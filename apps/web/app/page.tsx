@@ -2196,6 +2196,7 @@ function AdminView({
   const [selectedUser, setSelectedUser] = useState<any>(null)
   const [userModalOpen, setUserModalOpen] = useState(false)
   const [userLoading, setUserLoading] = useState(false)
+  const [userModalError, setUserModalError] = useState('')
   const [userQuery, setUserQuery] = useState('')
   const [routeMessage, setRouteMessage] = useState('Create a production enterprise architecture for a model router')
   const [routeResult, setRouteResult] = useState<RouteDecision | null>(null)
@@ -2280,35 +2281,46 @@ function AdminView({
   function closeUserModal() {
     setUserModalOpen(false)
     setSelectedUser(null)
+    setUserModalError('')
   }
 
   async function setUserStatus(userId: string, status: 'active' | 'suspended') {
-    const existing = users.find(u => u.user_id === userId)
-    await json(`/admin/users/${encodeURIComponent(userId)}/control`, {
-      method: 'PATCH',
-      body: JSON.stringify({
-        status,
-        monthly_budget_usd: existing?.monthly_budget_usd ?? null,
-        notes: selectedUser?.control?.notes ?? null,
-      }),
-    })
-    await loadAll()
-    await loadUser(userId)
+    try {
+      const existing = users.find(u => u.user_id === userId)
+      await json(`/admin/users/${encodeURIComponent(userId)}/control`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          status,
+          monthly_budget_usd: existing?.monthly_budget_usd ?? null,
+          notes: selectedUser?.control?.notes ?? null,
+        }),
+      })
+      setUserModalError('')
+      await loadAll()
+      await loadUser(userId)
+    } catch (e) {
+      setUserModalError(e instanceof Error ? e.message : 'Status update failed')
+    }
   }
 
   async function setMonthlyBudget(userId: string, value: string) {
-    const amount = value.trim() ? Number(value) : null
-    const existing = users.find(u => u.user_id === userId)
-    await json(`/admin/users/${encodeURIComponent(userId)}/control`, {
-      method: 'PATCH',
-      body: JSON.stringify({
-        status: existing?.status ?? 'active',
-        monthly_budget_usd: Number.isFinite(amount) ? amount : null,
-        notes: selectedUser?.control?.notes ?? null,
-      }),
-    })
-    await loadAll()
-    await loadUser(userId)
+    try {
+      const amount = value.trim() ? Number(value) : null
+      const existing = users.find(u => u.user_id === userId)
+      await json(`/admin/users/${encodeURIComponent(userId)}/control`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          status: existing?.status ?? 'active',
+          monthly_budget_usd: Number.isFinite(amount) ? amount : null,
+          notes: selectedUser?.control?.notes ?? null,
+        }),
+      })
+      setUserModalError('')
+      await loadAll()
+      await loadUser(userId)
+    } catch (e) {
+      setUserModalError(e instanceof Error ? e.message : 'Budget update failed')
+    }
   }
 
   async function setUserRole(userId: string, role: 'user' | 'admin') {
@@ -2317,10 +2329,11 @@ function AdminView({
         method: 'PATCH',
         body: JSON.stringify({ role }),
       })
+      setUserModalError('')
       await loadAll()
       await loadUser(userId)
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Role update failed')
+      setUserModalError(e instanceof Error ? e.message : 'Role update failed')
     }
   }
 
@@ -2342,10 +2355,11 @@ function AdminView({
         method: 'POST',
         body: JSON.stringify({ ...body, confirm_user_id: userId }),
       })
+      setUserModalError('')
       await loadAll()
       await loadUser(userId)
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Privacy action failed')
+      setUserModalError(e instanceof Error ? e.message : 'Privacy action failed')
     }
   }
 
@@ -2556,6 +2570,8 @@ function AdminView({
                 </div>
                 <button className="modal-close-btn" onClick={closeUserModal} type="button" aria-label="Close">×</button>
               </div>
+
+              {userModalError && <div className="error-bar" role="alert">{userModalError}</div>}
 
               <div className="settings-grid">
                 {Object.entries(selectedUser.counts ?? {}).map(([k, v]) => <span key={k}>{k.replace(/_/g, ' ')} <strong>{String(v)}</strong></span>)}

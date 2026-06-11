@@ -17,6 +17,7 @@ from sqlalchemy import func, or_
 
 from app.auth import get_claim_email, get_current_user_payload, is_admin_user, is_admin_user_db
 from app.config import get_settings
+from app.services.clerk import fetch_clerk_user
 from app.db.models import (
     AdminAuditLog,
     Conversation,
@@ -323,6 +324,28 @@ def users(
         emails = dict(db.query(User.clerk_id, User.email).filter(User.clerk_id.in_(page)).all())
         names = dict(db.query(User.clerk_id, User.name).filter(User.clerk_id.in_(page)).all())
 
+        # Backfill missing email/name from Clerk for users we haven't resolved yet
+        # (e.g. accounts created before the User profile table was populated, or
+        # whose JWT didn't carry email/name claims).
+        if get_settings().clerk_secret_key:
+            for user_id in page:
+                if emails.get(user_id) or names.get(user_id):
+                    continue
+                info = fetch_clerk_user(user_id)
+                if not info:
+                    continue
+                user_row = db.query(User).filter(User.clerk_id == user_id).first()
+                if not user_row:
+                    user_row = User(clerk_id=user_id)
+                    db.add(user_row)
+                if info.get("email"):
+                    user_row.email = info["email"]
+                    emails[user_id] = info["email"]
+                if info.get("name"):
+                    user_row.name = info["name"]
+                    names[user_id] = info["name"]
+            db.commit()
+
         conv_counts = dict(db.query(Conversation.user_id, func.count(Conversation.id)).filter(Conversation.user_id.in_(page)).group_by(Conversation.user_id).all())
         req_counts = dict(db.query(RequestLog.user_id, func.count(RequestLog.id)).filter(RequestLog.user_id.in_(page), RequestLog.status == "success").group_by(RequestLog.user_id).all())
         asst_counts = dict(
@@ -421,9 +444,22 @@ def user_detail(user_id: str, admin: AdminPrincipal = Depends(require_admin)) ->
             .limit(10)
             .all()
         )
-        user_row = db.query(User.email, User.name).filter(User.clerk_id == user_id).first()
-        user_email = user_row[0] if user_row else None
-        user_name = user_row[1] if user_row else None
+        user_row = db.query(User).filter(User.clerk_id == user_id).first()
+        user_email = user_row.email if user_row else None
+        user_name = user_row.name if user_row else None
+        if not (user_email or user_name) and get_settings().clerk_secret_key:
+            info = fetch_clerk_user(user_id)
+            if info:
+                if not user_row:
+                    user_row = User(clerk_id=user_id)
+                    db.add(user_row)
+                if info.get("email"):
+                    user_row.email = info["email"]
+                if info.get("name"):
+                    user_row.name = info["name"]
+                db.commit()
+                user_email = user_row.email
+                user_name = user_row.name
         control_out = _control_out(control)
         control_out["role"] = _effective_role(user_id, control.role if control else None, user_email)
         result = {

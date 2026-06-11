@@ -28,6 +28,11 @@ restartPolicyMaxRetries = 3
 # ADMIN_USER_IDS=<your Clerk user id>
 # ADMIN_EMAILS=subhachak@gmail.com
 #
+# Optional: Clerk Backend API secret key (Clerk dashboard -> API Keys ->
+# Secret keys, starts with sk_). Lets the admin Users tab show each user's
+# real name/email instead of just their Clerk user id.
+# CLERK_SECRET_KEY=sk_live_...
+#
 # New-signup approval gate (default true): new users must be activated by
 # an admin before they can chat. Admins (above) are exempt automatically.
 # REQUIRE_USER_APPROVAL=true

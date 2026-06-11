@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     admin_user_ids: str = ""
     admin_emails: str = ""
 
+    # Clerk Backend API secret key (sk_...). Used to look up a user's email/name
+    # by clerk_id for the admin Users tab when the JWT doesn't carry those claims.
+    clerk_secret_key: str = ""
+
     # New-user approval gate: when enabled, accounts created after first sign-in
     # default to status="pending" and cannot use the app until an admin sets
     # them to "active". Admins (env allowlist) are always exempt.

@@ -2194,6 +2194,8 @@ function AdminView({
   const [audit, setAudit] = useState<any[]>([])
   const [system, setSystem] = useState<any>(null)
   const [selectedUser, setSelectedUser] = useState<any>(null)
+  const [userModalOpen, setUserModalOpen] = useState(false)
+  const [userLoading, setUserLoading] = useState(false)
   const [userQuery, setUserQuery] = useState('')
   const [routeMessage, setRouteMessage] = useState('Create a production enterprise architecture for a model router')
   const [routeResult, setRouteResult] = useState<RouteDecision | null>(null)
@@ -2266,7 +2268,18 @@ function AdminView({
   }, [])
 
   async function loadUser(userId: string) {
-    setSelectedUser(await json(`/admin/users/${encodeURIComponent(userId)}`))
+    setUserModalOpen(true)
+    setUserLoading(true)
+    try {
+      setSelectedUser(await json(`/admin/users/${encodeURIComponent(userId)}`))
+    } finally {
+      setUserLoading(false)
+    }
+  }
+
+  function closeUserModal() {
+    setUserModalOpen(false)
+    setSelectedUser(null)
   }
 
   async function setUserStatus(userId: string, status: 'active' | 'suspended') {
@@ -2522,9 +2535,16 @@ function AdminView({
           </div>
         )}
 
-        {tab === 'users' && selectedUser && (
-          <div className="modal-backdrop" onClick={() => setSelectedUser(null)}>
+        {tab === 'users' && userModalOpen && (
+          <div className="modal-backdrop" onClick={closeUserModal}>
             <div className="routing-modal user-detail-modal" onClick={e => e.stopPropagation()}>
+              {!selectedUser || userLoading ? (
+                <div className="rp-empty" style={{ padding: '40px 0' }}>
+                  <i className="ti ti-loader-2 spin" style={{ fontSize: 22 }} />
+                  <span>Loading user…</span>
+                </div>
+              ) : (
+              <>
               <div className="panel-header">
                 <div>
                   <div className="panel-title">User detail</div>
@@ -2534,7 +2554,7 @@ function AdminView({
                   </div>
                   <div className="mono" style={{ marginTop: 4, fontSize: 11, color: 'var(--t5)' }}>{selectedUser.user_id}</div>
                 </div>
-                <button className="modal-close-btn" onClick={() => setSelectedUser(null)} type="button" aria-label="Close">×</button>
+                <button className="modal-close-btn" onClick={closeUserModal} type="button" aria-label="Close">×</button>
               </div>
 
               <div className="settings-grid">
@@ -2577,6 +2597,8 @@ function AdminView({
                 <button className="toggle-chip" onClick={() => privacyDelete(selectedUser.user_id, { research_runs: true })} type="button">Delete research</button>
                 <button className="toggle-chip danger" onClick={() => privacyDelete(selectedUser.user_id, { conversations: true, memories: true, writing_samples: true, twin_profile: true, research_runs: true })} type="button">Delete all user data</button>
               </div>
+              </>
+              )}
             </div>
           </div>
         )}

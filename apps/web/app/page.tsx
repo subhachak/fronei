@@ -2518,8 +2518,8 @@ function AdminView({
                   {users.map(u => (
                     <tr key={u.user_id} onClick={() => loadUser(u.user_id)}>
                       <td>
-                        <div className="user-cell-name">{u.name || u.user_id}</div>
-                        {u.email && <div className="user-cell-email">{u.email}</div>}
+                        <div className="user-cell-name">{u.name || u.email || 'Unnamed user'}</div>
+                        <div className="user-cell-email">{u.name && u.email ? u.email : u.user_id}</div>
                       </td>
                       <td><span className={`exec-pill ${u.status === 'suspended' ? 'danger-pill' : u.status === 'pending' ? 'warn-pill' : ''}`}>{u.status}</span></td>
                       <td><span className={`exec-pill ${u.role === 'admin' ? 'ok-pill' : ''}`}>{u.role}</span></td>
@@ -2549,8 +2549,8 @@ function AdminView({
                 <div>
                   <div className="panel-title">User detail</div>
                   <div style={{ marginTop: 4 }}>
-                    <strong>{selectedUser.name || selectedUser.user_id}</strong>
-                    {selectedUser.email && <span className="muted-text" style={{ marginLeft: 8 }}>{selectedUser.email}</span>}
+                    <strong>{selectedUser.name || selectedUser.email || 'Unnamed user'}</strong>
+                    {selectedUser.name && selectedUser.email && <span className="muted-text" style={{ marginLeft: 8 }}>{selectedUser.email}</span>}
                   </div>
                   <div className="mono" style={{ marginTop: 4, fontSize: 11, color: 'var(--t5)' }}>{selectedUser.user_id}</div>
                 </div>

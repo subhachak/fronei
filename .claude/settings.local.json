@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run *)",
+      "Bash(ps -p 55145 -o command=)",
+      "Bash(docker compose *)",
+      "Bash(curl -s http://localhost:8000/health)",
+      "Bash(grep -n \"fetch\\(\\\\`\\\\${API_BASE}\" /Users/subh/MyApps/modeldesk/apps/web/app/page.tsx)",
+      "Bash(grep -n \"fetch\\(\\\\`\\\\${API_BASE}\" /Users/subh/MyApps/modeldesk/apps/web/app/dashboard/page.tsx)",
+      "Bash(npm install *)",
+      "Bash(python -m pytest tests/ -v)",
+      "Bash(python3 -m pytest tests/ -v)",
+      "Bash(uv run *)",
+      "Bash(npx tsc *)",
+      "Bash(node scripts/gen-icons.mjs)",
+      "Bash(npm uninstall *)",
+      "Bash(grep -n \"empty-headline\\\\|onboardingName\\\\|showOnboarding\\\\|shell\\\\|</div>$\" /Users/subh/MyApps/sage/apps/web/app/page.tsx)",
+      "Bash(uv sync *)"
+    ]
+  }
+}

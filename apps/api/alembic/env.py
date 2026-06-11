@@ -40,6 +40,15 @@ def run_migrations_online() -> None:
     )
 
     with connectable.connect() as connection:
+        # Postgres has no default lock_timeout, so a DDL statement (e.g.
+        # ALTER TABLE ADD COLUMN) that's blocked behind a lock held by a
+        # still-running previous deploy's connection would hang forever,
+        # taking the deploy (and healthcheck) down with it. Fail fast
+        # instead so the deploy errors out cleanly and can be retried
+        # once the old connection's transaction has released its locks.
+        if connection.dialect.name == "postgresql":
+            connection.exec_driver_sql("SET lock_timeout = '5s'")
+
         context.configure(
             connection=connection,
             target_metadata=target_metadata,

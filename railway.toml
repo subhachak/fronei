@@ -1,0 +1,37 @@
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "infra/Dockerfile.api"
+
+[deploy]
+startCommand = "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT"
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3
+
+# Railway doesn't read env vars from this file (set them in the dashboard or via
+# `railway variables set KEY=value`). Required variables, mirroring render.yaml:
+#
+# APP_ENV=production
+# DATABASE_URL=<your Neon connection string>
+# ALLOWED_ORIGINS=https://fronei-new.vercel.app
+# DEFAULT_PROFILE=balanced
+# DAILY_BUDGET_USD=10
+# CLERK_ISSUER=<from Clerk dashboard>
+# CLERK_AUDIENCE=fronei-api
+# ADMIN_USER_IDS=<your Clerk user id>
+# ADMIN_EMAILS=subhachak@gmail.com
+#
+# Concurrency caps — Railway gives more headroom than Render free (512MB),
+# so these can likely go back to code defaults (4/6/5/4) once on a 1GB+ plan.
+# Start conservative, raise after confirming stable memory usage:
+# MAX_QUESTION_WORKERS=2
+# MAX_CLAIM_EXTRACT_WORKERS=3
+# MAX_DOCUMENT_WORKERS=2
+# MAX_DECOMPOSE_WORKERS=2
+#
+# Provider keys (set at least one):
+# OPENAI_API_KEY=
+# ANTHROPIC_API_KEY=
+# GEMINI_API_KEY=
+# OPENROUTER_API_KEY=
+# TAVILY_API_KEY=
+# BRAVE_API_KEY=

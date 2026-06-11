@@ -16,10 +16,14 @@ from pathlib import Path
 
 from litellm import completion
 
+from app.config import get_settings
+
 MAX_CHARS     = 60_000   # higher limit — vision extraction produces clean markdown
 MAX_PDF_PAGES = 30
 PDF_DPI       = 150      # 1275×1650px for letter — enough for fine print
-MAX_WORKERS   = 5        # parallel page extraction
+# Parallel page extraction. Override via MAX_DOCUMENT_WORKERS env var — lower
+# this on memory-constrained instances (e.g. Render free tier, 512MB).
+MAX_WORKERS   = get_settings().max_document_workers
 
 IMAGE_TYPES = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".tiff", ".tif", ".bmp"}
 PARSER_TYPES = {

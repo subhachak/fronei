@@ -24,6 +24,15 @@ services:
         sync: false          # comma-separated Clerk user IDs allowed to access /admin
       - key: ADMIN_EMAILS
         sync: false          # optional comma-separated admin emails
+      # Lower concurrency caps for the 512MB free instance — raise on bigger plans
+      - key: MAX_QUESTION_WORKERS
+        value: "2"
+      - key: MAX_CLAIM_EXTRACT_WORKERS
+        value: "3"
+      - key: MAX_DOCUMENT_WORKERS
+        value: "2"
+      - key: MAX_DECOMPOSE_WORKERS
+        value: "2"
       # Set at least one provider key — leave others blank
       - key: OPENAI_API_KEY
         sync: false

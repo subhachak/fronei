@@ -32,6 +32,14 @@ class Settings(BaseSettings):
     rate_limit_research_per_hour: int = 10
     rate_limit_extraction_per_hour: int = 5
 
+    # Concurrency caps for parallel LLM/extraction work. Each concurrent worker
+    # holds its own request/response buffers in memory at the same time, so on
+    # memory-constrained instances (e.g. Render free tier, 512MB) lower these.
+    max_question_workers: int = 4
+    max_claim_extract_workers: int = 6
+    max_document_workers: int = 5
+    max_decompose_workers: int = 4
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     @property

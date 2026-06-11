@@ -15,7 +15,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Callable
 
-from app.config import Settings
+from app.config import Settings, get_settings
 from app.db.models import Conversation
 from app.schemas import (
     ConvChatRequest, ExecutionLog, PlannerLog, PlannerSubQuery,
@@ -143,7 +143,7 @@ def _run_sub_queries(
             planner_context=planner_ctx, doc_context=doc_context or None,
         )
 
-    with ThreadPoolExecutor(max_workers=min(n, 4)) as pool:
+    with ThreadPoolExecutor(max_workers=min(n, get_settings().max_decompose_workers)) as pool:
         for future in as_completed([pool.submit(_call, i) for i in range(n)]):
             idx, r = future.result()
             sq = plan.sub_queries[idx]

@@ -50,8 +50,10 @@ PRIMARY_SOURCE_TYPES = {"government", "academic", "documentation", "pricing", "r
 MAX_SOURCES_PER_HOST_DEEP = 4
 MAX_SOURCES_PER_HOST_EXPERT = 3
 CLAIM_EXTRACTOR_MODEL = "claude-haiku-4-5-20251001"
-MAX_CLAIM_EXTRACT_WORKERS = 6
-MAX_QUESTION_WORKERS = 4
+# Defaults overridden by MAX_CLAIM_EXTRACT_WORKERS / MAX_QUESTION_WORKERS env vars
+# (see app.config.Settings) — lower these on memory-constrained instances.
+MAX_CLAIM_EXTRACT_WORKERS = get_settings().max_claim_extract_workers
+MAX_QUESTION_WORKERS = get_settings().max_question_workers
 MAX_CANDIDATES_PER_QUESTION = 8
 
 

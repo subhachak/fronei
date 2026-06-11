@@ -2490,95 +2490,93 @@ function AdminView({
         )}
 
         {tab === 'users' && (
-          <div className="admin-grid">
-            <div className="card admin-table-card">
-              <div className="admin-card-head">
-                <strong>Users</strong>
-                <div className="admin-search">
-                  <input className="conv-search-input" value={userQuery} onChange={e => setUserQuery(e.target.value)} placeholder="Search user id" />
-                  <button className="toggle-chip" onClick={loadAll} type="button">Search</button>
-                </div>
-              </div>
-              <div className="admin-table-wrap">
-                <table className="admin-table">
-                  <thead><tr><th>User</th><th>Email</th><th>Status</th><th>Role</th><th>This month</th><th>Total</th><th>Requests</th><th>Data</th></tr></thead>
-                  <tbody>
-                    {users.map(u => (
-                      <tr key={u.user_id} onClick={() => loadUser(u.user_id)} className={selectedUser?.user_id === u.user_id ? 'active' : ''}>
-                        <td className="mono">{u.user_id}</td>
-                        <td>{u.name ? <>{u.name}<br /><span style={{ color: 'var(--t5)', fontSize: 11 }}>{u.email}</span></> : (u.email ?? '—')}</td>
-                        <td><span className={`exec-pill ${u.status === 'suspended' ? 'danger-pill' : u.status === 'pending' ? 'warn-pill' : ''}`}>{u.status}</span></td>
-                        <td><span className={`exec-pill ${u.role === 'admin' ? 'ok-pill' : ''}`}>{u.role}</span></td>
-                        <td>{fmt$(u.month_spend, 4)}{u.role !== 'admin' ? ` / $${(u.monthly_budget_usd ?? 5).toFixed(2)}` : ''}</td>
-                        <td>{fmt$(u.total_spend, 4)}</td>
-                        <td>{u.request_count}</td>
-                        <td>{u.memory_count} mem · {u.writing_sample_count} samples · {u.research_run_count} research</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+          <div className="card admin-table-card users-table-card">
+            <div className="admin-card-head">
+              <strong>Users</strong>
+              <div className="admin-search">
+                <input className="conv-search-input" value={userQuery} onChange={e => setUserQuery(e.target.value)} placeholder="Search user id" />
+                <button className="toggle-chip" onClick={loadAll} type="button">Search</button>
               </div>
             </div>
+            <div className="admin-table-wrap">
+              <table className="admin-table users-table">
+                <thead><tr><th>User</th><th>Status</th><th>Role</th><th>This month</th><th>Total</th><th>Requests</th><th>Data</th></tr></thead>
+                <tbody>
+                  {users.map(u => (
+                    <tr key={u.user_id} onClick={() => loadUser(u.user_id)}>
+                      <td>
+                        <div className="user-cell-name">{u.name || u.user_id}</div>
+                        {u.email && <div className="user-cell-email">{u.email}</div>}
+                      </td>
+                      <td><span className={`exec-pill ${u.status === 'suspended' ? 'danger-pill' : u.status === 'pending' ? 'warn-pill' : ''}`}>{u.status}</span></td>
+                      <td><span className={`exec-pill ${u.role === 'admin' ? 'ok-pill' : ''}`}>{u.role}</span></td>
+                      <td>{fmt$(u.month_spend, 4)}{u.role !== 'admin' ? ` / $${(u.monthly_budget_usd ?? 5).toFixed(2)}` : ''}</td>
+                      <td>{fmt$(u.total_spend, 4)}</td>
+                      <td>{u.request_count}</td>
+                      <td>{u.memory_count} mem · {u.writing_sample_count} samples · {u.research_run_count} research</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
 
-            <div className="card admin-detail-card">
-              {selectedUser ? (
-                <>
-                  <div className="admin-card-head">
-                    <strong>User detail</strong>
-                    <span className="mono">{selectedUser.user_id}</span>
+        {tab === 'users' && selectedUser && (
+          <div className="modal-backdrop" onClick={() => setSelectedUser(null)}>
+            <div className="routing-modal user-detail-modal" onClick={e => e.stopPropagation()}>
+              <div className="panel-header">
+                <div>
+                  <div className="panel-title">User detail</div>
+                  <div style={{ marginTop: 4 }}>
+                    <strong>{selectedUser.name || selectedUser.user_id}</strong>
+                    {selectedUser.email && <span className="muted-text" style={{ marginLeft: 8 }}>{selectedUser.email}</span>}
                   </div>
-                  {(selectedUser.name || selectedUser.email) && (
-                    <div className="settings-line">
-                      <div>
-                        <strong>Name / Email</strong>
-                        <span>{selectedUser.name ?? '—'}{selectedUser.email ? ` · ${selectedUser.email}` : ''}</span>
-                      </div>
-                    </div>
+                  <div className="mono" style={{ marginTop: 4, fontSize: 11, color: 'var(--t5)' }}>{selectedUser.user_id}</div>
+                </div>
+                <button className="modal-close-btn" onClick={() => setSelectedUser(null)} type="button" aria-label="Close">×</button>
+              </div>
+
+              <div className="settings-grid">
+                {Object.entries(selectedUser.counts ?? {}).map(([k, v]) => <span key={k}>{k.replace(/_/g, ' ')} <strong>{String(v)}</strong></span>)}
+              </div>
+              <div className="settings-line">
+                <div><strong>Status</strong><span>{selectedUser.control?.status ?? 'active'}</span></div>
+                <div className="theme-btn-group">
+                  {selectedUser.control?.status === 'pending' && (
+                    <button className="theme-btn-opt active" onClick={() => setUserStatus(selectedUser.user_id, 'active')} type="button">Activate</button>
                   )}
-                  <div className="settings-grid">
-                    {Object.entries(selectedUser.counts ?? {}).map(([k, v]) => <span key={k}>{k.replace(/_/g, ' ')} <strong>{String(v)}</strong></span>)}
-                  </div>
-                  <div className="settings-line">
-                    <div><strong>Status</strong><span>{selectedUser.control?.status ?? 'active'}</span></div>
-                    <div className="theme-btn-group">
-                      {selectedUser.control?.status === 'pending' && (
-                        <button className="theme-btn-opt active" onClick={() => setUserStatus(selectedUser.user_id, 'active')} type="button">Activate</button>
-                      )}
-                      <button className={`theme-btn-opt${selectedUser.control?.status === 'active' || (!selectedUser.control?.status) ? ' active' : ''}`} onClick={() => setUserStatus(selectedUser.user_id, 'active')} type="button">Active</button>
-                      <button className={`theme-btn-opt${selectedUser.control?.status === 'suspended' ? ' active' : ''}`} onClick={() => setUserStatus(selectedUser.user_id, 'suspended')} type="button">Suspended</button>
-                    </div>
-                  </div>
-                  <div className="settings-line">
-                    <div><strong>Role</strong><span>{selectedUser.control?.role ?? 'user'}</span></div>
-                    <div className="theme-btn-group">
-                      <button className={`theme-btn-opt${selectedUser.control?.role !== 'admin' ? ' active' : ''}`} onClick={() => setUserRole(selectedUser.user_id, 'user')} type="button">User</button>
-                      <button className={`theme-btn-opt${selectedUser.control?.role === 'admin' ? ' active' : ''}`} onClick={() => setUserRole(selectedUser.user_id, 'admin')} type="button">Admin</button>
-                    </div>
-                  </div>
-                  {selectedUser.control?.role !== 'admin' && (
-                    <label className="settings-field">Monthly budget override
-                      <input
-                        className="conv-search-input"
-                        defaultValue={selectedUser.control?.monthly_budget_usd ?? ''}
-                        placeholder="Default $5.00"
-                        onBlur={e => setMonthlyBudget(selectedUser.user_id, e.target.value)}
-                      />
-                      <span className="muted-text" style={{ fontSize: 12 }}>
-                        Spent this month: {fmt$(selectedUser.month_spend ?? 0, 4)}
-                      </span>
-                    </label>
-                  )}
-                  <div className="admin-danger-zone">
-                    <strong>Privacy actions</strong>
-                    <button className="toggle-chip" onClick={() => privacyDelete(selectedUser.user_id, { memories: true })} type="button">Delete memories</button>
-                    <button className="toggle-chip" onClick={() => privacyDelete(selectedUser.user_id, { writing_samples: true, twin_profile: true })} type="button">Delete voice profile</button>
-                    <button className="toggle-chip" onClick={() => privacyDelete(selectedUser.user_id, { research_runs: true })} type="button">Delete research</button>
-                    <button className="toggle-chip danger" onClick={() => privacyDelete(selectedUser.user_id, { conversations: true, memories: true, writing_samples: true, twin_profile: true, research_runs: true })} type="button">Delete all user data</button>
-                  </div>
-                </>
-              ) : (
-                <div className="rp-empty"><i className="ti ti-users" /><span>Select a user.</span></div>
+                  <button className={`theme-btn-opt${selectedUser.control?.status === 'active' || (!selectedUser.control?.status) ? ' active' : ''}`} onClick={() => setUserStatus(selectedUser.user_id, 'active')} type="button">Active</button>
+                  <button className={`theme-btn-opt${selectedUser.control?.status === 'suspended' ? ' active' : ''}`} onClick={() => setUserStatus(selectedUser.user_id, 'suspended')} type="button">Suspended</button>
+                </div>
+              </div>
+              <div className="settings-line">
+                <div><strong>Role</strong><span>{selectedUser.control?.role ?? 'user'}</span></div>
+                <div className="theme-btn-group">
+                  <button className={`theme-btn-opt${selectedUser.control?.role !== 'admin' ? ' active' : ''}`} onClick={() => setUserRole(selectedUser.user_id, 'user')} type="button">User</button>
+                  <button className={`theme-btn-opt${selectedUser.control?.role === 'admin' ? ' active' : ''}`} onClick={() => setUserRole(selectedUser.user_id, 'admin')} type="button">Admin</button>
+                </div>
+              </div>
+              {selectedUser.control?.role !== 'admin' && (
+                <label className="settings-field">Monthly budget override
+                  <input
+                    className="conv-search-input"
+                    defaultValue={selectedUser.control?.monthly_budget_usd ?? ''}
+                    placeholder="Default $5.00"
+                    onBlur={e => setMonthlyBudget(selectedUser.user_id, e.target.value)}
+                  />
+                  <span className="muted-text" style={{ fontSize: 12 }}>
+                    Spent this month: {fmt$(selectedUser.month_spend ?? 0, 4)}
+                  </span>
+                </label>
               )}
+              <div className="admin-danger-zone">
+                <strong>Privacy actions</strong>
+                <button className="toggle-chip" onClick={() => privacyDelete(selectedUser.user_id, { memories: true })} type="button">Delete memories</button>
+                <button className="toggle-chip" onClick={() => privacyDelete(selectedUser.user_id, { writing_samples: true, twin_profile: true })} type="button">Delete voice profile</button>
+                <button className="toggle-chip" onClick={() => privacyDelete(selectedUser.user_id, { research_runs: true })} type="button">Delete research</button>
+                <button className="toggle-chip danger" onClick={() => privacyDelete(selectedUser.user_id, { conversations: true, memories: true, writing_samples: true, twin_profile: true, research_runs: true })} type="button">Delete all user data</button>
+              </div>
             </div>
           </div>
         )}

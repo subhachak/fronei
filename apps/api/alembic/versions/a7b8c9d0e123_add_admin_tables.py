@@ -9,6 +9,8 @@ from typing import Sequence, Union
 from alembic import op
 import sqlalchemy as sa
 
+from app.db.migration_helpers import index_exists
+
 
 revision: str = "a7b8c9d0e123"
 down_revision: Union[str, Sequence[str], None] = "f6a7b8901234"
@@ -26,8 +28,10 @@ def upgrade() -> None:
         sa.Column("notes", sa.Text(), nullable=True),
         sa.Column("created_at", sa.DateTime(), nullable=False),
         sa.Column("updated_at", sa.DateTime(), nullable=False),
+        if_not_exists=True,
     )
-    op.create_index("ix_user_admin_controls_user_id", "user_admin_controls", ["user_id"], unique=True)
+    if not index_exists("user_admin_controls", "ix_user_admin_controls_user_id"):
+        op.create_index("ix_user_admin_controls_user_id", "user_admin_controls", ["user_id"], unique=True)
 
     op.create_table(
         "admin_audit_logs",
@@ -37,9 +41,12 @@ def upgrade() -> None:
         sa.Column("target_user_id", sa.String(128), nullable=True),
         sa.Column("details_json", sa.Text(), nullable=True),
         sa.Column("created_at", sa.DateTime(), nullable=False),
+        if_not_exists=True,
     )
-    op.create_index("ix_admin_audit_logs_admin_user_id", "admin_audit_logs", ["admin_user_id"])
-    op.create_index("ix_admin_audit_logs_target_user_id", "admin_audit_logs", ["target_user_id"])
+    if not index_exists("admin_audit_logs", "ix_admin_audit_logs_admin_user_id"):
+        op.create_index("ix_admin_audit_logs_admin_user_id", "admin_audit_logs", ["admin_user_id"])
+    if not index_exists("admin_audit_logs", "ix_admin_audit_logs_target_user_id"):
+        op.create_index("ix_admin_audit_logs_target_user_id", "admin_audit_logs", ["target_user_id"])
 
 
 def downgrade() -> None:

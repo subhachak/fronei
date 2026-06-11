@@ -1,8 +1,8 @@
-"""add role to user_admin_controls
+"""add monthly_budget_usd to user_admin_controls
 
-Revision ID: b2c3d4e5f678
-Revises: a7b8c9d0e123
-Create Date: 2026-06-10
+Revision ID: d1e2f3a4b567
+Revises: c3d4e5f6a789
+Create Date: 2026-06-11
 """
 from typing import Sequence, Union
 
@@ -12,19 +12,19 @@ import sqlalchemy as sa
 from app.db.migration_helpers import column_exists
 
 
-revision: str = "b2c3d4e5f678"
-down_revision: Union[str, Sequence[str], None] = "a7b8c9d0e123"
+revision: str = "d1e2f3a4b567"
+down_revision: Union[str, Sequence[str], None] = "c3d4e5f6a789"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    if column_exists("user_admin_controls", "role"):
+    if column_exists("user_admin_controls", "monthly_budget_usd"):
         return
     with op.batch_alter_table("user_admin_controls", schema=None) as batch_op:
-        batch_op.add_column(sa.Column("role", sa.String(32), nullable=True, server_default="user"))
+        batch_op.add_column(sa.Column("monthly_budget_usd", sa.Float(), nullable=True))
 
 
 def downgrade() -> None:
     with op.batch_alter_table("user_admin_controls", schema=None) as batch_op:
-        batch_op.drop_column("role")
+        batch_op.drop_column("monthly_budget_usd")

@@ -9,6 +9,8 @@ from typing import Sequence, Union
 from alembic import op
 import sqlalchemy as sa
 
+from app.db.migration_helpers import index_exists
+
 
 revision: str = 'e5f6a7b89012'
 down_revision: Union[str, Sequence[str], None] = 'd4e5f6a7b890'
@@ -36,9 +38,12 @@ def upgrade() -> None:
         sa.Column('final_answer', sa.Text(), nullable=True),
         sa.Column('created_at', sa.DateTime(), nullable=False),
         sa.Column('updated_at', sa.DateTime(), nullable=False),
+        if_not_exists=True,
     )
-    op.create_index('ix_research_runs_user_id', 'research_runs', ['user_id'])
-    op.create_index('ix_research_runs_conversation_id', 'research_runs', ['conversation_id'])
+    if not index_exists('research_runs', 'ix_research_runs_user_id'):
+        op.create_index('ix_research_runs_user_id', 'research_runs', ['user_id'])
+    if not index_exists('research_runs', 'ix_research_runs_conversation_id'):
+        op.create_index('ix_research_runs_conversation_id', 'research_runs', ['conversation_id'])
 
     op.create_table(
         'research_questions',
@@ -48,8 +53,10 @@ def upgrade() -> None:
         sa.Column('search_query', sa.Text(), nullable=True),
         sa.Column('status', sa.String(32), nullable=True, server_default='pending'),
         sa.Column('created_at', sa.DateTime(), nullable=False),
+        if_not_exists=True,
     )
-    op.create_index('ix_research_questions_run_id', 'research_questions', ['run_id'])
+    if not index_exists('research_questions', 'ix_research_questions_run_id'):
+        op.create_index('ix_research_questions_run_id', 'research_questions', ['run_id'])
 
     op.create_table(
         'research_sources',
@@ -65,9 +72,12 @@ def upgrade() -> None:
         sa.Column('freshness_score', sa.Float(), nullable=True, server_default='0'),
         sa.Column('source_type', sa.String(64), nullable=True),
         sa.Column('created_at', sa.DateTime(), nullable=False),
+        if_not_exists=True,
     )
-    op.create_index('ix_research_sources_run_id', 'research_sources', ['run_id'])
-    op.create_index('ix_research_sources_question_id', 'research_sources', ['question_id'])
+    if not index_exists('research_sources', 'ix_research_sources_run_id'):
+        op.create_index('ix_research_sources_run_id', 'research_sources', ['run_id'])
+    if not index_exists('research_sources', 'ix_research_sources_question_id'):
+        op.create_index('ix_research_sources_question_id', 'research_sources', ['question_id'])
 
     op.create_table(
         'research_claims',
@@ -79,9 +89,12 @@ def upgrade() -> None:
         sa.Column('confidence', sa.String(32), nullable=True, server_default='medium'),
         sa.Column('relevance_score', sa.Float(), nullable=True, server_default='0'),
         sa.Column('created_at', sa.DateTime(), nullable=False),
+        if_not_exists=True,
     )
-    op.create_index('ix_research_claims_run_id', 'research_claims', ['run_id'])
-    op.create_index('ix_research_claims_source_id', 'research_claims', ['source_id'])
+    if not index_exists('research_claims', 'ix_research_claims_run_id'):
+        op.create_index('ix_research_claims_run_id', 'research_claims', ['run_id'])
+    if not index_exists('research_claims', 'ix_research_claims_source_id'):
+        op.create_index('ix_research_claims_source_id', 'research_claims', ['source_id'])
 
     op.create_table(
         'research_findings',
@@ -91,8 +104,10 @@ def upgrade() -> None:
         sa.Column('evidence_json', sa.Text(), nullable=True),
         sa.Column('confidence', sa.String(32), nullable=True, server_default='medium'),
         sa.Column('created_at', sa.DateTime(), nullable=False),
+        if_not_exists=True,
     )
-    op.create_index('ix_research_findings_run_id', 'research_findings', ['run_id'])
+    if not index_exists('research_findings', 'ix_research_findings_run_id'):
+        op.create_index('ix_research_findings_run_id', 'research_findings', ['run_id'])
 
 
 def downgrade() -> None:

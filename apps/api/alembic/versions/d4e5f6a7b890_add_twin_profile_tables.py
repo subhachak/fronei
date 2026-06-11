@@ -10,6 +10,8 @@ from typing import Sequence, Union
 from alembic import op
 import sqlalchemy as sa
 
+from app.db.migration_helpers import index_exists
+
 
 revision: str = 'd4e5f6a7b890'
 down_revision: Union[str, Sequence[str], None] = 'c2d3e4f56789'
@@ -26,8 +28,10 @@ def upgrade() -> None:
         sa.Column('label',      sa.String(120),   nullable=True),
         sa.Column('char_count', sa.Integer(),     nullable=False, server_default='0'),
         sa.Column('created_at', sa.DateTime(),    nullable=False),
+        if_not_exists=True,
     )
-    op.create_index('ix_writing_samples_user_id', 'writing_samples', ['user_id'])
+    if not index_exists('writing_samples', 'ix_writing_samples_user_id'):
+        op.create_index('ix_writing_samples_user_id', 'writing_samples', ['user_id'])
 
     op.create_table(
         'twin_profiles',
@@ -39,8 +43,10 @@ def upgrade() -> None:
         sa.Column('prefs_json',       sa.Text(),     nullable=True),
         sa.Column('created_at',       sa.DateTime(), nullable=False),
         sa.Column('updated_at',       sa.DateTime(), nullable=False),
+        if_not_exists=True,
     )
-    op.create_index('ix_twin_profiles_user_id', 'twin_profiles', ['user_id'])
+    if not index_exists('twin_profiles', 'ix_twin_profiles_user_id'):
+        op.create_index('ix_twin_profiles_user_id', 'twin_profiles', ['user_id'])
 
 
 def downgrade() -> None:

@@ -9,6 +9,8 @@ from typing import Sequence, Union
 from alembic import op
 import sqlalchemy as sa
 
+from app.db.migration_helpers import index_exists
+
 
 revision: str = 'b1c2d3e4f567'
 down_revision: Union[str, Sequence[str], None] = 'ad98597a4589'
@@ -26,8 +28,10 @@ def upgrade() -> None:
         sa.Column('source_conversation_id', sa.Integer(),     nullable=True),
         sa.Column('created_at',             sa.DateTime(),    nullable=False),
         sa.Column('updated_at',             sa.DateTime(),    nullable=False),
+        if_not_exists=True,
     )
-    op.create_index('ix_user_memories_user_id', 'user_memories', ['user_id'])
+    if not index_exists('user_memories', 'ix_user_memories_user_id'):
+        op.create_index('ix_user_memories_user_id', 'user_memories', ['user_id'])
 
 
 def downgrade() -> None:

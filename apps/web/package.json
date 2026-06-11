@@ -1,0 +1,27 @@
+{
+  "name": "fronei-web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "@clerk/nextjs": "^7.4.3",
+    "@types/dompurify": "^3.0.5",
+    "@types/node": "latest",
+    "@types/react": "latest",
+    "@types/react-dom": "latest",
+    "dompurify": "^3.4.8",
+    "highlight.js": "^11.11.1",
+    "marked": "^18.0.5",
+    "marked-highlight": "^2.2.4",
+    "next": "latest",
+    "react": "latest",
+    "react-dom": "latest",
+    "recharts": "^3.8.1",
+    "typescript": "latest"
+  }
+}

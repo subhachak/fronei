@@ -1,0 +1,19 @@
+# env files — never commit these
+.env
+.env.local
+.env.*.local
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+
+# DB files
+*.db
+*.db-shm
+*.db-wal
+
+# misc
+.DS_Store
+.fuse*

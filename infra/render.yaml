@@ -1,0 +1,33 @@
+services:
+  - type: web
+    name: fronei-api
+    env: python
+    rootDir: apps/api
+    buildCommand: pip install -e .
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false          # paste your Postgres URL from Supabase / Neon / Render DB
+      - key: ALLOWED_ORIGINS
+        sync: false          # set to your Vercel frontend URL, e.g. https://fronei.vercel.app
+      - key: DEFAULT_PROFILE
+        value: balanced
+      - key: DAILY_BUDGET_USD
+        value: "10"
+      - key: CLERK_ISSUER
+        sync: false
+      # Set at least one provider key — leave others blank
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: TAVILY_API_KEY
+        sync: false
+      - key: BRAVE_API_KEY
+        sync: false

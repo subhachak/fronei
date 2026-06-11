@@ -1,0 +1,500 @@
+from datetime import datetime, date, timezone
+from sqlalchemy import create_engine, DateTime, Float, ForeignKey, Integer, String, Text, event, func, inspect, text
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
+from app.config import get_settings
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    clerk_id: Mapped[str] = mapped_column(String(128), unique=True, nullable=False, index=True)
+    email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+def get_or_create_user(db, clerk_id: str, email: str | None = None, name: str | None = None) -> "User":
+    """Upsert the local profile row for a Clerk user. Called on every
+    authenticated session bootstrap so a User record exists from first login,
+    even before the user starts a conversation."""
+    now = datetime.now(timezone.utc)
+    user = db.query(User).filter(User.clerk_id == clerk_id).first()
+    if not user:
+        user = User(clerk_id=clerk_id, email=email, name=name, created_at=now, last_login_at=now)
+        db.add(user)
+    else:
+        if email and user.email != email:
+            user.email = email
+        if name and user.name != name:
+            user.name = name
+        user.last_login_at = now
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+class UserAdminControl(Base):
+    __tablename__ = "user_admin_controls"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(String(128), unique=True, nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(32), default="active")
+    role: Mapped[str] = mapped_column(String(32), default="user")
+    daily_budget_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class AdminAuditLog(Base):
+    __tablename__ = "admin_audit_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    admin_user_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    action: Mapped[str] = mapped_column(String(120), nullable=False)
+    target_user_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    details_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class Conversation(Base):
+    __tablename__ = "conversations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True, default="")
+    title: Mapped[str] = mapped_column(String(120), default="New conversation")
+    profile: Mapped[str] = mapped_column(String(32), default="balanced")
+    message_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    # Conversation memory (step 2)
+    running_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    active_task_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    messages: Mapped[list["ConversationMessage"]] = relationship(
+        "ConversationMessage",
+        back_populates="conversation",
+        cascade="all, delete-orphan",
+        order_by="ConversationMessage.id",
+    )
+
+
+class ConversationMessage(Base):
+    __tablename__ = "conversation_messages"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    conversation_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False
+    )
+    role: Mapped[str] = mapped_column(String(16))
+    content: Mapped[str] = mapped_column(Text)
+    task_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    complexity: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    model_used: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    prompt_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    completion_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    estimated_cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    execution_log_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    research_run_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    conversation: Mapped["Conversation"] = relationship("Conversation", back_populates="messages")
+
+
+class RequestLog(Base):
+    __tablename__ = "request_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    message: Mapped[str] = mapped_column(Text)
+    task_type: Mapped[str] = mapped_column(String(64))
+    complexity: Mapped[str] = mapped_column(String(32))
+    profile: Mapped[str] = mapped_column(String(32))
+    selected_model: Mapped[str] = mapped_column(String(128))
+    model_used: Mapped[str] = mapped_column(String(128))
+    latency_ms: Mapped[int] = mapped_column(Integer)
+    prompt_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    completion_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    estimated_cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="success")
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class UserMemory(Base):
+    __tablename__ = "user_memories"
+
+    id:                     Mapped[int]      = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id:                Mapped[str]      = mapped_column(String(128), nullable=False, index=True)
+    content:                Mapped[str]      = mapped_column(Text)
+    category:               Mapped[str]      = mapped_column(String(64), default="general")
+    source_conversation_id: Mapped[int|None] = mapped_column(Integer, nullable=True)
+    created_at:             Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at:             Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class WritingSample(Base):
+    __tablename__ = "writing_samples"
+
+    id:         Mapped[int]        = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id:    Mapped[str]        = mapped_column(String(128), nullable=False, index=True)
+    content:    Mapped[str]        = mapped_column(Text, nullable=False)
+    label:      Mapped[str | None] = mapped_column(String(120), nullable=True)
+    char_count: Mapped[int]        = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime]   = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class TwinProfile(Base):
+    __tablename__ = "twin_profiles"
+
+    id:               Mapped[int]             = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id:          Mapped[str]             = mapped_column(String(128), unique=True, nullable=False, index=True)
+    fingerprint_json: Mapped[str | None]      = mapped_column(Text, nullable=True)
+    rewrite_prompt:   Mapped[str | None]      = mapped_column(Text, nullable=True)
+    extracted_at:     Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    prefs_json:       Mapped[str | None]      = mapped_column(Text, nullable=True)
+    created_at:       Mapped[datetime]        = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at:       Mapped[datetime]        = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class ResearchRun(Base):
+    __tablename__ = "research_runs"
+
+    id:                      Mapped[int]             = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id:                 Mapped[str]             = mapped_column(String(128), nullable=False, index=True)
+    conversation_id:         Mapped[int | None]      = mapped_column(Integer, nullable=True, index=True)
+    query:                   Mapped[str]             = mapped_column(Text, nullable=False)
+    mode:                    Mapped[str]             = mapped_column(String(32), default="deep")
+    status:                  Mapped[str]             = mapped_column(String(32), default="running")
+    iterations:              Mapped[int]             = mapped_column(Integer, default=0)
+    max_sources:             Mapped[int]             = mapped_column(Integer, default=12)
+    source_count:            Mapped[int]             = mapped_column(Integer, default=0)
+    claim_count:             Mapped[int]             = mapped_column(Integer, default=0)
+    confidence:              Mapped[str | None]      = mapped_column(String(32), nullable=True)
+    gaps_json:               Mapped[str | None]      = mapped_column(Text, nullable=True)
+    contradictions_json:     Mapped[str | None]      = mapped_column(Text, nullable=True)
+    verifier_notes:          Mapped[str | None]      = mapped_column(Text, nullable=True)
+    final_answer:            Mapped[str | None]      = mapped_column(Text, nullable=True)
+    created_at:              Mapped[datetime]        = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at:              Mapped[datetime]        = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class ResearchQuestion(Base):
+    __tablename__ = "research_questions"
+
+    id:              Mapped[int]        = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id:          Mapped[int]        = mapped_column(Integer, ForeignKey("research_runs.id", ondelete="CASCADE"), nullable=False, index=True)
+    question:        Mapped[str]        = mapped_column(Text, nullable=False)
+    search_query:    Mapped[str | None] = mapped_column(Text, nullable=True)
+    status:          Mapped[str]        = mapped_column(String(32), default="pending")
+    created_at:      Mapped[datetime]   = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class ResearchSource(Base):
+    __tablename__ = "research_sources"
+
+    id:                  Mapped[int]        = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id:              Mapped[int]        = mapped_column(Integer, ForeignKey("research_runs.id", ondelete="CASCADE"), nullable=False, index=True)
+    question_id:         Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    title:               Mapped[str]        = mapped_column(Text, nullable=False)
+    url:                 Mapped[str]        = mapped_column(Text, nullable=False)
+    provider:            Mapped[str]        = mapped_column(String(64), default="")
+    excerpt:             Mapped[str | None] = mapped_column(Text, nullable=True)
+    credibility_score:   Mapped[float]      = mapped_column(Float, default=0.0)
+    relevance_score:     Mapped[float]      = mapped_column(Float, default=0.0)
+    freshness_score:     Mapped[float]      = mapped_column(Float, default=0.0)
+    source_type:         Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at:          Mapped[datetime]   = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class ResearchClaim(Base):
+    __tablename__ = "research_claims"
+
+    id:                Mapped[int]        = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id:            Mapped[int]        = mapped_column(Integer, ForeignKey("research_runs.id", ondelete="CASCADE"), nullable=False, index=True)
+    source_id:         Mapped[int]        = mapped_column(Integer, ForeignKey("research_sources.id", ondelete="CASCADE"), nullable=False, index=True)
+    claim:             Mapped[str]        = mapped_column(Text, nullable=False)
+    quote:             Mapped[str | None] = mapped_column(Text, nullable=True)
+    confidence:        Mapped[str]        = mapped_column(String(32), default="medium")
+    relevance_score:   Mapped[float]      = mapped_column(Float, default=0.0)
+    created_at:        Mapped[datetime]   = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class ResearchFinding(Base):
+    __tablename__ = "research_findings"
+
+    id:            Mapped[int]        = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id:        Mapped[int]        = mapped_column(Integer, ForeignKey("research_runs.id", ondelete="CASCADE"), nullable=False, index=True)
+    finding:       Mapped[str]        = mapped_column(Text, nullable=False)
+    evidence_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    confidence:    Mapped[str]        = mapped_column(String(32), default="medium")
+    created_at:    Mapped[datetime]   = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+def build_engine():
+    settings = get_settings()
+    if settings.database_url.startswith("sqlite"):
+        # timeout=30 → SQLite driver retries for up to 30 s before raising
+        # OperationalError("database is locked"), covering transient contention.
+        connect_args = {"check_same_thread": False, "timeout": 30}
+        return create_engine(settings.database_url, connect_args=connect_args, pool_pre_ping=True)
+    return create_engine(settings.database_url, pool_pre_ping=True)
+
+
+engine = build_engine()
+SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
+
+@event.listens_for(engine, "connect")
+def set_sqlite_pragma(dbapi_connection, connection_record):
+    if "sqlite" in str(engine.url):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        # WAL allows concurrent readers + one writer; dramatically reduces lock contention
+        # vs the default DELETE journal mode which holds an exclusive lock for the full write.
+        cursor.execute("PRAGMA journal_mode=WAL")
+        # Belt-and-suspenders: if another writer holds the lock, wait up to 5 s before failing.
+        cursor.execute("PRAGMA busy_timeout=5000")
+        cursor.close()
+
+
+def init_db() -> None:
+    # Dev fallback: create tables that don't exist yet (no-op on first run after
+    # `alembic upgrade head`).  In production run: alembic upgrade head
+    Base.metadata.create_all(bind=engine)
+    _ensure_sqlite_schema(engine)
+
+
+def _ensure_sqlite_schema(bind) -> None:
+    """Additive SQLite schema repair for DBs bootstrapped before Alembic ran."""
+    if "sqlite" not in str(bind.url):
+        return
+
+    inspector = inspect(bind)
+
+    def has_table(table: str) -> bool:
+        return table in inspector.get_table_names()
+
+    def has_column(table: str, column: str) -> bool:
+        if not has_table(table):
+            return False
+        return column in {c["name"] for c in inspector.get_columns(table)}
+
+    statements: list[str] = []
+    if has_table("users") and not has_column("users", "last_login_at"):
+        statements.append("ALTER TABLE users ADD COLUMN last_login_at DATETIME")
+
+    if has_table("conversations"):
+        if not has_column("conversations", "user_id"):
+            statements.append("ALTER TABLE conversations ADD COLUMN user_id VARCHAR(128) NOT NULL DEFAULT ''")
+        if not has_column("conversations", "running_summary"):
+            statements.append("ALTER TABLE conversations ADD COLUMN running_summary TEXT")
+        if not has_column("conversations", "active_task_json"):
+            statements.append("ALTER TABLE conversations ADD COLUMN active_task_json TEXT")
+
+    if has_table("request_logs") and not has_column("request_logs", "user_id"):
+        statements.append("ALTER TABLE request_logs ADD COLUMN user_id VARCHAR(128) NOT NULL DEFAULT ''")
+
+    admin_table_sql = {
+        "user_admin_controls": """
+            CREATE TABLE user_admin_controls (
+                id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                user_id VARCHAR(128) NOT NULL,
+                status VARCHAR(32) DEFAULT 'active',
+                role VARCHAR(32) DEFAULT 'user',
+                daily_budget_usd FLOAT,
+                notes TEXT,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL
+            )
+        """,
+        "admin_audit_logs": """
+            CREATE TABLE admin_audit_logs (
+                id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                admin_user_id VARCHAR(128) NOT NULL,
+                action VARCHAR(120) NOT NULL,
+                target_user_id VARCHAR(128),
+                details_json TEXT,
+                created_at DATETIME NOT NULL
+            )
+        """,
+    }
+    for table, statement in admin_table_sql.items():
+        if not has_table(table):
+            statements.append(statement)
+
+    if has_table("user_admin_controls") and not has_column("user_admin_controls", "role"):
+        statements.append("ALTER TABLE user_admin_controls ADD COLUMN role VARCHAR(32) DEFAULT 'user'")
+    if has_table("user_admin_controls"):
+        statements.append("CREATE UNIQUE INDEX IF NOT EXISTS ix_user_admin_controls_user_id ON user_admin_controls (user_id)")
+    if has_table("admin_audit_logs"):
+        statements.append("CREATE INDEX IF NOT EXISTS ix_admin_audit_logs_admin_user_id ON admin_audit_logs (admin_user_id)")
+        statements.append("CREATE INDEX IF NOT EXISTS ix_admin_audit_logs_target_user_id ON admin_audit_logs (target_user_id)")
+
+    if has_table("conversation_messages") and not has_column("conversation_messages", "execution_log_json"):
+        statements.append("ALTER TABLE conversation_messages ADD COLUMN execution_log_json TEXT")
+    if has_table("conversation_messages") and not has_column("conversation_messages", "research_run_id"):
+        statements.append("ALTER TABLE conversation_messages ADD COLUMN research_run_id INTEGER")
+
+    research_table_sql = {
+        "research_runs": """
+            CREATE TABLE research_runs (
+                id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                user_id VARCHAR(128) NOT NULL,
+                conversation_id INTEGER,
+                query TEXT NOT NULL,
+                mode VARCHAR(32) DEFAULT 'deep',
+                status VARCHAR(32) DEFAULT 'running',
+                iterations INTEGER DEFAULT 0,
+                max_sources INTEGER DEFAULT 12,
+                source_count INTEGER DEFAULT 0,
+                claim_count INTEGER DEFAULT 0,
+                confidence VARCHAR(32),
+                gaps_json TEXT,
+                contradictions_json TEXT,
+                verifier_notes TEXT,
+                final_answer TEXT,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL
+            )
+        """,
+        "research_questions": """
+            CREATE TABLE research_questions (
+                id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                run_id INTEGER NOT NULL,
+                question TEXT NOT NULL,
+                search_query TEXT,
+                status VARCHAR(32) DEFAULT 'pending',
+                created_at DATETIME NOT NULL,
+                FOREIGN KEY(run_id) REFERENCES research_runs (id) ON DELETE CASCADE
+            )
+        """,
+        "research_sources": """
+            CREATE TABLE research_sources (
+                id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                run_id INTEGER NOT NULL,
+                question_id INTEGER,
+                title TEXT NOT NULL,
+                url TEXT NOT NULL,
+                provider VARCHAR(64) DEFAULT '',
+                excerpt TEXT,
+                credibility_score FLOAT DEFAULT 0.0,
+                relevance_score FLOAT DEFAULT 0.0,
+                freshness_score FLOAT DEFAULT 0.0,
+                source_type VARCHAR(64),
+                created_at DATETIME NOT NULL,
+                FOREIGN KEY(run_id) REFERENCES research_runs (id) ON DELETE CASCADE
+            )
+        """,
+        "research_claims": """
+            CREATE TABLE research_claims (
+                id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                run_id INTEGER NOT NULL,
+                source_id INTEGER NOT NULL,
+                claim TEXT NOT NULL,
+                quote TEXT,
+                confidence VARCHAR(32) DEFAULT 'medium',
+                relevance_score FLOAT DEFAULT 0.0,
+                created_at DATETIME NOT NULL,
+                FOREIGN KEY(run_id) REFERENCES research_runs (id) ON DELETE CASCADE,
+                FOREIGN KEY(source_id) REFERENCES research_sources (id) ON DELETE CASCADE
+            )
+        """,
+        "research_findings": """
+            CREATE TABLE research_findings (
+                id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                run_id INTEGER NOT NULL,
+                finding TEXT NOT NULL,
+                evidence_json TEXT,
+                confidence VARCHAR(32) DEFAULT 'medium',
+                created_at DATETIME NOT NULL,
+                FOREIGN KEY(run_id) REFERENCES research_runs (id) ON DELETE CASCADE
+            )
+        """,
+    }
+    for table, statement in research_table_sql.items():
+        if not has_table(table):
+            statements.append(statement)
+
+    for table, column in [
+        ("research_runs", "user_id"),
+        ("research_runs", "conversation_id"),
+        ("research_questions", "run_id"),
+        ("research_sources", "run_id"),
+        ("research_sources", "question_id"),
+        ("research_claims", "run_id"),
+        ("research_claims", "source_id"),
+        ("research_findings", "run_id"),
+        ("conversation_messages", "research_run_id"),
+    ]:
+        if has_table(table):
+            statements.append(f"CREATE INDEX IF NOT EXISTS ix_{table}_{column} ON {table} ({column})")
+
+    if not statements:
+        return
+
+    with bind.begin() as conn:
+        for statement in statements:
+            conn.execute(text(statement))
+
+
+def get_all_memories(db, user_id: str) -> str:
+    """Return all memories for a user as a formatted block, newest first."""
+    mems = (
+        db.query(UserMemory)
+        .filter(UserMemory.user_id == user_id)
+        .order_by(UserMemory.updated_at.desc())
+        .all()
+    )
+    if not mems:
+        return ""
+    return "\n".join(f"- [{m.category}] {m.content}" for m in mems)
+
+
+def get_twin_profile(db, user_id: str) -> "TwinProfile | None":
+    """Return the TwinProfile for a user, or None if not yet created."""
+    return db.query(TwinProfile).filter(TwinProfile.user_id == user_id).first()
+
+
+def get_user_control(db, user_id: str) -> "UserAdminControl | None":
+    return db.query(UserAdminControl).filter(UserAdminControl.user_id == user_id).first()
+
+
+def get_effective_daily_budget(db, user_id: str) -> float:
+    settings = get_settings()
+    control = get_user_control(db, user_id)
+    if control and control.daily_budget_usd is not None:
+        return float(control.daily_budget_usd)
+    return settings.daily_budget_usd
+
+
+def is_user_suspended(db, user_id: str) -> bool:
+    control = get_user_control(db, user_id)
+    return bool(control and control.status == "suspended")
+
+
+def get_daily_spend(db, user_id: str) -> float:
+    today_start = datetime.combine(date.today(), datetime.min.time()).replace(tzinfo=timezone.utc)
+    msg_spend = (
+        db.query(func.sum(ConversationMessage.estimated_cost_usd))
+        .join(Conversation, ConversationMessage.conversation_id == Conversation.id)
+        .filter(ConversationMessage.role == "assistant")
+        .filter(Conversation.user_id == user_id)
+        .filter(ConversationMessage.created_at >= today_start)
+        .scalar() or 0.0
+    )
+    log_spend = (
+        db.query(func.sum(RequestLog.estimated_cost_usd))
+        .filter(RequestLog.status == "success")
+        .filter(RequestLog.user_id == user_id)
+        .filter(RequestLog.created_at >= today_start)
+        .scalar() or 0.0
+    )
+    return float(msg_spend) + float(log_spend)

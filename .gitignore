@@ -1,0 +1,8 @@
+.env
+.venv
+__pycache__
+*.pyc
+modeldesk.db
+.next
+node_modules
+.DS_Store

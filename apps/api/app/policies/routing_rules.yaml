@@ -1,0 +1,164 @@
+profiles:
+  cost_saver:
+    max_cost_per_request_usd: 0.05
+    prefer_open_models: true
+  balanced:
+    max_cost_per_request_usd: 0.50
+    prefer_quality: true
+    prefer_latency: true
+  best_quality:
+    max_cost_per_request_usd: 2.00
+    prefer_quality: true
+
+routes:
+  coding:
+    high:
+      cost_saver:
+        primary: "openrouter/deepseek/deepseek-chat"
+        fallback: [openrouter/deepseek/deepseek-coder-v2, gemini/gemini-2.5-flash, gpt-4.1-mini]
+      balanced:
+        primary: openrouter/qwen/qwen3-235b-a22b
+        fallback: [claude-sonnet-4-6, openrouter/deepseek/deepseek-chat, gpt-4.1, gemini/gemini-2.5-flash]
+      best_quality:
+        primary: claude-opus-4-8
+        fallback: [o3, openrouter/qwen/qwen3-235b-a22b, gemini/gemini-2.5-flash]
+    medium:
+      cost_saver:
+        primary: "openrouter/deepseek/deepseek-chat"
+        fallback: [gemini/gemini-2.5-flash, gpt-4.1-mini]
+      balanced:
+        primary: openrouter/deepseek/deepseek-chat
+        fallback: [claude-haiku-4-5-20251001, gemini/gemini-2.5-flash]
+      best_quality:
+        primary: claude-sonnet-4-6
+        fallback: [openrouter/qwen/qwen3-235b-a22b, gpt-4.1, gemini/gemini-2.5-flash]
+    low:
+      cost_saver:
+        primary: gemini/gemini-2.5-flash
+        fallback: [gpt-4.1-mini]
+      balanced:
+        primary: gemini/gemini-2.5-flash
+        fallback: [gpt-4.1-mini, claude-haiku-4-5-20251001]
+      best_quality:
+        primary: claude-sonnet-4-6
+        fallback: [gpt-4.1, gemini/gemini-2.5-flash]
+
+  architecture:
+    high:
+      cost_saver:
+        primary: openrouter/deepseek/deepseek-r1
+        fallback: [gemini/gemini-2.5-flash, gpt-4.1-mini]
+      balanced:
+        primary: openrouter/deepseek/deepseek-r1
+        fallback: [claude-sonnet-4-6, gpt-4.1, gemini/gemini-2.5-flash]
+      best_quality:
+        # DeepSeek R1 is o1-class at ~10x lower cost; o3 remains as fallback
+        primary: openrouter/deepseek/deepseek-r1
+        fallback: [o3, claude-opus-4-8, gemini/gemini-2.5-flash]
+    medium:
+      cost_saver:
+        primary: gemini/gemini-2.5-flash
+        fallback: [gpt-4.1-mini]
+      balanced:
+        primary: claude-sonnet-4-6
+        fallback: [gpt-4.1, gemini/gemini-2.5-flash]
+      best_quality:
+        primary: gpt-4.1
+        fallback: [claude-sonnet-4-6, gemini/gemini-2.5-flash]
+    low:
+      cost_saver:
+        primary: gemini/gemini-2.5-flash
+        fallback: [gpt-4.1-mini]
+      balanced:
+        primary: gemini/gemini-2.5-flash
+        fallback: [gpt-4.1-mini, claude-haiku-4-5-20251001]
+      best_quality:
+        primary: claude-sonnet-4-6
+        fallback: [gpt-4.1, gemini/gemini-2.5-flash]
+
+  summarization:
+    low:
+      cost_saver:
+        primary: gemini/gemini-2.5-flash
+        fallback: [gpt-4.1-mini]
+      balanced:
+        primary: gemini/gemini-2.5-flash
+        fallback: [gpt-4.1-mini, claude-haiku-4-5-20251001]
+      best_quality:
+        primary: claude-sonnet-4-6
+        fallback: [gpt-4.1, gemini/gemini-2.5-flash]
+    medium:
+      cost_saver:
+        primary: gemini/gemini-2.5-flash
+        fallback: [gpt-4.1-mini]
+      balanced:
+        primary: openrouter/deepseek/deepseek-chat
+        fallback: [claude-haiku-4-5-20251001, gemini/gemini-2.5-flash, gpt-4.1-mini]
+      best_quality:
+        primary: claude-sonnet-4-6
+        fallback: [gpt-4.1, gemini/gemini-2.5-flash]
+
+  writing:
+    low:
+      cost_saver:
+        primary: gemini/gemini-2.5-flash
+        fallback: [gpt-4.1-mini]
+      balanced:
+        primary: gemini/gemini-2.5-flash
+        fallback: [gpt-4.1-mini, claude-haiku-4-5-20251001]
+      best_quality:
+        primary: claude-sonnet-4-6
+        fallback: [gpt-4.1, gemini/gemini-2.5-flash]
+    medium:
+      cost_saver:
+        primary: gemini/gemini-2.5-flash
+        fallback: [gpt-4.1-mini]
+      balanced:
+        primary: claude-sonnet-4-6
+        fallback: [gpt-4.1, gemini/gemini-2.5-flash]
+      best_quality:
+        primary: claude-opus-4-8
+        fallback: [o3, gemini/gemini-2.5-flash]
+    high:
+      cost_saver:
+        primary: gemini/gemini-2.5-flash
+        fallback: [gpt-4.1-mini]
+      balanced:
+        primary: claude-sonnet-4-6
+        fallback: [gpt-4.1, gemini/gemini-2.5-flash]
+      best_quality:
+        primary: claude-opus-4-8
+        fallback: [o3, gemini/gemini-2.5-flash]
+
+  research:
+    medium:
+      cost_saver:
+        primary: gemini/gemini-2.5-flash
+        fallback: [gpt-4.1-mini]
+      balanced:
+        primary: openrouter/perplexity/sonar
+        fallback: [openrouter/deepseek/deepseek-chat, gpt-4.1, gemini/gemini-2.5-flash]
+      best_quality:
+        primary: openrouter/perplexity/sonar-pro
+        fallback: [claude-sonnet-4-6, gpt-4.1, gemini/gemini-2.5-flash]
+    high:
+      cost_saver:
+        primary: gemini/gemini-2.5-flash
+        fallback: [openrouter/perplexity/sonar]
+      balanced:
+        primary: openrouter/perplexity/sonar-pro
+        fallback: [openrouter/deepseek/deepseek-r1, gpt-4.1, gemini/gemini-2.5-flash]
+      best_quality:
+        primary: openrouter/perplexity/sonar-pro
+        fallback: [o3, openrouter/deepseek/deepseek-r1, gemini/gemini-2.5-flash, claude-opus-4-8]
+
+default:
+  cost_saver:
+    primary: gemini/gemini-2.5-flash
+    fallback: [gpt-4.1-mini]
+  balanced:
+    primary: openrouter/deepseek/deepseek-chat
+    fallback: [gpt-4.1-mini, claude-haiku-4-5-20251001, gemini/gemini-2.5-flash]
+  best_quality:
+    primary: gpt-4.1
+    fallback: [claude-sonnet-4-6, openrouter/qwen/qwen2.5-max, gemini/gemini-2.5-flash]

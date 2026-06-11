@@ -1,0 +1,51 @@
+<svg width="64" height="64" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+  <!-- Light background matching brand -->
+  <rect width="64" height="64" rx="14" fill="#f5f3ed"/>
+
+  <!-- LEFT HALF: Classical column (navy) -->
+  <!-- Capital top bar -->
+  <rect x="9" y="9" width="23" height="4" rx="1" fill="#1a2742"/>
+  <!-- Neck -->
+  <rect x="12" y="14" width="17" height="3" rx="1" fill="#1a2742"/>
+  <!-- Volute hint (small curve left) -->
+  <rect x="10" y="17" width="4" height="3" rx="2" fill="#1a2742"/>
+  <!-- Three shafts -->
+  <rect x="11" y="18" width="4" height="24" rx="1" fill="#1a2742"/>
+  <rect x="18" y="18" width="4" height="24" rx="1" fill="#1a2742"/>
+  <rect x="25" y="18" width="4" height="24" rx="1" fill="#1a2742"/>
+  <!-- Base -->
+  <rect x="9" y="44" width="23" height="3" rx="1" fill="#1a2742"/>
+  <rect x="11" y="48" width="19" height="3" rx="1" fill="#1a2742"/>
+  <rect x="9" y="52" width="23" height="3" rx="1" fill="#1a2742"/>
+
+  <!-- DIVIDER line -->
+  <line x1="32" y1="9" x2="32" y2="55" stroke="#e8e4da" stroke-width="1"/>
+
+  <!-- RIGHT HALF: Circuit version (gold) -->
+  <!-- Top neural net nodes -->
+  <circle cx="40" cy="6" r="3" fill="#c9a447"/>
+  <circle cx="50" cy="6" r="3" fill="#c9a447"/>
+  <circle cx="45" cy="13" r="3" fill="#c9a447"/>
+  <!-- Neural net connections -->
+  <line x1="40" y1="6" x2="45" y2="13" stroke="#c9a447" stroke-width="1.8" stroke-linecap="round"/>
+  <line x1="50" y1="6" x2="45" y2="13" stroke="#c9a447" stroke-width="1.8" stroke-linecap="round"/>
+  <line x1="40" y1="6" x2="50" y2="6" stroke="#c9a447" stroke-width="1.8" stroke-linecap="round"/>
+  <!-- Top capital trace -->
+  <line x1="32" y1="11" x2="55" y2="11" stroke="#c9a447" stroke-width="3" stroke-linecap="round"/>
+  <!-- Neck trace -->
+  <line x1="32" y1="17" x2="51" y2="17" stroke="#c9a447" stroke-width="2.5" stroke-linecap="round"/>
+  <!-- Main vertical trace (right edge of circuit column) -->
+  <line x1="54" y1="11" x2="54" y2="44" stroke="#c9a447" stroke-width="2.5" stroke-linecap="round"/>
+  <!-- Right-angle circuit extensions mid-column -->
+  <line x1="32" y1="24" x2="52" y2="24" stroke="#c9a447" stroke-width="2.5" stroke-linecap="round"/>
+  <circle cx="52" cy="24" r="3" fill="#c9a447"/>
+  <line x1="32" y1="33" x2="48" y2="33" stroke="#c9a447" stroke-width="2.5" stroke-linecap="round"/>
+  <circle cx="48" cy="33" r="3" fill="#c9a447"/>
+  <!-- Sub-branch node -->
+  <line x1="52" y1="24" x2="52" y2="33" stroke="#c9a447" stroke-width="1.8" stroke-linecap="round"/>
+  <circle cx="52" cy="28" r="2.2" fill="#c9a447"/>
+  <!-- Base traces -->
+  <line x1="32" y1="44" x2="55" y2="44" stroke="#c9a447" stroke-width="2.5" stroke-linecap="round"/>
+  <line x1="32" y1="48" x2="53" y2="48" stroke="#c9a447" stroke-width="2.5" stroke-linecap="round"/>
+  <line x1="32" y1="52" x2="55" y2="52" stroke="#c9a447" stroke-width="2.5" stroke-linecap="round"/>
+</svg>

@@ -1,0 +1,28 @@
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.api
+    env_file:
+      - ../apps/api/.env
+    environment:
+      DATABASE_URL: sqlite:////data/fronei.db
+    ports:
+      - "8000:8000"
+    volumes:
+      - db_data:/data
+    command: uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
+
+  web:
+    build:
+      context: ../apps/web
+      dockerfile: ../../infra/Dockerfile.web
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: http://api:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+
+volumes:
+  db_data:

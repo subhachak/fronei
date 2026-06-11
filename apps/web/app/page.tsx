@@ -2158,6 +2158,8 @@ function DashboardView({
 
 type AdminUserRow = {
   user_id: string
+  email: string | null
+  name: string | null
   status: string
   role: string
   monthly_budget_usd: number | null
@@ -2499,11 +2501,12 @@ function AdminView({
               </div>
               <div className="admin-table-wrap">
                 <table className="admin-table">
-                  <thead><tr><th>User</th><th>Status</th><th>Role</th><th>This month</th><th>Total</th><th>Requests</th><th>Data</th></tr></thead>
+                  <thead><tr><th>User</th><th>Email</th><th>Status</th><th>Role</th><th>This month</th><th>Total</th><th>Requests</th><th>Data</th></tr></thead>
                   <tbody>
                     {users.map(u => (
                       <tr key={u.user_id} onClick={() => loadUser(u.user_id)} className={selectedUser?.user_id === u.user_id ? 'active' : ''}>
                         <td className="mono">{u.user_id}</td>
+                        <td>{u.name ? <>{u.name}<br /><span style={{ color: 'var(--t5)', fontSize: 11 }}>{u.email}</span></> : (u.email ?? '—')}</td>
                         <td><span className={`exec-pill ${u.status === 'suspended' ? 'danger-pill' : u.status === 'pending' ? 'warn-pill' : ''}`}>{u.status}</span></td>
                         <td><span className={`exec-pill ${u.role === 'admin' ? 'ok-pill' : ''}`}>{u.role}</span></td>
                         <td>{fmt$(u.month_spend, 4)}{u.role !== 'admin' ? ` / $${(u.monthly_budget_usd ?? 5).toFixed(2)}` : ''}</td>
@@ -2520,7 +2523,18 @@ function AdminView({
             <div className="card admin-detail-card">
               {selectedUser ? (
                 <>
-                  <div className="admin-card-head"><strong>User detail</strong><span className="mono">{selectedUser.user_id}</span></div>
+                  <div className="admin-card-head">
+                    <strong>User detail</strong>
+                    <span className="mono">{selectedUser.user_id}</span>
+                  </div>
+                  {(selectedUser.name || selectedUser.email) && (
+                    <div className="settings-line">
+                      <div>
+                        <strong>Name / Email</strong>
+                        <span>{selectedUser.name ?? '—'}{selectedUser.email ? ` · ${selectedUser.email}` : ''}</span>
+                      </div>
+                    </div>
+                  )}
                   <div className="settings-grid">
                     {Object.entries(selectedUser.counts ?? {}).map(([k, v]) => <span key={k}>{k.replace(/_/g, ' ')} <strong>{String(v)}</strong></span>)}
                   </div>

@@ -321,6 +321,7 @@ def users(
             for c in db.query(UserAdminControl).filter(UserAdminControl.user_id.in_(page)).all()
         }
         emails = dict(db.query(User.clerk_id, User.email).filter(User.clerk_id.in_(page)).all())
+        names = dict(db.query(User.clerk_id, User.name).filter(User.clerk_id.in_(page)).all())
 
         conv_counts = dict(db.query(Conversation.user_id, func.count(Conversation.id)).filter(Conversation.user_id.in_(page)).group_by(Conversation.user_id).all())
         req_counts = dict(db.query(RequestLog.user_id, func.count(RequestLog.id)).filter(RequestLog.user_id.in_(page), RequestLog.status == "success").group_by(RequestLog.user_id).all())
@@ -374,6 +375,8 @@ def users(
             control = controls.get(user_id)
             rows.append({
                 "user_id": user_id,
+                "email": emails.get(user_id),
+                "name": names.get(user_id),
                 "status": control.status if control else "active",
                 "role": _effective_role(user_id, control.role if control else None, emails.get(user_id)),
                 "monthly_budget_usd": control.monthly_budget_usd if control else None,
@@ -418,11 +421,15 @@ def user_detail(user_id: str, admin: AdminPrincipal = Depends(require_admin)) ->
             .limit(10)
             .all()
         )
-        user_email = db.query(User.email).filter(User.clerk_id == user_id).scalar()
+        user_row = db.query(User.email, User.name).filter(User.clerk_id == user_id).first()
+        user_email = user_row[0] if user_row else None
+        user_name = user_row[1] if user_row else None
         control_out = _control_out(control)
         control_out["role"] = _effective_role(user_id, control.role if control else None, user_email)
         result = {
             "user_id": user_id,
+            "email": user_email,
+            "name": user_name,
             "control": control_out,
             "month_spend": round(get_monthly_spend(db, user_id), 6),
             "counts": {

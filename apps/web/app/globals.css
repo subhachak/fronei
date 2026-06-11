@@ -3753,6 +3753,27 @@ pre:hover .code-copy-btn { opacity: 1; }
   display: flex;
   flex-direction: column;
   gap: 14px;
+  position: relative;
+}
+.admin-loading-overlay {
+  position: sticky;
+  top: 0;
+  left: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  margin: -4px 0 0;
+  border-radius: 8px;
+  background: var(--ac-bg);
+  color: var(--ac-text);
+  font-size: 13px;
+  font-weight: 600;
+  width: fit-content;
+}
+.admin-loading-overlay .ti {
+  font-size: 16px;
 }
 .admin-content-embedded {
   height: auto;

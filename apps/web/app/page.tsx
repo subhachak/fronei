@@ -2413,6 +2413,13 @@ function AdminView({
 
         {error && <div className="error-bar" role="alert">{error}</div>}
 
+        {busy && (
+          <div className="admin-loading-overlay">
+            <i className="ti ti-loader-2 spin" />
+            <span>Loading…</span>
+          </div>
+        )}
+
         {tab === 'overview' && overview && (
           <>
             <div className="dash-summary-grid">
@@ -2521,7 +2528,7 @@ function AdminView({
             <div className="admin-card-head">
               <strong>Users</strong>
               <div className="admin-search">
-                <input className="conv-search-input" value={userQuery} onChange={e => setUserQuery(e.target.value)} placeholder="Search user id" />
+                <input className="conv-search-input" value={userQuery} onChange={e => setUserQuery(e.target.value)} onKeyDown={e => e.key === 'Enter' && loadAll()} placeholder="Search by name, email, or user id" />
                 <button className="toggle-chip" onClick={loadAll} type="button">Search</button>
               </div>
             </div>

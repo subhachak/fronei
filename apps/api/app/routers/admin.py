@@ -207,6 +207,7 @@ def _all_known_user_ids(db) -> set[str]:
         db.query(TwinProfile.user_id).distinct().all(),
         db.query(ResearchRun.user_id).distinct().all(),
         db.query(UserAdminControl.user_id).distinct().all(),
+        db.query(User.clerk_id).distinct().all(),
     ]
     for rows in sources:
         for (user_id,) in rows:
@@ -313,7 +314,19 @@ def users(
         all_ids = sorted(_all_known_user_ids(db))
         if query.strip():
             needle = query.strip().lower()
-            all_ids = [u for u in all_ids if needle in u.lower()]
+            matched_by_profile = {
+                clerk_id
+                for (clerk_id,) in db.query(User.clerk_id).filter(
+                    or_(
+                        func.lower(User.email).contains(needle),
+                        func.lower(User.name).contains(needle),
+                    )
+                ).all()
+            }
+            all_ids = [
+                u for u in all_ids
+                if needle in u.lower() or u in matched_by_profile
+            ]
         page = all_ids[offset:offset + limit]
         if not page:
             return {"items": [], "total": len(all_ids), "limit": limit, "offset": offset}

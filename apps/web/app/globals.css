@@ -3845,9 +3845,13 @@ pre:hover .code-copy-btn { opacity: 1; }
 .admin-table tr {
   cursor: default;
 }
-.admin-table tbody tr:hover,
-.admin-table tbody tr.active {
+.admin-table tbody tr:hover {
   background: var(--s2);
+}
+.admin-table tbody tr.active,
+.admin-table tbody tr.active:hover {
+  background: var(--ac-bg);
+  box-shadow: inset 3px 0 0 var(--ac);
 }
 .admin-table td.mono,
 .mono {

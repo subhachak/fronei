@@ -19,15 +19,20 @@ class User(Base):
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
-def get_or_create_user(db, clerk_id: str, email: str | None = None, name: str | None = None) -> "User":
+def get_or_create_user(db, clerk_id: str, email: str | None = None, name: str | None = None) -> tuple["User", bool]:
     """Upsert the local profile row for a Clerk user. Called on every
     authenticated session bootstrap so a User record exists from first login,
-    even before the user starts a conversation."""
+    even before the user starts a conversation.
+
+    Returns (user, created) where `created` is True only the first time this
+    clerk_id is seen — used to gate new-signup approval/notification logic."""
     now = datetime.now(timezone.utc)
     user = db.query(User).filter(User.clerk_id == clerk_id).first()
+    created = False
     if not user:
         user = User(clerk_id=clerk_id, email=email, name=name, created_at=now, last_login_at=now)
         db.add(user)
+        created = True
     else:
         if email and user.email != email:
             user.email = email
@@ -36,7 +41,7 @@ def get_or_create_user(db, clerk_id: str, email: str | None = None, name: str | 
         user.last_login_at = now
     db.commit()
     db.refresh(user)
-    return user
+    return user, created
 
 
 class UserAdminControl(Base):
@@ -478,6 +483,12 @@ def get_effective_daily_budget(db, user_id: str) -> float:
 def is_user_suspended(db, user_id: str) -> bool:
     control = get_user_control(db, user_id)
     return bool(control and control.status == "suspended")
+
+
+def is_user_pending(db, user_id: str) -> bool:
+    """True if the user has signed up but is awaiting admin activation."""
+    control = get_user_control(db, user_id)
+    return bool(control and control.status == "pending")
 
 
 def get_daily_spend(db, user_id: str) -> float:

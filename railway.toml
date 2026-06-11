@@ -4,7 +4,6 @@ dockerfilePath = "infra/Dockerfile.api"
 
 [deploy]
 # startCommand = "uv run alembic upgrade head && uv run uvicorn app.main:app --host 0.0.0.0 --port $PORT"
-# startCommand = "uv run alembic upgrade head && uv run uvicorn app.main:app --host 0.0.0.0 --port $PORT"
 startCommand = "uv run uvicorn app.main:app --host 0.0.0.0 --port 8080"
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 3
@@ -21,6 +20,18 @@ restartPolicyMaxRetries = 3
 # CLERK_AUDIENCE=fronei-api
 # ADMIN_USER_IDS=<your Clerk user id>
 # ADMIN_EMAILS=subhachak@gmail.com
+#
+# New-signup approval gate (default true): new users must be activated by
+# an admin before they can chat. Admins (above) are exempt automatically.
+# REQUIRE_USER_APPROVAL=true
+#
+# Email notification on new signups (optional — logs only if unset):
+# SMTP_HOST=smtp.gmail.com
+# SMTP_PORT=587
+# SMTP_USER=<smtp username>
+# SMTP_PASSWORD=<smtp password / app password>
+# SMTP_FROM=<from address, defaults to SMTP_USER>
+# NOTIFICATION_EMAILS=subhachak@gmail.com
 #
 # Concurrency caps — Railway gives more headroom than Render free (512MB),
 # so these can likely go back to code defaults (4/6/5/4) once on a 1GB+ plan.

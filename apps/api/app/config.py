@@ -26,6 +26,22 @@ class Settings(BaseSettings):
     admin_user_ids: str = ""
     admin_emails: str = ""
 
+    # New-user approval gate: when enabled, accounts created after first sign-in
+    # default to status="pending" and cannot use the app until an admin sets
+    # them to "active". Admins (env allowlist) are always exempt.
+    require_user_approval: bool = True
+
+    # Outbound email (admin notification on new signups). If smtp_host is unset,
+    # notifications are logged only (no email sent) — safe default for local dev.
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_user: str | None = None
+    smtp_password: str | None = None
+    smtp_from: str | None = None
+    # Comma-separated recipients for new-signup notifications. Falls back to
+    # admin_emails when unset.
+    notification_emails: str = ""
+
     # Per-user rate limits (sliding window). Admins are exempt.
     rate_limit_chat_per_minute: int = 20
     rate_limit_documents_per_minute: int = 10
@@ -57,6 +73,11 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.app_env.strip().lower() in {"prod", "production"}
+
+    @property
+    def notification_email_list(self) -> list[str]:
+        raw = self.notification_emails or self.admin_emails
+        return [v.strip() for v in raw.split(",") if v.strip()]
 
 
 @lru_cache

@@ -2507,7 +2507,7 @@ function AdminView({
                     {users.map(u => (
                       <tr key={u.user_id} onClick={() => loadUser(u.user_id)} className={selectedUser?.user_id === u.user_id ? 'active' : ''}>
                         <td className="mono">{u.user_id}</td>
-                        <td><span className={`exec-pill ${u.status === 'suspended' ? 'danger-pill' : ''}`}>{u.status}</span></td>
+                        <td><span className={`exec-pill ${u.status === 'suspended' ? 'danger-pill' : u.status === 'pending' ? 'warn-pill' : ''}`}>{u.status}</span></td>
                         <td><span className={`exec-pill ${u.role === 'admin' ? 'ok-pill' : ''}`}>{u.role}</span></td>
                         <td>{fmt$(u.today_spend, 4)}</td>
                         <td>{fmt$(u.total_spend, 4)}</td>
@@ -2530,7 +2530,10 @@ function AdminView({
                   <div className="settings-line">
                     <div><strong>Status</strong><span>{selectedUser.control?.status ?? 'active'}</span></div>
                     <div className="theme-btn-group">
-                      <button className={`theme-btn-opt${selectedUser.control?.status !== 'suspended' ? ' active' : ''}`} onClick={() => setUserStatus(selectedUser.user_id, 'active')} type="button">Active</button>
+                      {selectedUser.control?.status === 'pending' && (
+                        <button className="theme-btn-opt active" onClick={() => setUserStatus(selectedUser.user_id, 'active')} type="button">Activate</button>
+                      )}
+                      <button className={`theme-btn-opt${selectedUser.control?.status === 'active' || (!selectedUser.control?.status) ? ' active' : ''}`} onClick={() => setUserStatus(selectedUser.user_id, 'active')} type="button">Active</button>
                       <button className={`theme-btn-opt${selectedUser.control?.status === 'suspended' ? ' active' : ''}`} onClick={() => setUserStatus(selectedUser.user_id, 'suspended')} type="button">Suspended</button>
                     </div>
                   </div>
@@ -2722,6 +2725,7 @@ export default function Home() {
   const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab | undefined>(undefined)
   const [appView, setAppView]                 = useState<AppView>('chat')
   const [isAdmin, setIsAdmin]                 = useState(false)
+  const [accountStatus, setAccountStatus]     = useState<string | null>(null)
   const [uiMode, setUiMode]                   = useState<UiMode>('classic')
   const [theme, setThemeState]                = useState<'dark' | 'light'>('dark')
   const [accentTheme, setAccentThemeState]    = useState<AccentTheme>('default')
@@ -2811,7 +2815,10 @@ export default function Home() {
     const initialSettings = initialParams.get('settings')
     const shouldAutoLoadConversation = initialView !== 'dashboard' && initialSettings !== '1'
 
-    apiFetch('/me').catch(() => {})
+    apiFetch('/me')
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d?.account_status) setAccountStatus(d.account_status) })
+      .catch(() => {})
 
     apiFetch('/conversations')
       .then(r => r.ok ? r.json() : [])
@@ -3720,6 +3727,35 @@ export default function Home() {
   }
 
   // ── Render ────────────────────────────────────────────────────────────────
+
+  if (accountStatus === 'pending' && !isAdmin) {
+    return (
+      <div className="shell" style={{ alignItems: 'center', justifyContent: 'center', display: 'flex', minHeight: '100vh', padding: '24px', textAlign: 'center' }}>
+        <div className="card" style={{ maxWidth: 420, padding: '32px 28px' }}>
+          <h2 style={{ marginTop: 0 }}>Account pending approval</h2>
+          <p className="muted-text">
+            Thanks for signing up for Fronei. An administrator needs to activate
+            your account before you can start chatting. You&apos;ll be notified
+            once it&apos;s approved — try refreshing this page later.
+          </p>
+        </div>
+      </div>
+    )
+  }
+
+  if (accountStatus === 'suspended' && !isAdmin) {
+    return (
+      <div className="shell" style={{ alignItems: 'center', justifyContent: 'center', display: 'flex', minHeight: '100vh', padding: '24px', textAlign: 'center' }}>
+        <div className="card" style={{ maxWidth: 420, padding: '32px 28px' }}>
+          <h2 style={{ marginTop: 0 }}>Account suspended</h2>
+          <p className="muted-text">
+            This account has been suspended. Contact an administrator if you
+            believe this is a mistake.
+          </p>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="shell">

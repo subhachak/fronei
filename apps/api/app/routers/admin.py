@@ -56,7 +56,7 @@ class AdminPrincipal(BaseModel):
 
 
 class AdminControlUpdate(BaseModel):
-    status: Literal["active", "suspended"] = "active"
+    status: Literal["active", "suspended", "pending"] = "active"
     daily_budget_usd: float | None = Field(default=None, ge=0)
     notes: str | None = Field(default=None, max_length=1000)
 

@@ -13,7 +13,7 @@ from app.auth import CurrentUser, CurrentUserIsAdmin
 from app.config import get_settings
 from app.db.models import (
     Conversation, ConversationMessage, RequestLog, SessionLocal,
-    get_all_memories, get_daily_spend, get_effective_daily_budget, get_twin_profile, is_user_suspended,
+    get_all_memories, get_daily_spend, get_effective_daily_budget, get_twin_profile, is_user_pending, is_user_suspended,
 )
 from app.schemas import (
     ConvChatRequest, ConvChatResponse,
@@ -342,6 +342,8 @@ def chat(req: ConvChatRequest, user_id: str = CurrentUser, is_admin: bool = Curr
 
         if is_user_suspended(db, user_id):
             raise HTTPException(status_code=403, detail="This account is suspended.")
+        if is_user_pending(db, user_id):
+            raise HTTPException(status_code=403, detail="Your account is pending admin approval.")
         if req.deep_research and not is_admin:
             check_rate_limit(f"research:{user_id}", settings.rate_limit_research_per_hour, 3600)
         daily_spend = get_daily_spend(db, user_id)

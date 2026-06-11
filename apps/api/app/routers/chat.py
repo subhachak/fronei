@@ -3,7 +3,7 @@ from fastapi import APIRouter, HTTPException
 
 from app.auth import CurrentUser, CurrentUserIsAdmin
 from app.config import get_settings
-from app.db.models import RequestLog, SessionLocal, get_daily_spend, get_effective_daily_budget, is_user_suspended
+from app.db.models import RequestLog, SessionLocal, get_daily_spend, get_effective_daily_budget, is_user_pending, is_user_suspended
 from app.schemas import ChatRequest, ChatResponse
 from app.services.llm_gateway import invoke_llm
 from app.services.chat_pipeline import _build_doc_context
@@ -24,6 +24,8 @@ def chat(req: ChatRequest, user_id: str = CurrentUser, is_admin: bool = CurrentU
         # ── Budget gate (before any LLM calls) ───────────────────────────────
         if is_user_suspended(db, user_id):
             raise HTTPException(status_code=403, detail="This account is suspended.")
+        if is_user_pending(db, user_id):
+            raise HTTPException(status_code=403, detail="Your account is pending admin approval.")
         if req.deep_research and not is_admin:
             check_rate_limit(f"research:{user_id}", settings.rate_limit_research_per_hour, 3600)
         daily_spend = get_daily_spend(db, user_id)

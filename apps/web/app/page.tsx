@@ -6,7 +6,7 @@ import { marked } from 'marked'
 import { markedHighlight } from 'marked-highlight'
 import hljs from 'highlight.js'
 import DOMPurify from 'dompurify'
-import { useAuth, useUser } from '@clerk/nextjs'
+import { useAuth, useClerk, useUser } from '@clerk/nextjs'
 import {
   Bar, BarChart, CartesianGrid, Cell, Line, LineChart,
   ResponsiveContainer, Tooltip, XAxis, YAxis,
@@ -2164,6 +2164,8 @@ type AdminUserRow = {
   status: string
   role: string
   daily_budget_usd: number | null
+  monthly_budget_usd: number | null
+  month_spend: number
   conversation_count: number
   request_count: number
   today_spend: number
@@ -2277,6 +2279,7 @@ function AdminView({
       body: JSON.stringify({
         status,
         daily_budget_usd: existing?.daily_budget_usd ?? null,
+        monthly_budget_usd: existing?.monthly_budget_usd ?? null,
         notes: selectedUser?.control?.notes ?? null,
       }),
     })
@@ -2292,6 +2295,23 @@ function AdminView({
       body: JSON.stringify({
         status: existing?.status ?? 'active',
         daily_budget_usd: Number.isFinite(amount) ? amount : null,
+        monthly_budget_usd: existing?.monthly_budget_usd ?? null,
+        notes: selectedUser?.control?.notes ?? null,
+      }),
+    })
+    await loadAll()
+    await loadUser(userId)
+  }
+
+  async function setMonthlyBudget(userId: string, value: string) {
+    const amount = value.trim() ? Number(value) : null
+    const existing = users.find(u => u.user_id === userId)
+    await json(`/admin/users/${encodeURIComponent(userId)}/control`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        status: existing?.status ?? 'active',
+        daily_budget_usd: existing?.daily_budget_usd ?? null,
+        monthly_budget_usd: Number.isFinite(amount) ? amount : null,
         notes: selectedUser?.control?.notes ?? null,
       }),
     })
@@ -2502,7 +2522,7 @@ function AdminView({
               </div>
               <div className="admin-table-wrap">
                 <table className="admin-table">
-                  <thead><tr><th>User</th><th>Status</th><th>Role</th><th>Today</th><th>Total</th><th>Requests</th><th>Data</th></tr></thead>
+                  <thead><tr><th>User</th><th>Status</th><th>Role</th><th>Today</th><th>This month</th><th>Total</th><th>Requests</th><th>Data</th></tr></thead>
                   <tbody>
                     {users.map(u => (
                       <tr key={u.user_id} onClick={() => loadUser(u.user_id)} className={selectedUser?.user_id === u.user_id ? 'active' : ''}>
@@ -2510,6 +2530,7 @@ function AdminView({
                         <td><span className={`exec-pill ${u.status === 'suspended' ? 'danger-pill' : u.status === 'pending' ? 'warn-pill' : ''}`}>{u.status}</span></td>
                         <td><span className={`exec-pill ${u.role === 'admin' ? 'ok-pill' : ''}`}>{u.role}</span></td>
                         <td>{fmt$(u.today_spend, 4)}</td>
+                        <td>{fmt$(u.month_spend, 4)}{u.role !== 'admin' ? ` / $${(u.monthly_budget_usd ?? 5).toFixed(2)}` : ''}</td>
                         <td>{fmt$(u.total_spend, 4)}</td>
                         <td>{u.request_count}</td>
                         <td>{u.memory_count} mem · {u.writing_sample_count} samples · {u.research_run_count} research</td>
@@ -2552,6 +2573,19 @@ function AdminView({
                       onBlur={e => setBudget(selectedUser.user_id, e.target.value)}
                     />
                   </label>
+                  {selectedUser.control?.role !== 'admin' && (
+                    <label className="settings-field">Monthly budget override
+                      <input
+                        className="conv-search-input"
+                        defaultValue={selectedUser.control?.monthly_budget_usd ?? ''}
+                        placeholder="Default $5.00"
+                        onBlur={e => setMonthlyBudget(selectedUser.user_id, e.target.value)}
+                      />
+                      <span className="muted-text" style={{ fontSize: 12 }}>
+                        Spent this month: {fmt$(selectedUser.month_spend ?? 0, 4)}
+                      </span>
+                    </label>
+                  )}
                   <div className="admin-danger-zone">
                     <strong>Privacy actions</strong>
                     <button className="toggle-chip" onClick={() => privacyDelete(selectedUser.user_id, { memories: true })} type="button">Delete memories</button>
@@ -2702,6 +2736,7 @@ function AdminView({
 export default function Home() {
   const { getToken, isLoaded: authLoaded, isSignedIn } = useAuth()
   const { user } = useUser()
+  const { signOut } = useClerk()
 
   async function apiFetch(path: string, options: RequestInit = {}): Promise<Response> {
     const token = await getToken()
@@ -2726,6 +2761,7 @@ export default function Home() {
   const [appView, setAppView]                 = useState<AppView>('chat')
   const [isAdmin, setIsAdmin]                 = useState(false)
   const [accountStatus, setAccountStatus]     = useState<string | null>(null)
+  const [accountStatusLoaded, setAccountStatusLoaded] = useState(false)
   const [uiMode, setUiMode]                   = useState<UiMode>('classic')
   const [theme, setThemeState]                = useState<'dark' | 'light'>('dark')
   const [accentTheme, setAccentThemeState]    = useState<AccentTheme>('default')
@@ -2819,6 +2855,7 @@ export default function Home() {
       .then(r => r.ok ? r.json() : null)
       .then(d => { if (d?.account_status) setAccountStatus(d.account_status) })
       .catch(() => {})
+      .finally(() => setAccountStatusLoaded(true))
 
     apiFetch('/conversations')
       .then(r => r.ok ? r.json() : [])
@@ -3728,9 +3765,24 @@ export default function Home() {
 
   // ── Render ────────────────────────────────────────────────────────────────
 
+  if (!accountStatusLoaded) {
+    return (
+      <div className="shell" style={{ alignItems: 'center', justifyContent: 'center', display: 'flex', minHeight: '100vh' }} />
+    )
+  }
+
   if (accountStatus === 'pending' && !isAdmin) {
     return (
-      <div className="shell" style={{ alignItems: 'center', justifyContent: 'center', display: 'flex', minHeight: '100vh', padding: '24px', textAlign: 'center' }}>
+      <div className="shell" style={{ alignItems: 'center', justifyContent: 'center', display: 'flex', minHeight: '100vh', padding: '24px', textAlign: 'center', position: 'relative' }}>
+        <button
+          className="toggle-chip"
+          onClick={() => signOut(() => { window.location.href = '/' })}
+          type="button"
+          title="Log out"
+          style={{ position: 'absolute', top: 24, right: 24 }}
+        >
+          <i className="ti ti-logout" /> Log out
+        </button>
         <div className="card" style={{ maxWidth: 420, padding: '32px 28px' }}>
           <h2 style={{ marginTop: 0 }}>Account pending approval</h2>
           <p className="muted-text">
@@ -3745,7 +3797,16 @@ export default function Home() {
 
   if (accountStatus === 'suspended' && !isAdmin) {
     return (
-      <div className="shell" style={{ alignItems: 'center', justifyContent: 'center', display: 'flex', minHeight: '100vh', padding: '24px', textAlign: 'center' }}>
+      <div className="shell" style={{ alignItems: 'center', justifyContent: 'center', display: 'flex', minHeight: '100vh', padding: '24px', textAlign: 'center', position: 'relative' }}>
+        <button
+          className="toggle-chip"
+          onClick={() => signOut(() => { window.location.href = '/' })}
+          type="button"
+          title="Log out"
+          style={{ position: 'absolute', top: 24, right: 24 }}
+        >
+          <i className="ti ti-logout" /> Log out
+        </button>
         <div className="card" style={{ maxWidth: 420, padding: '32px 28px' }}>
           <h2 style={{ marginTop: 0 }}>Account suspended</h2>
           <p className="muted-text">

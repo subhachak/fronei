@@ -34,6 +34,7 @@ from app.db.models import (
     UserMemory,
     WritingSample,
     get_daily_spend,
+    get_monthly_spend,
 )
 from app.services.llm_gateway import (
     PROVIDER_TEST_MODELS,
@@ -58,6 +59,7 @@ class AdminPrincipal(BaseModel):
 class AdminControlUpdate(BaseModel):
     status: Literal["active", "suspended", "pending"] = "active"
     daily_budget_usd: float | None = Field(default=None, ge=0)
+    monthly_budget_usd: float | None = Field(default=None, ge=0)
     notes: str | None = Field(default=None, max_length=1000)
 
 
@@ -184,6 +186,7 @@ def _control_out(control: UserAdminControl | None) -> dict:
         "status": control.status if control else "active",
         "role": (control.role if control and control.role else "user"),
         "daily_budget_usd": control.daily_budget_usd if control else None,
+        "monthly_budget_usd": control.monthly_budget_usd if control else None,
         "notes": control.notes if control else None,
         "updated_at": _fmt(control.updated_at) if control else None,
     }
@@ -344,6 +347,20 @@ def users(
             .group_by(RequestLog.user_id)
             .all()
         )
+        month_start = _today_start().replace(day=1)
+        month_msg_costs = dict(
+            db.query(Conversation.user_id, func.coalesce(func.sum(ConversationMessage.estimated_cost_usd), 0.0))
+            .join(ConversationMessage, ConversationMessage.conversation_id == Conversation.id)
+            .filter(Conversation.user_id.in_(page), ConversationMessage.role == "assistant", ConversationMessage.created_at >= month_start)
+            .group_by(Conversation.user_id)
+            .all()
+        )
+        month_req_costs = dict(
+            db.query(RequestLog.user_id, func.coalesce(func.sum(RequestLog.estimated_cost_usd), 0.0))
+            .filter(RequestLog.user_id.in_(page), RequestLog.status == "success", RequestLog.created_at >= month_start)
+            .group_by(RequestLog.user_id)
+            .all()
+        )
         today = _today_start()
         today_msg_costs = dict(
             db.query(Conversation.user_id, func.coalesce(func.sum(ConversationMessage.estimated_cost_usd), 0.0))
@@ -377,6 +394,8 @@ def users(
                 "status": control.status if control else "active",
                 "role": _effective_role(user_id, control.role if control else None, emails.get(user_id)),
                 "daily_budget_usd": control.daily_budget_usd if control else None,
+                "monthly_budget_usd": control.monthly_budget_usd if control else None,
+                "month_spend": round(float(month_msg_costs.get(user_id, 0) or 0) + float(month_req_costs.get(user_id, 0) or 0), 6),
                 "conversation_count": conv_counts.get(user_id, 0),
                 "request_count": req_counts.get(user_id, 0) + asst_counts.get(user_id, 0),
                 "today_spend": round(float(today_msg_costs.get(user_id, 0) or 0) + float(today_req_costs.get(user_id, 0) or 0), 6),
@@ -425,6 +444,7 @@ def user_detail(user_id: str, admin: AdminPrincipal = Depends(require_admin)) ->
             "user_id": user_id,
             "control": control_out,
             "today_spend": round(get_daily_spend(db, user_id), 6),
+            "month_spend": round(get_monthly_spend(db, user_id), 6),
             "counts": {
                 "conversations": db.query(Conversation).filter(Conversation.user_id == user_id).count(),
                 "messages": (
@@ -496,6 +516,7 @@ def update_user_control(
             db.add(control)
         control.status = body.status
         control.daily_budget_usd = body.daily_budget_usd
+        control.monthly_budget_usd = body.monthly_budget_usd
         control.notes = body.notes
         control.updated_at = _now()
         _audit(db, admin, "user_control.update", user_id, body.model_dump())
@@ -979,6 +1000,7 @@ def system(admin: AdminPrincipal = Depends(require_admin)) -> dict:
         "allowed_origins": settings.origins,
         "default_profile": settings.default_profile,
         "daily_budget_usd": settings.daily_budget_usd,
+        "monthly_budget_usd": settings.monthly_budget_usd,
         "planner_model": settings.planner_model,
         "clerk_issuer_configured": bool(settings.clerk_issuer),
         "clerk_audience_configured": bool(settings.clerk_audience),

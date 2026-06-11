@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     allowed_origins: str = "http://localhost:3000"
     default_profile: str = "balanced"
     daily_budget_usd: float = 10.0
+    # Default per-user monthly budget cap (USD). Admins (env allowlist) are exempt.
+    monthly_budget_usd: float = 5.0
 
     openai_api_key: str | None = None
     anthropic_api_key: str | None = None
@@ -50,7 +52,7 @@ class Settings(BaseSettings):
 
     # Concurrency caps for parallel LLM/extraction work. Each concurrent worker
     # holds its own request/response buffers in memory at the same time, so on
-    # memory-constrained instances (e.g. Render free tier, 512MB) lower these.
+    # memory-constrained instances (e.g. Railway starter plan, 512MB) lower these.
     max_question_workers: int = 4
     max_claim_extract_workers: int = 6
     max_document_workers: int = 5

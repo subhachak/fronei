@@ -3,7 +3,16 @@ from fastapi import APIRouter, HTTPException
 
 from app.auth import CurrentUser, CurrentUserIsAdmin
 from app.config import get_settings
-from app.db.models import RequestLog, SessionLocal, get_daily_spend, get_effective_daily_budget, is_user_pending, is_user_suspended
+from app.db.models import (
+    RequestLog,
+    SessionLocal,
+    get_daily_spend,
+    get_effective_daily_budget,
+    get_effective_monthly_budget,
+    get_monthly_spend,
+    is_user_pending,
+    is_user_suspended,
+)
 from app.schemas import ChatRequest, ChatResponse
 from app.services.llm_gateway import invoke_llm
 from app.services.chat_pipeline import _build_doc_context
@@ -36,6 +45,15 @@ def chat(req: ChatRequest, user_id: str = CurrentUser, is_admin: bool = CurrentU
                 detail=f"Daily budget of ${daily_budget:.2f} reached "
                        f"(spent ${daily_spend:.4f} today). Try again tomorrow or ask an admin to adjust the limit."
             )
+        if not is_admin:
+            monthly_spend = get_monthly_spend(db, user_id)
+            monthly_budget = get_effective_monthly_budget(db, user_id)
+            if monthly_spend >= monthly_budget:
+                raise HTTPException(
+                    status_code=429,
+                    detail=f"Monthly budget of ${monthly_budget:.2f} reached "
+                           f"(spent ${monthly_spend:.4f} this month). Ask an admin to adjust the limit."
+                )
 
         # ── Plan ─────────────────────────────────────────────────────────────
         # No history for single-turn requests, but the planner still improves

@@ -13,7 +13,9 @@ from app.auth import CurrentUser, CurrentUserIsAdmin
 from app.config import get_settings
 from app.db.models import (
     Conversation, ConversationMessage, RequestLog, SessionLocal,
-    get_all_memories, get_daily_spend, get_effective_daily_budget, get_twin_profile, is_user_pending, is_user_suspended,
+    get_all_memories, get_daily_spend, get_effective_daily_budget,
+    get_effective_monthly_budget, get_monthly_spend, get_twin_profile,
+    is_user_pending, is_user_suspended,
 )
 from app.schemas import (
     ConvChatRequest, ConvChatResponse,
@@ -354,6 +356,15 @@ def chat(req: ConvChatRequest, user_id: str = CurrentUser, is_admin: bool = Curr
                 detail=f"Daily budget of ${daily_budget:.2f} reached "
                        f"(spent ${daily_spend:.4f} today). Try again tomorrow or ask an admin to adjust the limit."
             )
+        if not is_admin:
+            monthly_spend = get_monthly_spend(db, user_id)
+            monthly_budget = get_effective_monthly_budget(db, user_id)
+            if monthly_spend >= monthly_budget:
+                raise HTTPException(
+                    status_code=429,
+                    detail=f"Monthly budget of ${monthly_budget:.2f} reached "
+                           f"(spent ${monthly_spend:.4f} this month). Ask an admin to adjust the limit."
+                )
 
         history = _build_history(conv, db)
         user_memory = get_all_memories(db, user_id)

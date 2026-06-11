@@ -9,7 +9,7 @@ restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 3
 
 # Railway doesn't read env vars from this file (set them in the dashboard or via
-# `railway variables set KEY=value`). Required variables, mirroring render.yaml:
+# `railway variables set KEY=value`). Required variables:
 #
 # APP_ENV=production
 # DATABASE_URL=<your Neon connection string>
@@ -33,8 +33,8 @@ restartPolicyMaxRetries = 3
 # SMTP_FROM=<from address, defaults to SMTP_USER>
 # NOTIFICATION_EMAILS=subhachak@gmail.com
 #
-# Concurrency caps — Railway gives more headroom than Render free (512MB),
-# so these can likely go back to code defaults (4/6/5/4) once on a 1GB+ plan.
+# Concurrency caps — conservative for the 512MB starter plan; these can likely
+# go back to code defaults (4/6/5/4) once on a 1GB+ plan.
 # Start conservative, raise after confirming stable memory usage:
 # MAX_QUESTION_WORKERS=2
 # MAX_CLAIM_EXTRACT_WORKERS=3

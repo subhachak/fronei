@@ -3,7 +3,6 @@ from datetime import datetime, timezone, timedelta
 
 from fastapi import APIRouter, Query
 from app.auth import CurrentUser
-from app.config import get_settings
 from app.db.models import Conversation, ConversationMessage, RequestLog, SessionLocal
 from app.schemas import (
     AnalyticsResponse, AnalyticsSummary, DailyStat,
@@ -167,7 +166,6 @@ def get_analytics(
         return AnalyticsResponse(
             range=range,
             summary=summary,
-            daily_budget_usd=get_settings().daily_budget_usd,
             cost_by_day=cost_by_day,
             model_usage=model_usage,
             task_distribution=task_distribution,

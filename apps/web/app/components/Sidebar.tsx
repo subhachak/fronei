@@ -11,8 +11,6 @@ export type ConversationSummary = {
 
 interface SidebarProps {
   activePage: 'chat' | 'dashboard' | 'admin'
-  todaySpend?: number | null
-  dailyBudget?: number
   conversations?: ConversationSummary[]
   activeConvId?: number | null
   onLoadConversation?: (id: number) => void
@@ -35,8 +33,6 @@ interface SidebarProps {
 
 export default function Sidebar({
   activePage,
-  todaySpend,
-  dailyBudget = 10,
   conversations = [],
   activeConvId,
   onLoadConversation,
@@ -168,9 +164,6 @@ export default function Sidebar({
   const filteredConvs = convSearch.trim()
     ? conversations.filter(c => c.title.toLowerCase().includes(convSearch.toLowerCase()))
     : conversations
-
-  const budgetPct   = todaySpend != null ? Math.min((todaySpend / dailyBudget) * 100, 100) : 0
-  const budgetColor = budgetPct > 80 ? '#ef4444' : budgetPct > 50 ? '#f59e0b' : '#10b981'
 
   return (
     <nav
@@ -397,20 +390,6 @@ export default function Sidebar({
             </SignOutButton>
           </div>
         )}
-        <div
-          className="budget-row"
-          title={todaySpend != null
-            ? `$${todaySpend.toFixed(4)} of $${dailyBudget.toFixed(2)} used (${Math.round(budgetPct)}%)`
-            : 'Spend data unavailable'}
-        >
-          <span>Today</span>
-          <span className="budget-spend">
-            {todaySpend != null ? `$${todaySpend.toFixed(4)}` : '—'}
-          </span>
-        </div>
-        <div className="budget-track">
-          <div className="budget-fill" style={{ width: `${budgetPct}%`, background: budgetColor }} />
-        </div>
       </div>
     </nav>
   )

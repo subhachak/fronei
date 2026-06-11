@@ -6,8 +6,6 @@ from app.config import get_settings
 from app.db.models import (
     RequestLog,
     SessionLocal,
-    get_daily_spend,
-    get_effective_daily_budget,
     get_effective_monthly_budget,
     get_monthly_spend,
     is_user_pending,
@@ -37,14 +35,6 @@ def chat(req: ChatRequest, user_id: str = CurrentUser, is_admin: bool = CurrentU
             raise HTTPException(status_code=403, detail="Your account is pending admin approval.")
         if req.deep_research and not is_admin:
             check_rate_limit(f"research:{user_id}", settings.rate_limit_research_per_hour, 3600)
-        daily_spend = get_daily_spend(db, user_id)
-        daily_budget = get_effective_daily_budget(db, user_id)
-        if daily_spend >= daily_budget:
-            raise HTTPException(
-                status_code=429,
-                detail=f"Daily budget of ${daily_budget:.2f} reached "
-                       f"(spent ${daily_spend:.4f} today). Try again tomorrow or ask an admin to adjust the limit."
-            )
         if not is_admin:
             monthly_spend = get_monthly_spend(db, user_id)
             monthly_budget = get_effective_monthly_budget(db, user_id)

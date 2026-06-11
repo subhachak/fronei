@@ -23,7 +23,6 @@ restartPolicyMaxRetries = 3
 # DATABASE_URL=<your Neon connection string>
 # ALLOWED_ORIGINS=https://fronei-new.vercel.app
 # DEFAULT_PROFILE=balanced
-# DAILY_BUDGET_USD=10
 # CLERK_ISSUER=<from Clerk dashboard>
 # CLERK_AUDIENCE=fronei-api
 # ADMIN_USER_IDS=<your Clerk user id>

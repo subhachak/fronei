@@ -16,13 +16,13 @@ def db():
     session.close()
 
 
-def test_get_daily_spend_empty(db):
-    from app.db.models import get_daily_spend
-    assert get_daily_spend(db, "u1") == 0.0
+def test_get_monthly_spend_empty(db):
+    from app.db.models import get_monthly_spend
+    assert get_monthly_spend(db, "u1") == 0.0
 
 
-def test_get_daily_spend_with_data(db):
-    from app.db.models import get_daily_spend
+def test_get_monthly_spend_with_data(db):
+    from app.db.models import get_monthly_spend
     conv = Conversation(user_id="u1", title="t", profile="balanced", message_count=2)
     db.add(conv); db.flush()
     msg = ConversationMessage(
@@ -31,11 +31,11 @@ def test_get_daily_spend_with_data(db):
         created_at=datetime.now(timezone.utc),
     )
     db.add(msg); db.commit()
-    assert get_daily_spend(db, "u1") == pytest.approx(0.05)
+    assert get_monthly_spend(db, "u1") == pytest.approx(0.05)
 
 
-def test_get_daily_spend_is_user_scoped(db):
-    from app.db.models import get_daily_spend
+def test_get_monthly_spend_is_user_scoped(db):
+    from app.db.models import get_monthly_spend
 
     conv1 = Conversation(user_id="u1", title="u1", profile="balanced", message_count=2)
     conv2 = Conversation(user_id="u2", title="u2", profile="balanced", message_count=2)
@@ -68,21 +68,21 @@ def test_get_daily_spend_is_user_scoped(db):
     ])
     db.commit()
 
-    assert get_daily_spend(db, "u1") == pytest.approx(0.06)
-    assert get_daily_spend(db, "u2") == pytest.approx(0.50)
+    assert get_monthly_spend(db, "u1") == pytest.approx(0.06)
+    assert get_monthly_spend(db, "u2") == pytest.approx(0.50)
 
 
 def test_admin_budget_override_and_suspension_helpers(db):
-    from app.db.models import get_effective_daily_budget, is_user_suspended
+    from app.db.models import get_effective_monthly_budget, is_user_suspended
 
     db.add(UserAdminControl(
         user_id="u1",
         status="suspended",
-        daily_budget_usd=2.5,
+        monthly_budget_usd=2.5,
     ))
     db.commit()
 
-    assert get_effective_daily_budget(db, "u1") == pytest.approx(2.5)
+    assert get_effective_monthly_budget(db, "u1") == pytest.approx(2.5)
     assert is_user_suspended(db, "u1") is True
     assert is_user_suspended(db, "missing") is False
 
@@ -136,5 +136,5 @@ def test_ensure_sqlite_schema_adds_missing_legacy_columns():
     assert {"user_id", "running_summary", "active_task_json"} <= conversation_cols
     assert "execution_log_json" in message_cols
     assert "user_id" in request_cols
-    assert {"user_id", "status", "daily_budget_usd", "notes"} <= admin_control_cols
+    assert {"user_id", "status", "monthly_budget_usd", "notes"} <= admin_control_cols
     assert {"admin_user_id", "action", "target_user_id", "details_json"} <= audit_cols

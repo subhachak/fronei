@@ -276,7 +276,6 @@ class AnalyticsSummary(BaseModel):
 class AnalyticsResponse(BaseModel):
     range: str
     summary: AnalyticsSummary
-    daily_budget_usd: float
     cost_by_day: list[DailyStat]
     model_usage: list[ModelUsageStat]
     task_distribution: list[TaskStat]

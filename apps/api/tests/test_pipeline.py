@@ -28,7 +28,6 @@ def _make_settings():
     s = MagicMock()
     s.planner_model = "gemini/gemini-2.5-flash"
     s.default_profile = "balanced"
-    s.daily_budget_usd = 10.0
     return s
 
 

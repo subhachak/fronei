@@ -45,7 +45,7 @@ type ModelDetailStat = {
 }
 type Summary = { total_cost: number; total_requests: number; total_tokens: number; avg_latency_ms: number }
 type AnalyticsData = {
-  range: string; summary: Summary; daily_budget_usd?: number; cost_by_day: DailyStat[]
+  range: string; summary: Summary; cost_by_day: DailyStat[]
   model_usage: ModelUsageStat[]; task_distribution: TaskStat[]; model_stats: ModelDetailStat[]
 }
 
@@ -2040,10 +2040,8 @@ function PipelineLog({
 
 function DashboardView({
   apiFetch,
-  onBudgetLoaded,
 }: {
   apiFetch: (path: string, options?: RequestInit) => Promise<Response>
-  onBudgetLoaded?: (total: number | null, budget: number | undefined) => void
 }) {
   const [range, setRange] = useState<Range>('7d')
   const [data, setData] = useState<AnalyticsData | null>(null)
@@ -2059,7 +2057,6 @@ function DashboardView({
       .then((d: AnalyticsData) => {
         if (cancelled) return
         setData(d)
-        onBudgetLoaded?.(d.summary?.total_cost ?? null, d.daily_budget_usd)
       })
       .catch(e => { if (!cancelled) setError(e instanceof Error ? e.message : 'Failed to load') })
       .finally(() => { if (!cancelled) setLoading(false) })
@@ -2163,12 +2160,10 @@ type AdminUserRow = {
   user_id: string
   status: string
   role: string
-  daily_budget_usd: number | null
   monthly_budget_usd: number | null
   month_spend: number
   conversation_count: number
   request_count: number
-  today_spend: number
   total_spend: number
   memory_count: number
   writing_sample_count: number
@@ -2278,23 +2273,6 @@ function AdminView({
       method: 'PATCH',
       body: JSON.stringify({
         status,
-        daily_budget_usd: existing?.daily_budget_usd ?? null,
-        monthly_budget_usd: existing?.monthly_budget_usd ?? null,
-        notes: selectedUser?.control?.notes ?? null,
-      }),
-    })
-    await loadAll()
-    await loadUser(userId)
-  }
-
-  async function setBudget(userId: string, value: string) {
-    const amount = value.trim() ? Number(value) : null
-    const existing = users.find(u => u.user_id === userId)
-    await json(`/admin/users/${encodeURIComponent(userId)}/control`, {
-      method: 'PATCH',
-      body: JSON.stringify({
-        status: existing?.status ?? 'active',
-        daily_budget_usd: Number.isFinite(amount) ? amount : null,
         monthly_budget_usd: existing?.monthly_budget_usd ?? null,
         notes: selectedUser?.control?.notes ?? null,
       }),
@@ -2310,7 +2288,6 @@ function AdminView({
       method: 'PATCH',
       body: JSON.stringify({
         status: existing?.status ?? 'active',
-        daily_budget_usd: existing?.daily_budget_usd ?? null,
         monthly_budget_usd: Number.isFinite(amount) ? amount : null,
         notes: selectedUser?.control?.notes ?? null,
       }),
@@ -2522,14 +2499,13 @@ function AdminView({
               </div>
               <div className="admin-table-wrap">
                 <table className="admin-table">
-                  <thead><tr><th>User</th><th>Status</th><th>Role</th><th>Today</th><th>This month</th><th>Total</th><th>Requests</th><th>Data</th></tr></thead>
+                  <thead><tr><th>User</th><th>Status</th><th>Role</th><th>This month</th><th>Total</th><th>Requests</th><th>Data</th></tr></thead>
                   <tbody>
                     {users.map(u => (
                       <tr key={u.user_id} onClick={() => loadUser(u.user_id)} className={selectedUser?.user_id === u.user_id ? 'active' : ''}>
                         <td className="mono">{u.user_id}</td>
                         <td><span className={`exec-pill ${u.status === 'suspended' ? 'danger-pill' : u.status === 'pending' ? 'warn-pill' : ''}`}>{u.status}</span></td>
                         <td><span className={`exec-pill ${u.role === 'admin' ? 'ok-pill' : ''}`}>{u.role}</span></td>
-                        <td>{fmt$(u.today_spend, 4)}</td>
                         <td>{fmt$(u.month_spend, 4)}{u.role !== 'admin' ? ` / $${(u.monthly_budget_usd ?? 5).toFixed(2)}` : ''}</td>
                         <td>{fmt$(u.total_spend, 4)}</td>
                         <td>{u.request_count}</td>
@@ -2565,14 +2541,6 @@ function AdminView({
                       <button className={`theme-btn-opt${selectedUser.control?.role === 'admin' ? ' active' : ''}`} onClick={() => setUserRole(selectedUser.user_id, 'admin')} type="button">Admin</button>
                     </div>
                   </div>
-                  <label className="settings-field">Daily budget override
-                    <input
-                      className="conv-search-input"
-                      defaultValue={selectedUser.control?.daily_budget_usd ?? ''}
-                      placeholder="Global default"
-                      onBlur={e => setBudget(selectedUser.user_id, e.target.value)}
-                    />
-                  </label>
                   {selectedUser.control?.role !== 'admin' && (
                     <label className="settings-field">Monthly budget override
                       <input
@@ -2772,10 +2740,6 @@ export default function Home() {
   const [activeConvId, setActiveConvId]   = useState<number | null>(null)
   const [messages, setMessages]           = useState<MessageOut[]>([])
 
-  // Budget / spend
-  const [todaySpend, setTodaySpend]   = useState<number | null>(null)
-  const [dailyBudget, setDailyBudget] = useState<number>(10)
-
   // Input state
   const [message, setMessage]             = useState('')
   const [quality, setQuality]             = useState<Quality>('smart')
@@ -2851,12 +2815,6 @@ export default function Home() {
     const initialSettings = initialParams.get('settings')
     const shouldAutoLoadConversation = initialView !== 'dashboard' && initialSettings !== '1'
 
-    apiFetch('/me')
-      .then(r => r.ok ? r.json() : null)
-      .then(d => { if (d?.account_status) setAccountStatus(d.account_status) })
-      .catch(() => {})
-      .finally(() => setAccountStatusLoaded(true))
-
     apiFetch('/conversations')
       .then(r => r.ok ? r.json() : [])
       .then((list: ConversationSummary[]) => {
@@ -2871,14 +2829,6 @@ export default function Home() {
         const m = extractModelOptions(p)
         if (m.length > 0) setModelOptions(m)
       }).catch(() => {})
-
-    apiFetch('/analytics?range=1d')
-      .then(r => r.ok ? r.json() : null)
-      .then(d => {
-        if (d?.summary?.total_cost != null) setTodaySpend(d.summary.total_cost)
-        if (d?.daily_budget_usd != null) setDailyBudget(d.daily_budget_usd)
-      })
-      .catch(() => {})
 
     apiFetch('/twin-profile')
       .then(r => r.ok ? r.json() : null)
@@ -2933,6 +2883,23 @@ export default function Home() {
     } catch { /* ignore */ }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  useEffect(() => {
+    if (!authLoaded) return
+    if (!isSignedIn) {
+      setAccountStatusLoaded(true)
+      return
+    }
+    let cancelled = false
+    apiFetch('/me')
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (!cancelled && d?.account_status) setAccountStatus(d.account_status) })
+      .catch(() => {})
+      .finally(() => { if (!cancelled) setAccountStatusLoaded(true) })
+    return () => { cancelled = true }
+  // apiFetch is recreated on render; auth state is the intended trigger.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authLoaded, isSignedIn, user?.id])
 
   useEffect(() => {
     if (!authLoaded) return
@@ -3718,8 +3685,6 @@ export default function Home() {
               research:           researchMeta,
             } : m))
 
-            if (data.estimated_cost_usd) setTodaySpend(prev => (prev ?? 0) + (data.estimated_cost_usd as number))
-
             if (wasNew && startConvId) {
               const list: ConversationSummary[] = await apiFetch('/conversations').then(r => r.json())
               setConversations(list)
@@ -3779,9 +3744,19 @@ export default function Home() {
           onClick={() => signOut(() => { window.location.href = '/' })}
           type="button"
           title="Log out"
-          style={{ position: 'absolute', top: 24, right: 24 }}
+          style={{
+            position: 'absolute',
+            top: 24,
+            right: 24,
+            zIndex: 50,
+            padding: '8px 16px',
+            fontSize: 13,
+            background: 'var(--bg-s1)',
+            borderColor: 'var(--bd2)',
+            color: 'var(--t2)',
+          }}
         >
-          <i className="ti ti-logout" /> Log out
+          <i className="ti ti-logout" aria-hidden="true" /> Log out
         </button>
         <div className="card" style={{ maxWidth: 420, padding: '32px 28px' }}>
           <h2 style={{ marginTop: 0 }}>Account pending approval</h2>
@@ -3803,9 +3778,19 @@ export default function Home() {
           onClick={() => signOut(() => { window.location.href = '/' })}
           type="button"
           title="Log out"
-          style={{ position: 'absolute', top: 24, right: 24 }}
+          style={{
+            position: 'absolute',
+            top: 24,
+            right: 24,
+            zIndex: 50,
+            padding: '8px 16px',
+            fontSize: 13,
+            background: 'var(--bg-s1)',
+            borderColor: 'var(--bd2)',
+            color: 'var(--t2)',
+          }}
         >
-          <i className="ti ti-logout" /> Log out
+          <i className="ti ti-logout" aria-hidden="true" /> Log out
         </button>
         <div className="card" style={{ maxWidth: 420, padding: '32px 28px' }}>
           <h2 style={{ marginTop: 0 }}>Account suspended</h2>
@@ -3827,8 +3812,6 @@ export default function Home() {
 
       <Sidebar
         activePage={appView}
-        todaySpend={todaySpend}
-        dailyBudget={dailyBudget}
         conversations={conversations}
         activeConvId={activeConvId}
         onLoadConversation={loadConversation}
@@ -3898,10 +3881,6 @@ export default function Home() {
         ) : appView === 'dashboard' ? (
           <DashboardView
             apiFetch={apiFetch}
-            onBudgetLoaded={(total, budget) => {
-              if (total != null) setTodaySpend(total)
-              if (budget != null) setDailyBudget(budget)
-            }}
           />
         ) : (
         <>

@@ -51,7 +51,6 @@ class UserAdminControl(Base):
     user_id: Mapped[str] = mapped_column(String(128), unique=True, nullable=False, index=True)
     status: Mapped[str] = mapped_column(String(32), default="active")
     role: Mapped[str] = mapped_column(String(32), default="user")
-    daily_budget_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
     monthly_budget_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
@@ -315,7 +314,6 @@ def _ensure_sqlite_schema(bind) -> None:
                 user_id VARCHAR(128) NOT NULL,
                 status VARCHAR(32) DEFAULT 'active',
                 role VARCHAR(32) DEFAULT 'user',
-                daily_budget_usd FLOAT,
                 monthly_budget_usd FLOAT,
                 notes TEXT,
                 created_at DATETIME NOT NULL,
@@ -476,14 +474,6 @@ def get_user_control(db, user_id: str) -> "UserAdminControl | None":
     return db.query(UserAdminControl).filter(UserAdminControl.user_id == user_id).first()
 
 
-def get_effective_daily_budget(db, user_id: str) -> float:
-    settings = get_settings()
-    control = get_user_control(db, user_id)
-    if control and control.daily_budget_usd is not None:
-        return float(control.daily_budget_usd)
-    return settings.daily_budget_usd
-
-
 def is_user_suspended(db, user_id: str) -> bool:
     control = get_user_control(db, user_id)
     return bool(control and control.status == "suspended")
@@ -518,26 +508,6 @@ def get_monthly_spend(db, user_id: str) -> float:
         .filter(RequestLog.status == "success")
         .filter(RequestLog.user_id == user_id)
         .filter(RequestLog.created_at >= month_start)
-        .scalar() or 0.0
-    )
-    return float(msg_spend) + float(log_spend)
-
-
-def get_daily_spend(db, user_id: str) -> float:
-    today_start = datetime.combine(date.today(), datetime.min.time()).replace(tzinfo=timezone.utc)
-    msg_spend = (
-        db.query(func.sum(ConversationMessage.estimated_cost_usd))
-        .join(Conversation, ConversationMessage.conversation_id == Conversation.id)
-        .filter(ConversationMessage.role == "assistant")
-        .filter(Conversation.user_id == user_id)
-        .filter(ConversationMessage.created_at >= today_start)
-        .scalar() or 0.0
-    )
-    log_spend = (
-        db.query(func.sum(RequestLog.estimated_cost_usd))
-        .filter(RequestLog.status == "success")
-        .filter(RequestLog.user_id == user_id)
-        .filter(RequestLog.created_at >= today_start)
         .scalar() or 0.0
     )
     return float(msg_spend) + float(log_spend)

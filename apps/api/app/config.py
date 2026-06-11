@@ -10,7 +10,6 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./fronei.db"
     allowed_origins: str = "http://localhost:3000"
     default_profile: str = "balanced"
-    daily_budget_usd: float = 10.0
     # Default per-user monthly budget cap (USD). Admins (env allowlist) are exempt.
     monthly_budget_usd: float = 5.0
 

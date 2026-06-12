@@ -197,6 +197,28 @@ def _effective_role(user_id: str, db_role: str | None, email: str | None = None)
     return db_role or "user"
 
 
+def _user_profiles(db, user_ids) -> dict[str, dict[str, str | None]]:
+    ids = sorted({str(user_id) for user_id in user_ids if user_id})
+    if not ids:
+        return {}
+    return {
+        clerk_id: {"email": email, "name": name}
+        for clerk_id, email, name in (
+            db.query(User.clerk_id, User.email, User.name)
+            .filter(User.clerk_id.in_(ids))
+            .all()
+        )
+    }
+
+
+def _profile_fields(profiles: dict[str, dict[str, str | None]], user_id: str, prefix: str = "") -> dict[str, str | None]:
+    profile = profiles.get(user_id) or {}
+    return {
+        f"{prefix}email": profile.get("email"),
+        f"{prefix}name": profile.get("name"),
+    }
+
+
 def _all_known_user_ids(db) -> set[str]:
     user_ids: set[str] = set()
     sources = [
@@ -785,7 +807,15 @@ def usage(
                 for d, v in sorted(by_day.items())
             ],
             "top_users": sorted(
-                [{"user_id": u, "cost": round(v["cost"], 6), "requests": v["requests"]} for u, v in by_user.items()],
+                [
+                    {
+                        "user_id": u,
+                        **_profile_fields(user_profiles, u),
+                        "cost": round(v["cost"], 6),
+                        "requests": v["requests"],
+                    }
+                    for u, v in by_user.items()
+                ],
                 key=lambda x: -x["cost"],
             )[:20],
             "model_usage": sorted(
@@ -936,6 +966,7 @@ def research_runs(
             q = q.filter(ResearchRun.status == status)
         total = q.count()
         runs = q.order_by(ResearchRun.updated_at.desc()).offset(offset).limit(limit).all()
+        user_profiles = _user_profiles(db, [r.user_id for r in runs])
         return {
             "total": total,
             "limit": limit,
@@ -944,6 +975,7 @@ def research_runs(
                 {
                     "id": r.id,
                     "user_id": r.user_id,
+                    **_profile_fields(user_profiles, r.user_id),
                     "conversation_id": r.conversation_id,
                     "query": r.query[:300],
                     "mode": r.mode,
@@ -973,6 +1005,7 @@ def errors(
         q = db.query(RequestLog).filter(or_(RequestLog.status == "error", RequestLog.error.isnot(None)))
         total = q.count()
         rows = q.order_by(RequestLog.created_at.desc()).offset(offset).limit(limit).all()
+        user_profiles = _user_profiles(db, [r.user_id for r in rows])
         return {
             "total": total,
             "limit": limit,
@@ -981,6 +1014,7 @@ def errors(
                 {
                     "id": r.id,
                     "user_id": r.user_id,
+                    **_profile_fields(user_profiles, r.user_id),
                     "created_at": _fmt(r.created_at),
                     "task_type": r.task_type,
                     "complexity": r.complexity,
@@ -1006,6 +1040,10 @@ def audit(
         q = db.query(AdminAuditLog)
         total = q.count()
         rows = q.order_by(AdminAuditLog.created_at.desc()).offset(offset).limit(limit).all()
+        user_profiles = _user_profiles(
+            db,
+            [r.admin_user_id for r in rows] + [r.target_user_id for r in rows if r.target_user_id],
+        )
         return {
             "total": total,
             "limit": limit,
@@ -1014,8 +1052,10 @@ def audit(
                 {
                     "id": r.id,
                     "admin_user_id": r.admin_user_id,
+                    **_profile_fields(user_profiles, r.admin_user_id, "admin_"),
                     "action": r.action,
                     "target_user_id": r.target_user_id,
+                    **_profile_fields(user_profiles, r.target_user_id or "", "target_"),
                     "details": json.loads(r.details_json or "{}"),
                     "created_at": _fmt(r.created_at),
                 }

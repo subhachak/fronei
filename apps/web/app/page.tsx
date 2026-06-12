@@ -2268,8 +2268,8 @@ function AdminView({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  function userLabel(userId: string): string {
-    const u = users.find(x => x.user_id === userId)
+  function userLabel(userId: string, identity?: { name?: string | null; email?: string | null }): string {
+    const u = identity ?? users.find(x => x.user_id === userId)
     return u?.name || u?.email || userId
   }
 
@@ -2487,7 +2487,7 @@ function AdminView({
                     <thead><tr><th>User</th><th>Cost</th><th>Requests</th></tr></thead>
                     <tbody>
                       {usage?.top_users?.slice(0, 5).map((u: any) => (
-                        <tr key={u.user_id}><td>{userLabel(u.user_id)}</td><td>{fmt$(u.cost, 4)}</td><td>{u.requests}</td></tr>
+                        <tr key={u.user_id}><td>{userLabel(u.user_id, u)}</td><td>{fmt$(u.cost, 4)}</td><td>{u.requests}</td></tr>
                       ))}
                       {usage && (!usage.top_users || usage.top_users.length === 0) && (
                         <tr><td colSpan={3} className="muted-text">No usage in this period.</td></tr>
@@ -2636,7 +2636,7 @@ function AdminView({
             <div className="card admin-table-card">
               <div className="chart-card-title">Top users</div>
               <div className="admin-table-wrap"><table className="admin-table"><thead><tr><th>User</th><th>Cost</th><th>Requests</th></tr></thead><tbody>
-                {usage.top_users?.map((u: any) => <tr key={u.user_id}><td>{userLabel(u.user_id)}</td><td>{fmt$(u.cost, 4)}</td><td>{u.requests}</td></tr>)}
+                {usage.top_users?.map((u: any) => <tr key={u.user_id}><td>{userLabel(u.user_id, u)}</td><td>{fmt$(u.cost, 4)}</td><td>{u.requests}</td></tr>)}
               </tbody></table></div>
             </div>
             <div className="card admin-table-card">
@@ -2723,7 +2723,7 @@ function AdminView({
           <div className="card admin-table-card">
             <div className="chart-card-title">Research runs</div>
             <div className="admin-table-wrap"><table className="admin-table"><thead><tr><th>ID</th><th>User</th><th>Status</th><th>Mode</th><th>Evidence</th><th>Query</th></tr></thead><tbody>
-              {research.map(r => <tr key={r.id}><td>{r.id}</td><td>{userLabel(r.user_id)}</td><td>{r.status}</td><td>{r.mode}</td><td>{r.source_count} src · {r.claim_count} claims</td><td>{r.query}</td></tr>)}
+              {research.map(r => <tr key={r.id}><td>{r.id}</td><td>{userLabel(r.user_id, r)}</td><td>{r.status}</td><td>{r.mode}</td><td>{r.source_count} src · {r.claim_count} claims</td><td>{r.query}</td></tr>)}
             </tbody></table></div>
           </div>
         )}
@@ -2732,7 +2732,7 @@ function AdminView({
           <div className="card admin-table-card">
             <div className="chart-card-title">Request errors</div>
             <div className="admin-table-wrap"><table className="admin-table"><thead><tr><th>Time</th><th>User</th><th>Model</th><th>Error</th></tr></thead><tbody>
-              {errors.map(e => <tr key={e.id}><td>{e.created_at ? fmtTime(e.created_at) : '—'}</td><td>{userLabel(e.user_id)}</td><td className="mono">{e.selected_model}</td><td>{e.error}</td></tr>)}
+              {errors.map(e => <tr key={e.id}><td>{e.created_at ? fmtTime(e.created_at) : '—'}</td><td>{userLabel(e.user_id, e)}</td><td className="mono">{e.selected_model}</td><td>{e.error}</td></tr>)}
             </tbody></table></div>
           </div>
         )}
@@ -2741,7 +2741,14 @@ function AdminView({
           <div className="card admin-table-card">
             <div className="chart-card-title">Admin audit</div>
             <div className="admin-table-wrap"><table className="admin-table"><thead><tr><th>Time</th><th>Admin</th><th>Action</th><th>Target</th></tr></thead><tbody>
-              {audit.map(a => <tr key={a.id}><td>{a.created_at ? fmtTime(a.created_at) : '—'}</td><td>{userLabel(a.admin_user_id)}</td><td>{a.action}</td><td>{a.target_user_id ? userLabel(a.target_user_id) : '—'}</td></tr>)}
+              {audit.map(a => (
+                <tr key={a.id}>
+                  <td>{a.created_at ? fmtTime(a.created_at) : '—'}</td>
+                  <td>{userLabel(a.admin_user_id, { name: a.admin_name, email: a.admin_email })}</td>
+                  <td>{a.action}</td>
+                  <td>{a.target_user_id ? userLabel(a.target_user_id, { name: a.target_name, email: a.target_email }) : '—'}</td>
+                </tr>
+              ))}
             </tbody></table></div>
           </div>
         )}

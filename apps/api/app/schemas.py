@@ -57,9 +57,14 @@ class DocumentGenerateRequest(BaseModel):
 class DocumentGenerateFromPromptRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=32000)
     title: str | None = Field(default=None, max_length=180)
+    doc_type: str | None = Field(default=None, max_length=64)
+    audience: str | None = Field(default=None, max_length=120)
+    tone: str | None = Field(default=None, max_length=120)
+    length: str | None = Field(default=None, max_length=80)
+    output_formats: list[str] = Field(default_factory=list)
     profile: Profile | None = None
     force_model: str | None = None
-    attached_documents: list[AttachedDocument] = []
+    attached_documents: list[AttachedDocument] = Field(default_factory=list)
 
 
 class DocumentGenerateFromPromptResponse(BaseModel):

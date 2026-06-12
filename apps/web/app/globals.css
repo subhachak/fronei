@@ -3900,7 +3900,7 @@ pre:hover .code-copy-btn { opacity: 1; }
 .doc-brief-modal {
   width: min(680px, calc(100vw - 28px));
   max-height: calc(100vh - 40px);
-  background: var(--bg);
+  background: var(--bg-modal);
   color: var(--t1);
   border: 1px solid var(--bd2);
   border-radius: 16px;
@@ -3958,7 +3958,7 @@ pre:hover .code-copy-btn { opacity: 1; }
   min-height: 42px;
   border-radius: 10px;
   border: 1px solid var(--bd);
-  background: var(--bg-s1);
+  background: var(--bg-input);
   color: var(--t1);
   padding: 0 12px;
   font: inherit;
@@ -3982,7 +3982,7 @@ pre:hover .code-copy-btn { opacity: 1; }
   padding: 0 12px;
   border-radius: 10px;
   border: 1px solid var(--bd);
-  background: var(--bg-s1);
+  background: var(--bg-input);
   color: var(--t2);
   font-weight: 700;
   cursor: pointer;

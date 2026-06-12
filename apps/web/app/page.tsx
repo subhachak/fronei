@@ -5631,12 +5631,7 @@ export default function Home() {
                   const next = !documentIntentOn
                   setDocumentIntentOn(next)
                   setLeftMenuOpen(false)
-                  if (next) {
-                    const seed = message.trim() || (pendingFiles.length > 0
-                      ? 'Generate a client-ready document from the attached files.'
-                      : 'Generate a client-ready document.')
-                    setDocumentBriefDraft(defaultDocumentBrief(seed, true))
-                  } else {
+                  if (!next) {
                     setDocumentBriefDraft(null)
                   }
                 }}

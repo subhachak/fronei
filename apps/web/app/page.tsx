@@ -1846,7 +1846,10 @@ function SettingsView({
             <div className="settings-card-list">
               <div className="settings-card">
                 <div className="settings-card-head">
-                  <strong>Profile summary<span>Fronei uses this compact profile before ranked memories.</span></strong>
+                  <div>
+                    <strong>Profile summary</strong>
+                    <span>Fronei uses this compact profile before ranked memories.</span>
+                  </div>
                   {!profileLoaded && <span className="settings-muted">Loading...</span>}
                 </div>
                 {profileLoaded && (
@@ -1877,7 +1880,10 @@ function SettingsView({
 
               <div className="settings-card">
                 <div className="settings-card-head">
-                  <strong>What Fronei remembers<span>Review, pin, correct, or scrub remembered facts.</span></strong>
+                  <div>
+                    <strong>What Fronei remembers</strong>
+                    <span>Review, pin, correct, or scrub remembered facts.</span>
+                  </div>
                   {memories.length > 0 && <button className="toggle-chip danger" onClick={onClearMemories} type="button">Clear all</button>}
                 </div>
                 <div className="memory-toolbar">
@@ -1921,7 +1927,12 @@ function SettingsView({
               </div>
 
               <div className="settings-card">
-                <div className="settings-card-head"><strong>Writing style<span>Derived from writing samples and profile consolidation.</span></strong></div>
+                <div className="settings-card-head">
+                  <div>
+                    <strong>Writing style</strong>
+                    <span>Derived from writing samples and profile consolidation.</span>
+                  </div>
+                </div>
                 {profileLoaded && profileValueText(communicationStyle) !== 'Not set' ? (
                   <div className="settings-grid">
                     {Object.entries(isRecord(communicationStyle) ? communicationStyle : { style: communicationStyle }).slice(0, 8).map(([key, value]) => (
@@ -2309,7 +2320,10 @@ function DashboardView({
               <div className="settings-card-list dashboard-admin-block">
                 <div className="settings-card">
                   <div className="settings-card-head">
-                    <strong>Global monthly budget<span>Admins can configure the cap and override behavior from here.</span></strong>
+                    <div>
+                      <strong>Global monthly budget</strong>
+                      <span>Admins can configure the cap and override behavior from here.</span>
+                    </div>
                     <span className={`exec-pill ${ops.budget.status === 'exceeded' ? 'danger-pill' : ops.budget.status === 'warning' ? 'warn-pill' : 'ok-pill'}`}>{ops.budget.status}</span>
                   </div>
                   <div className="dash-summary-grid">

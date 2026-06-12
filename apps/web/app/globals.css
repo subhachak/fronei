@@ -2523,6 +2523,63 @@ pre:hover .code-copy-btn { opacity: 1; }
   color: var(--ac-text);
 }
 
+.pl-step-pending .pl-dot {
+  background: transparent;
+  border: 1px dashed var(--bd);
+  color: var(--t6);
+}
+
+.pl-step-pending .pl-message {
+  color: var(--t6);
+}
+
+.pl-pending-label {
+  font-size: 10px;
+  color: var(--t6);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.pl-substeps {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 2px;
+}
+
+.pl-substep {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.pl-substep-status {
+  width: 14px;
+  min-width: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 2px;
+}
+
+.pl-substep-done .pl-substep-status {
+  color: #34d399;
+  font-size: 12px;
+}
+
+.pl-substep-text {
+  color: var(--t4);
+  flex: 1;
+  min-width: 0;
+}
+
+.pl-substep-active .pl-substep-text {
+  color: var(--t2);
+  font-weight: 500;
+}
+
 .pl-body {
   flex: 1;
   min-width: 0;

@@ -787,7 +787,7 @@ function defaultDocumentBrief(prompt: string, forced = false): DocumentBrief | n
     resume:           { audience: 'Recruiter', tone: 'Formal', length: 'Standard', outputFormats: ['docx'] },
   }
   return {
-    title: inferDocumentTitle(prompt),
+    title: '',
     docType,
     ...defaults[docType],
   }
@@ -2394,11 +2394,13 @@ function DocumentBriefModal({
   brief,
   onChange,
   onClose,
+  onCancel,
   onGenerate,
 }: {
   brief: DocumentBrief
   onChange: (brief: DocumentBrief) => void
   onClose: () => void
+  onCancel: () => void
   onGenerate: (brief: DocumentBrief) => void
 }) {
   const selectedFormats = new Set(brief.outputFormats)
@@ -2428,15 +2430,6 @@ function DocumentBriefModal({
           </button>
         </header>
         <div className="doc-brief-body">
-          <label className="doc-brief-field doc-brief-title-field">
-            <span>Title</span>
-            <input
-              value={brief.title}
-              onChange={e => onChange({ ...brief, title: e.target.value })}
-              placeholder="Fronei document"
-            />
-          </label>
-
           <div className="doc-brief-grid">
             <label className="doc-brief-field">
               <span>Document type</span>
@@ -2493,13 +2486,13 @@ function DocumentBriefModal({
           </div>
         </div>
         <footer className="doc-brief-footer">
-          <button type="button" className="action-btn" onClick={onClose}>Cancel</button>
+          <button type="button" className="doc-brief-cancel" onClick={onCancel}>Cancel</button>
           <button
             type="button"
             className="send-btn"
             onClick={() => onGenerate({
               ...brief,
-              title: brief.title.trim() || 'Fronei document',
+              title: brief.title.trim(),
               outputFormats: brief.outputFormats.length ? brief.outputFormats : ['docx'],
             })}
           >
@@ -4334,12 +4327,12 @@ export default function Home() {
     attachedDocs: AttachedDocument[],
     brief?: DocumentBrief,
   ): Promise<GeneratedDocument> {
-    const title = brief?.title || inferDocumentTitle(prompt)
+    const title = brief?.title?.trim() || ''
     const res = await apiFetch('/documents/generate/from-prompt/docx', {
       method: 'POST',
       body: JSON.stringify({
         prompt,
-        title,
+        title: title || undefined,
         doc_type: brief?.docType,
         audience: brief?.audience,
         tone: brief?.tone,
@@ -5528,24 +5521,24 @@ export default function Home() {
                 {pendingFiles.length > 0 && <span className="plus-badge">{pendingFiles.length}</span>}
               </button>
 
-              <div className="c-spacer" />
+              {documentIntentOn && (
+                <button
+                  className="composer-mode-chip"
+                  type="button"
+                  onClick={() => {
+                    setDocumentIntentOn(false)
+                    setDocumentBriefDraft(null)
+                  }}
+                  title="Cancel document mode"
+                  aria-label="Cancel document mode"
+                >
+                  <i className="ti ti-file-text" aria-hidden="true" />
+                  <span>Document</span>
+                  <i className="ti ti-x" aria-hidden="true" />
+                </button>
+              )}
 
-              {/* Right: quality selector */}
-              <select
-                className="c-select"
-                value={researchOn ? 'research' : quality}
-                onChange={e => {
-                  if (e.target.value === 'research') { setResearchOn(true) }
-                  else { setResearchOn(false); setQuality(e.target.value as Quality) }
-                }}
-                disabled={isBusy}
-                aria-label="Quality"
-              >
-                <option value="quick">Quick</option>
-                <option value="smart">Smart</option>
-                <option value="thorough">Thorough</option>
-                <option value="research">Research</option>
-              </select>
+              <div className="c-spacer" />
 
               {/* Format as artifact button — only shown when persona has artifacts configured */}
               {visibleArtifacts.length > 0 && <button
@@ -5594,7 +5587,6 @@ export default function Home() {
                   <i className="ti ti-send" aria-hidden="true" />
                   {isExtracting
                     ? `Extracting${pendingFiles.length > 1 ? ` ${pendingFiles.length} files` : ''}…`
-                    : documentIntentOn ? 'Generate'
                     : loading ? 'Routing…'
                     : streaming ? 'Streaming…'
                     : 'Send'}
@@ -5773,6 +5765,9 @@ export default function Home() {
           brief={documentBriefDraft}
           onChange={setDocumentBriefDraft}
           onClose={() => {
+            setDocumentBriefDraft(null)
+          }}
+          onCancel={() => {
             setDocumentBriefDraft(null)
             setDocumentIntentOn(false)
           }}

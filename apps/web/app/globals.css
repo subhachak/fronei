@@ -1796,6 +1796,31 @@ option { background: var(--bg-modal); color: var(--t2); }
   line-height: 1;
 }
 
+.composer-mode-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 9px;
+  border-radius: 999px;
+  border: 1px solid var(--ac-bd);
+  background: var(--ac-bg);
+  color: var(--ac-text);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.composer-mode-chip i {
+  font-size: 14px;
+}
+
+.composer-mode-chip:hover {
+  border-color: var(--ac);
+}
+
 /* ── Left menu popup ─────────────────────────────────────────────── */
 .left-menu-popup {
   position: absolute;
@@ -4007,6 +4032,27 @@ pre:hover .code-copy-btn { opacity: 1; }
 .doc-brief-footer {
   justify-content: flex-end;
   border-top: 1px solid var(--bd);
+}
+
+.doc-brief-cancel {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 34px;
+  padding: 0 14px;
+  border-radius: 9px;
+  border: 1px solid var(--bd2);
+  background: var(--bg-input);
+  color: var(--t2);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.doc-brief-cancel:hover {
+  background: var(--bg-s2);
+  color: var(--t1);
 }
 
 @media (max-width: 640px) {

@@ -1829,7 +1829,11 @@ option { background: var(--bg-modal); color: var(--t2); }
   transition: background 0.1s;
 }
 .left-menu-item:hover { background: var(--bg-s2); }
-.left-menu-item.on { color: var(--ac-text); }
+.left-menu-item.on {
+  color: var(--ac-text);
+  background: var(--ac-bg);
+  box-shadow: inset 0 0 0 1px var(--ac-bd);
+}
 .left-menu-item.on i { color: var(--ac-text); }
 .left-menu-item i { font-size: 16px; color: var(--t3); flex-shrink: 0; }
 .left-menu-item span:first-of-type { flex: 1; }

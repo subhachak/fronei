@@ -3514,6 +3514,7 @@ export default function Home() {
   const [quality, setQuality]             = useState<Quality>('smart')
   const [researchOn, setResearchOn]       = useState(false)
   const [webSearchOn, setWebSearchOn]     = useState(false)
+  const [documentIntentOn, setDocumentIntentOn] = useState(false)
   const [previewDoc, setPreviewDoc]       = useState<GeneratedDocument | null>(null)
   const [forceModel, setForceModel]       = useState('')
   const [showWebSearch, setShowWebSearch] = useState(false)
@@ -4151,7 +4152,6 @@ export default function Home() {
       title: string; doc_type: string; markdown: string
       filename: string; docx_base64: string
     }
-    downloadBlob(base64ToBlob(data.docx_base64, DOCX_MIME), data.filename)
     return {
       title:      data.title,
       docType:    data.doc_type,
@@ -4268,7 +4268,9 @@ export default function Home() {
     opts: { forceResearch?: boolean; suppressResearchRecommendation?: boolean } = {},
   ) {
     const rawText = (overrideText !== undefined ? overrideText : message).trim()
-    const sent = rawText
+    const sent = rawText || (documentIntentOn && pendingFiles.length > 0
+      ? 'Generate a client-ready document from the attached files.'
+      : '')
     if ((!sent && pendingFiles.length === 0) || isBusy) return
     lastSentRef.current = sent
     setLoading(true)
@@ -4367,7 +4369,7 @@ export default function Home() {
 
         setLiveSteps(prev => [...prev, {
           stage:   'routing' as PipelineStage,
-          message: 'Files ready — sending to Fronei…',
+          message: documentIntentOn ? 'Files ready — generating document…' : 'Files ready — sending to Fronei…',
           ts:      Date.now(),
         }])
 
@@ -4393,6 +4395,34 @@ export default function Home() {
     }
 
     try {
+      if (documentIntentOn) {
+        if (!bubblePreCreated) {
+          setMessages(prev => [
+            ...prev,
+            { id: tempAsstId, role: 'assistant' as const, content: '', created_at: new Date().toISOString() },
+          ])
+        }
+        setLiveAssistantId(tempAsstId)
+        setLiveSteps([{
+          stage:   'routing' as PipelineStage,
+          message: 'Generating document…',
+          ts:      Date.now(),
+        }])
+        const generated = await generateDocumentFromPrompt(apiMessage, extractedDocs)
+        setMessages(prev => prev.map(m => m.id === tempAsstId ? {
+          ...m,
+          content: 'Generated a document from your prompt. Preview it or download the .docx when ready.',
+          document_preview: generated,
+          created_at: new Date().toISOString(),
+        } : m))
+        setPreviewDoc(generated)
+        setPendingFiles([])
+        setDocumentIntentOn(false)
+        setLiveSteps([])
+        setLiveAssistantId(null)
+        setLoading(false)
+        return
+      }
 
       const isArtifactRequest = !!artifactType
 
@@ -5245,7 +5275,7 @@ export default function Home() {
 
               {/* Left: + button */}
               <button
-                className={`composer-plus${leftMenuOpen ? ' active' : ''}${(researchOn || webSearchOn || pendingFiles.length > 0) ? ' has-active' : ''}`}
+                className={`composer-plus${leftMenuOpen ? ' active' : ''}${(researchOn || webSearchOn || documentIntentOn || pendingFiles.length > 0) ? ' has-active' : ''}`}
                 onClick={() => setLeftMenuOpen(v => !v)}
                 disabled={isBusy}
                 type="button"
@@ -5321,6 +5351,7 @@ export default function Home() {
                   <i className="ti ti-send" aria-hidden="true" />
                   {isExtracting
                     ? `Extracting${pendingFiles.length > 1 ? ` ${pendingFiles.length} files` : ''}…`
+                    : documentIntentOn ? 'Generate'
                     : loading ? 'Routing…'
                     : streaming ? 'Streaming…'
                     : 'Send'}
@@ -5333,13 +5364,13 @@ export default function Home() {
           {leftMenuOpen && (
             <div className="left-menu-popup">
               <button
-                className="left-menu-item"
+                className={`left-menu-item${pendingFiles.length > 0 ? ' on' : ''}`}
                 type="button"
                 onClick={() => { fileInputRef.current?.click(); setLeftMenuOpen(false) }}
               >
                 <i className="ti ti-paperclip" aria-hidden="true" />
                 <span>Attach files</span>
-                {pendingFiles.length > 0 && <span className="left-menu-count">{pendingFiles.length} pending</span>}
+                <span className="left-menu-status">{pendingFiles.length > 0 ? `${pendingFiles.length} pending` : 'Add'}</span>
               </button>
               <button
                 className={`left-menu-item${researchOn ? ' on' : ''}`}
@@ -5349,6 +5380,15 @@ export default function Home() {
                 <i className="ti ti-microscope" aria-hidden="true" />
                 <span>Research</span>
                 <span className="left-menu-status">{researchOn ? 'On' : 'Off'}</span>
+              </button>
+              <button
+                className={`left-menu-item${documentIntentOn ? ' on' : ''}`}
+                type="button"
+                onClick={() => setDocumentIntentOn(v => !v)}
+              >
+                <i className="ti ti-file-text" aria-hidden="true" />
+                <span>Document</span>
+                <span className="left-menu-status">{documentIntentOn ? 'On' : 'Off'}</span>
               </button>
             </div>
           )}

@@ -64,6 +64,11 @@ class DocumentGenerateFromPromptRequest(BaseModel):
     output_formats: list[str] = Field(default_factory=list)
     profile: Profile | None = None
     force_model: str | None = None
+    deep_research: bool = False
+    research_mode: ResearchMode = "quick"
+    allow_research_recommendation: bool = True
+    web_search: bool = False
+    allow_web_search_recommendation: bool = True
     attached_documents: list[AttachedDocument] = Field(default_factory=list)
 
 

@@ -4038,6 +4038,89 @@ pre:hover .code-copy-btn { opacity: 1; }
   line-height: 1.4;
 }
 
+.doc-rec-factors {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+
+.doc-rec-factors span {
+  padding: 5px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--bd);
+  background: var(--bg-s2);
+  color: var(--t2);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.doc-plan-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.doc-plan-section-title {
+  font-size: 12px;
+  font-weight: 750;
+  color: var(--t2);
+}
+
+.doc-plan-option {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px 12px;
+  width: 100%;
+  padding: 11px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--bd);
+  background: var(--bg-input);
+  color: var(--t2);
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.doc-plan-option.active,
+.doc-plan-option.recommended {
+  border-color: var(--ac-bd);
+  background: var(--ac-bg);
+}
+
+.doc-plan-option-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.doc-plan-option-main em {
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--bg-s2);
+  color: var(--ac-text);
+  font-size: 10px;
+  font-style: normal;
+  text-transform: uppercase;
+}
+
+.doc-plan-option-status {
+  color: var(--t3);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.doc-plan-option-reason {
+  grid-column: 1 / -1;
+  color: var(--t3);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
 .doc-brief-footer {
   justify-content: flex-end;
   border-top: 1px solid var(--bd);

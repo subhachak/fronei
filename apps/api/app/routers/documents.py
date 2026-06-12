@@ -31,8 +31,12 @@ from app.services.document_extractor import (
 )
 from app.services.document_generator import generate_docx_bytes
 from app.services.llm_gateway import invoke_llm
-from app.services.rate_limit import rate_limiter
+from app.services.personal_context import build_context
+from app.services.planner import run_planner
+from app.services.rate_limit import check_rate_limit, rate_limiter
+from app.services.research_orchestrator import run_research
 from app.services.router import choose_route
+from app.services.web_context import gather_web_context
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 MAX_UPLOAD_BYTES = 30 * 1024 * 1024   # 30 MB
@@ -59,6 +63,7 @@ Rules:
 - Make assumptions explicit when the prompt is underspecified.
 - Keep the document coherent enough to paste directly into a Word document.
 - Do not invent precise facts, metrics, dates, legal claims, or citations not supplied by the user.
+- If source-grounded research or web context is provided, use it as source material and preserve useful citations.
 """
 DOC_TYPE_PROMPTS = {
     "executive_report": """Document type: executive_report
@@ -239,19 +244,102 @@ def generate_docx_from_prompt(
 
         doc_context = _build_doc_context(req.attached_documents)
         doc_type = req.doc_type if req.doc_type in DOC_TYPES else _classify_doc_type(req.prompt)
+        user_memory = build_context(db, user_id)
+        plan = run_planner(
+            req.prompt,
+            [],
+            settings.planner_model,
+            user_memory=user_memory,
+            doc_context=doc_context,
+        )
+        planner_recommends_research = (
+            plan.recommend_deep_research
+            and plan.research_confidence == "high"
+        )
+        planner_recommends_web = bool(plan.needs_web_search)
+        recommended_plan: dict = {}
+        if planner_recommends_research and req.allow_research_recommendation and not req.deep_research:
+            recommended_plan["deep_research"] = {
+                "reason": plan.research_reason or "This document would likely be stronger with source-grounded research.",
+                "risk_factors": plan.research_risk_factors,
+                "confidence": plan.research_confidence,
+                "suggested_mode": "deep",
+            }
+        if (
+            planner_recommends_web
+            and req.allow_web_search_recommendation
+            and not req.web_search
+            and not req.deep_research
+        ):
+            recommended_plan["web_search"] = {
+                "reason": "This document may need current or external source context.",
+                "search_query": plan.search_query or req.prompt,
+                "confidence": "high" if plan.research_confidence == "high" else "medium",
+            }
+        if recommended_plan:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "document_plan_recommended",
+                    "recommendations": recommended_plan,
+                },
+            )
+        use_deep_research = bool(req.deep_research)
+        use_web = (not use_deep_research) and bool(req.web_search)
+        research_cost = 0.0
+        research_latency_ms = 0
+        if use_deep_research:
+            if not is_admin:
+                check_rate_limit(f"research:{user_id}", settings.rate_limit_research_per_hour, 3600)
+            research = run_research(
+                db,
+                user_id=user_id,
+                conversation_id=None,
+                query=plan.enriched_prompt or req.prompt,
+                profile=req.profile,
+                force_model=req.force_model,
+                mode=req.research_mode if req.research_mode != "quick" else "deep",
+                progress=lambda *_args, **_kwargs: None,
+            )
+            research_cost = research.result.estimated_cost_usd or 0.0
+            research_latency_ms = research.result.latency_ms
+            research_context = (
+                "SOURCE-GROUNDED RESEARCH SYNTHESIS FOR THIS DOCUMENT:\n\n"
+                f"{research.result.answer}"
+            )
+            doc_context = "\n\n".join(part for part in [doc_context, research_context] if part)
+
+        web_context = gather_web_context(plan.search_query or req.prompt, use_web)
         route = choose_route(
             req.prompt,
             req.profile,
             req.force_model,
             task_override="writing",
             complexity_override="high",
+            web_search=use_web,
         )
+        if plan.planner_model != "none":
+            route.reason = f"[planner:{plan.planner_model} {plan.planner_latency_ms}ms] {route.reason}"
+        if use_web:
+            route.reason = f"{route.reason} {web_context.status}"
+        if use_deep_research:
+            route.reason = f"{route.reason} Deep research synthesis used as source material."
         result = invoke_llm(
-            req.prompt,
+            plan.enriched_prompt or req.prompt,
             route,
+            deep_research=False,
+            web_context=web_context.context,
+            enable_native_search=use_web,
+            planner_context=plan.context_summary or None,
             doc_context=doc_context or None,
             artifact_context=_document_system_prompt(doc_type, req),
         )
+        result.estimated_cost_usd = (
+            (result.estimated_cost_usd or 0.0)
+            + plan.planner_cost_usd
+            + research_cost
+        )
+        result.latency_ms = result.latency_ms + plan.planner_latency_ms + research_latency_ms
         title = req.title or _title_from_markdown(result.answer) or "Fronei document"
         content = generate_docx_bytes(title, result.answer, "Generated by Fronei", doc_type=doc_type)
         db.add(RequestLog(

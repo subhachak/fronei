@@ -411,6 +411,15 @@ body {
   flex: 1;
   min-width: 0;
   overflow: hidden;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.nav-logo:hover {
+  opacity: 0.86;
 }
 
 .logo-mark {

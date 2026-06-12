@@ -180,10 +180,16 @@ export default function Sidebar({
 
       {/* Logo row */}
       <div className="nav-top">
-        <div className="nav-logo">
+        <button
+          className="nav-logo"
+          type="button"
+          onClick={onNewConversation}
+          title="Go to new chat"
+          aria-label="Go to new chat"
+        >
           <img src="/fronei-logo-wide.png" alt="Fronei" className="nav-logo-img" />
           <img src="/fronei-icon.svg" alt="Fronei" className="nav-logo-img-collapsed" />
-        </div>
+        </button>
         <button
           className="sidebar-toggle-btn"
           onClick={() => setSidebarCollapsed(v => !v)}

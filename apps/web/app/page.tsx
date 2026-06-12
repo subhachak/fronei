@@ -3017,6 +3017,35 @@ function ArtifactTicker({ artifactType }: { artifactType: ArtifactType | null })
   )
 }
 
+type PlanStepGroup = 'planning' | 'routing' | 'working' | 'refining'
+
+// Every raw SSE pipeline stage maps onto one of the four top-level "plan
+// steps" shown in the running commentary. Stages within the same group are
+// rendered as a rolling list of sub-steps under that group's parent row.
+const PLAN_STEP_GROUP: Record<PipelineStage, PlanStepGroup> = {
+  planning: 'planning',
+  routing: 'routing',
+  working: 'working',
+  sub_complete: 'working',
+  searching: 'working',
+  reading: 'working',
+  extracting: 'working',
+  checking: 'working',
+  verifying: 'working',
+  synthesising: 'working',
+  refining: 'refining',
+  complete: 'refining',
+}
+
+const PLAN_STEP_LABELS: Record<PlanStepGroup, string> = {
+  planning: 'Analysing your request',
+  routing: 'Planning the approach',
+  working: 'Researching & working',
+  refining: 'Refining the response',
+}
+
+const PLAN_STEP_ORDER: PlanStepGroup[] = ['planning', 'routing', 'working', 'refining']
+
 function PipelineLog({
   steps,
   startTs,
@@ -3028,95 +3057,120 @@ function PipelineLog({
   sourceText: string
   subCompletions?: Map<number, PipelineStep>
 }) {
-  const stage_icons: Record<string, string> = {
-    planning: 'ti-brain',
-    routing: 'ti-git-branch',
-    working: 'ti-adjustments-horizontal',
-    synthesising: 'ti-layers-union',
-    refining: 'ti-sparkles',
-    searching: 'ti-world-search',
-    reading: 'ti-file-search',
-    extracting: 'ti-filter',
-    checking: 'ti-shield-check',
-    verifying: 'ti-rosette-discount-check',
-    complete: 'ti-checks',
+  const grouped: Record<PlanStepGroup, PipelineStep[]> = {
+    planning: [], routing: [], working: [], refining: [],
   }
+  for (const step of steps) {
+    grouped[PLAN_STEP_GROUP[step.stage] ?? 'working'].push(step)
+  }
+  const lastStep = steps[steps.length - 1]
+  const activeGroup: PlanStepGroup = lastStep ? (PLAN_STEP_GROUP[lastStep.stage] ?? 'working') : 'planning'
 
   return (
     <div className="pipeline-log">
-      {steps.map((step, i) => {
-        const isLast = i === steps.length - 1
-        const icon = stage_icons[step.stage] ?? 'ti-point'
+      {PLAN_STEP_ORDER.map(group => {
+        const groupSteps = grouped[group]
+        const isActive = group === activeGroup
+        const isPending = groupSteps.length === 0
+        const status = isPending ? 'pending' : isActive ? 'active' : 'done'
+        const lastInGroup = groupSteps[groupSteps.length - 1]
+
         return (
-          <div key={i} className={`pl-step${isLast ? ' pl-step-active' : ' pl-step-done'}`}>
+          <div key={group} className={`pl-step pl-step-${status}`}>
             <div className="pl-dot">
-              <i className={`ti ${icon}`} aria-hidden="true" />
+              {status === 'done' && <i className="ti ti-check" aria-hidden="true" />}
+              {status === 'active' && <span className="pl-sq-spinner" />}
+              {status === 'pending' && <i className="ti ti-point" aria-hidden="true" />}
             </div>
             <div className="pl-body">
               <div className="pl-row">
-                <span className="pl-message">{step.message}</span>
-                {!isLast && (
-                  <span className="pl-elapsed">{elapsed(step.ts)}</span>
+                <span className="pl-message">{PLAN_STEP_LABELS[group]}</span>
+                {status === 'done' && lastInGroup && (
+                  <span className="pl-elapsed">{elapsed(lastInGroup.ts)}</span>
                 )}
-                {isLast && (
-                  <span className="pl-elapsed pl-elapsed-live">
-                    {elapsed(startTs)}
-                  </span>
+                {status === 'active' && (
+                  <span className="pl-elapsed pl-elapsed-live">{elapsed(startTs)}</span>
+                )}
+                {status === 'pending' && (
+                  <span className="pl-pending-label">Not started yet</span>
                 )}
               </div>
 
-              {step.stage === 'routing' && step.sub_queries && step.sub_queries.length > 0 && (
-                <div className="pl-subqueries">
-                  {step.sub_queries.map((sq, j) => (
-                    <div key={j} className="pl-sq">
-                      <span className="pl-sq-num">{j + 1}</span>
-                      <span className="pl-sq-text">{sq.query}</span>
-                      {sq.task_type && <span className="pl-sq-tag">{sq.task_type}</span>}
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {step.stage === 'working' && step.queries && step.queries.length > 0 && (
-                <div className="pl-subqueries pl-subqueries-parallel">
-                  {step.queries.map((query, j) => {
-                    const done = subCompletions.get(j)
-                    const p = done?.model ? getProvider(done.model) : null
+              {groupSteps.length > 0 && (
+                <div className="pl-substeps">
+                  {groupSteps.map((step, j) => {
+                    const isCurrent = isActive && j === groupSteps.length - 1
                     return (
-                      <div
-                        key={j}
-                        className={`pl-sq-parallel${done ? ' pl-sq-parallel-done' : ' pl-sq-parallel-running'}`}
-                      >
-                        <span className="pl-sq-parallel-status">
-                          {done
-                            ? <i className="ti ti-check" aria-hidden="true" />
-                            : <span className="pl-sq-spinner" />}
+                      <div key={j} className={`pl-substep${isCurrent ? ' pl-substep-active' : ' pl-substep-done'}`}>
+                        <span className="pl-substep-status">
+                          {isCurrent
+                            ? <span className="pl-sq-spinner" />
+                            : <i className="ti ti-check" aria-hidden="true" />}
                         </span>
-                        <span className="pl-sq-parallel-text">{query}</span>
-                        {done && (
-                          <span className="pl-sq-parallel-meta">
-                            {p && (
-                              <span style={{ color: p.color, fontSize: 10 }}>{p.name}</span>
-                            )}
-                            <span>{((done.latency_ms ?? 0) / 1000).toFixed(1)}s</span>
-                            {done.cost_usd != null && (
-                              <span>${done.cost_usd.toFixed(5)}</span>
-                            )}
-                          </span>
-                        )}
+                        <span className="pl-substep-text">{step.message}</span>
                       </div>
+
                     )
                   })}
                 </div>
+              )}
+
+              {groupSteps.map((step, j) => (
+                <div key={`detail-${j}`}>
+                  {step.stage === 'routing' && step.sub_queries && step.sub_queries.length > 0 && (
+                    <div className="pl-subqueries">
+                      {step.sub_queries.map((sq, k) => (
+                        <div key={k} className="pl-sq">
+                          <span className="pl-sq-num">{k + 1}</span>
+                          <span className="pl-sq-text">{sq.query}</span>
+                          {sq.task_type && <span className="pl-sq-tag">{sq.task_type}</span>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {step.stage === 'working' && step.queries && step.queries.length > 0 && (
+                    <div className="pl-subqueries pl-subqueries-parallel">
+                      {step.queries.map((query, k) => {
+                        const done = subCompletions.get(k)
+                        const p = done?.model ? getProvider(done.model) : null
+                        return (
+                          <div
+                            key={k}
+                            className={`pl-sq-parallel${done ? ' pl-sq-parallel-done' : ' pl-sq-parallel-running'}`}
+                          >
+                            <span className="pl-sq-parallel-status">
+                              {done
+                                ? <i className="ti ti-check" aria-hidden="true" />
+                                : <span className="pl-sq-spinner" />}
+                            </span>
+                            <span className="pl-sq-parallel-text">{query}</span>
+                            {done && (
+                              <span className="pl-sq-parallel-meta">
+                                {p && (
+                                  <span style={{ color: p.color, fontSize: 10 }}>{p.name}</span>
+                                )}
+                                <span>{((done.latency_ms ?? 0) / 1000).toFixed(1)}s</span>
+                                {done.cost_usd != null && (
+                                  <span>${done.cost_usd.toFixed(5)}</span>
+                                )}
+                              </span>
+                            )}
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
+              ))}
+
+              {isActive && group === 'planning' && (
+                <ThinkingTicker sourceText={sourceText} />
               )}
             </div>
           </div>
         )
       })}
-
-      {steps.length > 0 && steps[steps.length - 1].stage === 'planning' && (
-        <ThinkingTicker sourceText={sourceText} />
-      )}
 
       <div className="pl-working">
         <div className="typing-dot" style={{ padding: 0 }}>

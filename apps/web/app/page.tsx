@@ -29,7 +29,6 @@ type OutputMode =
   | 'email' | 'proposal' | 'architecture' | 'pushback'
 type ResearchMode = 'quick' | 'deep' | 'expert'
 type Quality = 'quick' | 'smart' | 'thorough'
-type UiMode = 'classic' | 'workbench'
 type Range = '1d' | '7d' | '30d' | 'all'
 type ArtifactType = 'adr' | 'solution_comparison' | 'trade_off_matrix' | 'exec_brief' | 'risk_register' | 'nfr_analysis' | 'steering_update'
 type PersonaId = 'enterprise_architect' | 'product_manager' | 'software_engineer' | 'data_scientist' | 'custom'
@@ -3501,7 +3500,6 @@ export default function Home() {
   const [isAdmin, setIsAdmin]                 = useState(false)
   const [accountStatus, setAccountStatus]     = useState<string | null>(null)
   const [accountStatusLoaded, setAccountStatusLoaded] = useState(false)
-  const [uiMode, setUiMode]                   = useState<UiMode>('classic')
   const [theme, setThemeState]                = useState<'dark' | 'light'>('dark')
   const [accentTheme, setAccentThemeState]    = useState<AccentTheme>('default')
   const rightPanelWidthRef = useRef(300)
@@ -3588,13 +3586,17 @@ export default function Home() {
     const initialParams = new URLSearchParams(window.location.search)
     const initialView = initialParams.get('view')
     const initialSettings = initialParams.get('settings')
-    const shouldAutoLoadConversation = initialView !== 'dashboard' && initialSettings !== '1'
+    const initialConvId = initialParams.get('c')
+    const shouldAutoLoadConversation = initialView !== 'dashboard' && initialSettings !== '1' && !!initialConvId
 
     apiFetch('/conversations')
       .then(r => r.ok ? r.json() : [])
       .then((list: ConversationSummary[]) => {
         setConversations(list)
-        if (shouldAutoLoadConversation && list.length > 0) loadConversation(list[0].id)
+        if (shouldAutoLoadConversation) {
+          const id = parseInt(initialConvId as string, 10)
+          if (!Number.isNaN(id) && list.some(c => c.id === id)) loadConversation(id)
+        }
       }).catch(() => {})
 
     apiFetch('/models/policy')
@@ -3634,8 +3636,6 @@ export default function Home() {
       if (sa) { try { setVisibleArtifacts(JSON.parse(sa)) } catch {} }
       const sw = localStorage.getItem('md-show-web-search')
       if (sw) setShowWebSearch(sw === '1')
-      const su = localStorage.getItem('fronei-ui-mode') as UiMode | null
-      if (su === 'classic' || su === 'workbench') setUiMode(su)
       const st = localStorage.getItem('md-theme') as 'dark' | 'light' | null
       if (st === 'dark' || st === 'light') setThemeState(st)
       const sac = localStorage.getItem('md-accent') as AccentTheme | null
@@ -3845,10 +3845,6 @@ export default function Home() {
     try { localStorage.setItem('md-visible-artifacts', JSON.stringify(visibleArtifacts)) } catch {}
   }, [visibleArtifacts])
 
-  useEffect(() => {
-    try { localStorage.setItem('fronei-ui-mode', uiMode) } catch {}
-  }, [uiMode])
-
   function selectPersona(id: PersonaId) {
     setPersona(id)
     if (id !== 'custom') {
@@ -3891,10 +3887,21 @@ export default function Home() {
 
   // ── Data actions ──────────────────────────────────────────────────────────
 
+  function setConvUrlParam(id: number | null) {
+    try {
+      const url = new URL(window.location.href)
+      if (id != null) url.searchParams.set('c', String(id))
+      else url.searchParams.delete('c')
+      const qs = url.searchParams.toString()
+      window.history.replaceState({}, '', url.pathname + (qs ? `?${qs}` : ''))
+    } catch {}
+  }
+
   async function loadConversation(id: number) {
     setMobileNavOpen(false)
     setSettingsViewOpen(false)
     setActiveConvId(id)
+    setConvUrlParam(id)
     setMessages([])
     setExecPanelData(null)
     setPendingFiles([])
@@ -3913,6 +3920,7 @@ export default function Home() {
     setMobileNavOpen(false)
     setSettingsViewOpen(false)
     setActiveConvId(null)
+    setConvUrlParam(null)
     setMessages([])
     setExecPanelData(null)
     setMessage('')
@@ -4439,6 +4447,7 @@ export default function Home() {
           if (eventType === 'start') {
             startConvId = data.conversation_id as number
             setActiveConvId(startConvId)
+            setConvUrlParam(startConvId)
             if (!bubblePreCreated) {
               setLiveAssistantId(tempAsstId)
               setMessages(prev => [...prev, { id: tempAsstId, role: 'assistant' as const, content: '', created_at: new Date().toISOString() }])
@@ -4706,7 +4715,7 @@ export default function Home() {
       />
 
       {/* ── Main area ── */}
-      <div className={`main-area${uiMode === 'workbench' ? ' workbench-ui' : ''}`}>
+      <div className="main-area workbench-ui">
 
         {settingsViewOpen ? (
           <SettingsView
@@ -4763,22 +4772,6 @@ export default function Home() {
             {activeConv ? activeConv.title : 'New chat with Fronei'}
           </span>
           <div className="topbar-controls">
-            <div className="ui-mode-toggle" role="group" aria-label="UI mode">
-              <button
-                className={uiMode === 'classic' ? 'active' : ''}
-                onClick={() => setUiMode('classic')}
-                type="button"
-              >
-                Classic
-              </button>
-              <button
-                className={uiMode === 'workbench' ? 'active' : ''}
-                onClick={() => setUiMode('workbench')}
-                type="button"
-              >
-                Workbench
-              </button>
-            </div>
             <div className="topbar-chip">
               <i className="ti ti-adjustments-horizontal" />
               {researchOn ? 'Research' : quality === 'quick' ? 'Quick' : quality === 'thorough' ? 'Thorough' : 'Smart'}
@@ -4813,47 +4806,31 @@ export default function Home() {
             onDrop={e => { e.preventDefault(); setDragOver(false); addFiles(e.dataTransfer.files) }}
           >
             {messages.length === 0 && !loading ? (
-              uiMode === 'workbench' ? (
-                <div className="workbench-home">
-                  <div className="workbench-kicker">{workbench.kicker}</div>
-                  <h1>{userName ? `${workbench.headline.replace(/\?$/, '')}, ${userName.split(' ')[0]}?` : workbench.headline}</h1>
-                  <p className="workbench-subhead">{workbench.subhead}</p>
-                  <div className="workbench-mode-grid">
-                    {workbench.actions.map(action => (
-                      <button
-                        key={action.title}
-                        className="workbench-mode-card"
-                        type="button"
-                        onClick={() => { setMessage(action.prompt); taRef.current?.focus() }}
-                      >
-                        <i className={`ti ${action.icon}`} aria-hidden="true" />
-                        <strong>{action.title}</strong>
-                        <span>{action.desc}</span>
-                      </button>
-                    ))}
-                  </div>
-                  <div className="workbench-rail">
-                    <div><span>Role</span><strong>{workbench.railLabel}</strong></div>
-                    <div><span>Mode</span><strong>{researchOn ? 'Research' : quality}</strong></div>
-                    <div><span>Voice</span><strong>{hasProfile ? 'Active' : 'Not trained'}</strong></div>
-                    <div><span>Artifacts</span><strong>{visibleArtifacts.length}</strong></div>
-                  </div>
+              <div className="workbench-home">
+                <div className="workbench-kicker">{workbench.kicker}</div>
+                <h1>{userName ? `${workbench.headline.replace(/\?$/, '')}, ${userName.split(' ')[0]}?` : workbench.headline}</h1>
+                <p className="workbench-subhead">{workbench.subhead}</p>
+                <div className="workbench-mode-grid">
+                  {workbench.actions.map(action => (
+                    <button
+                      key={action.title}
+                      className="workbench-mode-card"
+                      type="button"
+                      onClick={() => { setMessage(action.prompt); taRef.current?.focus() }}
+                    >
+                      <i className={`ti ${action.icon}`} aria-hidden="true" />
+                      <strong>{action.title}</strong>
+                      <span>{action.desc}</span>
+                    </button>
+                  ))}
                 </div>
-              ) : (
-                <div className="empty-state">
-                  <img src="/fronei-logo.png" alt="Fronei" className="empty-logo-full" />
-                  <p className="empty-headline">
-                    {userName
-                      ? `What can I help you with today, ${userName.split(' ')[0]}?`
-                      : 'What can I help you with today?'}
-                  </p>
-                  <p className="empty-sub">
-                    {visibleArtifacts.length > 0
-                      ? <>Use the <i className="ti ti-layout-grid" style={{ fontSize: 13, verticalAlign: -1 }} aria-hidden="true" /> button to generate a structured artifact.</>
-                      : 'Just start typing below.'}
-                  </p>
+                <div className="workbench-rail">
+                  <div><span>Role</span><strong>{workbench.railLabel}</strong></div>
+                  <div><span>Mode</span><strong>{researchOn ? 'Research' : quality}</strong></div>
+                  <div><span>Voice</span><strong>{hasProfile ? 'Active' : 'Not trained'}</strong></div>
+                  <div><span>Artifacts</span><strong>{visibleArtifacts.length}</strong></div>
                 </div>
-              )
+              </div>
             ) : (
               <>
                 {messages.map((m, i) => {
@@ -4992,15 +4969,24 @@ export default function Home() {
                         </div>
                         <div className="doc-generated-body">
                           <div className="doc-generated-title">Document generated</div>
-                          <div className="doc-generated-sub">{m.document_preview.title}.docx</div>
                         </div>
                         <button
-                          className="send-btn doc-generated-cta"
+                          className="doc-generated-icon-btn"
                           type="button"
                           onClick={() => setPreviewDoc(m.document_preview!)}
+                          title="Preview document"
+                          aria-label="Preview document"
                         >
                           <i className="ti ti-eye" aria-hidden="true" />
-                          Open document
+                        </button>
+                        <button
+                          className="doc-generated-icon-btn doc-generated-download"
+                          type="button"
+                          onClick={() => downloadBlob(base64ToBlob(m.document_preview!.docxBase64, DOCX_MIME), m.document_preview!.filename)}
+                          title="Download .docx"
+                          aria-label="Download document"
+                        >
+                          <i className="ti ti-file-download" aria-hidden="true" />
                         </button>
                       </div>
                     )}

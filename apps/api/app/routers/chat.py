@@ -12,6 +12,7 @@ from app.db.models import (
     is_user_suspended,
 )
 from app.schemas import ChatRequest, ChatResponse
+from app.services.budget_guard import enforce_global_monthly_budget
 from app.services.llm_gateway import invoke_llm
 from app.services.chat_pipeline import _build_doc_context
 from app.services.planner import run_planner
@@ -33,6 +34,7 @@ def chat(req: ChatRequest, user_id: str = CurrentUser, is_admin: bool = CurrentU
             raise HTTPException(status_code=403, detail="This account is suspended.")
         if is_user_pending(db, user_id):
             raise HTTPException(status_code=403, detail="Your account is pending admin approval.")
+        enforce_global_monthly_budget(db, is_admin)
         if req.deep_research and not is_admin:
             check_rate_limit(f"research:{user_id}", settings.rate_limit_research_per_hour, 3600)
         if not is_admin:

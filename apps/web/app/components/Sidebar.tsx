@@ -10,7 +10,7 @@ export type ConversationSummary = {
 }
 
 interface SidebarProps {
-  activePage: 'chat' | 'dashboard' | 'admin'
+  activePage: 'chat' | 'admin'
   conversations?: ConversationSummary[]
   activeConvId?: number | null
   onLoadConversation?: (id: number) => void
@@ -26,7 +26,6 @@ interface SidebarProps {
   onEditingTitleChange?: (v: string) => void
   onStartEdit?: (id: number, currentTitle: string) => void
   onCancelEdit?: () => void
-  onOpenDashboard?: () => void
   onOpenSettings?: () => void
   settingsActive?: boolean
 }
@@ -48,7 +47,6 @@ export default function Sidebar({
   onEditingTitleChange,
   onStartEdit,
   onCancelEdit,
-  onOpenDashboard,
   onOpenSettings,
   settingsActive = false,
 }: SidebarProps) {
@@ -328,33 +326,6 @@ export default function Sidebar({
             </>
           )}
         </div>
-      </div>
-
-      <div className="nav-divider" />
-
-      {/* Dashboard link */}
-      <div className="nav-links" style={{ flexShrink: 0 }}>
-        {onOpenDashboard ? (
-          <button
-            type="button"
-            className={`nav-link${activePage === 'dashboard' ? ' active' : ''}`}
-            onClick={onOpenDashboard}
-            aria-current={activePage === 'dashboard' ? 'page' : undefined}
-          >
-            <i className="ti ti-chart-bar" aria-hidden="true" />
-            <span>Dashboard</span>
-          </button>
-        ) : activePage === 'chat' ? (
-          <Link href="/dashboard" className="nav-link">
-            <i className="ti ti-chart-bar" aria-hidden="true" />
-            <span>Dashboard</span>
-          </Link>
-        ) : (
-          <Link href="/dashboard" className="nav-link active" aria-current="page">
-            <i className="ti ti-chart-bar" aria-hidden="true" />
-            <span>Dashboard</span>
-          </Link>
-        )}
       </div>
 
       <div className="nav-divider" />

@@ -29,6 +29,7 @@ from app.services.research_orchestrator import (
 from app.services.research_metadata import research_meta_for_run_id
 from app.services import memory_extractor, memory_writer
 from app.services.personal_context import build_context
+from app.services.budget_guard import enforce_global_monthly_budget
 from app.services.chat_pipeline import (
     PipelineSetup, PipelineResult, SubQueryExecution,
     run_pipeline, build_exec_log, build_pipeline_setup,
@@ -346,6 +347,7 @@ def chat(req: ConvChatRequest, user_id: str = CurrentUser, is_admin: bool = Curr
             raise HTTPException(status_code=403, detail="This account is suspended.")
         if is_user_pending(db, user_id):
             raise HTTPException(status_code=403, detail="Your account is pending admin approval.")
+        enforce_global_monthly_budget(db, is_admin)
         if req.deep_research and not is_admin:
             check_rate_limit(f"research:{user_id}", settings.rate_limit_research_per_hour, 3600)
         if not is_admin:
@@ -471,6 +473,9 @@ def chat_stream(req: ConvChatRequest, user_id: str = CurrentUser, is_admin: bool
 
             if is_user_suspended(db, user_id):
                 raise HTTPException(status_code=403, detail="This account is suspended.")
+            if is_user_pending(db, user_id):
+                raise HTTPException(status_code=403, detail="Your account is pending admin approval.")
+            enforce_global_monthly_budget(db, is_admin)
             if req.deep_research and not is_admin:
                 check_rate_limit(f"research:{user_id}", settings.rate_limit_research_per_hour, 3600)
             if not is_admin:

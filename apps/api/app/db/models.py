@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, date, timezone
 from sqlalchemy import Boolean, create_engine, DateTime, Float, ForeignKey, Integer, String, Text, event, func, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
@@ -66,6 +67,16 @@ class AdminAuditLog(Base):
     target_user_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     details_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class AdminSetting(Base):
+    __tablename__ = "admin_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    key: Mapped[str] = mapped_column(String(128), unique=True, nullable=False, index=True)
+    value_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
 class Conversation(Base):
@@ -398,6 +409,15 @@ def _ensure_sqlite_schema(bind) -> None:
                 created_at DATETIME NOT NULL
             )
         """,
+        "admin_settings": """
+            CREATE TABLE admin_settings (
+                id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                key VARCHAR(128) NOT NULL,
+                value_json TEXT DEFAULT '{}',
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL
+            )
+        """,
     }
     for table, statement in admin_table_sql.items():
         if not has_table(table):
@@ -412,6 +432,8 @@ def _ensure_sqlite_schema(bind) -> None:
     if has_table("admin_audit_logs"):
         statements.append("CREATE INDEX IF NOT EXISTS ix_admin_audit_logs_admin_user_id ON admin_audit_logs (admin_user_id)")
         statements.append("CREATE INDEX IF NOT EXISTS ix_admin_audit_logs_target_user_id ON admin_audit_logs (target_user_id)")
+    if has_table("admin_settings"):
+        statements.append("CREATE UNIQUE INDEX IF NOT EXISTS ix_admin_settings_key ON admin_settings (key)")
 
     if has_table("conversation_messages") and not has_column("conversation_messages", "execution_log_json"):
         statements.append("ALTER TABLE conversation_messages ADD COLUMN execution_log_json TEXT")
@@ -562,6 +584,69 @@ def get_effective_monthly_budget(db, user_id: str) -> float:
     if control and control.monthly_budget_usd is not None:
         return float(control.monthly_budget_usd)
     return settings.monthly_budget_usd
+
+
+GLOBAL_BUDGET_SETTING_KEY = "global_budget"
+
+
+def get_admin_setting(db, key: str) -> dict:
+    row = db.query(AdminSetting).filter(AdminSetting.key == key).first()
+    if not row or not row.value_json:
+        return {}
+    try:
+        data = json.loads(row.value_json)
+        return data if isinstance(data, dict) else {}
+    except json.JSONDecodeError:
+        return {}
+
+
+def set_admin_setting(db, key: str, value: dict) -> AdminSetting:
+    now = datetime.now(timezone.utc)
+    row = db.query(AdminSetting).filter(AdminSetting.key == key).first()
+    if not row:
+        row = AdminSetting(key=key, created_at=now, updated_at=now)
+        db.add(row)
+    row.value_json = json.dumps(value)
+    row.updated_at = now
+    return row
+
+
+def get_global_budget_config(db) -> dict:
+    raw = get_admin_setting(db, GLOBAL_BUDGET_SETTING_KEY)
+    cap = raw.get("monthly_budget_usd")
+    try:
+        cap = float(cap) if cap is not None else None
+    except (TypeError, ValueError):
+        cap = None
+    return {
+        "monthly_budget_usd": cap if cap is not None and cap >= 0 else None,
+        "admin_override_enabled": bool(raw.get("admin_override_enabled", True)),
+    }
+
+
+def set_global_budget_config(db, monthly_budget_usd: float | None, admin_override_enabled: bool) -> AdminSetting:
+    return set_admin_setting(db, GLOBAL_BUDGET_SETTING_KEY, {
+        "monthly_budget_usd": monthly_budget_usd,
+        "admin_override_enabled": admin_override_enabled,
+    })
+
+
+def get_global_monthly_spend(db) -> float:
+    month_start = datetime.combine(date.today().replace(day=1), datetime.min.time()).replace(tzinfo=timezone.utc)
+    msg_spend = (
+        db.query(func.sum(ConversationMessage.estimated_cost_usd))
+        .join(Conversation, ConversationMessage.conversation_id == Conversation.id)
+        .filter(ConversationMessage.role == "assistant")
+        .filter(ConversationMessage.created_at >= month_start)
+        .scalar() or 0.0
+    )
+    log_spend = (
+        db.query(func.sum(RequestLog.estimated_cost_usd))
+        .filter(RequestLog.status == "success")
+        .filter(RequestLog.created_at >= month_start)
+        .scalar() or 0.0
+    )
+    return float(msg_spend) + float(log_spend)
 
 
 def get_monthly_spend(db, user_id: str) -> float:

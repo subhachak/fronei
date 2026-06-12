@@ -30,7 +30,6 @@ type OutputMode =
 type ResearchMode = 'quick' | 'deep' | 'expert'
 type Quality = 'quick' | 'smart' | 'thorough'
 type UiMode = 'classic' | 'workbench'
-type AppView = 'chat' | 'dashboard'
 type Range = '1d' | '7d' | '30d' | 'all'
 type ArtifactType = 'adr' | 'solution_comparison' | 'trade_off_matrix' | 'exec_brief' | 'risk_register' | 'nfr_analysis' | 'steering_update'
 type PersonaId = 'enterprise_architect' | 'product_manager' | 'software_engineer' | 'data_scientist' | 'custom'
@@ -1226,7 +1225,7 @@ function AssistantContent({ message }: { message: MessageOut }) {
   )
 }
 
-type SettingsTab = 'general' | 'guide' | 'voice' | 'memory' | 'workspace' | 'models' | 'account' | 'admin'
+type SettingsTab = 'general' | 'dashboard' | 'guide' | 'voice' | 'memory' | 'workspace' | 'models' | 'account' | 'admin'
 type UserGuidePageId = 'start' | 'chat' | 'modes' | 'workbench' | 'research' | 'documents' | 'memory' | 'shortcuts' | 'settings' | 'api' | 'tips'
 
 const USER_GUIDE_PAGES: {
@@ -1694,6 +1693,7 @@ function SettingsView({
 
   const nav: { id: SettingsTab; label: string; icon: string }[] = [
     { id: 'general',   label: 'General',   icon: 'ti-settings' },
+    { id: 'dashboard', label: 'Dashboard', icon: 'ti-chart-bar' },
     { id: 'guide',     label: 'Guide',     icon: 'ti-book' },
     { id: 'voice',     label: 'My voice',  icon: 'ti-sparkles' },
     { id: 'memory',    label: 'Memory',    icon: 'ti-brain' },
@@ -1803,6 +1803,10 @@ function SettingsView({
                 </div>
               </article>
             </div>
+          )}
+
+          {tab === 'dashboard' && (
+            <DashboardView apiFetch={apiFetch} embedded isAdmin={isAdmin} />
           )}
 
           {tab === 'voice' && (
@@ -2209,11 +2213,18 @@ function PipelineLog({
 
 function DashboardView({
   apiFetch,
+  embedded = false,
+  isAdmin = false,
 }: {
   apiFetch: (path: string, options?: RequestInit) => Promise<Response>
+  embedded?: boolean
+  isAdmin?: boolean
 }) {
   const [range, setRange] = useState<Range>('7d')
   const [data, setData] = useState<AnalyticsData | null>(null)
+  const [ops, setOps] = useState<any>(null)
+  const [budgetInput, setBudgetInput] = useState('')
+  const [adminOverrideEnabled, setAdminOverrideEnabled] = useState(true)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
@@ -2234,18 +2245,51 @@ function DashboardView({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [range])
 
+  useEffect(() => {
+    if (!isAdmin) return
+    let cancelled = false
+    apiFetch('/admin/ops-summary')
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        if (cancelled || !d) return
+        setOps(d)
+        setBudgetInput(d.budget?.monthly_budget_usd == null ? '' : String(d.budget.monthly_budget_usd))
+        setAdminOverrideEnabled(Boolean(d.budget?.admin_override_enabled))
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAdmin])
+
+  async function saveGlobalBudget() {
+    const amount = budgetInput.trim() ? Number(budgetInput) : null
+    const res = await apiFetch('/admin/global-budget', {
+      method: 'PATCH',
+      body: JSON.stringify({
+        monthly_budget_usd: Number.isFinite(amount) ? amount : null,
+        admin_override_enabled: adminOverrideEnabled,
+      }),
+    })
+    if (!res.ok) {
+      setError('Failed to update global budget')
+      return
+    }
+    const budget = await res.json()
+    setOps((prev: any) => prev ? { ...prev, budget } : { budget, recommendations: [] })
+  }
+
   const s = data?.summary
 
   return (
     <>
-      <div className="topbar">
+      {!embedded && <div className="topbar">
         <span className="topbar-title">Usage analytics</span>
-      </div>
-      <div className="dash-content">
+      </div>}
+      <div className={embedded ? 'dash-content dash-content-embedded' : 'dash-content'}>
         <div className="dash-header">
           <div>
             <div className="eyebrow"><span className="eyebrow-dot" />Analytics</div>
-            <h1>Dashboard</h1>
+            {!embedded && <h1>Dashboard</h1>}
           </div>
           <div className="range-group">
             {RANGES.map(r => (
@@ -2261,6 +2305,59 @@ function DashboardView({
 
         {data && s && (
           <>
+            {isAdmin && ops?.budget && (
+              <div className="settings-card-list dashboard-admin-block">
+                <div className="settings-card">
+                  <div className="settings-card-head">
+                    <strong>Global monthly budget<span>Admins can configure the cap and override behavior from here.</span></strong>
+                    <span className={`exec-pill ${ops.budget.status === 'exceeded' ? 'danger-pill' : ops.budget.status === 'warning' ? 'warn-pill' : 'ok-pill'}`}>{ops.budget.status}</span>
+                  </div>
+                  <div className="dash-summary-grid">
+                    <div className="card stat-summary-card"><div className="stat-summary-label">This month</div><div className="stat-summary-value green">{fmt$(ops.budget.month_spend ?? 0, 4)}</div></div>
+                    <div className="card stat-summary-card"><div className="stat-summary-label">Global cap</div><div className="stat-summary-value">{ops.budget.monthly_budget_usd == null ? 'Off' : fmt$(ops.budget.monthly_budget_usd, 2)}</div></div>
+                    <div className="card stat-summary-card"><div className="stat-summary-label">Used</div><div className="stat-summary-value blue">{ops.budget.percent_used == null ? '—' : `${ops.budget.percent_used}%`}</div></div>
+                    <div className="card stat-summary-card"><div className="stat-summary-label">Admin override</div><div className="stat-summary-value">{ops.budget.admin_override_enabled ? 'On' : 'Off'}</div></div>
+                  </div>
+                  <div className="settings-line">
+                    <div><strong>Monthly cap</strong><span>Leave blank to disable the global cap.</span></div>
+                    <input className="conv-search-input budget-input" value={budgetInput} onChange={e => setBudgetInput(e.target.value)} placeholder="No cap" inputMode="decimal" />
+                  </div>
+                  <div className="settings-line">
+                    <div><strong>Admin override</strong><span>When enabled, admins can continue after the global cap is reached.</span></div>
+                    <div className="theme-btn-group">
+                      <button className={`theme-btn-opt${adminOverrideEnabled ? ' active' : ''}`} onClick={() => setAdminOverrideEnabled(true)} type="button">On</button>
+                      <button className={`theme-btn-opt${!adminOverrideEnabled ? ' active' : ''}`} onClick={() => setAdminOverrideEnabled(false)} type="button">Off</button>
+                    </div>
+                  </div>
+                  <button className="nav-chat-cta settings-primary" onClick={saveGlobalBudget} type="button">Save budget</button>
+                </div>
+
+                <div className="settings-card">
+                  <strong>Recommended actions</strong>
+                  {ops.recommendations?.length ? ops.recommendations.map((rec: any, idx: number) => (
+                    <div key={`${rec.title}-${idx}`} className="settings-memory">
+                      <span className={`exec-pill ${rec.severity === 'high' ? 'danger-pill' : rec.severity === 'medium' ? 'warn-pill' : ''}`}>{rec.severity}</span>
+                      <div className="memory-main">
+                        <p><strong>{rec.title}</strong></p>
+                        <p>{rec.detail}</p>
+                        <span className="memory-footnote">{rec.action}</span>
+                      </div>
+                    </div>
+                  )) : <span className="settings-muted">No recommended actions right now.</span>}
+                </div>
+
+                <div className="settings-card">
+                  <strong>Pending tasks and insights</strong>
+                  <div className="settings-grid">
+                    <span>Pending approvals <strong>{ops.pending?.user_approvals ?? 0}</strong></span>
+                    <span>Failed research <strong>{ops.pending?.failed_research_runs ?? 0}</strong></span>
+                    <span>Users near budget <strong>{ops.pending?.users_near_budget?.length ?? 0}</strong></span>
+                    <span>Recent errors <strong>{ops.recent_errors?.length ?? 0}</strong></span>
+                  </div>
+                </div>
+              </div>
+            )}
+
             <div className="dash-summary-grid">
               <div className="card stat-summary-card"><div className="stat-summary-label">Total spent</div><div className="stat-summary-value green">{fmt$(s.total_cost, 4)}</div></div>
               <div className="card stat-summary-card"><div className="stat-summary-label">Requests</div><div className="stat-summary-value">{s.total_requests.toLocaleString()}</div></div>
@@ -2964,7 +3061,6 @@ export default function Home() {
   const [devMode, setDevMode]                 = useState(false)
   const [settingsViewOpen, setSettingsViewOpen] = useState(false)
   const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab | undefined>(undefined)
-  const [appView, setAppView]                 = useState<AppView>('chat')
   const [isAdmin, setIsAdmin]                 = useState(false)
   const [accountStatus, setAccountStatus]     = useState<string | null>(null)
   const [accountStatusLoaded, setAccountStatusLoaded] = useState(false)
@@ -3108,7 +3204,8 @@ export default function Home() {
         setAccentThemeState(sac)
       }
       if (initialView === 'dashboard') {
-        setAppView('dashboard')
+        setSettingsViewOpen(true)
+        setSettingsInitialTab('dashboard')
         window.history.replaceState({}, '', window.location.pathname)
       }
       if (initialView === 'admin') {
@@ -3335,13 +3432,6 @@ export default function Home() {
     setTwinPanelOpen(true)
   }
 
-  function openDashboardView() {
-    setSettingsViewOpen(false)
-    setAppView('dashboard')
-    setMobileNavOpen(false)
-  }
-
-
   useEffect(() => {
     try { localStorage.setItem('md-show-web-search', showWebSearch ? '1' : '0') } catch {}
     if (!showWebSearch) setWebSearchOn(false)
@@ -3365,7 +3455,6 @@ export default function Home() {
   async function loadConversation(id: number) {
     setMobileNavOpen(false)
     setSettingsViewOpen(false)
-    setAppView('chat')
     setActiveConvId(id)
     setMessages([])
     setExecPanelData(null)
@@ -3384,7 +3473,6 @@ export default function Home() {
   function newConversation() {
     setMobileNavOpen(false)
     setSettingsViewOpen(false)
-    setAppView('chat')
     setActiveConvId(null)
     setMessages([])
     setExecPanelData(null)
@@ -4084,7 +4172,7 @@ export default function Home() {
       )}
 
       <Sidebar
-        activePage={appView}
+        activePage="chat"
         conversations={conversations}
         activeConvId={activeConvId}
         onLoadConversation={loadConversation}
@@ -4100,7 +4188,6 @@ export default function Home() {
         onStartEdit={(id, title) => { setEditingTitleId(id); setEditingTitle(title) }}
         onRenameConversation={renameConversation}
         onCancelEdit={() => setEditingTitleId(null)}
-        onOpenDashboard={openDashboardView}
         onOpenSettings={openSettingsView}
         settingsActive={settingsViewOpen}
       />
@@ -4154,10 +4241,6 @@ export default function Home() {
             isAdmin={canSeeAdmin}
             apiFetch={apiFetch}
             initialTab={settingsInitialTab}
-          />
-        ) : appView === 'dashboard' ? (
-          <DashboardView
-            apiFetch={apiFetch}
           />
         ) : (
         <>
@@ -4842,27 +4925,16 @@ export default function Home() {
           <span>New</span>
         </button>
         <button
-          className={`mobile-nav-btn${!settingsViewOpen && appView === 'chat' ? ' active' : ''}`}
+          className={`mobile-nav-btn${!settingsViewOpen ? ' active' : ''}`}
           onClick={() => {
             setSettingsViewOpen(false)
-            setAppView('chat')
             taRef.current?.focus()
           }}
           aria-label="Chat"
-          aria-current={!settingsViewOpen && appView === 'chat' ? 'page' : undefined}
+          aria-current={!settingsViewOpen ? 'page' : undefined}
         >
           <i className="ti ti-message" aria-hidden="true" />
           <span>Chat</span>
-        </button>
-        <button
-          type="button"
-          className={`mobile-nav-btn${!settingsViewOpen && appView === 'dashboard' ? ' active' : ''}`}
-          onClick={openDashboardView}
-          aria-label="Dashboard"
-          aria-current={!settingsViewOpen && appView === 'dashboard' ? 'page' : undefined}
-        >
-          <i className="ti ti-chart-bar" aria-hidden="true" />
-          <span>Analytics</span>
         </button>
       </div>
 

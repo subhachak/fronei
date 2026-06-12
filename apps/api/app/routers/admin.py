@@ -35,7 +35,10 @@ from app.db.models import (
     UserMemory,
     UserProfile,
     WritingSample,
+    get_global_budget_config,
+    get_global_monthly_spend,
     get_monthly_spend,
+    set_global_budget_config,
 )
 from app.services.llm_gateway import (
     PROVIDER_TEST_MODELS,
@@ -65,6 +68,11 @@ class AdminControlUpdate(BaseModel):
 
 class UserRoleUpdate(BaseModel):
     role: Literal["user", "admin"]
+
+
+class GlobalBudgetUpdate(BaseModel):
+    monthly_budget_usd: float | None = Field(default=None, ge=0)
+    admin_override_enabled: bool = True
 
 
 class PrivacyDeleteRequest(BaseModel):
@@ -324,6 +332,147 @@ def overview(admin: AdminPrincipal = Depends(require_admin)) -> dict:
             "total_writing_samples": db.query(WritingSample).count(),
             "total_research_runs": db.query(ResearchRun).count(),
         }
+    finally:
+        db.close()
+
+
+def _budget_status(db) -> dict:
+    config = get_global_budget_config(db)
+    spend = get_global_monthly_spend(db)
+    cap = config["monthly_budget_usd"]
+    percent = (spend / cap * 100.0) if cap and cap > 0 else None
+    return {
+        "monthly_budget_usd": cap,
+        "month_spend": round(spend, 6),
+        "percent_used": round(percent, 1) if percent is not None else None,
+        "admin_override_enabled": config["admin_override_enabled"],
+        "status": (
+            "disabled" if cap is None else
+            "exceeded" if spend >= cap else
+            "warning" if percent is not None and percent >= 80 else
+            "normal"
+        ),
+    }
+
+
+def _ops_recommendations(db, budget: dict) -> list[dict]:
+    recs: list[dict] = []
+    pending_users = db.query(UserAdminControl).filter(UserAdminControl.status == "pending").count()
+    if pending_users:
+        recs.append({
+            "severity": "medium",
+            "title": "Review pending users",
+            "detail": f"{pending_users} user{'s' if pending_users != 1 else ''} waiting for approval.",
+            "action": "Open Users and activate or suspend the account.",
+        })
+    if budget["status"] == "exceeded":
+        recs.append({
+            "severity": "high",
+            "title": "Global monthly budget exceeded",
+            "detail": f"Spend is ${budget['month_spend']:.4f} this month.",
+            "action": "Raise the cap, enable admin override, or pause expensive research usage.",
+        })
+    elif budget["status"] == "warning":
+        recs.append({
+            "severity": "medium",
+            "title": "Global budget nearing cap",
+            "detail": f"{budget['percent_used']}% of the monthly cap has been used.",
+            "action": "Review top users and model spend before the cap is hit.",
+        })
+    start = _today_start()
+    errors_today = db.query(RequestLog).filter(RequestLog.status == "error", RequestLog.created_at >= start).count()
+    if errors_today:
+        recs.append({
+            "severity": "medium",
+            "title": "Request errors today",
+            "detail": f"{errors_today} backend request error{'s' if errors_today != 1 else ''} logged today.",
+            "action": "Open Errors and inspect provider/auth/routing failures.",
+        })
+    running_research = db.query(ResearchRun).filter(ResearchRun.status == "running").count()
+    if running_research:
+        recs.append({
+            "severity": "low",
+            "title": "Research runs in progress",
+            "detail": f"{running_research} research run{'s' if running_research != 1 else ''} currently marked running.",
+            "action": "Open Research and check for long-running or stuck jobs.",
+        })
+    return recs
+
+
+@router.get("/ops-summary")
+def ops_summary(admin: AdminPrincipal = Depends(require_admin)) -> dict:
+    db = SessionLocal()
+    try:
+        budget = _budget_status(db)
+        month_start = _today_start().replace(day=1)
+        users_near_budget = []
+        controls = {
+            c.user_id: c
+            for c in db.query(UserAdminControl).filter(UserAdminControl.monthly_budget_usd.isnot(None)).all()
+        }
+        for user_id, control in controls.items():
+            if not control.monthly_budget_usd or control.monthly_budget_usd <= 0:
+                continue
+            spend = get_monthly_spend(db, user_id)
+            percent = spend / control.monthly_budget_usd * 100.0
+            if percent >= 80:
+                users_near_budget.append({
+                    "user_id": user_id,
+                    "month_spend": round(spend, 6),
+                    "monthly_budget_usd": control.monthly_budget_usd,
+                    "percent_used": round(percent, 1),
+                })
+        top_models = (
+            db.query(
+                RequestLog.model_used,
+                func.coalesce(func.sum(RequestLog.estimated_cost_usd), 0.0),
+                func.count(RequestLog.id),
+            )
+            .filter(RequestLog.status == "success", RequestLog.created_at >= month_start, RequestLog.model_used.isnot(None))
+            .group_by(RequestLog.model_used)
+            .order_by(func.coalesce(func.sum(RequestLog.estimated_cost_usd), 0.0).desc())
+            .limit(5)
+            .all()
+        )
+        pending_users = db.query(UserAdminControl).filter(UserAdminControl.status == "pending").count()
+        failed_research = db.query(ResearchRun).filter(ResearchRun.status == "failed").count()
+        recent_errors = db.query(RequestLog).filter(RequestLog.status == "error").order_by(RequestLog.created_at.desc()).limit(5).all()
+        return {
+            "budget": budget,
+            "pending": {
+                "user_approvals": pending_users,
+                "failed_research_runs": failed_research,
+                "users_near_budget": sorted(users_near_budget, key=lambda x: -x["percent_used"])[:10],
+            },
+            "top_models_month": [
+                {"model": model, "cost": round(float(cost or 0), 6), "requests": int(count or 0)}
+                for model, cost, count in top_models
+            ],
+            "recent_errors": [
+                {
+                    "id": row.id,
+                    "created_at": _fmt(row.created_at),
+                    "user_id": row.user_id,
+                    "model": row.model_used or row.selected_model,
+                    "error": row.error,
+                }
+                for row in recent_errors
+            ],
+            "recommendations": _ops_recommendations(db, budget),
+        }
+    finally:
+        db.close()
+
+
+@router.patch("/global-budget")
+def update_global_budget(body: GlobalBudgetUpdate, admin: AdminPrincipal = Depends(require_admin)) -> dict:
+    db = SessionLocal()
+    try:
+        set_global_budget_config(db, body.monthly_budget_usd, body.admin_override_enabled)
+        _audit(db, admin, "global_budget.update", None, body.model_dump())
+        budget = _budget_status(db)
+        db.commit()
+        return budget
     finally:
         db.close()
 

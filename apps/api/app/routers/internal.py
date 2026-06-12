@@ -39,6 +39,7 @@ def smoke_check(x_internal_secret: str = Header(default="")) -> dict:
         "conversation_messages",
         "user_memories",
         "user_profiles",
+        "admin_settings",
         "request_logs",
     ]
     inspector = inspect(engine)

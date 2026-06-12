@@ -1226,7 +1226,7 @@ function AssistantContent({ message }: { message: MessageOut }) {
 }
 
 type SettingsTab = 'general' | 'dashboard' | 'guide' | 'voice' | 'memory' | 'workspace' | 'models' | 'account' | 'admin'
-type UserGuidePageId = 'start' | 'chat' | 'modes' | 'workbench' | 'research' | 'documents' | 'memory' | 'shortcuts' | 'settings' | 'api' | 'tips'
+type UserGuidePageId = 'start' | 'chat' | 'modes' | 'workbench' | 'research' | 'documents' | 'memory' | 'dashboard' | 'adminOps' | 'difference' | 'shortcuts' | 'settings' | 'api' | 'tips'
 
 const USER_GUIDE_PAGES: {
   id: UserGuidePageId
@@ -1240,32 +1240,49 @@ const USER_GUIDE_PAGES: {
     id: 'start',
     label: 'Start here',
     icon: 'ti-compass',
-    title: 'Start here',
-    summary: 'The essentials for getting useful answers from Fronei without tuning anything first.',
+    title: 'Start here: what Fronei is for',
+    summary: 'Fronei is a personal AI workbench for thinking, writing, research, decisions, and reusable work products. It is designed to learn how you work, route each task to the right model path, and turn conversation into durable context and structured deliverables.',
     sections: [
       {
-        title: 'Ask naturally',
-        body: 'Use the composer like a normal conversation. Fronei keeps the thread context, routes the request, and chooses the response mode from your prompt.',
-        items: ['Start a focused chat for each topic.', 'Add constraints like audience, format, length, and deadline.', 'Use follow-ups to refine instead of restating the whole request.'],
-      },
-      {
-        title: 'Pick the right quality',
-        body: 'Quick is best for drafts and simple answers, Smart is the balanced default, and Thorough is for high-stakes synthesis or harder reasoning.',
-      },
-      {
-        title: 'Your first five minutes',
-        body: 'A fast checklist to set up Fronei the way you work.',
+        title: 'The core idea',
+        body: 'Use Fronei as an operating layer over frontier models, not just another blank chat box. A normal AI chat tool answers the prompt in front of it. Fronei adds product behavior around that model call: conversations, memory, writing voice, role-based workbench actions, output modes, research, artifacts, analytics, budget controls, and admin visibility. The goal is to reduce repeated prompting and make high-quality work repeatable.',
         items: [
-          'Choose Classic or Workbench mode based on whether you want a guided persona rail or a plain chat.',
-          'Set a default Quality level in Settings → General, then override per-message when a task needs more or less.',
-          'Pick an Output mode if you regularly need a specific format (exec-ready, client-ready, email, ADR, etc.).',
-          'Add a few writing samples under Settings → Voice so responses match your tone from the start.',
-          'Skim Settings → Workspace to see which personas and artifact types are enabled for your role.',
+          'Use chat for open-ended thinking, writing, and follow-up refinement.',
+          'Use Workbench when you want a guided path to a known deliverable.',
+          'Use Research when freshness, citations, contradiction checks, or source coverage matters.',
+          'Use Memory and Voice so Fronei gets more personalized over time instead of treating every session as a fresh start.',
+          'Use Dashboard and Settings to understand cost, usage, routing, and operational health.',
         ],
       },
       {
-        title: 'How a request gets routed',
-        body: 'Fronei combines your Quality level, Output mode, and whether Research/Web search is on to pick a model and a response shape. Higher quality and research routes cost more and take longer, so reserve them for work where the depth pays off.',
+        title: 'Your first setup pass',
+        body: 'A good first setup takes only a few minutes and pays off across every conversation. Set the defaults once, then override them per task when needed.',
+        items: [
+          'Open Settings → General and choose Classic or Workbench. Classic is best when you want a simple chat surface. Workbench is best when you want guided actions and artifacts.',
+          'Set your default Quality. Smart is the best starting point for most users; Quick is useful when you are cost-sensitive; Thorough is for heavier reasoning.',
+          'Choose a default Output mode if you repeatedly create the same kind of work, such as exec-ready summaries, client-ready wording, or architecture analysis.',
+          'Open Settings → Voice and add writing samples that represent how you want Fronei to sound.',
+          'Open Settings → Memory and periodically review what Fronei remembers, pin important facts, and scrub anything you do not want reused.',
+        ],
+      },
+      {
+        title: 'How to ask for better work',
+        body: 'The strongest prompts describe the desired outcome, audience, constraints, and decision criteria. Fronei can infer a lot, but explicit context still improves quality and reduces revisions.',
+        items: [
+          'Say what you are trying to accomplish: decide, draft, explain, compare, challenge, summarize, or produce a reusable artifact.',
+          'Name the audience: yourself, a customer, a technical team, executives, reviewers, or an approver.',
+          'Add constraints: length, tone, risk tolerance, budget, deadline, must-use technology, or must-avoid options.',
+          'Ask for a format: bullet memo, table, email, plan, ADR, trade-off matrix, risk register, or steering update.',
+          'Iterate with precise feedback: too long, more skeptical, more technical, less formal, show assumptions, add risks, or convert to an action plan.',
+        ],
+      },
+      {
+        title: 'How a request is handled',
+        body: 'For each request, Fronei combines your conversation history, relevant memories, writing voice, selected quality, output mode, workbench persona, artifact selection, and research/web settings. It then routes the request through the appropriate backend path and records usage so you can inspect cost and behavior later. Higher quality and research routes cost more and take longer, so reserve them for work where the depth pays off.',
+      },
+      {
+        title: 'A simple operating rhythm',
+        body: 'For everyday use, start in Smart quality and Default output mode. Turn on Thorough when the answer will influence a decision. Turn on Research when current facts or citations matter. Use Workbench for repeatable deliverables. Review Memory every so often so Fronei stays accurate and personal.',
       },
     ],
   },
@@ -1274,30 +1291,51 @@ const USER_GUIDE_PAGES: {
     label: 'Chat',
     icon: 'ti-message-circle',
     title: 'Chat and conversations',
-    summary: 'Manage conversations, continue threads, and keep useful context close.',
+    summary: 'Chat is the main working surface. Use it for reasoning, drafting, critique, synthesis, planning, and follow-up refinement.',
     sections: [
       {
-        title: 'Conversation flow',
-        body: 'Each chat is a thread with its own history. Fronei uses recent turns plus its running summary so long conversations stay coherent.',
-        items: ['Create a new chat when the goal changes.', 'Use the dashboard to return to older work.', 'Trim or correct a thread when the conversation has drifted.'],
-      },
-      {
-        title: 'Better prompts',
-        body: 'The best prompts include the outcome, context, and decision criteria. You can ask for a plan, a draft, a critique, or a concrete artifact.',
-      },
-      {
-        title: 'Iterating on a response',
-        body: 'Treat the first reply as a draft, not a final answer.',
+        title: 'Use one thread per goal',
+        body: 'Each conversation carries its own context. Keep related work in one thread when you want Fronei to remember the evolution of the task, assumptions, and prior decisions. Start a new conversation when the objective changes, because unrelated context can steer responses in the wrong direction.',
         items: [
-          'Ask Fronei to tighten, expand, restructure, or re-target a section instead of regenerating everything.',
-          'Give explicit feedback: "too generic", "make this more skeptical", "shorten to one page", "reformat as a table".',
-          'If a thread drifts off-topic, start a new chat (Cmd/Ctrl+K) rather than fighting the existing context.',
-          'For long-running work, periodically ask for a short recap so you can confirm Fronei still has the right picture.',
+          'Good thread: "Q3 migration decision" with research, trade-offs, draft recommendation, and final memo.',
+          'Good thread: "Rewrite my LinkedIn announcement" with tone iterations and final copy.',
+          'Less useful thread: mixing travel planning, architecture review, and personal notes in one long conversation.',
         ],
       },
       {
-        title: 'Switching modes mid-conversation',
-        body: 'You can change Quality, Output mode, or toggle Research/Web search on any message — Fronei applies the new setting to that turn without losing the conversation history.',
+        title: 'The best prompt shape',
+        body: 'A strong prompt has four parts: task, context, constraints, and output. For example: "Compare Neon and Supabase for my personal Fronei deployment. Assume lowest cost, low ops overhead, Postgres compatibility, and easy backups. Output a decision memo with recommendation, risks, and next steps."',
+      },
+      {
+        title: 'Iterate surgically',
+        body: 'Treat the first response as a useful draft. Instead of regenerating everything, tell Fronei exactly what to change. This preserves the best parts of the answer and saves cost.',
+        items: [
+          'Ask for targeted edits: "keep the recommendation, but add an implementation risk section."',
+          'Ask for audience changes: "make this more direct for an executive sponsor."',
+          'Ask for structure changes: "convert this to a table with decision criteria and scores."',
+          'Ask for critique: "what would a skeptical reviewer challenge here?"',
+          'Ask for compression: "turn this into a 150-word Slack update."',
+        ],
+      },
+      {
+        title: 'When to use normal chat instead of Research',
+        body: 'Normal chat is best when the answer mainly depends on the context you provide, Fronei memory, or general reasoning. Use it for drafts, analysis, brainstorming, planning, editing, strategy, code explanation, and internal decision support. Turn on Research when current public information, citations, source comparison, or contradiction checking is part of the job.',
+      },
+      {
+        title: 'Conversation hygiene',
+        body: 'Long conversations can become noisy. Ask for a recap when a thread gets long, correct wrong assumptions explicitly, and start a fresh thread when you pivot. If Fronei learns something you do not want remembered, remove it from Settings → Memory.',
+      },
+      {
+        title: 'Useful chat commands',
+        body: 'Fronei responds well to direct operating instructions embedded in the prompt.',
+        items: [
+          'Plan first, then wait for my approval before implementing.',
+          'Ask clarifying questions only if the answer materially changes the solution.',
+          'Give me the recommendation first, then the reasoning.',
+          'Be skeptical and identify hidden risks.',
+          'Write this in my voice, but make it more concise.',
+          'Convert this into an artifact I can reuse.',
+        ],
       },
     ],
   },
@@ -1306,24 +1344,24 @@ const USER_GUIDE_PAGES: {
     label: 'Profiles & modes',
     icon: 'ti-adjustments',
     title: 'Quality, profiles, and output modes',
-    summary: 'Understand the dials that control cost, depth, and the shape of the response.',
+    summary: 'These controls determine how much effort Fronei spends and what shape the final answer takes.',
     sections: [
       {
         title: 'Quality levels',
-        body: 'Quality controls how much reasoning depth and model capability is applied to a request.',
+        body: 'Quality is the main cost/depth control. Use the cheapest setting that is appropriate for the stakes of the work.',
         items: [
-          'Quick — fastest and cheapest, best for simple lookups, short drafts, and routine tasks.',
-          'Smart — the balanced default for most day-to-day work.',
-          'Thorough — maximum reasoning effort for complex synthesis, architecture decisions, or anything high-stakes.',
+          'Quick — fastest and cheapest. Use for short rewrites, simple summaries, brainstorming, naming, and low-risk drafts.',
+          'Smart — balanced default. Use for most daily work: writing, planning, comparisons, code explanation, and moderate reasoning.',
+          'Thorough — highest effort. Use for architecture decisions, multi-factor trade-offs, nuanced writing, risk analysis, or work you will defend to others.',
         ],
       },
       {
         title: 'Model profiles',
-        body: 'Each Quality level maps to a model profile that determines which underlying models are eligible: Cost saver favors cheaper models, Balanced mixes cost and capability, and Best quality always prefers the strongest available model. Admins can see profile-to-model mappings in Settings → Models.',
+        body: 'Behind the scenes, each Quality level maps to a model profile. Cost saver favors cheaper models, Balanced mixes cost and capability, and Best quality prefers the strongest configured route. Admins can inspect and tune model mappings in Settings → Models. This gives Fronei a practical advantage over a single fixed-model chat surface: routine tasks can stay cheap while hard tasks can still use stronger models.',
       },
       {
         title: 'Output modes',
-        body: 'Output mode shapes the format and tone of the response, independent of quality.',
+        body: 'Output mode shapes the format, tone, and editorial posture of the answer. It is independent of Quality, so you can ask for a cheap exec-ready draft or a thorough architecture analysis.',
         items: [
           'Default — Fronei chooses a sensible format automatically.',
           'Raw — unrefined model output, useful when you want to post-process it yourself.',
@@ -1336,8 +1374,20 @@ const USER_GUIDE_PAGES: {
         ],
       },
       {
-        title: 'Combining the dials',
-        body: 'Quality, profile, and output mode are independent. A common pattern is Thorough + Architecture for a design decision, or Smart + Exec-ready for a status update — pick the depth you need first, then the format your audience expects.',
+        title: 'Recommended combinations',
+        body: 'Most work falls into a few repeatable patterns.',
+        items: [
+          'Smart + Default — general conversation, planning, drafting, and analysis.',
+          'Quick + Email — quick reply drafts or tone cleanup.',
+          'Smart + Client-ready — polished external language without over-spending.',
+          'Thorough + Architecture — design decisions, ADRs, trade-off analysis, and technical recommendations.',
+          'Thorough + Pushback — stress-testing a proposal before you commit to it.',
+          'Research + Exec-ready — source-grounded leadership summaries.',
+        ],
+      },
+      {
+        title: 'Cost discipline',
+        body: 'A useful habit is to draft in Quick or Smart, then use Thorough only on the version that is close to final. For research-heavy work, start with Quick Research to map the topic, then move to Deep or Expert only when you know the question is worth the extra cost.',
       },
     ],
   },
@@ -1346,15 +1396,21 @@ const USER_GUIDE_PAGES: {
     label: 'Personas & artifacts',
     icon: 'ti-layout-grid',
     title: 'Workbench mode, personas, and artifacts',
-    summary: 'Use role-based personas and structured artifacts to go straight from a question to a deliverable.',
+    summary: 'Workbench turns Fronei from a chat surface into a repeatable deliverable factory for common professional workflows.',
     sections: [
       {
         title: 'Workbench mode',
-        body: 'Workbench replaces the plain composer with a persona rail of guided actions. Each action pre-fills a prompt for a common deliverable so you can jump straight in instead of writing the request from scratch. Switch between Classic and Workbench in Settings → General.',
+        body: 'Workbench replaces the plain composer with role-specific actions and artifact controls. It is useful when you know the kind of work product you need but do not want to manually craft the prompt every time. Switch between Classic and Workbench in Settings → General.',
+        items: [
+          'Use Classic for free-form conversation.',
+          'Use Workbench for recurring work products like briefs, ADRs, comparisons, risk registers, and steering updates.',
+          'Use a persona to bias the action rail toward your role and the kind of decisions you make.',
+          'Use artifact controls when the output needs a consistent structure.',
+        ],
       },
       {
         title: 'Personas',
-        body: 'A persona tunes the action rail and available artifacts to a role.',
+        body: 'A persona changes the suggested actions and available artifacts. It does not prevent you from asking anything; it simply gives Fronei better defaults for the kind of work you are doing.',
         items: [
           'Enterprise Architect — research briefs, ADRs, solution comparisons, challenge reviews, and the full artifact set.',
           'Product Manager — exec briefs, risk registers, steering updates, and trade-off matrices.',
@@ -1365,7 +1421,7 @@ const USER_GUIDE_PAGES: {
       },
       {
         title: 'Artifacts',
-        body: 'Artifacts are structured deliverable types Fronei can generate directly from a request.',
+        body: 'Artifacts are structured deliverables. Use them when the output should be reviewed, shared, compared, or reused later. They reduce the need to repeatedly ask for sections and formatting.',
         items: [
           'ADR — Architecture Decision Record with context, decision, and consequences.',
           'Compare — side-by-side comparison of solution options.',
@@ -1378,7 +1434,21 @@ const USER_GUIDE_PAGES: {
       },
       {
         title: 'Generating an artifact',
-        body: 'Select a persona, then choose an artifact type from the composer (or use a workbench action) and describe the subject. Fronei automatically uses the Architecture output mode for artifacts so the structure stays consistent regardless of your default output mode.',
+        body: 'Select a persona, choose an artifact type, and describe the subject, audience, and decision criteria. Fronei automatically applies a structured output style so the artifact is consistent regardless of your normal chat defaults.',
+      },
+      {
+        title: 'Artifact examples',
+        body: 'Artifacts work best when you give Fronei the real decision context.',
+        items: [
+          'ADR: "Create an ADR for choosing Neon Postgres for Fronei production. Include cost, operational overhead, backup risk, and rollback plan."',
+          'Trade-off matrix: "Compare Railway, Fly.io, Render, and a single VPS for personal-use deployment. Score cost, setup time, operational overhead, reliability, and migration effort."',
+          'Risk register: "Build a risk register for launching Fronei publicly with Clerk, Neon, Railway, and multiple model providers."',
+          'Exec brief: "Summarize why we should implement global budget caps before adding more expensive research features."',
+        ],
+      },
+      {
+        title: 'Reviewing generated artifacts',
+        body: 'Do not treat artifacts as final just because they are structured. Ask Fronei to identify assumptions, missing stakeholders, weak evidence, and risks. For technical artifacts, ask it to add migration steps, operational runbooks, and validation checks.',
       },
     ],
   },
@@ -1387,29 +1457,48 @@ const USER_GUIDE_PAGES: {
     label: 'Research',
     icon: 'ti-microscope',
     title: 'Research mode',
-    summary: 'Use research when freshness, source coverage, citations, or contradiction checking matters.',
+    summary: 'Research mode is for source-grounded work: current facts, cited answers, evidence trails, market scans, technical comparisons, and contradiction checks.',
     sections: [
       {
         title: 'When to use it',
-        body: 'Research mode searches, gathers sources, extracts claims, checks gaps, and synthesizes a sourced answer.',
-        items: ['Use it for market scans, technical comparisons, and current events.', 'Prefer normal chat for private brainstorming or simple writing.', 'Check cited sources before acting on high-stakes decisions.'],
-      },
-      {
-        title: 'Reading results',
-        body: 'Research answers can include source pills and evidence sections. Open them when you want to inspect where a claim came from.',
+        body: 'Use Research when the answer should be based on current or external information, not just reasoning from the conversation. Research mode searches, gathers sources, extracts claims, checks gaps, and synthesizes a cited answer.',
+        items: [
+          'Use it for product comparisons, pricing, recent announcements, regulations, competitor scans, and vendor due diligence.',
+          'Use it when you need source coverage and evidence, not just a confident-sounding summary.',
+          'Use it for technical choices where docs, changelogs, or current limitations matter.',
+          'Prefer normal chat for private brainstorming, writing from your own context, or low-stakes internal drafts.',
+        ],
       },
       {
         title: 'Research depth levels',
-        body: 'Research mode has its own depth setting, separate from Quality.',
+        body: 'Research depth is separate from normal Quality. Pick the depth based on how defensible the final answer needs to be.',
         items: [
-          'Quick — a fast pass over a small set of sources, good for a quick fact check.',
-          'Deep — broader source coverage with claim extraction and gap-checking, the usual choice for substantive research.',
-          'Expert — the most exhaustive pass, including contradiction checking across sources — use for decisions you will defend.',
+          'Quick — fast fact check or initial topic map.',
+          'Deep — broader source coverage, claim extraction, and gap-checking. This is the default for serious but routine research.',
+          'Expert — most exhaustive path with stronger contradiction checks. Use when the decision is costly, visible, or hard to reverse.',
+        ],
+      },
+      {
+        title: 'How to write a research request',
+        body: 'A good research request names the decision, scope, source preference, and output format.',
+        items: [
+          'Decision: "Should I deploy Fronei on Railway or a VPS?"',
+          'Scope: "personal use, lowest cost, low overhead, Postgres, Clerk, nightly cron."',
+          'Evidence requirement: "prioritize official docs, pricing pages, and recent changelogs."',
+          'Output: "give me a recommendation, trade-off table, risks, and next actions."',
         ],
       },
       {
         title: 'Web search toggle',
-        body: 'The web search toggle lets Fronei pull in current information for a single message without running full research mode. Use it for quick freshness checks (prices, releases, recent news) when you do not need a sourced research report. Your preference is remembered between sessions.',
+        body: 'The web search toggle is lighter than full Research. Use it when a single answer needs current information but you do not need a full evidence workflow. Examples: "check the latest pricing", "what changed in this release", or "is this API still current?"',
+      },
+      {
+        title: 'Reading research output',
+        body: 'Research answers can include source pills, evidence sections, verifier notes, gaps, and contradictions. Use those details to decide whether the answer is strong enough to act on. For high-stakes work, inspect the sources directly and ask follow-up questions about weak evidence or conflicting claims.',
+      },
+      {
+        title: 'Research best practices',
+        body: 'Research quality improves when you constrain the question. Avoid asking for "everything about X" unless you truly want a broad survey. Ask for a decision-oriented answer, include what you already know, and tell Fronei what would change your mind.',
       },
     ],
   },
@@ -1418,12 +1507,17 @@ const USER_GUIDE_PAGES: {
     label: 'Documents',
     icon: 'ti-paperclip',
     title: 'Documents and attachments',
-    summary: 'Attach files when the answer should be grounded in content you provide.',
+    summary: 'Use attachments when Fronei should analyze, summarize, rewrite, or extract structured information from material you provide.',
     sections: [
       {
         title: 'Attach useful material',
-        body: 'Document extraction turns supported uploads into context for the next request. Ask Fronei to summarize, compare, rewrite, extract risks, or answer questions from the file.',
-        items: ['Keep uploads relevant to the current task.', 'For long PDFs, ask for specific sections or decisions.', 'If extraction is weak, paste the most important excerpt directly.'],
+        body: 'Document extraction turns supported uploads into context for the next request. Attach material when the answer should be grounded in a specific file rather than general model knowledge.',
+        items: [
+          'Attach source material that is directly relevant to the current task.',
+          'For long PDFs, ask for a specific section, decision, clause, table, or risk area.',
+          'For messy scans or unusual formatting, paste the most important excerpt directly if extraction is incomplete.',
+          'Keep the prompt explicit: say whether you want summary, rewrite, critique, extraction, comparison, or action plan.',
+        ],
       },
       {
         title: 'Common document workflows',
@@ -1435,27 +1529,166 @@ const USER_GUIDE_PAGES: {
           '"Rewrite section 3 in client-ready tone, keep the numbers unchanged" — targeted rewrites.',
         ],
       },
+      {
+        title: 'Document review pattern',
+        body: 'For serious document review, use a three-pass flow: first ask for a neutral summary, then ask for risks and missing information, then ask for the final output in the format you need. This prevents the final answer from skipping over important context too early.',
+      },
+      {
+        title: 'Combining documents with artifacts',
+        body: 'Attachments pair especially well with artifacts. A project plan can become a risk register. A vendor proposal can become a trade-off matrix. A design doc can become an ADR. A status report can become an exec brief.',
+      },
+      {
+        title: 'Privacy habit',
+        body: 'Only attach files you are comfortable sending through the configured model and extraction pipeline. If a file contains sensitive material, redact it first or paste only the relevant excerpts.',
+      },
     ],
   },
   {
     id: 'memory',
     label: 'Memory',
     icon: 'ti-brain',
-    title: 'Memory and voice',
-    summary: 'Control what Fronei remembers and how closely it matches your style.',
+    title: 'Memory, personalization, and voice',
+    summary: 'Fronei can become more useful over time by remembering stable facts, preferences, work context, and communication style. You remain in control of what is kept.',
     sections: [
       {
-        title: 'Saved memories',
-        body: 'Memories are reusable facts and preferences. Review or delete them from the Memory settings page.',
+        title: 'What memory is for',
+        body: 'Memory is for durable context: preferences, background facts, work style, active projects, communication norms, and recurring constraints. The point is to avoid repeating the same personal context in every prompt.',
+        items: [
+          'Good memory: "prefers concise executive summaries with recommendation first."',
+          'Good memory: "uses Railway, Neon, Clerk, and GitHub Actions for Fronei production."',
+          'Good memory: "wants lowest-cost, lowest-overhead deployment choices for personal use."',
+          'Poor memory: one-off temporary details that will not matter after the current task.',
+        ],
+      },
+      {
+        title: 'How memories are used',
+        body: 'Fronei ranks active memories by recency, importance, confidence, repetition, and relevance to the current turn. Pinned memories are treated as more authoritative. Lower-confidence memories can be shown as uncertain so the model does not over-commit to them.',
+      },
+      {
+        title: 'User control',
+        body: 'Open Settings → Memory to review what Fronei remembers. You can pin important facts, edit incorrect facts, mark something as wrong, delete specific memories, or clear everything. This is the safety valve: Fronei can learn automatically, but you can scrub anything you do not want remembered.',
       },
       {
         title: 'Writing voice',
-        body: 'Writing samples help Fronei learn tone, structure, directness, and depth. Add samples that represent how you actually want work to sound.',
-        items: ['Use polished examples for the style you want.', 'Re-extract after adding or removing several samples.', 'Delete samples you no longer want influencing the profile.'],
+        body: 'Writing samples help Fronei learn tone, structure, directness, formality, and technical depth. Add samples that represent the style you actually want future outputs to resemble.',
+        items: [
+          'Use polished examples for the style you want repeated.',
+          'Add samples from different contexts if you want range: email, memo, technical note, executive update.',
+          'Delete samples that no longer represent your desired voice.',
+          'Re-extract after adding or removing several samples.',
+        ],
       },
       {
-        title: 'How memory affects responses',
-        body: 'Saved memories and your writing voice are applied automatically — you do not need to repeat preferences in every prompt. If a response does not reflect a saved preference, check that the memory is still listed and that your voice samples have been re-extracted recently.',
+        title: 'Profile summary',
+        body: 'Fronei also maintains a compact profile summary with bio, role, company, location, active projects, key preferences, constraints, and communication style. The profile gives the model a stable high-level picture before ranked memories are added.',
+      },
+      {
+        title: 'Best practices',
+        body: 'Let Fronei learn the stable parts of how you work, but keep temporary project details in the conversation thread. Review Memory after important sessions. Pin facts that should not be overwritten automatically. Scrub sensitive or stale information quickly.',
+      },
+    ],
+  },
+  {
+    id: 'dashboard',
+    label: 'Dashboard',
+    icon: 'ti-chart-bar',
+    title: 'Dashboard, usage, and cost visibility',
+    summary: 'The Dashboard shows how Fronei is being used: spend, requests, tokens, latency, model usage, task distribution, and admin-only operational insights.',
+    sections: [
+      {
+        title: 'Where it lives',
+        body: 'The Dashboard is inside Settings → Dashboard. Regular users see their normal usage analytics. Admins see the same analytics plus operational controls and reports.',
+      },
+      {
+        title: 'What the metrics mean',
+        body: 'Usage analytics help you understand cost and performance over time.',
+        items: [
+          'Total spent — estimated model cost for the selected range.',
+          'Requests — number of completed model-backed calls.',
+          'Tokens — prompt and completion volume, useful for understanding why some tasks cost more.',
+          'Average latency — how long requests take on average.',
+          'Model usage — which models are used most and how much they cost.',
+          'Task distribution — what kinds of work Fronei is doing.',
+        ],
+      },
+      {
+        title: 'Admin budget controls',
+        body: 'Admins can configure a global monthly cap from the Dashboard. The cap is stored in the database, not Railway config, so it can be changed without a deploy. Admin override determines whether admins can continue using Fronei after the cap is reached.',
+      },
+      {
+        title: 'Recommended actions',
+        body: 'Admin insights summarize what needs attention: pending approvals, failed research runs, users near budget, recent errors, model spend, and budget pressure. Treat this as a lightweight operations checklist.',
+      },
+      {
+        title: 'How to use it well',
+        body: 'Check Dashboard after enabling new features, changing model routing, or running research-heavy sessions. Watch for cost spikes, slow model paths, repeated errors, and users nearing budget. Adjust quality defaults or model routing when spend does not match the value of the work.',
+      },
+    ],
+  },
+  {
+    id: 'adminOps',
+    label: 'Admin & ops',
+    icon: 'ti-shield-lock',
+    title: 'Admin operations',
+    summary: 'Admin tools give trusted users control over access, costs, routing, providers, research runs, audits, and system health.',
+    sections: [
+      {
+        title: 'Admin access',
+        body: 'Admins are identified by configured allowlists and/or DB-assigned roles. Admin-only screens and endpoints are hidden from regular users and enforced by the backend.',
+      },
+      {
+        title: 'User management',
+        body: 'Admins can review users, change roles, suspend accounts, approve pending access, and inspect usage. Use suspension for immediate access control and role changes for durable permissions.',
+      },
+      {
+        title: 'Cost and budget operations',
+        body: 'Admins can inspect spend, users near budget, model usage, and global budget state. The global monthly cap prevents runaway cost. Admin override is useful for emergency maintenance or critical work, but should be used deliberately.',
+      },
+      {
+        title: 'Provider and model routing',
+        body: 'Provider settings and model routing determine which model paths Fronei can use for Quick, Smart, Thorough, Research, and specialized work. Change routing carefully, then monitor Dashboard for latency, errors, and cost impact.',
+      },
+      {
+        title: 'Audit and system health',
+        body: 'Audit logs record sensitive admin actions. System status and smoke checks help confirm that database tables, migrations, internal tasks, and required services are healthy before production traffic depends on them.',
+      },
+    ],
+  },
+  {
+    id: 'difference',
+    label: 'Why Fronei',
+    icon: 'ti-git-compare',
+    title: 'How Fronei is different from general AI chat products',
+    summary: 'Fronei still uses frontier models, but the product is built around workflow, personalization, routing, cost control, and operational visibility rather than a single general-purpose chat surface.',
+    sections: [
+      {
+        title: 'Frontier model vs product layer',
+        body: 'Products like ChatGPT, Claude, Gemini, and similar tools are excellent general AI assistants. Fronei is different in emphasis: it wraps model capability in a workflow layer for your own recurring tasks, preferences, deployment needs, usage policies, and operational controls.',
+      },
+      {
+        title: 'What Fronei adds',
+        body: 'Fronei adds application behavior around the model call.',
+        items: [
+          'Persistent user memories with confidence, recency, importance, pinning, and user scrub controls.',
+          'Writing voice extraction from samples and profile consolidation.',
+          'Quality and output-mode routing so cheap tasks stay cheap and hard tasks can use stronger paths.',
+          'Workbench personas and reusable artifacts for repeatable professional deliverables.',
+          'Research mode with source gathering, evidence, gap checks, and contradiction awareness.',
+          'Admin dashboard, budget caps, usage analytics, audit logs, and operational recommendations.',
+          'Self-hostable production posture where you control database, auth, providers, and cost policy.',
+        ],
+      },
+      {
+        title: 'When a general chat tool is enough',
+        body: 'A general chat product is often enough for casual questions, one-off writing help, quick brainstorming, or when you do not need custom memory, budget controls, admin workflows, or self-hosted operational ownership.',
+      },
+      {
+        title: 'When Fronei is better',
+        body: 'Fronei is better when you want a private, personal, configurable AI workspace that learns your context, produces repeatable work products, exposes cost and routing behavior, and can be operated like a small production system.',
+      },
+      {
+        title: 'How to think about it',
+        body: 'Use frontier chat products as powerful general assistants. Use Fronei as your tailored AI operating layer: opinionated defaults, personal context, structured outputs, research workflows, and cost-aware administration. The value is not only the model answer; it is the system around the answer.',
       },
     ],
   },
@@ -1464,7 +1697,7 @@ const USER_GUIDE_PAGES: {
     label: 'Shortcuts & dev mode',
     icon: 'ti-keyboard',
     title: 'Keyboard shortcuts and developer tools',
-    summary: 'Move faster and see how your requests are routed under the hood.',
+    summary: 'Use shortcuts for speed and developer mode to inspect how Fronei is behaving under the hood.',
     sections: [
       {
         title: 'Keyboard shortcuts',
@@ -1476,7 +1709,11 @@ const USER_GUIDE_PAGES: {
       },
       {
         title: 'Dev mode and the execution panel',
-        body: 'Turning on dev mode reveals the execution log and routing panel for each response — which model handled the request, the profile and quality applied, timing, and (in research mode) the steps taken to gather sources. Use it to understand cost and latency trade-offs, or to debug an unexpected answer.',
+        body: 'Turning on dev mode reveals the execution log and routing panel for each response: model, profile, quality, timing, task type, and research steps when applicable. Use it to understand cost and latency trade-offs, diagnose unexpected behavior, and verify that a request used the path you intended.',
+      },
+      {
+        title: 'When to enable dev mode',
+        body: 'Enable dev mode when tuning model routing, debugging slow responses, checking whether Research actually ran, investigating cost, or preparing production hardening. Turn it off for a quieter daily-use interface.',
       },
     ],
   },
@@ -1485,15 +1722,27 @@ const USER_GUIDE_PAGES: {
     label: 'Settings',
     icon: 'ti-adjustments-horizontal',
     title: 'Settings map',
-    summary: 'A quick map of where controls live.',
+    summary: 'Settings is where Fronei becomes yours: appearance, dashboard, guide, voice, memory, workspace, models, account, and admin controls.',
     sections: [
       {
-        title: 'Main sections',
-        body: 'General controls appearance, default quality/output mode, UI mode (Classic/Workbench), and developer details. Voice manages writing samples and tone. Memory manages saved facts and preferences. Workspace controls persona and artifact tooling. Models shows profile-to-model mappings and routing defaults. Account stores your profile context.',
+        title: 'General',
+        body: 'General controls theme, accent color, manual web search visibility, developer mode, default quality, default output mode, and UI mode. This is the best place to set the defaults you want every day.',
+      },
+      {
+        title: 'Dashboard',
+        body: 'Dashboard shows usage analytics. Admins also see global budget controls, pending tasks, insights, and recommended actions.',
+      },
+      {
+        title: 'Voice and Memory',
+        body: 'Voice manages writing samples and tone extraction. Memory manages remembered facts, preferences, profile summary, active projects, constraints, and scrub controls.',
+      },
+      {
+        title: 'Workspace and Models',
+        body: 'Workspace controls persona and artifact tooling. Models shows profile-to-model mappings and routing defaults so you can understand which model paths are available.',
       },
       {
         title: 'Admin',
-        body: 'Admins see an additional settings page with operational tools: user management and role assignment, usage and cost analytics, provider configuration, model routing rules, research run history, audit logs, and system status.',
+        body: 'Admins see operational tools: user management and role assignment, usage and cost analytics, provider configuration, model routing rules, research run history, audit logs, system status, and budget controls.',
       },
     ],
   },
@@ -1502,7 +1751,7 @@ const USER_GUIDE_PAGES: {
     label: 'API reference',
     icon: 'ti-api',
     title: 'API reference',
-    summary: 'For developers integrating with the Fronei backend directly.',
+    summary: 'For developers integrating with, testing, or operating the Fronei backend directly.',
     sections: [
       {
         title: 'Interactive docs',
@@ -1524,6 +1773,14 @@ const USER_GUIDE_PAGES: {
       {
         title: 'Authentication',
         body: 'API requests require the same Clerk-issued bearer token used by the web app. Admin endpoints additionally require the calling user to be an admin (via the env allowlist or the DB-assigned admin role).',
+      },
+      {
+        title: 'Operational endpoints',
+        body: 'Internal endpoints such as smoke checks and profile consolidation are intended for deployment automation, cron jobs, and health checks. Protect them with the configured internal secret and avoid exposing them as public user workflows.',
+      },
+      {
+        title: 'Integration habit',
+        body: 'When integrating directly, start from the OpenAPI schema, use Clerk bearer tokens, respect admin-only boundaries, and test against a local or scratch database before touching production.',
       },
     ],
   },

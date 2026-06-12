@@ -2,7 +2,7 @@ name: Consolidate Fronei Profiles
 
 on:
   schedule:
-    - cron: "17 7 * * *"
+    - cron: "0 7 * * *"
   workflow_dispatch:
 
 jobs:

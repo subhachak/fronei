@@ -4,7 +4,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import check_production_config, get_settings
-from app.db.models import init_db
+from app.db.models import engine, init_db
+from app.db.schema_check import check_schema_version
 from app.routers.admin import router as admin_router
 from app.routers.analytics import router as analytics_router
 from app.routers.chat import router as chat_router
@@ -26,6 +27,7 @@ settings = get_settings()
 async def lifespan(app: FastAPI):
     check_production_config()
     init_db()
+    check_schema_version(engine)
     configure_provider_keys()
     yield
 

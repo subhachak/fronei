@@ -2469,6 +2469,40 @@ function ThinkingTicker({ sourceText }: { sourceText: string }) {
   )
 }
 
+const ARTIFACT_TICKER_FRAGMENTS: Record<string, string[]> = {
+  adr: ['weighing options', 'drafting decision', 'capturing context', 'listing consequences', 'checking alternatives'],
+  solution_comparison: ['comparing options', 'scoring criteria', 'weighing trade-offs', 'drafting matrix', 'summarising fit'],
+  trade_off_matrix: ['mapping dimensions', 'scoring options', 'building matrix', 'weighing trade-offs', 'drafting recommendation'],
+  exec_brief: ['framing the ask', 'sizing impact', 'drafting recommendation', 'checking risks', 'tightening language'],
+  risk_register: ['identifying risks', 'scoring impact', 'drafting mitigations', 'checking likelihood', 'prioritising risks'],
+  nfr_analysis: ['reviewing requirements', 'scoring trade-offs', 'checking constraints', 'drafting analysis', 'summarising fit'],
+  steering_update: ['summarising status', 'checking milestones', 'drafting update', 'flagging risks', 'next steps'],
+}
+
+function ArtifactTicker({ artifactType }: { artifactType: ArtifactType | null }) {
+  const [idx, setIdx] = useState(0)
+  const words = useMemo(() => {
+    const base = (artifactType && ARTIFACT_TICKER_FRAGMENTS[artifactType]) || ['drafting document', 'structuring sections', 'checking details']
+    return [...base, 'almost there']
+  }, [artifactType])
+
+  useEffect(() => {
+    const id = setInterval(() => setIdx(i => (i + 1) % words.length), 1100)
+    return () => clearInterval(id)
+  }, [words])
+
+  const label = artifactType ? ARTIFACT_TYPES.find(a => a.value === artifactType)?.label : null
+
+  return (
+    <div className="thinking-state artifact-ticker">
+      <div className="typing-dot"><span /><span /><span /></div>
+      <span className="thinking-label">
+        {label ? `Building ${label}` : 'Building artifact'} — <span key={idx} className="ticker-word">{words[idx]}</span>…
+      </span>
+    </div>
+  )
+}
+
 function PipelineLog({
   steps,
   startTs,
@@ -3473,6 +3507,7 @@ export default function Home() {
   // Status
   const [loading, setLoading]     = useState(false)
   const [streaming, setStreaming] = useState(false)
+  const [artifactGenerating, setArtifactGenerating] = useState(false)
   const [refining, setRefining]   = useState(false)
   const [error, setError]         = useState('')
   const [copied, setCopied]       = useState<number | null>(null)
@@ -4348,6 +4383,8 @@ export default function Home() {
         return
       }
 
+      const isArtifactRequest = !!artifactType
+
       const res = await apiFetch('/conversations/chat/stream', {
         method: 'POST',
         body: JSON.stringify({
@@ -4461,13 +4498,18 @@ export default function Home() {
             setLiveSteps([])
             setSubCompletions(new Map())
             setStreaming(true)
-            setMessages(prev => prev.map(m => m.id === tempAsstId ? { ...m, content: m.content + (data.text as string) } : m))
+            if (isArtifactRequest) {
+              setArtifactGenerating(true)
+            } else {
+              setMessages(prev => prev.map(m => m.id === tempAsstId ? { ...m, content: m.content + (data.text as string) } : m))
+            }
 
           } else if (eventType === 'refine_start') {
             setLiveSteps([])
             setSubCompletions(new Map())
             setRefining(true)
             setStreaming(false)
+            setArtifactGenerating(false)
             setMessages(prev => prev.map(m => m.id === tempAsstId ? { ...m, content: '' } : m))
 
           } else if (eventType === 'refine_token') {
@@ -4477,6 +4519,7 @@ export default function Home() {
             if (!startRoute && data.route) startRoute = data.route as RouteDecision
             setStreaming(false)
             setRefining(false)
+            setArtifactGenerating(false)
             setLiveSteps([])
             setSubCompletions(new Map())
             setLiveAssistantId(null)
@@ -4528,6 +4571,7 @@ export default function Home() {
       setLoading(false)
       setStreaming(false)
       setRefining(false)
+      setArtifactGenerating(false)
       setIsExtracting(false)
       setLiveSteps([])
       setSubCompletions(new Map())
@@ -4902,6 +4946,10 @@ export default function Home() {
                                 </div>
                               </div>
                             </div>
+                          )
+                          : m.id === liveAssistantId && artifactGenerating
+                          ? (
+                            <ArtifactTicker artifactType={artifactType} />
                           )
                           : m.content
                           ? (

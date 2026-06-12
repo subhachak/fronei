@@ -19,6 +19,10 @@ from app.services.prompts import (
 
 MAX_COMPLETION_TOKENS = 8192
 DEEP_RESEARCH_MAX_COMPLETION_TOKENS = 16384
+
+# Hard caps so a stalled provider connection can't hang the SSE stream forever.
+STREAM_REQUEST_TIMEOUT_S = 120   # overall time allowed for the HTTP call to complete
+STREAM_CHUNK_TIMEOUT_S = 45      # max gap allowed between successive chunks
 # Keep only recent turns — older context is now covered by the running_summary
 # injected via planner_context, so sending 20+ raw messages is wasteful.
 MAX_HISTORY_MESSAGES = 8
@@ -244,10 +248,47 @@ def _call_model(
 
 # ── Streaming helpers ─────────────────────────────────────────────────────────
 
+def _iter_with_stall_timeout(iterable, timeout_s: float) -> Generator:
+    """Wrap a blocking iterator so it raises TimeoutError if no item arrives
+    within `timeout_s`, instead of hanging forever on a stalled connection.
+
+    Runs the underlying iteration in a background thread and relays items
+    through a queue, so we can bound the wait on each `next()` call.
+    """
+    import queue
+    import threading
+
+    _SENTINEL = object()
+    q: "queue.Queue" = queue.Queue(maxsize=8)
+
+    def _worker() -> None:
+        try:
+            for item in iterable:
+                q.put((item, None))
+            q.put(_SENTINEL)
+        except Exception as exc:  # noqa: BLE001
+            q.put((None, exc))
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+
+    while True:
+        try:
+            item = q.get(timeout=timeout_s)
+        except queue.Empty:
+            raise TimeoutError(f"LLM stream stalled for more than {timeout_s}s")
+        if item is _SENTINEL:
+            return
+        value, exc = item
+        if exc is not None:
+            raise exc
+        yield value
+
 def _stream_call(model: str, msgs: list[dict], max_tokens: int, enable_native_search: bool):
     """completion() with stream=True, with Gemini grounding fallback."""
     kwargs: dict = {"model": model, "messages": msgs, "temperature": 0.2,
-                    "max_tokens": max_tokens, "stream": True}
+                    "max_tokens": max_tokens, "stream": True,
+                    "timeout": STREAM_REQUEST_TIMEOUT_S}
     if _is_gemini(model) and enable_native_search:
         kwargs["tools"] = _GEMINI_SEARCH_TOOL
     try:
@@ -282,7 +323,7 @@ def _stream_models(
         full_text = ""
         stream_ok = True
         try:
-            for chunk in response:
+            for chunk in _iter_with_stall_timeout(response, STREAM_CHUNK_TIMEOUT_S):
                 chunks.append(chunk)
                 token = (chunk.choices[0].delta.content or "") if chunk.choices else ""
                 if token:
@@ -293,6 +334,11 @@ def _stream_models(
 
         if not stream_ok:
             record_provider_failure(provider)
+            if full_text:
+                # Tokens were already streamed to the client for this model;
+                # retrying with a fallback would duplicate/garble output, so
+                # surface the stall as an error instead of hanging silently.
+                raise RuntimeError("LLM stream stalled after partial output.")
             continue
 
         record_provider_success(provider)

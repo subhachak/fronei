@@ -30,9 +30,10 @@ KNOWN_DOC_TYPES = {
     "meeting_notes",
     "one_pager",
     "letter",
+    "resume",
 }
 COVER_DOC_TYPES = {"executive_report", "proposal", "technical_spec"}
-COMPACT_HEADER_DOC_TYPES = {"memo", "one_pager"}
+COMPACT_HEADER_DOC_TYPES = {"memo", "one_pager", "resume"}
 TOC_DOC_TYPES = {"executive_report", "proposal"}
 
 

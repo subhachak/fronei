@@ -3484,7 +3484,6 @@ export default function Home() {
   const [quality, setQuality]             = useState<Quality>('smart')
   const [researchOn, setResearchOn]       = useState(false)
   const [webSearchOn, setWebSearchOn]     = useState(false)
-  const [documentMode, setDocumentMode]   = useState(false)
   const [previewDoc, setPreviewDoc]       = useState<GeneratedDocument | null>(null)
   const [forceModel, setForceModel]       = useState('')
   const [showWebSearch, setShowWebSearch] = useState(false)
@@ -4229,9 +4228,7 @@ export default function Home() {
     opts: { forceResearch?: boolean; suppressResearchRecommendation?: boolean } = {},
   ) {
     const rawText = (overrideText !== undefined ? overrideText : message).trim()
-    const sent = rawText || (documentMode && pendingFiles.length > 0
-      ? 'Generate a client-ready document from the attached files.'
-      : '')
+    const sent = rawText
     if ((!sent && pendingFiles.length === 0) || isBusy) return
     lastSentRef.current = sent
     setLoading(true)
@@ -4330,7 +4327,7 @@ export default function Home() {
 
         setLiveSteps(prev => [...prev, {
           stage:   'routing' as PipelineStage,
-          message: documentMode ? 'Files ready — generating document…' : 'Files ready — sending to Fronei…',
+          message: 'Files ready — sending to Fronei…',
           ts:      Date.now(),
         }])
 
@@ -4356,32 +4353,6 @@ export default function Home() {
     }
 
     try {
-      if (documentMode) {
-        if (!bubblePreCreated) {
-          setMessages(prev => [
-            ...prev,
-            { id: tempAsstId, role: 'assistant' as const, content: '', created_at: new Date().toISOString() },
-          ])
-        }
-        setLiveAssistantId(tempAsstId)
-        setLiveSteps([{
-          stage:   'routing' as PipelineStage,
-          message: 'Generating Word document…',
-          ts:      Date.now(),
-        }])
-        const generated = await generateDocumentFromPrompt(apiMessage, extractedDocs)
-        setMessages(prev => prev.map(m => m.id === tempAsstId ? {
-          ...m,
-          content: 'Generated a client-ready Word document from your prompt and downloaded it as a .docx file.',
-          created_at: new Date().toISOString(),
-          document_preview: generated,
-        } : m))
-        setPendingFiles([])
-        setLiveSteps([])
-        setLiveAssistantId(null)
-        setLoading(false)
-        return
-      }
 
       const isArtifactRequest = !!artifactType
 
@@ -4544,6 +4515,15 @@ export default function Home() {
               action:             startAction,
               research_run_id:    (data.research_run_id as number | undefined) ?? researchMeta?.run_id ?? null,
               research:           researchMeta,
+              document_preview:   data.document_preview
+                ? {
+                    title:      (data.document_preview as any).title,
+                    docType:    (data.document_preview as any).doc_type,
+                    markdown:   (data.document_preview as any).markdown,
+                    filename:   (data.document_preview as any).filename,
+                    docxBase64: (data.document_preview as any).docx_base64,
+                  } as GeneratedDocument
+                : null,
             } : m))
 
             if (wasNew && startConvId) {
@@ -5238,7 +5218,7 @@ export default function Home() {
 
               {/* Left: + button */}
               <button
-                className={`composer-plus${leftMenuOpen ? ' active' : ''}${(researchOn || webSearchOn || documentMode || pendingFiles.length > 0) ? ' has-active' : ''}`}
+                className={`composer-plus${leftMenuOpen ? ' active' : ''}${(researchOn || webSearchOn || pendingFiles.length > 0) ? ' has-active' : ''}`}
                 onClick={() => setLeftMenuOpen(v => !v)}
                 disabled={isBusy}
                 type="button"
@@ -5284,17 +5264,6 @@ export default function Home() {
                 )}
               </button>}
 
-              <button
-                className={`action-btn${documentMode ? ' active' : ''}`}
-                onClick={() => setDocumentMode(v => !v)}
-                disabled={isBusy}
-                type="button"
-                aria-label="Generate Word document"
-                title={documentMode ? 'Document generation on' : 'Generate a Word document from this prompt'}
-              >
-                <i className="ti ti-file-text" aria-hidden="true" />
-              </button>
-
               {/* Options popover trigger */}
               {(hasProfile || devMode || showWebSearch) && (
                 <button
@@ -5325,7 +5294,6 @@ export default function Home() {
                   <i className="ti ti-send" aria-hidden="true" />
                   {isExtracting
                     ? `Extracting${pendingFiles.length > 1 ? ` ${pendingFiles.length} files` : ''}…`
-                    : documentMode ? 'Generate'
                     : loading ? 'Routing…'
                     : streaming ? 'Streaming…'
                     : 'Send'}

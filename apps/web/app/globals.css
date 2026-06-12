@@ -3785,12 +3785,19 @@ pre:hover .code-copy-btn { opacity: 1; }
   max-width: 880px;
   height: 100%;
   max-height: 100%;
-  background: var(--bg-s1);
+  background: #ffffff;
+  color: #1a1a1a;
   border: 1px solid var(--bd2);
   border-radius: 16px;
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+.doc-preview-modal .doc-preview-header h2,
+.doc-preview-modal .doc-preview-body,
+.doc-preview-modal .doc-preview-content {
+  color: #1a1a1a;
 }
 
 @media (max-width: 720px) {

@@ -47,6 +47,10 @@ class Settings(BaseSettings):
     # admin_emails when unset.
     notification_emails: str = ""
 
+    # Shared secret for internal task endpoints, e.g. scheduled profile
+    # consolidation. Leave unset locally unless you need to exercise the route.
+    internal_task_secret: str = ""
+
     # Per-user rate limits (sliding window). Admins are exempt.
     rate_limit_chat_per_minute: int = 20
     rate_limit_documents_per_minute: int = 10

@@ -45,6 +45,14 @@ restartPolicyMaxRetries = 3
 # SMTP_FROM=<from address, defaults to SMTP_USER>
 # NOTIFICATION_EMAILS=subhachak@gmail.com
 #
+# Nightly personalization consolidation (optional but recommended once
+# UserProfile is enabled): set a secret, then create a Railway Cron service or
+# external scheduled job that POSTs:
+#   /internal/consolidate-profiles
+# with header:
+#   X-Internal-Secret: <same secret>
+# INTERNAL_TASK_SECRET=<random long secret>
+#
 # Concurrency caps — conservative for the 512MB starter plan; these can likely
 # go back to code defaults (4/6/5/4) once on a 1GB+ plan.
 # Start conservative, raise after confirming stable memory usage:

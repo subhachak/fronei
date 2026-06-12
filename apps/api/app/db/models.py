@@ -1,5 +1,5 @@
 from datetime import datetime, date, timezone
-from sqlalchemy import create_engine, DateTime, Float, ForeignKey, Integer, String, Text, event, func, inspect, text
+from sqlalchemy import Boolean, create_engine, DateTime, Float, ForeignKey, Integer, String, Text, event, func, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
 from app.config import get_settings
 
@@ -133,6 +133,21 @@ class RequestLog(Base):
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
+DEFAULT_DECAY_RATES: dict[str, float] = {
+    "bio": 0.005,
+    "work": 0.005,
+    "project": 0.08,
+    "preference": 0.03,
+    "communication_style": 0.01,
+    "relationship": 0.03,
+    "constraint": 0.03,
+    "temporary_plan": 0.15,
+    "tool": 0.03,
+    "personal": 0.03,
+    "general": 0.05,
+}
+
+
 class UserMemory(Base):
     __tablename__ = "user_memories"
 
@@ -140,9 +155,30 @@ class UserMemory(Base):
     user_id:                Mapped[str]      = mapped_column(String(128), nullable=False, index=True)
     content:                Mapped[str]      = mapped_column(Text)
     category:               Mapped[str]      = mapped_column(String(64), default="general")
+    scope:                  Mapped[str]      = mapped_column(String(32), default="global")
+    confidence:             Mapped[float]    = mapped_column(Float, default=0.6)
+    source:                 Mapped[str]      = mapped_column(String(16), default="stated")
+    seen_count:             Mapped[int]      = mapped_column(Integer, default=1)
+    last_seen_at:           Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    importance:             Mapped[float]    = mapped_column(Float, default=0.5)
+    decay_rate:             Mapped[float]    = mapped_column(Float, default=0.05)
+    pinned:                 Mapped[bool]     = mapped_column(Boolean, default=False)
+    status:                 Mapped[str]      = mapped_column(String(16), default="active")
+    superseded_by_id:       Mapped[int|None] = mapped_column(Integer, nullable=True)
     source_conversation_id: Mapped[int|None] = mapped_column(Integer, nullable=True)
     created_at:             Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at:             Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class UserProfile(Base):
+    __tablename__ = "user_profiles"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(String(128), unique=True, nullable=False, index=True)
+    profile_json: Mapped[str] = mapped_column(Text, default="{}")
+    last_consolidated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
 class WritingSample(Base):
@@ -307,6 +343,38 @@ def _ensure_sqlite_schema(bind) -> None:
     if has_table("request_logs") and not has_column("request_logs", "user_id"):
         statements.append("ALTER TABLE request_logs ADD COLUMN user_id VARCHAR(128) NOT NULL DEFAULT ''")
 
+    if has_table("user_memories"):
+        memory_columns = [
+            ("scope", "VARCHAR(32) DEFAULT 'global'"),
+            ("confidence", "FLOAT DEFAULT 0.6"),
+            ("source", "VARCHAR(16) DEFAULT 'stated'"),
+            ("seen_count", "INTEGER DEFAULT 1"),
+            ("last_seen_at", "DATETIME"),
+            ("importance", "FLOAT DEFAULT 0.5"),
+            ("decay_rate", "FLOAT DEFAULT 0.05"),
+            ("pinned", "BOOLEAN DEFAULT 0"),
+            ("status", "VARCHAR(16) DEFAULT 'active'"),
+            ("superseded_by_id", "INTEGER"),
+        ]
+        for column, ddl in memory_columns:
+            if not has_column("user_memories", column):
+                statements.append(f"ALTER TABLE user_memories ADD COLUMN {column} {ddl}")
+        statements.append("CREATE INDEX IF NOT EXISTS ix_user_memories_user_id_status ON user_memories (user_id, status)")
+
+    if not has_table("user_profiles"):
+        statements.append("""
+            CREATE TABLE user_profiles (
+                id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                user_id VARCHAR(128) NOT NULL,
+                profile_json TEXT DEFAULT '{}',
+                last_consolidated_at DATETIME,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL
+            )
+        """)
+    if has_table("user_profiles"):
+        statements.append("CREATE UNIQUE INDEX IF NOT EXISTS ix_user_profiles_user_id ON user_profiles (user_id)")
+
     admin_table_sql = {
         "user_admin_controls": """
             CREATE TABLE user_admin_controls (
@@ -453,10 +521,13 @@ def _ensure_sqlite_schema(bind) -> None:
 
 
 def get_all_memories(db, user_id: str) -> str:
-    """Return all memories for a user as a formatted block, newest first."""
+    """Deprecated: return active memories for a user as a formatted block.
+
+    New prompt paths should use app.services.personal_context.build_context().
+    """
     mems = (
         db.query(UserMemory)
-        .filter(UserMemory.user_id == user_id)
+        .filter(UserMemory.user_id == user_id, UserMemory.status == "active")
         .order_by(UserMemory.updated_at.desc())
         .all()
     )

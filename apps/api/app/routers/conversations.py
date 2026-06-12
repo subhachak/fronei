@@ -13,7 +13,7 @@ from app.auth import CurrentUser, CurrentUserIsAdmin
 from app.config import get_settings
 from app.db.models import (
     Conversation, ConversationMessage, RequestLog, SessionLocal,
-    get_all_memories, get_effective_monthly_budget, get_monthly_spend,
+    get_effective_monthly_budget, get_monthly_spend,
     get_twin_profile, is_user_pending, is_user_suspended,
 )
 from app.schemas import (
@@ -28,6 +28,7 @@ from app.services.research_orchestrator import (
 )
 from app.services.research_metadata import research_meta_for_run_id
 from app.services import memory_extractor, memory_writer
+from app.services.personal_context import build_context
 from app.services.chat_pipeline import (
     PipelineSetup, PipelineResult, SubQueryExecution,
     run_pipeline, build_exec_log, build_pipeline_setup,
@@ -358,7 +359,7 @@ def chat(req: ConvChatRequest, user_id: str = CurrentUser, is_admin: bool = Curr
                 )
 
         history = _build_history(conv, db)
-        user_memory = get_all_memories(db, user_id)
+        user_memory = build_context(db, user_id)
 
         db.add(ConversationMessage(conversation_id=conv.id, role="user", content=req.message))
         db.flush()
@@ -483,7 +484,7 @@ def chat_stream(req: ConvChatRequest, user_id: str = CurrentUser, is_admin: bool
                     )
 
             history = _build_history(conv, db)
-            user_memory = get_all_memories(db, user_id)
+            user_memory = build_context(db, user_id)
             db.add(ConversationMessage(conversation_id=conv.id, role="user", content=req.message))
             db.flush()
 

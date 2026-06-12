@@ -10,8 +10,10 @@ from app.routers.analytics import router as analytics_router
 from app.routers.chat import router as chat_router
 from app.routers.conversations import router as conversations_router
 from app.routers.documents import router as documents_router
+from app.routers.internal import router as internal_router
 from app.routers.memory import router as memory_router
 from app.routers.models import router as models_router
+from app.routers.personal_context import router as personal_context_router
 from app.routers.research_runs import router as research_runs_router
 from app.routers.twin_profile import router as twin_profile_router
 from app.routers.users import router as users_router
@@ -49,8 +51,10 @@ app.include_router(admin_router)
 app.include_router(chat_router)
 app.include_router(conversations_router)
 app.include_router(documents_router)
+app.include_router(internal_router)
 app.include_router(memory_router)
 app.include_router(models_router)
+app.include_router(personal_context_router)
 app.include_router(research_runs_router)
 app.include_router(twin_profile_router)
 app.include_router(users_router)

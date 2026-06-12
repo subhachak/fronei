@@ -2995,6 +2995,63 @@ pre:hover .code-copy-btn { opacity: 1; }
   color: var(--t2);
 }
 
+.settings-profile-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.settings-profile-cell {
+  border: 1px solid var(--bd);
+  border-radius: 8px;
+  padding: 10px;
+  background: var(--bg-s2);
+  text-align: left;
+  min-width: 0;
+  cursor: pointer;
+}
+
+.settings-profile-cell span,
+.settings-chip-section > span,
+.memory-footnote {
+  color: var(--t5);
+  font-size: 11px;
+}
+
+.settings-profile-cell strong {
+  display: block;
+  color: var(--t2);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
+  margin-top: 3px;
+  overflow-wrap: anywhere;
+}
+
+.settings-chip-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.settings-chip-section > div,
+.memory-meta,
+.memory-actions,
+.memory-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.memory-toolbar {
+  justify-content: space-between;
+}
+
+.memory-toolbar .c-select {
+  min-width: 180px;
+}
+
 .settings-sample-list {
   display: flex;
   flex-direction: column;
@@ -3009,6 +3066,48 @@ pre:hover .code-copy-btn { opacity: 1; }
   border-radius: 8px;
   padding: 9px 10px;
   background: var(--bg-s2);
+}
+
+.settings-memory.inactive {
+  opacity: 0.72;
+}
+
+.memory-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.memory-actions {
+  justify-content: flex-end;
+  flex: 0 0 auto;
+}
+
+.memory-confidence {
+  border-radius: 999px;
+  padding: 2px 7px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.confidence-high {
+  background: color-mix(in srgb, var(--green) 14%, transparent);
+  color: var(--green);
+}
+
+.confidence-medium {
+  background: color-mix(in srgb, var(--orange) 16%, transparent);
+  color: var(--orange);
+}
+
+.confidence-low {
+  background: rgba(248,113,113,0.12);
+  color: #f87171;
+}
+
+.conv-action-btn.active {
+  color: var(--ac-text);
+  border-color: var(--ac-bd);
 }
 .settings-sample > div,
 .settings-memory p {
@@ -3025,6 +3124,11 @@ pre:hover .code-copy-btn { opacity: 1; }
   color: var(--t4);
   font-size: 12px;
   line-height: 1.45;
+}
+
+.memory-footnote {
+  display: block;
+  margin-top: 5px;
 }
 .settings-textarea {
   min-height: 100px;

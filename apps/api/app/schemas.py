@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Literal
+from typing import Any, Literal
 
 TaskType = Literal[
     "coding", "reasoning", "architecture", "writing", "summarization",
@@ -288,6 +288,14 @@ class MemoryItem(BaseModel):
     id: int
     content: str
     category: str
+    scope: str = "global"
+    confidence: float = 0.6
+    source: str = "stated"
+    seen_count: int = 1
+    last_seen_at: str | None = None
+    importance: float = 0.5
+    pinned: bool = False
+    status: str = "active"
     source_conversation_id: int | None = None
     created_at: str
     updated_at: str
@@ -295,6 +303,25 @@ class MemoryItem(BaseModel):
 class MemoryCreate(BaseModel):
     content: str = Field(min_length=1, max_length=500)
     category: str = Field(default="general", max_length=64)
+    scope: str = Field(default="global", max_length=32)
+
+
+class MemoryUpdate(BaseModel):
+    pinned: bool | None = None
+    content: str | None = Field(default=None, min_length=1, max_length=500)
+    category: str | None = Field(default=None, max_length=64)
+    scope: str | None = Field(default=None, max_length=32)
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    status: Literal["active", "superseded", "archived"] | None = None
+
+
+class PersonalProfileOut(BaseModel):
+    profile: dict[str, Any] = {}
+    last_consolidated_at: str | None = None
+
+
+class PersonalProfileUpdate(BaseModel):
+    overrides: dict[str, Any] = {}
 
 
 # ── Writing samples ───────────────────────────────────────────────────

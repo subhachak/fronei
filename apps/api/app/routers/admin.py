@@ -33,6 +33,7 @@ from app.db.models import (
     User,
     UserAdminControl,
     UserMemory,
+    UserProfile,
     WritingSample,
     get_monthly_spend,
 )
@@ -71,6 +72,7 @@ class PrivacyDeleteRequest(BaseModel):
     memories: bool = False
     writing_samples: bool = False
     twin_profile: bool = False
+    user_profile: bool = False
     research_runs: bool = False
     confirm_user_id: str | None = None
 
@@ -158,6 +160,7 @@ def _privacy_counts(db, user_id: str) -> dict[str, int]:
             if conv_ids else 0
         ),
         "memories": db.query(UserMemory).filter(UserMemory.user_id == user_id).count(),
+        "user_profiles": db.query(UserProfile).filter(UserProfile.user_id == user_id).count(),
         "writing_samples": db.query(WritingSample).filter(WritingSample.user_id == user_id).count(),
         "twin_profiles": db.query(TwinProfile).filter(TwinProfile.user_id == user_id).count(),
         "research_runs": len(run_ids),
@@ -225,6 +228,7 @@ def _all_known_user_ids(db) -> set[str]:
         db.query(Conversation.user_id).distinct().all(),
         db.query(RequestLog.user_id).distinct().all(),
         db.query(UserMemory.user_id).distinct().all(),
+        db.query(UserProfile.user_id).distinct().all(),
         db.query(WritingSample.user_id).distinct().all(),
         db.query(TwinProfile.user_id).distinct().all(),
         db.query(ResearchRun.user_id).distinct().all(),
@@ -512,6 +516,7 @@ def user_detail(user_id: str, admin: AdminPrincipal = Depends(require_admin)) ->
                     .count()
                 ),
                 "memories": db.query(UserMemory).filter(UserMemory.user_id == user_id).count(),
+                "user_profiles": db.query(UserProfile).filter(UserProfile.user_id == user_id).count(),
                 "writing_samples": db.query(WritingSample).filter(WritingSample.user_id == user_id).count(),
                 "twin_profiles": db.query(TwinProfile).filter(TwinProfile.user_id == user_id).count(),
                 "research_runs": db.query(ResearchRun).filter(ResearchRun.user_id == user_id).count(),
@@ -643,6 +648,8 @@ def privacy_delete(
         deleted: dict[str, int] = {}
         if body.memories:
             deleted["memories"] = db.query(UserMemory).filter(UserMemory.user_id == user_id).delete()
+        if body.user_profile:
+            deleted["user_profiles"] = db.query(UserProfile).filter(UserProfile.user_id == user_id).delete()
         if body.writing_samples:
             deleted["writing_samples"] = db.query(WritingSample).filter(WritingSample.user_id == user_id).delete()
         if body.twin_profile:

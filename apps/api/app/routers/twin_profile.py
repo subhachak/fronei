@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 
 from app.auth import CurrentUser
-from app.db.models import SessionLocal, TwinProfile, WritingSample
+from app.db.models import SessionLocal, TwinProfile, UserProfile, WritingSample
 from app.schemas import (
     FingerprintOut,
     TwinProfileOut,
@@ -28,15 +28,38 @@ def _sample_out(s: WritingSample) -> WritingSampleOut:
     )
 
 
-def _profile_out(profile: TwinProfile | None, sample_count: int) -> TwinProfileOut:
+def _profile_json(profile: UserProfile | None) -> dict:
+    if not profile or not profile.profile_json:
+        return {}
+    try:
+        data = json.loads(profile.profile_json)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _fingerprint_from_user_profile(profile: UserProfile | None) -> FingerprintOut | None:
+    communication_style = _profile_json(profile).get("communication_style")
+    if not isinstance(communication_style, dict) or not communication_style:
+        return None
+    fingerprint_source = communication_style.get("fingerprint")
+    if isinstance(fingerprint_source, dict):
+        communication_style = fingerprint_source
+    try:
+        return FingerprintOut(**communication_style)
+    except Exception:
+        return None
+
+
+def _profile_out(profile: TwinProfile | None, sample_count: int, user_profile: UserProfile | None = None, user_id: str = "") -> TwinProfileOut:
+    fingerprint = _fingerprint_from_user_profile(user_profile)
     if profile is None:
-        return TwinProfileOut(user_id="", sample_count=sample_count)
-    fingerprint = None
+        return TwinProfileOut(user_id=user_id if fingerprint else "", fingerprint=fingerprint, sample_count=sample_count)
     if profile.fingerprint_json:
         try:
-            fingerprint = FingerprintOut(**json.loads(profile.fingerprint_json))
+            fingerprint = fingerprint or FingerprintOut(**json.loads(profile.fingerprint_json))
         except Exception:
-            fingerprint = None
+            pass
     prefs = {}
     if profile.prefs_json:
         try:
@@ -60,8 +83,9 @@ def get_profile(user_id: str = CurrentUser) -> TwinProfileOut:
     db = SessionLocal()
     try:
         profile = db.query(TwinProfile).filter(TwinProfile.user_id == user_id).first()
+        user_profile = db.query(UserProfile).filter(UserProfile.user_id == user_id).first()
         count = db.query(WritingSample).filter(WritingSample.user_id == user_id).count()
-        return _profile_out(profile, count)
+        return _profile_out(profile, count, user_profile=user_profile, user_id=user_id)
     finally:
         db.close()
 
@@ -69,6 +93,7 @@ def get_profile(user_id: str = CurrentUser) -> TwinProfileOut:
 @router.put("/prefs", response_model=TwinProfileOut)
 def update_prefs(
     body: TwinProfilePrefsUpdate,
+    background_tasks: BackgroundTasks,
     user_id: str = CurrentUser,
 ) -> TwinProfileOut:
     db = SessionLocal()
@@ -88,8 +113,10 @@ def update_prefs(
         profile.updated_at = datetime.now(timezone.utc)
         db.commit()
         db.refresh(profile)
+        background_tasks.add_task(_trigger_consolidation, user_id)
         count = db.query(WritingSample).filter(WritingSample.user_id == user_id).count()
-        return _profile_out(profile, count)
+        user_profile = db.query(UserProfile).filter(UserProfile.user_id == user_id).first()
+        return _profile_out(profile, count, user_profile=user_profile, user_id=user_id)
     finally:
         db.close()
 
@@ -174,3 +201,11 @@ def _trigger_extraction(user_id: str) -> None:
     from app.services.fingerprint_extractor import extract_and_store
 
     extract_and_store(user_id)
+    _trigger_consolidation(user_id)
+
+
+def _trigger_consolidation(user_id: str) -> None:
+    """Called as a background task. Import here to avoid circular imports."""
+    from app.services.memory_consolidator import consolidate_user_silent
+
+    consolidate_user_silent(user_id)

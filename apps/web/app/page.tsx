@@ -49,6 +49,28 @@ type AnalyticsData = {
   model_usage: ModelUsageStat[]; task_distribution: TaskStat[]; model_stats: ModelDetailStat[]
 }
 
+type MemoryItem = {
+  id: number
+  content: string
+  category: string
+  scope: string
+  confidence: number
+  source: string
+  seen_count: number
+  last_seen_at: string | null
+  importance: number
+  pinned: boolean
+  status: string
+  created_at: string
+  updated_at: string
+}
+
+type MemoryPatch = Partial<Pick<MemoryItem, 'content' | 'category' | 'scope' | 'confidence' | 'pinned' | 'status'>>
+type PersonalContextProfile = {
+  profile: Record<string, unknown>
+  last_consolidated_at: string | null
+}
+
 const ARTIFACT_TYPES: { value: ArtifactType; label: string; icon: string; hint: string }[] = [
   { value: 'adr',                 label: 'ADR',             icon: 'ti-gavel',           hint: 'Architecture Decision Record' },
   { value: 'solution_comparison', label: 'Compare',         icon: 'ti-scale',           hint: 'Solution option comparison' },
@@ -925,6 +947,35 @@ function scorePct(v?: number): string {
   return v == null ? '—' : `${Math.round(v * 100)}`
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function profileValueText(value: unknown): string {
+  if (value == null || value === '') return 'Not set'
+  if (Array.isArray(value)) return value.length ? value.map(profileValueText).join(', ') : 'Not set'
+  if (isRecord(value)) {
+    const parts = Object.entries(value)
+      .filter(([, v]) => v != null && v !== '' && (!Array.isArray(v) || v.length > 0))
+      .slice(0, 6)
+      .map(([k, v]) => `${k.replace(/_/g, ' ')}: ${profileValueText(v)}`)
+    return parts.length ? parts.join('; ') : 'Not set'
+  }
+  return String(value)
+}
+
+function profileList(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map(profileValueText).filter(v => v && v !== 'Not set').slice(0, 8)
+  if (typeof value === 'string' && value.trim()) return [value.trim()]
+  return []
+}
+
+function memoryConfidenceLabel(value: number): string {
+  if (value >= 0.8) return 'high'
+  if (value >= 0.5) return 'medium'
+  return 'low'
+}
+
 function renderMarkdownWithCitations(content: string, research?: ResearchMeta | null): string {
   let html = DOMPurify.sanitize(marked.parse(content) as string)
   if (!research || research.sources.length === 0) return html
@@ -1534,8 +1585,12 @@ function SettingsView({
   sampleSubmitting,
   memories,
   memoriesLoaded,
+  personalProfile,
+  profileLoaded,
+  onUpdateMemory,
   onDeleteMemory,
   onClearMemories,
+  onSaveProfileOverrides,
   userName,
   userDomain,
   onUserNameChange,
@@ -1573,10 +1628,14 @@ function SettingsView({
   onDeleteSample: (id: number) => void
   onReExtract: () => void
   sampleSubmitting: boolean
-  memories: {id: number; content: string; category: string}[]
+  memories: MemoryItem[]
   memoriesLoaded: boolean
+  personalProfile: PersonalContextProfile | null
+  profileLoaded: boolean
+  onUpdateMemory: (id: number, patch: MemoryPatch) => Promise<void>
   onDeleteMemory: (id: number) => void
   onClearMemories: () => void
+  onSaveProfileOverrides: (overrides: Record<string, unknown>) => Promise<void>
   userName: string
   userDomain: string
   onUserNameChange: (v: string) => void
@@ -1597,7 +1656,41 @@ function SettingsView({
 }) {
   const [tab, setTab] = useState<SettingsTab>(initialTab ?? 'general')
   const [guidePage, setGuidePage] = useState<UserGuidePageId>('start')
+  const [memoryCategoryFilter, setMemoryCategoryFilter] = useState('all')
+  const [showInactiveMemories, setShowInactiveMemories] = useState(false)
   const activeGuidePage = USER_GUIDE_PAGES.find(page => page.id === guidePage) ?? USER_GUIDE_PAGES[0]
+  const profile = personalProfile?.profile ?? {}
+  const profileOverrides = isRecord(profile.overrides) ? profile.overrides : {}
+  const profileField = (key: string): unknown => (
+    profileOverrides[key] !== undefined ? profileOverrides[key] : profile[key]
+  )
+  const profileSummary = [
+    ['Role', profileField('role')],
+    ['Company', profileField('company')],
+    ['Location', profileField('location')],
+    ['Bio', profileField('bio')],
+  ]
+  const activeProjects = profileList(profileField('active_projects'))
+  const keyPreferences = profileList(profileField('key_preferences'))
+  const constraints = profileList(profileField('constraints'))
+  const communicationStyle = profileField('communication_style')
+  const memoryCategories = Array.from(new Set(memories.map(m => m.category).filter(Boolean))).sort()
+  const visibleMemories = memories
+    .filter(m => showInactiveMemories || m.status === 'active')
+    .filter(m => memoryCategoryFilter === 'all' || m.category === memoryCategoryFilter)
+
+  async function editProfileOverride(key: string, label: string) {
+    const current = profileValueText(profileField(key))
+    const next = window.prompt(`Update ${label}`, current === 'Not set' ? '' : current)
+    if (next == null) return
+    await onSaveProfileOverrides({ [key]: next.trim() })
+  }
+
+  async function editMemory(memory: MemoryItem) {
+    const next = window.prompt('Update memory', memory.content)
+    if (next == null || !next.trim() || next.trim() === memory.content) return
+    await onUpdateMemory(memory.id, { content: next.trim() })
+  }
 
   const nav: { id: SettingsTab; label: string; icon: string }[] = [
     { id: 'general',   label: 'General',   icon: 'ti-settings' },
@@ -1748,16 +1841,92 @@ function SettingsView({
           {tab === 'memory' && (
             <div className="settings-card-list">
               <div className="settings-card">
-                <div className="settings-card-head"><strong>Saved memories</strong>{memories.length > 0 && <button className="toggle-chip" onClick={onClearMemories} type="button">Clear all</button>}</div>
+                <div className="settings-card-head">
+                  <strong>Profile summary<span>Fronei uses this compact profile before ranked memories.</span></strong>
+                  {!profileLoaded && <span className="settings-muted">Loading...</span>}
+                </div>
+                {profileLoaded && (
+                  <>
+                    <div className="settings-profile-grid">
+                      {profileSummary.map(([label, value]) => (
+                        <button key={label as string} className="settings-profile-cell" onClick={() => editProfileOverride(String(label).toLowerCase(), String(label))} type="button">
+                          <span>{label as string}</span>
+                          <strong>{profileValueText(value)}</strong>
+                        </button>
+                      ))}
+                    </div>
+                    <div className="settings-chip-section">
+                      <span>Active projects</span>
+                      <div>{activeProjects.length ? activeProjects.map(item => <span key={item} className="exec-pill">{item}</span>) : <span className="settings-muted">None yet</span>}</div>
+                    </div>
+                    <div className="settings-chip-section">
+                      <span>Key preferences</span>
+                      <div>{keyPreferences.length ? keyPreferences.map(item => <span key={item} className="exec-pill">{item}</span>) : <span className="settings-muted">None yet</span>}</div>
+                    </div>
+                    <div className="settings-chip-section">
+                      <span>Constraints</span>
+                      <div>{constraints.length ? constraints.map(item => <span key={item} className="exec-pill">{item}</span>) : <span className="settings-muted">None yet</span>}</div>
+                    </div>
+                  </>
+                )}
+              </div>
+
+              <div className="settings-card">
+                <div className="settings-card-head">
+                  <strong>What Fronei remembers<span>Review, pin, correct, or scrub remembered facts.</span></strong>
+                  {memories.length > 0 && <button className="toggle-chip danger" onClick={onClearMemories} type="button">Clear all</button>}
+                </div>
+                <div className="memory-toolbar">
+                  <select className="c-select" value={memoryCategoryFilter} onChange={e => setMemoryCategoryFilter(e.target.value)}>
+                    <option value="all">All categories</option>
+                    {memoryCategories.map(category => <option key={category} value={category}>{category}</option>)}
+                  </select>
+                  <button className={`toggle-chip${showInactiveMemories ? ' on' : ''}`} onClick={() => setShowInactiveMemories(v => !v)} type="button">
+                    {showInactiveMemories ? 'Hide inactive' : 'Show inactive'}
+                  </button>
+                </div>
                 {!memoriesLoaded && <span className="settings-muted">Loading...</span>}
-                {memoriesLoaded && memories.length === 0 && <span className="settings-muted">Nothing saved yet.</span>}
-                {memories.map(m => (
-                  <div key={m.id} className="settings-memory">
-                    <span className="exec-pill">{m.category}</span>
-                    <p>{m.content}</p>
-                    <button className="conv-action-btn danger" onClick={() => onDeleteMemory(m.id)} type="button" aria-label="Delete memory"><i className="ti ti-x" /></button>
+                {memoriesLoaded && visibleMemories.length === 0 && <span className="settings-muted">Nothing saved for this view.</span>}
+                {visibleMemories.map(m => (
+                  <div key={m.id} className={`settings-memory${m.status !== 'active' ? ' inactive' : ''}`}>
+                    <div className="memory-main">
+                      <div className="memory-meta">
+                        <span className="exec-pill">{m.category}</span>
+                        <span className="exec-pill">{m.scope}</span>
+                        <span className="exec-pill">{m.source}</span>
+                        <span className={`memory-confidence confidence-${memoryConfidenceLabel(m.confidence)}`}>{memoryConfidenceLabel(m.confidence)} confidence</span>
+                        {m.status !== 'active' && <span className="exec-pill">{m.status}</span>}
+                      </div>
+                      <p>{m.content}</p>
+                      <span className="memory-footnote">Seen {m.seen_count}x{m.last_seen_at ? ` · last ${new Date(m.last_seen_at).toLocaleDateString()}` : ''}</span>
+                    </div>
+                    <div className="memory-actions">
+                      <button className={`conv-action-btn${m.pinned ? ' active' : ''}`} onClick={() => onUpdateMemory(m.id, { pinned: !m.pinned })} type="button" aria-label={m.pinned ? 'Unpin memory' : 'Pin memory'} title={m.pinned ? 'Unpin' : 'Pin'}>
+                        <i className={`ti ${m.pinned ? 'ti-star-filled' : 'ti-star'}`} />
+                      </button>
+                      <button className="conv-action-btn" onClick={() => editMemory(m)} type="button" aria-label="Edit memory" title="Edit">
+                        <i className="ti ti-pencil" />
+                      </button>
+                      <button className="conv-action-btn" onClick={() => onUpdateMemory(m.id, { status: 'archived', confidence: 0 })} type="button" aria-label="Mark memory as wrong" title="Mark wrong">
+                        <i className="ti ti-ban" />
+                      </button>
+                      <button className="conv-action-btn danger" onClick={() => onDeleteMemory(m.id)} type="button" aria-label="Delete memory" title="Delete"><i className="ti ti-x" /></button>
+                    </div>
                   </div>
                 ))}
+              </div>
+
+              <div className="settings-card">
+                <div className="settings-card-head"><strong>Writing style<span>Derived from writing samples and profile consolidation.</span></strong></div>
+                {profileLoaded && profileValueText(communicationStyle) !== 'Not set' ? (
+                  <div className="settings-grid">
+                    {Object.entries(isRecord(communicationStyle) ? communicationStyle : { style: communicationStyle }).slice(0, 8).map(([key, value]) => (
+                      <span key={key}>{key.replace(/_/g, ' ')} <strong>{profileValueText(value)}</strong></span>
+                    ))}
+                  </div>
+                ) : (
+                  <span className="settings-muted">Add writing samples or keep chatting to build this profile.</span>
+                )}
               </div>
             </div>
           )}
@@ -2623,7 +2792,7 @@ function AdminView({
                 <button className="toggle-chip" onClick={() => privacyDelete(selectedUser.user_id, { memories: true })} type="button">Delete memories</button>
                 <button className="toggle-chip" onClick={() => privacyDelete(selectedUser.user_id, { writing_samples: true, twin_profile: true })} type="button">Delete voice profile</button>
                 <button className="toggle-chip" onClick={() => privacyDelete(selectedUser.user_id, { research_runs: true })} type="button">Delete research</button>
-                <button className="toggle-chip danger" onClick={() => privacyDelete(selectedUser.user_id, { conversations: true, memories: true, writing_samples: true, twin_profile: true, research_runs: true })} type="button">Delete all user data</button>
+                <button className="toggle-chip danger" onClick={() => privacyDelete(selectedUser.user_id, { conversations: true, memories: true, user_profile: true, writing_samples: true, twin_profile: true, research_runs: true })} type="button">Delete all user data</button>
               </div>
               </>
               )}
@@ -2845,9 +3014,11 @@ export default function Home() {
   const [, setTick] = useState(0)
 
   // Memory
-  const [memories, setMemories]             = useState<{id: number; content: string; category: string}[]>([])
+  const [memories, setMemories]             = useState<MemoryItem[]>([])
   const [memoriesLoaded, setMemoriesLoaded] = useState(false)
   const [memoriesOpen, setMemoriesOpen]     = useState(false)
+  const [personalProfile, setPersonalProfile] = useState<PersonalContextProfile | null>(null)
+  const [personalProfileLoaded, setPersonalProfileLoaded] = useState(false)
   const [hasProfile, setHasProfile]         = useState(false)
 
   // Twin profile
@@ -3100,10 +3271,22 @@ export default function Home() {
 
   useEffect(() => {
     if (!memoriesOpen || memoriesLoaded) return
-    apiFetch('/memory')
+    apiFetch('/memory?include_superseded=true')
       .then(r => r.ok ? r.json() : [])
       .then(m => { setMemories(m); setMemoriesLoaded(true) })
-      .catch(() => {})
+      .catch(() => { setMemoriesLoaded(true) })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [memoriesOpen])
+
+  useEffect(() => {
+    if (!memoriesOpen || personalProfileLoaded) return
+    apiFetch('/personal-context/profile')
+      .then(r => r.ok ? r.json() : null)
+      .then((p: PersonalContextProfile | null) => {
+        setPersonalProfile(p)
+        setPersonalProfileLoaded(true)
+      })
+      .catch(() => { setPersonalProfileLoaded(true) })
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [memoriesOpen])
 
@@ -3290,9 +3473,30 @@ export default function Home() {
     setMemories(prev => prev.filter(m => m.id !== id))
   }
 
+  async function updateMemory(id: number, patch: MemoryPatch) {
+    const res = await apiFetch(`/memory/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    })
+    if (!res.ok) return
+    const updated: MemoryItem = await res.json()
+    setMemories(prev => prev.map(m => m.id === id ? updated : m))
+  }
+
   async function clearAllMemories() {
     await apiFetch('/memory?confirm=true', { method: 'DELETE' })
     setMemories([])
+  }
+
+  async function saveProfileOverrides(overrides: Record<string, unknown>) {
+    const res = await apiFetch('/personal-context/profile', {
+      method: 'PATCH',
+      body: JSON.stringify({ overrides }),
+    })
+    if (!res.ok) return
+    const updated: PersonalContextProfile = await res.json()
+    setPersonalProfile(updated)
+    setPersonalProfileLoaded(true)
   }
 
   async function loadTwinProfile() {
@@ -3927,8 +4131,12 @@ export default function Home() {
             sampleSubmitting={sampleSubmitting}
             memories={memories}
             memoriesLoaded={memoriesLoaded}
+            personalProfile={personalProfile}
+            profileLoaded={personalProfileLoaded}
+            onUpdateMemory={updateMemory}
             onDeleteMemory={deleteMemory}
             onClearMemories={clearAllMemories}
+            onSaveProfileOverrides={saveProfileOverrides}
             userName={userName}
             userDomain={userDomain}
             onUserNameChange={setUserName}

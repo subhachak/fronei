@@ -735,6 +735,8 @@ def usage(
                 by_user[user_id]["cost"] += float(cost or 0)
                 by_user[user_id]["requests"] += int(count or 0)
 
+        user_profiles = _user_profiles(db, by_user.keys())
+
         by_model: dict[str, dict] = defaultdict(lambda: {"cost": 0.0, "requests": 0, "latency_total": 0.0, "latency_count": 0})
         for model, cost, count, avg_latency in (
             msg_base.with_entities(

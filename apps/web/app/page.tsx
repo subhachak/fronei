@@ -725,6 +725,13 @@ function inferDocumentTitle(prompt: string) {
   return (cleaned || 'Fronei document').slice(0, 90)
 }
 
+function base64ToArrayBuffer(base64: string): ArrayBuffer {
+  const byteChars = atob(base64)
+  const bytes = new Uint8Array(byteChars.length)
+  for (let i = 0; i < byteChars.length; i++) bytes[i] = byteChars.charCodeAt(i)
+  return bytes.buffer
+}
+
 function base64ToBlob(base64: string, mimeType: string): Blob {
   const byteChars = atob(base64)
   const byteArrays: BlobPart[] = []
@@ -2315,7 +2322,23 @@ const DOC_TYPE_LABELS: Record<string, string> = {
 }
 
 function DocumentPreviewModal({ doc, onClose }: { doc: GeneratedDocument; onClose: () => void }) {
-  const html = useMemo(() => DOMPurify.sanitize(marked.parse(doc.markdown) as string), [doc.markdown])
+  const [html, setHtml] = useState<string | null>(null)
+  const [error, setError] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    setHtml(null)
+    setError(false)
+    import('mammoth')
+      .then(mammoth => mammoth.convertToHtml({ arrayBuffer: base64ToArrayBuffer(doc.docxBase64) }))
+      .then(result => {
+        if (!cancelled) setHtml(DOMPurify.sanitize(result.value))
+      })
+      .catch(() => {
+        if (!cancelled) setError(true)
+      })
+    return () => { cancelled = true }
+  }, [doc.docxBase64])
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
@@ -2354,7 +2377,16 @@ function DocumentPreviewModal({ doc, onClose }: { doc: GeneratedDocument; onClos
           </div>
         </header>
         <div className="doc-preview-body">
-          <div className="markdown-body doc-preview-content" dangerouslySetInnerHTML={{ __html: html }} />
+          {error ? (
+            <div className="markdown-body doc-preview-content" dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(marked.parse(doc.markdown) as string) }} />
+          ) : html === null ? (
+            <div className="thinking-state">
+              <div className="typing-dot"><span /><span /><span /></div>
+              <span className="thinking-label">Rendering document…</span>
+            </div>
+          ) : (
+            <div className="docx-preview-content" dangerouslySetInnerHTML={{ __html: html }} />
+          )}
         </div>
       </div>
     </div>
@@ -4525,17 +4557,6 @@ export default function Home() {
                   } as GeneratedDocument
                 : null,
             } : m))
-
-            if (data.document_preview) {
-              const dp = data.document_preview as any
-              setPreviewDoc({
-                title:      dp.title,
-                docType:    dp.doc_type,
-                markdown:   dp.markdown,
-                filename:   dp.filename,
-                docxBase64: dp.docx_base64,
-              } as GeneratedDocument)
-            }
 
             if (wasNew && startConvId) {
               const list: ConversationSummary[] = await apiFetch('/conversations').then(r => r.json())

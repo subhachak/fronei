@@ -465,6 +465,39 @@ type DocumentBrief = {
   outputFormats: DocumentOutputFormat[]
 }
 
+type DocumentResearchRecommendation = {
+  reason: string
+  risk_factors: string[]
+  confidence: string
+  suggested_mode: ResearchMode
+}
+
+type DocumentWebSearchRecommendation = {
+  reason: string
+  search_query: string
+  confidence: string
+}
+
+type DocumentPlanCapabilities = {
+  deepResearch: boolean
+  webSearch: boolean
+}
+
+type DocumentPlanRecommendations = {
+  deepResearch?: DocumentResearchRecommendation
+  webSearch?: DocumentWebSearchRecommendation
+}
+
+class DocumentPlanRecommendationError extends Error {
+  recommendations: DocumentPlanRecommendations
+
+  constructor(recommendations: DocumentPlanRecommendations) {
+    super('Fronei recommends updating the document plan.')
+    this.name = 'DocumentPlanRecommendationError'
+    this.recommendations = recommendations
+  }
+}
+
 type ConversationDetail = ConversationSummary & { messages: MessageOut[] }
 
 type WritingSample = {
@@ -779,10 +812,10 @@ function defaultDocumentBrief(prompt: string, forced = false): DocumentBrief | n
   const defaults: Record<string, Omit<DocumentBrief, 'title' | 'docType'>> = {
     executive_report: { audience: 'Client', tone: 'Client-ready', length: 'Standard', outputFormats: ['docx'] },
     proposal:         { audience: 'Client', tone: 'Persuasive', length: 'Detailed', outputFormats: ['docx'] },
-    memo:             { audience: 'Internal team', tone: 'Concise', length: 'Short', outputFormats: ['markdown', 'docx'] },
-    technical_spec:   { audience: 'Technical team', tone: 'Technical', length: 'Detailed', outputFormats: ['markdown', 'docx'] },
-    meeting_notes:    { audience: 'Internal team', tone: 'Concise', length: 'Short', outputFormats: ['markdown', 'docx'] },
-    one_pager:        { audience: 'Executive', tone: 'Concise', length: 'One page', outputFormats: ['docx', 'markdown'] },
+    memo:             { audience: 'Internal team', tone: 'Concise', length: 'Short', outputFormats: ['markdown'] },
+    technical_spec:   { audience: 'Technical team', tone: 'Technical', length: 'Detailed', outputFormats: ['markdown'] },
+    meeting_notes:    { audience: 'Internal team', tone: 'Concise', length: 'Short', outputFormats: ['markdown'] },
+    one_pager:        { audience: 'Executive', tone: 'Concise', length: 'One page', outputFormats: ['docx'] },
     letter:           { audience: 'Client', tone: 'Formal', length: 'Short', outputFormats: ['docx'] },
     resume:           { audience: 'Recruiter', tone: 'Formal', length: 'Standard', outputFormats: ['docx'] },
   }
@@ -2390,26 +2423,34 @@ const DOC_TYPE_LABELS: Record<string, string> = {
   resume:           'Resume',
 }
 
-function DocumentBriefModal({
+function DocumentPlanModal({
   brief,
+  detected,
+  capabilities,
+  recommendations,
   onChange,
+  onCapabilitiesChange,
   onClose,
   onCancel,
+  onSendAsChat,
   onGenerate,
 }: {
   brief: DocumentBrief
+  detected?: boolean
+  capabilities: DocumentPlanCapabilities
+  recommendations?: DocumentPlanRecommendations
   onChange: (brief: DocumentBrief) => void
+  onCapabilitiesChange: (capabilities: DocumentPlanCapabilities) => void
   onClose: () => void
   onCancel: () => void
-  onGenerate: (brief: DocumentBrief) => void
+  onSendAsChat?: () => void
+  onGenerate: (brief: DocumentBrief, capabilities: DocumentPlanCapabilities) => void
 }) {
-  const selectedFormats = new Set(brief.outputFormats)
-  const toggleFormat = (format: DocumentOutputFormat) => {
-    const next = selectedFormats.has(format)
-      ? brief.outputFormats.filter(f => f !== format)
-      : [...brief.outputFormats, format]
-    onChange({ ...brief, outputFormats: next.length ? next : ['docx'] })
+  const selectedFormat = brief.outputFormats[0] ?? 'docx'
+  const setFormat = (format: DocumentOutputFormat) => {
+    onChange({ ...brief, outputFormats: [format] })
   }
+  const hasRecommendations = !!recommendations?.deepResearch || !!recommendations?.webSearch
 
   return (
     <div className="doc-preview-backdrop" onClick={onClose}>
@@ -2422,7 +2463,7 @@ function DocumentBriefModal({
       >
         <header className="doc-brief-header">
           <div>
-            <span className="doc-preview-type">Document brief</span>
+            <span className="doc-preview-type">{hasRecommendations ? 'Plan recommended' : 'Document plan'}</span>
             <h2 id="doc-brief-title">Shape this document</h2>
           </div>
           <button className="action-btn" type="button" onClick={onClose} aria-label="Close document brief">
@@ -2464,16 +2505,18 @@ function DocumentBriefModal({
             <div className="doc-format-row" role="group" aria-label="Output formats">
               <button
                 type="button"
-                className={`doc-format-pill${selectedFormats.has('docx') ? ' active' : ''}`}
-                onClick={() => toggleFormat('docx')}
+                className={`doc-format-pill${selectedFormat === 'docx' ? ' active' : ''}`}
+                onClick={() => setFormat('docx')}
+                aria-pressed={selectedFormat === 'docx'}
               >
                 <i className="ti ti-file-type-docx" aria-hidden="true" />
                 Word
               </button>
               <button
                 type="button"
-                className={`doc-format-pill${selectedFormats.has('markdown') ? ' active' : ''}`}
-                onClick={() => toggleFormat('markdown')}
+                className={`doc-format-pill${selectedFormat === 'markdown' ? ' active' : ''}`}
+                onClick={() => setFormat('markdown')}
+                aria-pressed={selectedFormat === 'markdown'}
               >
                 <i className="ti ti-markdown" aria-hidden="true" />
                 Markdown
@@ -2484,8 +2527,48 @@ function DocumentBriefModal({
           <div className="doc-brief-suggestion">
             Fronei suggests {DOC_TYPE_LABELS[brief.docType] ?? 'Document'} for {brief.audience.toLowerCase()}, {brief.tone.toLowerCase()} tone, {brief.length.toLowerCase()} depth.
           </div>
+
+          <div className="doc-plan-section">
+            <div className="doc-plan-section-title">Source plan</div>
+            <button
+              type="button"
+              className={`doc-plan-option${capabilities.webSearch ? ' active' : ''}${recommendations?.webSearch ? ' recommended' : ''}`}
+              onClick={() => onCapabilitiesChange({ ...capabilities, webSearch: !capabilities.webSearch })}
+            >
+              <span className="doc-plan-option-main">
+                <i className="ti ti-world-search" aria-hidden="true" />
+                <span>Web search</span>
+                {recommendations?.webSearch && <em>Recommended</em>}
+              </span>
+              <span className="doc-plan-option-status">{capabilities.webSearch ? 'On' : 'Off'}</span>
+              {recommendations?.webSearch && (
+                <span className="doc-plan-option-reason">{recommendations.webSearch.reason}</span>
+              )}
+            </button>
+            <button
+              type="button"
+              className={`doc-plan-option${capabilities.deepResearch ? ' active' : ''}${recommendations?.deepResearch ? ' recommended' : ''}`}
+              onClick={() => onCapabilitiesChange({
+                deepResearch: !capabilities.deepResearch,
+                webSearch: capabilities.deepResearch ? capabilities.webSearch : false,
+              })}
+            >
+              <span className="doc-plan-option-main">
+                <i className="ti ti-microscope" aria-hidden="true" />
+                <span>Deep research</span>
+                {recommendations?.deepResearch && <em>Recommended</em>}
+              </span>
+              <span className="doc-plan-option-status">{capabilities.deepResearch ? 'On' : 'Off'}</span>
+              {recommendations?.deepResearch && (
+                <span className="doc-plan-option-reason">{recommendations.deepResearch.reason}</span>
+              )}
+            </button>
+          </div>
         </div>
         <footer className="doc-brief-footer">
+          {detected && onSendAsChat && (
+            <button type="button" className="doc-brief-cancel" onClick={onSendAsChat}>Send as chat</button>
+          )}
           <button type="button" className="doc-brief-cancel" onClick={onCancel}>Cancel</button>
           <button
             type="button"
@@ -2493,11 +2576,11 @@ function DocumentBriefModal({
             onClick={() => onGenerate({
               ...brief,
               title: brief.title.trim(),
-              outputFormats: brief.outputFormats.length ? brief.outputFormats : ['docx'],
-            })}
+              outputFormats: [brief.outputFormats[0] ?? 'docx'],
+            }, capabilities)}
           >
             <i className="ti ti-file-plus" aria-hidden="true" />
-            Generate
+            Start
           </button>
         </footer>
       </div>
@@ -3712,6 +3795,12 @@ export default function Home() {
   const [documentIntentOn, setDocumentIntentOn] = useState(false)
   const [previewDoc, setPreviewDoc]       = useState<GeneratedDocument | null>(null)
   const [documentBriefDraft, setDocumentBriefDraft] = useState<DocumentBrief | null>(null)
+  const [documentBriefDetected, setDocumentBriefDetected] = useState(false)
+  const [documentPlanCapabilities, setDocumentPlanCapabilities] = useState<DocumentPlanCapabilities>({
+    deepResearch: false,
+    webSearch: false,
+  })
+  const [documentPlanRecommendations, setDocumentPlanRecommendations] = useState<DocumentPlanRecommendations>({})
   const [forceModel, setForceModel]       = useState('')
   const [showWebSearch, setShowWebSearch] = useState(false)
   const [leftMenuOpen, setLeftMenuOpen]   = useState(false)
@@ -4326,6 +4415,12 @@ export default function Home() {
     prompt: string,
     attachedDocs: AttachedDocument[],
     brief?: DocumentBrief,
+    opts: {
+      deepResearch?: boolean
+      allowResearchRecommendation?: boolean
+      webSearch?: boolean
+      allowWebSearchRecommendation?: boolean
+    } = {},
   ): Promise<GeneratedDocument> {
     const title = brief?.title?.trim() || ''
     const res = await apiFetch('/documents/generate/from-prompt/docx', {
@@ -4340,6 +4435,11 @@ export default function Home() {
         output_formats: brief?.outputFormats ?? ['docx'],
         profile: buildRequestFields(quality, false, false).profile,
         force_model: forceModel.trim() || null,
+        deep_research: opts.deepResearch ?? false,
+        research_mode: opts.deepResearch ? 'deep' : 'quick',
+        allow_research_recommendation: opts.allowResearchRecommendation ?? true,
+        web_search: opts.webSearch ?? false,
+        allow_web_search_recommendation: opts.allowWebSearchRecommendation ?? true,
         attached_documents: attachedDocs.map(d => ({
           name:       d.name,
           text:       d.text,
@@ -4351,7 +4451,46 @@ export default function Home() {
     })
     if (!res.ok) {
       const err = await res.json().catch(() => ({ detail: 'Document generation failed' }))
-      throw new Error((err as { detail: string }).detail || 'Document generation failed')
+      const detail = (err as { detail: unknown }).detail
+      if (
+        res.status === 409
+        && typeof detail === 'object'
+        && detail !== null
+        && (detail as { code?: string }).code === 'document_plan_recommended'
+      ) {
+        const rawRecommendations = (detail as { recommendations?: Record<string, unknown> }).recommendations ?? {}
+        const nextRecommendations: DocumentPlanRecommendations = {}
+        const rawResearch = rawRecommendations.deep_research
+        if (rawResearch && typeof rawResearch === 'object') {
+          const r = rawResearch as {
+            reason?: string
+            risk_factors?: string[]
+            confidence?: string
+            suggested_mode?: ResearchMode
+          }
+          nextRecommendations.deepResearch = {
+            reason: r.reason || 'This document would likely be stronger with deep research.',
+            risk_factors: Array.isArray(r.risk_factors) ? r.risk_factors : [],
+            confidence: r.confidence || 'high',
+            suggested_mode: r.suggested_mode || 'deep',
+          }
+        }
+        const rawWeb = rawRecommendations.web_search
+        if (rawWeb && typeof rawWeb === 'object') {
+          const w = rawWeb as {
+            reason?: string
+            search_query?: string
+            confidence?: string
+          }
+          nextRecommendations.webSearch = {
+            reason: w.reason || 'This document may need current or external source context.',
+            search_query: w.search_query || prompt,
+            confidence: w.confidence || 'medium',
+          }
+        }
+        throw new DocumentPlanRecommendationError(nextRecommendations)
+      }
+      throw new Error(typeof detail === 'string' ? detail : 'Document generation failed')
     }
     const data = await res.json() as {
       title: string; doc_type: string; markdown: string
@@ -4474,6 +4613,11 @@ export default function Home() {
     opts: {
       forceResearch?: boolean
       suppressResearchRecommendation?: boolean
+      suppressDocumentDetection?: boolean
+      forceDocumentResearch?: boolean
+      suppressDocumentResearchRecommendation?: boolean
+      forceDocumentWebSearch?: boolean
+      suppressDocumentWebSearchRecommendation?: boolean
       documentBrief?: DocumentBrief
     } = {},
   ) {
@@ -4483,13 +4627,16 @@ export default function Home() {
       : '')
     if ((!sent && pendingFiles.length === 0) || isBusy) return
 
-    if (!opts.documentBrief) {
+    if (!opts.documentBrief && !opts.suppressDocumentDetection) {
       const inferredBrief = defaultDocumentBrief(sent, documentIntentOn)
       if (inferredBrief) {
-        setDocumentBriefDraft(inferredBrief)
-        setDocumentIntentOn(true)
-        setLeftMenuOpen(false)
-        setOptionsOpen(false)
+            setDocumentBriefDraft(inferredBrief)
+            setDocumentBriefDetected(!documentIntentOn)
+            setDocumentPlanCapabilities({ deepResearch: false, webSearch: false })
+            setDocumentPlanRecommendations({})
+            setDocumentIntentOn(true)
+            setLeftMenuOpen(false)
+            setOptionsOpen(false)
         return
       }
     }
@@ -4631,7 +4778,33 @@ export default function Home() {
           message: 'Generating document…',
           ts:      Date.now(),
         }])
-        const generated = await generateDocumentFromPrompt(apiMessage, extractedDocs, opts.documentBrief)
+        let generated: GeneratedDocument
+        try {
+          generated = await generateDocumentFromPrompt(apiMessage, extractedDocs, opts.documentBrief, {
+            deepResearch: opts.forceDocumentResearch,
+            allowResearchRecommendation: !opts.suppressDocumentResearchRecommendation,
+            webSearch: opts.forceDocumentWebSearch,
+            allowWebSearchRecommendation: !opts.suppressDocumentWebSearchRecommendation,
+          })
+        } catch (e) {
+          if (e instanceof DocumentPlanRecommendationError && opts.documentBrief) {
+            setDocumentBriefDraft(opts.documentBrief)
+            setDocumentBriefDetected(false)
+            setDocumentPlanRecommendations(e.recommendations)
+            setDocumentPlanCapabilities({
+              deepResearch: opts.forceDocumentResearch ?? false,
+              webSearch: opts.forceDocumentWebSearch ?? false,
+            })
+            setDocumentIntentOn(true)
+            setMessage(sent)
+            setMessages(prev => prev.filter(m => m.id !== tempUserId && m.id !== tempAsstId))
+            setLiveSteps([])
+            setLiveAssistantId(null)
+            setLoading(false)
+            return
+          }
+          throw e
+        }
         setMessages(prev => prev.map(m => m.id === tempAsstId ? {
           ...m,
           content: 'Generated a document from your prompt. Preview it or download the .docx when ready.',
@@ -4641,6 +4814,9 @@ export default function Home() {
         setPendingFiles([])
         setDocumentIntentOn(false)
         setDocumentBriefDraft(null)
+        setDocumentBriefDetected(false)
+        setDocumentPlanRecommendations({})
+        setDocumentPlanCapabilities({ deepResearch: false, webSearch: false })
         setLiveSteps([])
         setLiveAssistantId(null)
         setLoading(false)
@@ -5543,6 +5719,9 @@ export default function Home() {
                   onClick={() => {
                     setDocumentIntentOn(false)
                     setDocumentBriefDraft(null)
+                    setDocumentBriefDetected(false)
+                    setDocumentPlanRecommendations({})
+                    setDocumentPlanCapabilities({ deepResearch: false, webSearch: false })
                   }}
                   title="Cancel document mode"
                   aria-label="Cancel document mode"
@@ -5631,6 +5810,9 @@ export default function Home() {
                     if (next) {
                       setDocumentIntentOn(false)
                       setDocumentBriefDraft(null)
+                      setDocumentBriefDetected(false)
+                      setDocumentPlanRecommendations({})
+                      setDocumentPlanCapabilities({ deepResearch: false, webSearch: false })
                     }
                     return next
                   })
@@ -5650,8 +5832,14 @@ export default function Home() {
                   setLeftMenuOpen(false)
                   if (next) {
                     setResearchOn(false)
+                    setDocumentBriefDetected(false)
+                    setDocumentPlanRecommendations({})
+                    setDocumentPlanCapabilities({ deepResearch: false, webSearch: false })
                   } else {
                     setDocumentBriefDraft(null)
+                    setDocumentBriefDetected(false)
+                    setDocumentPlanRecommendations({})
+                    setDocumentPlanCapabilities({ deepResearch: false, webSearch: false })
                   }
                 }}
               >
@@ -5788,19 +5976,44 @@ export default function Home() {
         <DocumentPreviewModal doc={previewDoc} onClose={() => setPreviewDoc(null)} />
       )}
       {documentBriefDraft && (
-        <DocumentBriefModal
+        <DocumentPlanModal
           brief={documentBriefDraft}
+          detected={documentBriefDetected}
+          capabilities={documentPlanCapabilities}
+          recommendations={documentPlanRecommendations}
           onChange={setDocumentBriefDraft}
+          onCapabilitiesChange={setDocumentPlanCapabilities}
           onClose={() => {
             setDocumentBriefDraft(null)
           }}
           onCancel={() => {
             setDocumentBriefDraft(null)
             setDocumentIntentOn(false)
+            setDocumentBriefDetected(false)
+            setDocumentPlanRecommendations({})
+            setDocumentPlanCapabilities({ deepResearch: false, webSearch: false })
           }}
-          onGenerate={(brief) => {
+          onSendAsChat={() => {
             setDocumentBriefDraft(null)
-            submit(undefined, { documentBrief: brief })
+            setDocumentIntentOn(false)
+            setDocumentBriefDetected(false)
+            setDocumentPlanRecommendations({})
+            setDocumentPlanCapabilities({ deepResearch: false, webSearch: false })
+            submit(undefined, { suppressDocumentDetection: true })
+          }}
+          onGenerate={(brief, capabilities) => {
+            const hadResearchRecommendation = !!documentPlanRecommendations.deepResearch
+            const hadWebRecommendation = !!documentPlanRecommendations.webSearch
+            setDocumentBriefDraft(null)
+            setDocumentBriefDetected(false)
+            setDocumentPlanRecommendations({})
+            submit(undefined, {
+              documentBrief: brief,
+              forceDocumentResearch: capabilities.deepResearch,
+              forceDocumentWebSearch: capabilities.webSearch,
+              suppressDocumentResearchRecommendation: capabilities.deepResearch || hadResearchRecommendation,
+              suppressDocumentWebSearchRecommendation: capabilities.webSearch || hadWebRecommendation,
+            })
           }}
         />
       )}

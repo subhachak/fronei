@@ -279,7 +279,11 @@ def _add_toc(doc: Document) -> None:
     paragraph = doc.add_paragraph()
     _add_field(paragraph, r'TOC \o "1-3" \h \z \u', "Right-click and update field to refresh.")
     doc.add_page_break()
-    _enable_field_updates(doc)
+    # Note: deliberately NOT calling _enable_field_updates here. Setting
+    # w:updateFields makes Word prompt "This document contains fields that
+    # may refer to other files. Do you want to update the fields..." every
+    # time the document is opened. The TOC field still works via the normal
+    # right-click "Update Field" / F9, per the placeholder text above.
 
 
 def _strip_leading_h1(content: str) -> str:

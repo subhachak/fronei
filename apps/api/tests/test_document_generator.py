@@ -114,7 +114,9 @@ def test_generate_docx_type_layouts(doc_type: str, has_cover: bool, has_toc: boo
     if has_toc:
         assert "Table of Contents" in text
         assert "TOC" in document_xml
-        assert "updateFields" in _docx_part(content, "word/settings.xml")
+        # updateFields is intentionally NOT set, since it triggers a
+        # "fields may refer to other files" prompt when Word opens the doc.
+        assert "updateFields" not in _docx_part(content, "word/settings.xml")
     else:
         assert "TOC" not in document_xml
 

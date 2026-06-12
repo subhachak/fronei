@@ -3897,6 +3897,131 @@ pre:hover .code-copy-btn { opacity: 1; }
   text-align: left;
 }
 
+.doc-brief-modal {
+  width: min(680px, calc(100vw - 28px));
+  max-height: calc(100vh - 40px);
+  background: var(--bg);
+  color: var(--t1);
+  border: 1px solid var(--bd2);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.doc-brief-header,
+.doc-brief-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 18px 22px;
+}
+
+.doc-brief-header {
+  border-bottom: 1px solid var(--bd);
+}
+
+.doc-brief-header h2 {
+  margin: 5px 0 0;
+  font-size: 20px;
+  color: var(--t1);
+}
+
+.doc-brief-body {
+  padding: 22px;
+  overflow-y: auto;
+}
+
+.doc-brief-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.doc-brief-field {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-bottom: 14px;
+}
+
+.doc-brief-field span {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--t2);
+}
+
+.doc-brief-field input,
+.doc-brief-field select {
+  min-height: 42px;
+  border-radius: 10px;
+  border: 1px solid var(--bd);
+  background: var(--bg-s1);
+  color: var(--t1);
+  padding: 0 12px;
+  font: inherit;
+}
+
+.doc-brief-title-field input {
+  font-weight: 650;
+}
+
+.doc-format-row {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.doc-format-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 38px;
+  padding: 0 12px;
+  border-radius: 10px;
+  border: 1px solid var(--bd);
+  background: var(--bg-s1);
+  color: var(--t2);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.doc-format-pill.active {
+  color: var(--ac-text);
+  border-color: var(--ac-bd);
+  background: var(--ac-bg);
+}
+
+.doc-brief-suggestion {
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--ac-bd);
+  background: var(--ac-bg);
+  color: var(--ac-text);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.doc-brief-footer {
+  justify-content: flex-end;
+  border-top: 1px solid var(--bd);
+}
+
+@media (max-width: 640px) {
+  .doc-brief-modal {
+    width: 100vw;
+    height: 100vh;
+    max-height: none;
+    border-radius: 0;
+  }
+
+  .doc-brief-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* ── File attachment ─────────────────────────────────────────────────────── */
 
 .attach-strip {

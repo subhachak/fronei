@@ -451,6 +451,18 @@ type GeneratedDocument = {
   markdown: string
   filename: string
   docxBase64: string
+  outputFormats?: DocumentOutputFormat[]
+}
+
+type DocumentOutputFormat = 'docx' | 'markdown'
+
+type DocumentBrief = {
+  title: string
+  docType: string
+  audience: string
+  tone: string
+  length: string
+  outputFormats: DocumentOutputFormat[]
 }
 
 type ConversationDetail = ConversationSummary & { messages: MessageOut[] }
@@ -717,11 +729,68 @@ function safeDownloadName(title: string, ext: string) {
 
 function inferDocumentTitle(prompt: string) {
   const cleaned = prompt
-    .replace(/\b(generate|create|write|draft|prepare|build)\b/gi, '')
-    .replace(/\b(a|an|the|report|document|doc|proposal|brief)\b/gi, '')
+    .replace(/\b(generate|create|write|draft|prepare|build|produce|put together)\b/gi, '')
+    .replace(/\b(a|an|the|report|document|doc|proposal|brief|memo|letter|one-pager|one pager)\b/gi, '')
     .replace(/\s+/g, ' ')
     .trim()
   return (cleaned || 'Fronei document').slice(0, 90)
+}
+
+const DOCUMENT_DOC_TYPES = [
+  'executive_report',
+  'proposal',
+  'memo',
+  'technical_spec',
+  'meeting_notes',
+  'one_pager',
+  'letter',
+  'resume',
+] as const
+
+const DOCUMENT_AUDIENCES = ['Client', 'Executive', 'Technical team', 'Internal team', 'Recruiter', 'General reader']
+const DOCUMENT_TONES = ['Client-ready', 'Formal', 'Concise', 'Persuasive', 'Technical', 'Warm']
+const DOCUMENT_LENGTHS = ['One page', 'Short', 'Standard', 'Detailed']
+
+function inferDocumentType(prompt: string): string {
+  const text = ` ${prompt.toLowerCase()} `
+  if (/(resume|résumé| cv |curriculum vitae)/.test(text)) return 'resume'
+  if (/(meeting notes|meeting minutes|minutes of the meeting|meeting recap|attendees|agenda)/.test(text)) return 'meeting_notes'
+  if (/(technical spec|technical specification|implementation spec|architecture spec|requirements document|design doc)/.test(text)) return 'technical_spec'
+  if (/(proposal|propose|statement of work| sow |sow document|commercial offer)/.test(text)) return 'proposal'
+  if (/(one pager|one-pager|1 pager|1-pager|single page|single-page)/.test(text)) return 'one_pager'
+  if (/(memo|memorandum|internal note)/.test(text)) return 'memo'
+  if (/(cover letter|recommendation letter|formal letter|letter to)/.test(text)) return 'letter'
+  return 'executive_report'
+}
+
+function detectDocumentPrompt(prompt: string): string | null {
+  const text = ` ${prompt.toLowerCase()} `
+  const directType = inferDocumentType(prompt)
+  if (directType !== 'executive_report') return directType
+  if (/(executive report|board report|status report|client report)/.test(text)) return 'executive_report'
+  const hasAction = /(write|draft|create|generate|prepare|produce|build|put together)/.test(text)
+  const hasDocNoun = /(document| doc |report|write-up|writeup|word file|word doc|\.docx|downloadable)/.test(text)
+  return hasAction && hasDocNoun ? 'executive_report' : null
+}
+
+function defaultDocumentBrief(prompt: string, forced = false): DocumentBrief | null {
+  const docType = forced ? inferDocumentType(prompt) : detectDocumentPrompt(prompt)
+  if (!docType) return null
+  const defaults: Record<string, Omit<DocumentBrief, 'title' | 'docType'>> = {
+    executive_report: { audience: 'Client', tone: 'Client-ready', length: 'Standard', outputFormats: ['docx'] },
+    proposal:         { audience: 'Client', tone: 'Persuasive', length: 'Detailed', outputFormats: ['docx'] },
+    memo:             { audience: 'Internal team', tone: 'Concise', length: 'Short', outputFormats: ['markdown', 'docx'] },
+    technical_spec:   { audience: 'Technical team', tone: 'Technical', length: 'Detailed', outputFormats: ['markdown', 'docx'] },
+    meeting_notes:    { audience: 'Internal team', tone: 'Concise', length: 'Short', outputFormats: ['markdown', 'docx'] },
+    one_pager:        { audience: 'Executive', tone: 'Concise', length: 'One page', outputFormats: ['docx', 'markdown'] },
+    letter:           { audience: 'Client', tone: 'Formal', length: 'Short', outputFormats: ['docx'] },
+    resume:           { audience: 'Recruiter', tone: 'Formal', length: 'Standard', outputFormats: ['docx'] },
+  }
+  return {
+    title: inferDocumentTitle(prompt),
+    docType,
+    ...defaults[docType],
+  }
 }
 
 function base64ToArrayBuffer(base64: string): ArrayBuffer {
@@ -2318,6 +2387,129 @@ const DOC_TYPE_LABELS: Record<string, string> = {
   meeting_notes:    'Meeting notes',
   one_pager:        'One-pager',
   letter:           'Letter',
+  resume:           'Resume',
+}
+
+function DocumentBriefModal({
+  brief,
+  onChange,
+  onClose,
+  onGenerate,
+}: {
+  brief: DocumentBrief
+  onChange: (brief: DocumentBrief) => void
+  onClose: () => void
+  onGenerate: (brief: DocumentBrief) => void
+}) {
+  const selectedFormats = new Set(brief.outputFormats)
+  const toggleFormat = (format: DocumentOutputFormat) => {
+    const next = selectedFormats.has(format)
+      ? brief.outputFormats.filter(f => f !== format)
+      : [...brief.outputFormats, format]
+    onChange({ ...brief, outputFormats: next.length ? next : ['docx'] })
+  }
+
+  return (
+    <div className="doc-preview-backdrop" onClick={onClose}>
+      <div
+        className="doc-brief-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="doc-brief-title"
+        onClick={e => e.stopPropagation()}
+      >
+        <header className="doc-brief-header">
+          <div>
+            <span className="doc-preview-type">Document brief</span>
+            <h2 id="doc-brief-title">Shape this document</h2>
+          </div>
+          <button className="action-btn" type="button" onClick={onClose} aria-label="Close document brief">
+            <i className="ti ti-x" aria-hidden="true" />
+          </button>
+        </header>
+        <div className="doc-brief-body">
+          <label className="doc-brief-field doc-brief-title-field">
+            <span>Title</span>
+            <input
+              value={brief.title}
+              onChange={e => onChange({ ...brief, title: e.target.value })}
+              placeholder="Fronei document"
+            />
+          </label>
+
+          <div className="doc-brief-grid">
+            <label className="doc-brief-field">
+              <span>Document type</span>
+              <select value={brief.docType} onChange={e => onChange({ ...brief, docType: e.target.value })}>
+                {DOCUMENT_DOC_TYPES.map(type => (
+                  <option key={type} value={type}>{DOC_TYPE_LABELS[type]}</option>
+                ))}
+              </select>
+            </label>
+            <label className="doc-brief-field">
+              <span>Audience</span>
+              <select value={brief.audience} onChange={e => onChange({ ...brief, audience: e.target.value })}>
+                {DOCUMENT_AUDIENCES.map(option => <option key={option} value={option}>{option}</option>)}
+              </select>
+            </label>
+            <label className="doc-brief-field">
+              <span>Tone</span>
+              <select value={brief.tone} onChange={e => onChange({ ...brief, tone: e.target.value })}>
+                {DOCUMENT_TONES.map(option => <option key={option} value={option}>{option}</option>)}
+              </select>
+            </label>
+            <label className="doc-brief-field">
+              <span>Length</span>
+              <select value={brief.length} onChange={e => onChange({ ...brief, length: e.target.value })}>
+                {DOCUMENT_LENGTHS.map(option => <option key={option} value={option}>{option}</option>)}
+              </select>
+            </label>
+          </div>
+
+          <div className="doc-brief-field">
+            <span>Output</span>
+            <div className="doc-format-row" role="group" aria-label="Output formats">
+              <button
+                type="button"
+                className={`doc-format-pill${selectedFormats.has('docx') ? ' active' : ''}`}
+                onClick={() => toggleFormat('docx')}
+              >
+                <i className="ti ti-file-type-docx" aria-hidden="true" />
+                Word
+              </button>
+              <button
+                type="button"
+                className={`doc-format-pill${selectedFormats.has('markdown') ? ' active' : ''}`}
+                onClick={() => toggleFormat('markdown')}
+              >
+                <i className="ti ti-markdown" aria-hidden="true" />
+                Markdown
+              </button>
+            </div>
+          </div>
+
+          <div className="doc-brief-suggestion">
+            Fronei suggests {DOC_TYPE_LABELS[brief.docType] ?? 'Document'} for {brief.audience.toLowerCase()}, {brief.tone.toLowerCase()} tone, {brief.length.toLowerCase()} depth.
+          </div>
+        </div>
+        <footer className="doc-brief-footer">
+          <button type="button" className="action-btn" onClick={onClose}>Cancel</button>
+          <button
+            type="button"
+            className="send-btn"
+            onClick={() => onGenerate({
+              ...brief,
+              title: brief.title.trim() || 'Fronei document',
+              outputFormats: brief.outputFormats.length ? brief.outputFormats : ['docx'],
+            })}
+          >
+            <i className="ti ti-file-plus" aria-hidden="true" />
+            Generate
+          </button>
+        </footer>
+      </div>
+    </div>
+  )
 }
 
 function DocumentPreviewModal({ doc, onClose }: { doc: GeneratedDocument; onClose: () => void }) {
@@ -2370,6 +2562,16 @@ function DocumentPreviewModal({ doc, onClose }: { doc: GeneratedDocument; onClos
               <i className="ti ti-file-download" aria-hidden="true" />
               Download .docx
             </button>
+            {doc.outputFormats?.includes('markdown') && (
+              <button
+                className="action-btn"
+                type="button"
+                onClick={() => downloadBlob(new Blob([doc.markdown], { type: 'text/markdown;charset=utf-8' }), safeDownloadName(doc.title, 'md'))}
+                title="Download Markdown"
+              >
+                <i className="ti ti-markdown" aria-hidden="true" />
+              </button>
+            )}
             <button className="action-btn" type="button" onClick={onClose} aria-label="Close preview">
               <i className="ti ti-x" aria-hidden="true" />
             </button>
@@ -3516,6 +3718,7 @@ export default function Home() {
   const [webSearchOn, setWebSearchOn]     = useState(false)
   const [documentIntentOn, setDocumentIntentOn] = useState(false)
   const [previewDoc, setPreviewDoc]       = useState<GeneratedDocument | null>(null)
+  const [documentBriefDraft, setDocumentBriefDraft] = useState<DocumentBrief | null>(null)
   const [forceModel, setForceModel]       = useState('')
   const [showWebSearch, setShowWebSearch] = useState(false)
   const [leftMenuOpen, setLeftMenuOpen]   = useState(false)
@@ -4126,13 +4329,22 @@ export default function Home() {
     URL.revokeObjectURL(href)
   }
 
-  async function generateDocumentFromPrompt(prompt: string, attachedDocs: AttachedDocument[]): Promise<GeneratedDocument> {
-    const title = inferDocumentTitle(prompt)
+  async function generateDocumentFromPrompt(
+    prompt: string,
+    attachedDocs: AttachedDocument[],
+    brief?: DocumentBrief,
+  ): Promise<GeneratedDocument> {
+    const title = brief?.title || inferDocumentTitle(prompt)
     const res = await apiFetch('/documents/generate/from-prompt/docx', {
       method: 'POST',
       body: JSON.stringify({
         prompt,
         title,
+        doc_type: brief?.docType,
+        audience: brief?.audience,
+        tone: brief?.tone,
+        length: brief?.length,
+        output_formats: brief?.outputFormats ?? ['docx'],
         profile: buildRequestFields(quality, false, false).profile,
         force_model: forceModel.trim() || null,
         attached_documents: attachedDocs.map(d => ({
@@ -4158,6 +4370,7 @@ export default function Home() {
       markdown:   data.markdown,
       filename:   data.filename,
       docxBase64: data.docx_base64,
+      outputFormats: brief?.outputFormats ?? ['docx'],
     }
   }
 
@@ -4265,13 +4478,29 @@ export default function Home() {
 
   async function submit(
     overrideText?: string,
-    opts: { forceResearch?: boolean; suppressResearchRecommendation?: boolean } = {},
+    opts: {
+      forceResearch?: boolean
+      suppressResearchRecommendation?: boolean
+      documentBrief?: DocumentBrief
+    } = {},
   ) {
     const rawText = (overrideText !== undefined ? overrideText : message).trim()
     const sent = rawText || (documentIntentOn && pendingFiles.length > 0
       ? 'Generate a client-ready document from the attached files.'
       : '')
     if ((!sent && pendingFiles.length === 0) || isBusy) return
+
+    if (!opts.documentBrief) {
+      const inferredBrief = defaultDocumentBrief(sent, documentIntentOn)
+      if (inferredBrief) {
+        setDocumentBriefDraft(inferredBrief)
+        setDocumentIntentOn(true)
+        setLeftMenuOpen(false)
+        setOptionsOpen(false)
+        return
+      }
+    }
+
     lastSentRef.current = sent
     setLoading(true)
     setStreaming(false)
@@ -4369,7 +4598,7 @@ export default function Home() {
 
         setLiveSteps(prev => [...prev, {
           stage:   'routing' as PipelineStage,
-          message: documentIntentOn ? 'Files ready — generating document…' : 'Files ready — sending to Fronei…',
+          message: (documentIntentOn || opts.documentBrief) ? 'Files ready — generating document…' : 'Files ready — sending to Fronei…',
           ts:      Date.now(),
         }])
 
@@ -4395,7 +4624,7 @@ export default function Home() {
     }
 
     try {
-      if (documentIntentOn) {
+      if (documentIntentOn || opts.documentBrief) {
         if (!bubblePreCreated) {
           setMessages(prev => [
             ...prev,
@@ -4408,16 +4637,16 @@ export default function Home() {
           message: 'Generating document…',
           ts:      Date.now(),
         }])
-        const generated = await generateDocumentFromPrompt(apiMessage, extractedDocs)
+        const generated = await generateDocumentFromPrompt(apiMessage, extractedDocs, opts.documentBrief)
         setMessages(prev => prev.map(m => m.id === tempAsstId ? {
           ...m,
           content: 'Generated a document from your prompt. Preview it or download the .docx when ready.',
           document_preview: generated,
           created_at: new Date().toISOString(),
         } : m))
-        setPreviewDoc(generated)
         setPendingFiles([])
         setDocumentIntentOn(false)
+        setDocumentBriefDraft(null)
         setLiveSteps([])
         setLiveAssistantId(null)
         setLoading(false)
@@ -5018,6 +5247,20 @@ export default function Home() {
                         >
                           <i className="ti ti-file-download" aria-hidden="true" />
                         </button>
+                        {m.document_preview.outputFormats?.includes('markdown') && (
+                          <button
+                            className="doc-generated-icon-btn"
+                            type="button"
+                            onClick={() => downloadBlob(
+                              new Blob([m.document_preview!.markdown], { type: 'text/markdown;charset=utf-8' }),
+                              safeDownloadName(m.document_preview!.title, 'md')
+                            )}
+                            title="Download Markdown"
+                            aria-label="Download Markdown"
+                          >
+                            <i className="ti ti-markdown" aria-hidden="true" />
+                          </button>
+                        )}
                       </div>
                     )}
 
@@ -5384,7 +5627,19 @@ export default function Home() {
               <button
                 className={`left-menu-item${documentIntentOn ? ' on' : ''}`}
                 type="button"
-                onClick={() => setDocumentIntentOn(v => !v)}
+                onClick={() => {
+                  const next = !documentIntentOn
+                  setDocumentIntentOn(next)
+                  setLeftMenuOpen(false)
+                  if (next) {
+                    const seed = message.trim() || (pendingFiles.length > 0
+                      ? 'Generate a client-ready document from the attached files.'
+                      : 'Generate a client-ready document.')
+                    setDocumentBriefDraft(defaultDocumentBrief(seed, true))
+                  } else {
+                    setDocumentBriefDraft(null)
+                  }
+                }}
               >
                 <i className="ti ti-file-text" aria-hidden="true" />
                 <span>Document</span>
@@ -5517,6 +5772,20 @@ export default function Home() {
 
       {previewDoc && (
         <DocumentPreviewModal doc={previewDoc} onClose={() => setPreviewDoc(null)} />
+      )}
+      {documentBriefDraft && (
+        <DocumentBriefModal
+          brief={documentBriefDraft}
+          onChange={setDocumentBriefDraft}
+          onClose={() => {
+            setDocumentBriefDraft(null)
+            setDocumentIntentOn(false)
+          }}
+          onGenerate={(brief) => {
+            setDocumentBriefDraft(null)
+            submit(undefined, { documentBrief: brief })
+          }}
+        />
       )}
 
     </div>

@@ -48,6 +48,12 @@ class DocumentExtractResponse(BaseModel):
     text_preview:    str           # first 300 chars for UI display
 
 
+class DocumentGenerateRequest(BaseModel):
+    title: str = Field(default="Fronei document", min_length=1, max_length=180)
+    content: str = Field(min_length=1, max_length=120000)
+    subtitle: str | None = Field(default=None, max_length=240)
+
+
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=32000)
     profile: Profile | None = None

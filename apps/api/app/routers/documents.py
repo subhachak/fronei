@@ -1,15 +1,18 @@
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi.responses import StreamingResponse
 
 from app.auth import CurrentUser
-from app.schemas import DocumentExtractResponse
+from app.schemas import DocumentExtractResponse, DocumentGenerateRequest
 from app.services.document_extractor import (
     MAX_PDF_PAGES,
     SUPPORTED,
     ExtractionError,
     extract_text,
 )
+from app.services.document_generator import generate_docx_bytes
 from app.services.rate_limit import rate_limiter
 
 router = APIRouter(prefix="/documents", tags=["documents"])
@@ -64,3 +67,30 @@ def supported_types() -> dict:
         "max_mb": MAX_UPLOAD_BYTES // (1024 * 1024),
         "max_pdf_pages": MAX_PDF_PAGES,
     }
+
+
+@router.post(
+    "/generate/docx",
+    dependencies=[rate_limiter("document_generation", "rate_limit_documents_per_minute", 60)],
+)
+def generate_docx(
+    req: DocumentGenerateRequest,
+    user_id: str = CurrentUser,
+) -> StreamingResponse:
+    content = generate_docx_bytes(req.title, req.content, req.subtitle)
+    filename = f"{_safe_filename(req.title)}.docx"
+    quoted = quote(filename)
+    return StreamingResponse(
+        iter([content]),
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quoted}",
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+def _safe_filename(title: str) -> str:
+    safe = "".join(ch.lower() if ch.isalnum() else "-" for ch in title.strip())
+    safe = "-".join(part for part in safe.split("-") if part)
+    return (safe or "fronei-document")[:80]

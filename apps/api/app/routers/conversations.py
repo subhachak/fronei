@@ -37,7 +37,7 @@ from app.services.chat_pipeline import (
 )
 from app.routers.documents import build_document_artifact
 from app.services import plan_gate
-from app.services.planner import passthrough, plan_from_dict, plan_to_dict, run_planner
+from app.services.planner import apply_confirmed_plan, passthrough, plan_from_dict, plan_to_dict, run_planner
 from app.services.rate_limit import check_rate_limit, rate_limiter
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
@@ -519,20 +519,30 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
             output_mode: OutputMode = req.output_mode
             research_mode = req.research_mode if req.research_mode != "quick" else ("deep" if req.deep_research else "quick")
 
-            if preloaded_plan is None and research_mode != "quick":
+            if research_mode != "quick":
                 # ── Adaptive research routing ─────────────────────────────
                 # If a prior research run exists in this conversation, run the
                 # planner first to classify the turn. Follow-ups / continuations
                 # synthesize from the existing evidence store instead of
                 # re-running the full pipeline (10-20s vs 3-7 minutes).
+                #
+                # If a plan was already produced (e.g. confirmed via the
+                # plan_proposed → execute-plan round trip), reuse it instead of
+                # re-running the planner, applying any confirmed overrides
+                # (deep_research toggle, etc.) the user made in the popup.
                 existing_run_id = _get_last_research_run_id(db, conv)
                 running_summary, active_task = _conversation_state(conv)
-                plan = run_planner(
-                    req.message, history, settings.planner_model,
-                    running_summary=running_summary,
-                    active_task=active_task,
-                    user_memory=user_memory,
-                )
+                if preloaded_plan is not None:
+                    plan = preloaded_plan
+                    if req.confirmed_plan:
+                        apply_confirmed_plan(plan, req.confirmed_plan.model_dump(exclude_none=True))
+                else:
+                    plan = run_planner(
+                        req.message, history, settings.planner_model,
+                        running_summary=running_summary,
+                        active_task=active_task,
+                        user_memory=user_memory,
+                    )
                 research_query = plan.enriched_prompt or req.message
                 yield _pipeline_log(
                     "routing",

@@ -16,6 +16,7 @@
     "@types/react-dom": "latest",
     "dompurify": "^3.4.8",
     "highlight.js": "^11.11.1",
+    "mammoth": "^1.12.0",
     "marked": "^18.0.5",
     "marked-highlight": "^2.2.4",
     "next": "latest",

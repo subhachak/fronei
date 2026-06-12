@@ -4526,6 +4526,17 @@ export default function Home() {
                 : null,
             } : m))
 
+            if (data.document_preview) {
+              const dp = data.document_preview as any
+              setPreviewDoc({
+                title:      dp.title,
+                docType:    dp.doc_type,
+                markdown:   dp.markdown,
+                filename:   dp.filename,
+                docxBase64: dp.docx_base64,
+              } as GeneratedDocument)
+            }
+
             if (wasNew && startConvId) {
               const list: ConversationSummary[] = await apiFetch('/conversations').then(r => r.json())
               setConversations(list)
@@ -4953,6 +4964,26 @@ export default function Home() {
                       )}
                     </div>
 
+                    {m.role === 'assistant' && m.document_preview && (
+                      <div className="doc-generated-callout">
+                        <div className="doc-generated-icon">
+                          <i className="ti ti-file-text" aria-hidden="true" />
+                        </div>
+                        <div className="doc-generated-body">
+                          <div className="doc-generated-title">Document generated</div>
+                          <div className="doc-generated-sub">{m.document_preview.title}.docx</div>
+                        </div>
+                        <button
+                          className="send-btn doc-generated-cta"
+                          type="button"
+                          onClick={() => setPreviewDoc(m.document_preview!)}
+                        >
+                          <i className="ti ti-eye" aria-hidden="true" />
+                          Open document
+                        </button>
+                      </div>
+                    )}
+
                     {m.content && (
                       <div className="turn-actions">
                         {m.role === 'user' && !isBusy && (
@@ -4981,17 +5012,6 @@ export default function Home() {
                             aria-label="Download as DOCX"
                           >
                             <i className="ti ti-file-download" aria-hidden="true" />
-                          </button>
-                        )}
-                        {m.role === 'assistant' && m.document_preview && (
-                          <button
-                            className="action-btn preview-doc-btn"
-                            onClick={() => setPreviewDoc(m.document_preview!)}
-                            title="Preview document"
-                            aria-label="Preview generated document"
-                          >
-                            <i className="ti ti-eye" aria-hidden="true" />
-                            <span>Preview</span>
                           </button>
                         )}
                         {m.created_at && (

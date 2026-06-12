@@ -4618,6 +4618,7 @@ export default function Home() {
 
     try {
       if (documentIntentOn || opts.documentBrief) {
+        setResearchOn(false)
         if (!bubblePreCreated) {
           setMessages(prev => [
             ...prev,
@@ -5625,7 +5626,14 @@ export default function Home() {
                 className={`left-menu-item${researchOn ? ' on' : ''}`}
                 type="button"
                 onClick={() => {
-                  setResearchOn(v => !v)
+                  setResearchOn(v => {
+                    const next = !v
+                    if (next) {
+                      setDocumentIntentOn(false)
+                      setDocumentBriefDraft(null)
+                    }
+                    return next
+                  })
                   setLeftMenuOpen(false)
                 }}
               >
@@ -5640,7 +5648,9 @@ export default function Home() {
                   const next = !documentIntentOn
                   setDocumentIntentOn(next)
                   setLeftMenuOpen(false)
-                  if (!next) {
+                  if (next) {
+                    setResearchOn(false)
+                  } else {
                     setDocumentBriefDraft(null)
                   }
                 }}

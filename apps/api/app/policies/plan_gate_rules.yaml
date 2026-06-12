@@ -23,7 +23,9 @@ document:
   # Gate when more than this many plausible formats are offered.
   max_silent_format_options: 1
 
-# Overall plan confidence: "low" always gates, regardless of other signals.
+# Overall plan confidence: "low" gates only if there are open_questions to
+# surface to the user. A low-confidence plan with no open questions (e.g. a
+# passthrough/no-op plan) has nothing to confirm and runs in "auto" mode.
 plan_confidence:
   gating_levels: [low]
 

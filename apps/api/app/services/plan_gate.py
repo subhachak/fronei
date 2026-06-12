@@ -124,8 +124,14 @@ def evaluate(plan: Plan) -> PlanGateResult:
     )
 
     # ── Overall confidence ───────────────────────────────────────────────
+    # Low confidence only warrants a confirmation popup if there's actually
+    # something to ask the user about (open questions). A passthrough/no-op
+    # plan with low confidence but no open questions has nothing to confirm.
     confidence_cfg = policy.get("plan_confidence", {})
-    confidence_gates = plan.plan_confidence in confidence_cfg.get("gating_levels", ["low"])
+    confidence_gates = (
+        plan.plan_confidence in confidence_cfg.get("gating_levels", ["low"])
+        and bool(open_questions)
+    )
     if confidence_gates:
         gate_reasons.append("plan_confidence")
 

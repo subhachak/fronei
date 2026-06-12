@@ -102,12 +102,15 @@ needs_web_search — true only for real-time or external data (current events, l
   release notes, breaking news). False for conceptual or architectural questions.
 
 web_search_criticality — only meaningful when needs_web_search is true:
-  trivial  — a single, low-stakes, easily-verifiable fact that would not change the substance of the \
-    answer (today's date, a library's current version number, a unit conversion constant).
+  trivial  — a single, low-stakes, easily-verifiable fact or live status check that the user could \
+    immediately confirm themselves and that does not involve any recommendation, comparison, or framing \
+    decision (today's date, a library's current version number, a unit conversion constant, whether the \
+    stock market is currently open, the current weather in a city, whether a service is currently down).
   material — anything that shapes the content, recommendation, or framing of the response (pricing, \
     vendor comparisons, regulatory status, current events analysis), or when the user's phrasing \
     implies they want the answer scoped to information they supplied rather than external sources. \
-    Default to "material" when unsure.
+    The test is not "does this need a live lookup" but "does the result change a recommendation or \
+    judgment in the answer". Default to "material" when unsure.
 
 search_query — optimised search engine query when needs_web_search is true, otherwise null.
 

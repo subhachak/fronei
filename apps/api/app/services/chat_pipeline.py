@@ -22,7 +22,7 @@ from app.schemas import (
     RouteDecision, SubQueryLog, WebContextLog, WorkerLog,
 )
 from app.services.llm_gateway import LLMResult, invoke_llm, synthesize_answers
-from app.services.planner import Plan, run_planner
+from app.services.planner import Plan, apply_confirmed_plan, run_planner
 from app.services.prompts import ARTIFACT_PROMPTS
 from app.services.router import choose_route
 from app.services.web_context import WebContextResult, gather_web_context
@@ -314,11 +314,17 @@ def build_pipeline_setup(
     history: list[dict],
     settings: Settings,
     user_memory: str = "",
+    plan: Plan | None = None,
+    confirmed_plan: dict | None = None,
 ) -> PipelineSetup:
     """
     Runs the pre-LLM steps shared between the sync and streaming paths:
     planner → web context → route → annotate route reason.
     Does NOT call any LLM worker. Safe to call before opening a stream.
+
+    If `plan` is provided (e.g. reconstructed from a persisted plan_json for
+    an execute-plan re-submission), the planner is not re-run. `confirmed_plan`
+    (if any) is applied as overrides onto whichever plan is used.
     """
     profile = req.profile or conv.profile
     running_summary, active_task = _conversation_state(conv)
@@ -326,11 +332,13 @@ def build_pipeline_setup(
     doc_context: str = _build_doc_context(req.attached_documents)
     artifact_context: str = ARTIFACT_PROMPTS.get(req.artifact_type or "", "")
 
-    plan = run_planner(
-        req.message, history, settings.planner_model,
-        running_summary=running_summary, active_task=active_task,
-        user_memory=user_memory, doc_context=doc_context,
-    )
+    if plan is None:
+        plan = run_planner(
+            req.message, history, settings.planner_model,
+            running_summary=running_summary, active_task=active_task,
+            user_memory=user_memory, doc_context=doc_context,
+        )
+    plan = apply_confirmed_plan(plan, confirmed_plan)
     use_web = (req.web_search or plan.needs_web_search) and plan.action != "answer_directly"
     wc = gather_web_context(plan.search_query or req.message, use_web or req.deep_research)
 
@@ -358,6 +366,72 @@ def build_pipeline_setup(
         doc_context=doc_context,
         artifact_context=artifact_context,
     )
+
+
+DOCUMENT_OUTPUT_INSTRUCTIONS = """
+OUTPUT FORMAT — IMPORTANT:
+After writing the complete document body, append a line containing exactly:
+---SUMMARY---
+followed by a short bullet-point outline (one bullet per major section/heading
+of the document you just wrote), 3-8 bullets. This outline is shown to the user
+in the chat as the description of the document — it must stand on its own and
+should NOT repeat the document body.
+"""
+
+
+def generate_document_output(
+    plan: Plan,
+    route: RouteDecision,
+    history: list[dict],
+    wc: WebContextResult,
+    planner_ctx: str | None,
+    doc_context: str,
+    deep_research: bool,
+    enable_native_search: bool,
+    artifact_context: str = "",
+) -> tuple[LLMResult, str, str, str]:
+    """Single LLM call producing a document body + chat-facing bullet outline.
+
+    Returns (llm_result, document_body_markdown, chat_summary, doc_type).
+    """
+    from app.routers.documents import DOC_TYPE_PROMPTS, DOCUMENT_SYSTEM_PROMPT
+
+    brief = plan.document_brief or {}
+    doc_type = brief.get("doc_type") or "executive_report"
+    parts = [DOCUMENT_SYSTEM_PROMPT, DOC_TYPE_PROMPTS.get(doc_type, DOC_TYPE_PROMPTS["executive_report"])]
+
+    preferences = []
+    if brief.get("audience"):
+        preferences.append(f"- Audience: {brief['audience']}")
+    if brief.get("tone"):
+        preferences.append(f"- Tone: {brief['tone']}")
+    if brief.get("length"):
+        preferences.append(f"- Length/depth: {brief['length']}")
+    if brief.get("title"):
+        preferences.append(f"- Suggested title: {brief['title']}")
+    if preferences:
+        parts.append("User-selected document brief:\n" + "\n".join(preferences))
+
+    if artifact_context:
+        parts.append(artifact_context)
+    parts.append(DOCUMENT_OUTPUT_INSTRUCTIONS)
+    sys_prompt = "\n\n".join(parts)
+
+    result = invoke_llm(
+        plan.enriched_prompt, route,
+        history=history,
+        deep_research=deep_research,
+        web_context=wc.context if enable_native_search else None,
+        enable_native_search=enable_native_search,
+        planner_context=planner_ctx,
+        doc_context=doc_context or None,
+        artifact_context=sys_prompt,
+    )
+
+    body, _, summary = result.answer.partition("---SUMMARY---")
+    body = body.strip() or result.answer.strip()
+    summary = summary.strip() or "Here's your document — see the attached preview."
+    return result, body, summary, doc_type
 
 
 def run_pipeline(

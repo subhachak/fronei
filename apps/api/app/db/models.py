@@ -119,6 +119,7 @@ class ConversationMessage(Base):
     estimated_cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
     execution_log_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     research_run_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    plan_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     conversation: Mapped["Conversation"] = relationship("Conversation", back_populates="messages")

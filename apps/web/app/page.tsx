@@ -430,6 +430,39 @@ type ResearchRecommendation = {
   temp_asst_id?: number
 }
 
+type PlanCapabilityState = {
+  enabled: boolean
+  recommended: boolean
+  reason?: string
+  risk_factors?: string[]
+  brief?: Record<string, unknown>
+  format_options?: string[]
+  format_recommendation?: string | null
+  supported_formats?: string[]
+}
+
+type PlanCapabilities = {
+  web_search: PlanCapabilityState
+  deep_research: PlanCapabilityState
+  document: PlanCapabilityState
+}
+
+type PlanProposal = {
+  conv_id: number
+  message_id: number
+  plan_confidence: string
+  open_questions: string[]
+  capabilities: PlanCapabilities
+}
+
+type ConfirmedPlanOverrides = {
+  web_search?: boolean
+  deep_research?: boolean
+  document?: boolean
+  document_format?: string
+  document_brief?: Record<string, unknown>
+}
+
 type MessageOut = {
   id: number; role: 'user' | 'assistant'; content: string
   route?: RouteDecision | null; task_type?: string | null
@@ -443,6 +476,7 @@ type MessageOut = {
   research_recommendation?: ResearchRecommendation | null
   attached_files?: { name: string; method: string; pages: number | null }[] | null
   document_preview?: GeneratedDocument | null
+  plan_proposal?: PlanProposal | null
 }
 
 type GeneratedDocument = {
@@ -2423,6 +2457,177 @@ const DOC_TYPE_LABELS: Record<string, string> = {
   resume:           'Resume',
 }
 
+const PLAN_FORMAT_LABELS: Record<string, string> = {
+  markdown: 'Markdown',
+  docx: 'Word',
+  pptx: 'PowerPoint',
+  pdf: 'PDF',
+  xlsx: 'Excel',
+}
+
+const PLAN_FORMAT_ORDER = ['markdown', 'docx', 'pptx', 'pdf', 'xlsx'] as const
+
+function PlanModal({
+  proposal,
+  onClose,
+  onConfirm,
+}: {
+  proposal: PlanProposal
+  onClose: () => void
+  onConfirm: (confirmed: ConfirmedPlanOverrides) => void
+}) {
+  const caps = proposal.capabilities
+  const [webSearch, setWebSearch] = useState(!!caps.web_search?.enabled)
+  const [deepResearch, setDeepResearch] = useState(!!caps.deep_research?.enabled)
+  const [wantsDoc, setWantsDoc] = useState(!!caps.document?.enabled)
+  const formatOptions = caps.document?.format_options?.length ? caps.document.format_options : ['markdown', 'docx']
+  const supportedFormats = caps.document?.supported_formats ?? ['markdown', 'docx']
+  const [format, setFormat] = useState(
+    caps.document?.format_recommendation || formatOptions[0] || 'markdown'
+  )
+
+  const formatsToShow = PLAN_FORMAT_ORDER.filter(
+    f => formatOptions.includes(f) || supportedFormats.includes(f)
+  )
+
+  return (
+    <div className="doc-preview-backdrop" onClick={onClose}>
+      <div
+        className="doc-brief-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="plan-modal-title"
+        onClick={e => e.stopPropagation()}
+      >
+        <header className="doc-brief-header">
+          <div>
+            <span className="doc-preview-type">Plan proposed</span>
+            <h2 id="plan-modal-title">Confirm how Fronei should proceed</h2>
+          </div>
+          <button className="action-btn" type="button" onClick={onClose} aria-label="Close plan review">
+            <i className="ti ti-x" aria-hidden="true" />
+          </button>
+        </header>
+        <div className="doc-brief-body">
+          {proposal.open_questions.length > 0 && (
+            <div className="doc-brief-suggestion">
+              {proposal.open_questions.join(' ')}
+            </div>
+          )}
+
+          <div className="doc-plan-section">
+            <div className="doc-plan-section-title">Plan options</div>
+
+            {caps.web_search && (
+              <button
+                type="button"
+                className={`doc-plan-option${webSearch ? ' active' : ''}${caps.web_search.recommended ? ' recommended' : ''}`}
+                onClick={() => setWebSearch(v => !v)}
+              >
+                <span className="doc-plan-option-main">
+                  <i className="ti ti-world-search" aria-hidden="true" />
+                  <span>Web search</span>
+                  {caps.web_search.recommended && <em>Recommended</em>}
+                </span>
+                <span className="doc-plan-option-status">{webSearch ? 'On' : 'Off'}</span>
+                {caps.web_search.reason && (
+                  <span className="doc-plan-option-reason">{caps.web_search.reason}</span>
+                )}
+              </button>
+            )}
+
+            {caps.deep_research && (
+              <button
+                type="button"
+                className={`doc-plan-option${deepResearch ? ' active' : ''}${caps.deep_research.recommended ? ' recommended' : ''}`}
+                onClick={() => setDeepResearch(v => !v)}
+              >
+                <span className="doc-plan-option-main">
+                  <i className="ti ti-microscope" aria-hidden="true" />
+                  <span>Deep research</span>
+                  {caps.deep_research.recommended && <em>Recommended</em>}
+                </span>
+                <span className="doc-plan-option-status">{deepResearch ? 'On' : 'Off'}</span>
+                {caps.deep_research.reason && (
+                  <span className="doc-plan-option-reason">{caps.deep_research.reason}</span>
+                )}
+                {caps.deep_research.risk_factors && caps.deep_research.risk_factors.length > 0 && (
+                  <div className="research-rec-tags">
+                    {caps.deep_research.risk_factors.slice(0, 4).map(f => (
+                      <span key={f}>{f.replace(/_/g, ' ')}</span>
+                    ))}
+                  </div>
+                )}
+              </button>
+            )}
+
+            {caps.document && (
+              <>
+                <button
+                  type="button"
+                  className={`doc-plan-option${wantsDoc ? ' active' : ''}${caps.document.recommended ? ' recommended' : ''}`}
+                  onClick={() => setWantsDoc(v => !v)}
+                >
+                  <span className="doc-plan-option-main">
+                    <i className="ti ti-file-text" aria-hidden="true" />
+                    <span>Generate document</span>
+                    {caps.document.recommended && <em>Recommended</em>}
+                  </span>
+                  <span className="doc-plan-option-status">{wantsDoc ? 'On' : 'Off'}</span>
+                  {caps.document.reason && (
+                    <span className="doc-plan-option-reason">{caps.document.reason}</span>
+                  )}
+                </button>
+
+                {wantsDoc && formatsToShow.length > 0 && (
+                  <div className="doc-brief-field">
+                    <span>Output format</span>
+                    <div className="doc-format-row" role="group" aria-label="Output formats">
+                      {formatsToShow.map(f => {
+                        const isSupported = supportedFormats.includes(f)
+                        return (
+                          <button
+                            key={f}
+                            type="button"
+                            className={`doc-format-pill${format === f ? ' active' : ''}`}
+                            disabled={!isSupported}
+                            onClick={() => isSupported && setFormat(f)}
+                            aria-pressed={format === f}
+                            title={isSupported ? undefined : 'Coming soon'}
+                          >
+                            {PLAN_FORMAT_LABELS[f] ?? f}
+                            {!isSupported && ' (coming soon)'}
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+        <footer className="doc-brief-footer">
+          <button type="button" className="doc-brief-cancel" onClick={onClose}>Cancel</button>
+          <button
+            type="button"
+            className="send-btn"
+            onClick={() => onConfirm({
+              web_search: webSearch,
+              deep_research: deepResearch,
+              document: wantsDoc,
+              document_format: wantsDoc ? format : undefined,
+            })}
+          >
+            <i className="ti ti-player-play" aria-hidden="true" />
+            Continue
+          </button>
+        </footer>
+      </div>
+    </div>
+  )
+}
+
 function DocumentPlanModal({
   brief,
   detected,
@@ -3801,6 +4006,7 @@ export default function Home() {
     webSearch: false,
   })
   const [documentPlanRecommendations, setDocumentPlanRecommendations] = useState<DocumentPlanRecommendations>({})
+  const [activePlanProposalMsgId, setActivePlanProposalMsgId] = useState<number | null>(null)
   const [forceModel, setForceModel]       = useState('')
   const [showWebSearch, setShowWebSearch] = useState(false)
   const [leftMenuOpen, setLeftMenuOpen]   = useState(false)
@@ -4667,10 +4873,7 @@ export default function Home() {
     }])
     if (overrideText === undefined) setMessage('')
 
-    let startRoute: RouteDecision | null = null
-    let startConvId = activeConvId
-    let startTurnType: string | null = null
-    let startAction: string | null = null
+    const startConvId = activeConvId
 
     const userCtx = [
       userName   && `User: ${userName}`,
@@ -4850,6 +5053,42 @@ export default function Home() {
         throw new Error((err as { detail: string }).detail || 'Request failed')
       }
 
+      await runStream(res, { tempAsstId, tempUserId, wasNew, startConvId, sent, isArtifactRequest, bubblePreCreated })
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Unknown error')
+      setMessages(prev => prev.filter(m => m.id !== tempUserId && m.id !== tempAsstId))
+    } finally {
+      setLoading(false)
+      setStreaming(false)
+      setRefining(false)
+      setArtifactGenerating(false)
+      setIsExtracting(false)
+      setLiveSteps([])
+      setSubCompletions(new Map())
+      setLiveAssistantId(null)
+    }
+  }
+
+  // Consumes an SSE chat-stream response (from /chat/stream or /execute-plan)
+  // and applies the resulting events to component state.
+  async function runStream(res: Response, ctx: {
+    tempAsstId: number
+    tempUserId: number
+    wasNew: boolean
+    startConvId: number | null
+    sent: string
+    isArtifactRequest: boolean
+    bubblePreCreated: boolean
+  }) {
+    const { tempAsstId, tempUserId, wasNew, sent, isArtifactRequest } = ctx
+    let startConvId = ctx.startConvId
+    let bubblePreCreated = ctx.bubblePreCreated
+    let startRoute: RouteDecision | null = null
+    let startTurnType: string | null = null
+    let startAction: string | null = null
+
+    try {
+      if (!res.body) throw new Error('Empty response body')
       const reader = res.body.getReader()
       readerRef.current = reader
       const decoder = new TextDecoder()
@@ -4881,6 +5120,7 @@ export default function Home() {
               setLiveAssistantId(tempAsstId)
               setMessages(prev => [...prev, { id: tempAsstId, role: 'assistant' as const, content: '', created_at: new Date().toISOString() }])
               setPipelineTs(Date.now())
+              bubblePreCreated = true
             }
             setLiveSteps([])
             setLoading(false)
@@ -4935,6 +5175,26 @@ export default function Home() {
                 : m
             ))
 
+          } else if (eventType === 'plan_proposed') {
+            const proposal: PlanProposal = {
+              conv_id: (startConvId ?? data.conversation_id) as number,
+              message_id: data.message_id as number,
+              plan_confidence: (data.plan_confidence as string) ?? 'low',
+              open_questions: (data.open_questions as string[]) ?? [],
+              capabilities: data.capabilities as PlanCapabilities,
+            }
+            setLoading(false)
+            setStreaming(false)
+            setRefining(false)
+            setLiveSteps([])
+            setSubCompletions(new Map())
+            setLiveAssistantId(null)
+            setMessages(prev => prev.map(m =>
+              m.id === tempAsstId
+                ? { ...m, plan_proposal: proposal }
+                : m
+            ))
+
           } else if (eventType === 'token') {
             setLiveSteps([])
             setSubCompletions(new Map())
@@ -4985,6 +5245,7 @@ export default function Home() {
               action:             startAction,
               research_run_id:    (data.research_run_id as number | undefined) ?? researchMeta?.run_id ?? null,
               research:           researchMeta,
+              plan_proposal:      null,
               document_preview:   data.document_preview
                 ? {
                     title:      (data.document_preview as any).title,
@@ -5025,6 +5286,55 @@ export default function Home() {
       setIsExtracting(false)
       setLiveSteps([])
       setSubCompletions(new Map())
+      setLiveAssistantId(null)
+    }
+  }
+
+  // Re-submits a previously-proposed plan (with user-confirmed overrides) for
+  // execution via the /execute-plan endpoint — no re-planning, no re-sending text.
+  async function actOnPlanProposal(proposal: PlanProposal, confirmed: ConfirmedPlanOverrides) {
+    setActivePlanProposalMsgId(null)
+    setMessages(prev => prev.map(m =>
+      m.plan_proposal?.message_id === proposal.message_id
+        ? { ...m, plan_proposal: null, content: '' }
+        : m
+    ))
+
+    const target = messages.find(m => m.plan_proposal?.message_id === proposal.message_id)
+    const tempAsstId = target?.id ?? -Date.now()
+
+    setLoading(true)
+    setStreaming(false)
+    setRefining(false)
+    setLiveSteps([])
+    setSubCompletions(new Map())
+    setPipelineTs(Date.now())
+    setLiveAssistantId(tempAsstId)
+    setError('')
+
+    try {
+      const res = await apiFetch(`/conversations/${proposal.conv_id}/messages/${proposal.message_id}/execute-plan`, {
+        method: 'POST',
+        body: JSON.stringify({ confirmed_plan: confirmed }),
+      })
+
+      if (!res.ok || !res.body) {
+        const err = await res.json().catch(() => ({ detail: 'Request failed' }))
+        throw new Error((err as { detail: string }).detail || 'Request failed')
+      }
+
+      await runStream(res, {
+        tempAsstId,
+        tempUserId: -1,
+        wasNew: false,
+        startConvId: proposal.conv_id,
+        sent: lastSentRef.current,
+        isArtifactRequest: false,
+        bubblePreCreated: true,
+      })
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Unknown error')
+      setLoading(false)
       setLiveAssistantId(null)
     }
   }
@@ -5330,7 +5640,30 @@ export default function Home() {
                           </div>
                         ) : m.content
                       ) : (
-                        m.research_recommendation
+                        m.plan_proposal
+                          ? (
+                            <div className="research-rec-card">
+                              <div className="research-rec-icon">
+                                <i className="ti ti-route" aria-hidden="true" />
+                              </div>
+                              <div className="research-rec-body">
+                                <div className="research-rec-title">Confirm plan before continuing</div>
+                                {m.plan_proposal.open_questions.length > 0 && (
+                                  <p>{m.plan_proposal.open_questions.join(' ')}</p>
+                                )}
+                                <div className="research-rec-actions">
+                                  <button
+                                    className="send-btn"
+                                    type="button"
+                                    onClick={() => setActivePlanProposalMsgId(m.id)}
+                                  >
+                                    Review plan
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+                          )
+                          : m.research_recommendation
                           ? (
                             <div className="research-rec-card">
                               <div className="research-rec-icon">
@@ -5975,6 +6308,18 @@ export default function Home() {
       {previewDoc && (
         <DocumentPreviewModal doc={previewDoc} onClose={() => setPreviewDoc(null)} />
       )}
+      {activePlanProposalMsgId !== null && (() => {
+        const m = messages.find(mm => mm.id === activePlanProposalMsgId)
+        if (!m?.plan_proposal) return null
+        const proposal = m.plan_proposal
+        return (
+          <PlanModal
+            proposal={proposal}
+            onClose={() => setActivePlanProposalMsgId(null)}
+            onConfirm={confirmed => actOnPlanProposal(proposal, confirmed)}
+          />
+        )
+      })()}
       {documentBriefDraft && (
         <DocumentPlanModal
           brief={documentBriefDraft}

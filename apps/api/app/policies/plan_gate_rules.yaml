@@ -1,0 +1,32 @@
+# Plan gate policy — decides whether a turn executes immediately ("auto") or
+# requires one bundled confirmation popup ("confirm") before execution.
+#
+# See docs/unified-plan-architecture.md for the full design. This file holds
+# only the tunable thresholds; the decision logic itself lives in
+# app/services/plan_gate.py.
+
+# Web search: needs_web_search is true, but only "material" criticality gates.
+web_search:
+  # Criticality values the planner may return. Anything not listed here
+  # falls back to `default_criticality`.
+  gating_criticalities: [material]
+  default_criticality: material
+
+# Deep research: recommend_deep_research always gates, regardless of confidence.
+deep_research:
+  always_gate: true
+
+# Document output: gates when the brief is incomplete or there's a format choice.
+document:
+  # Brief fields whose absence (null/empty) is considered "ambiguous".
+  required_brief_fields: [doc_type, audience, tone, length]
+  # Gate when more than this many plausible formats are offered.
+  max_silent_format_options: 1
+
+# Overall plan confidence: "low" always gates, regardless of other signals.
+plan_confidence:
+  gating_levels: [low]
+
+# Formats the document generator can actually produce today. Anything else
+# the planner proposes is shown disabled ("coming soon") in the format picker.
+supported_document_formats: [markdown, docx]

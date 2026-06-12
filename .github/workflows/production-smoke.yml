@@ -1,0 +1,29 @@
+name: Production Smoke Check
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for Railway deploy
+        if: github.event_name == 'push'
+        run: sleep 120
+
+      - name: Check public health
+        run: |
+          curl -fsS "$FRONEI_API_URL/health"
+        env:
+          FRONEI_API_URL: ${{ secrets.FRONEI_API_URL }}
+
+      - name: Check internal smoke endpoint
+        run: |
+          curl -fsS -X POST "$FRONEI_API_URL/internal/smoke" \
+            -H "X-Internal-Secret: $INTERNAL_TASK_SECRET"
+        env:
+          FRONEI_API_URL: ${{ secrets.FRONEI_API_URL }}
+          INTERNAL_TASK_SECRET: ${{ secrets.INTERNAL_TASK_SECRET }}

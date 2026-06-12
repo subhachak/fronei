@@ -48,6 +48,15 @@ def run_migrations_online() -> None:
         # once the old connection's transaction has released its locks.
         if connection.dialect.name == "postgresql":
             connection.exec_driver_sql("SET lock_timeout = '5s'")
+            # SQLAlchemy 2.0 auto-begins a transaction on the statement above.
+            # If left open, Alembic's context.begin_transaction() below detects
+            # an active transaction and falls back to a SAVEPOINT instead of a
+            # real top-level transaction — releasing the savepoint then looks
+            # like a successful migration (clean log output, no errors), but
+            # the outer transaction is never committed and is silently rolled
+            # back when the connection closes. Commit it now so Alembic starts
+            # its own top-level transaction for the actual migration.
+            connection.commit()
 
         context.configure(
             connection=connection,

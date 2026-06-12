@@ -5521,6 +5521,20 @@ export default function Home() {
                 {pendingFiles.length > 0 && <span className="plus-badge">{pendingFiles.length}</span>}
               </button>
 
+              {researchOn && (
+                <button
+                  className="composer-mode-chip"
+                  type="button"
+                  onClick={() => setResearchOn(false)}
+                  title="Cancel research mode"
+                  aria-label="Cancel research mode"
+                >
+                  <i className="ti ti-microscope" aria-hidden="true" />
+                  <span>Research</span>
+                  <i className="ti ti-x" aria-hidden="true" />
+                </button>
+              )}
+
               {documentIntentOn && (
                 <button
                   className="composer-mode-chip"
@@ -5610,7 +5624,10 @@ export default function Home() {
               <button
                 className={`left-menu-item${researchOn ? ' on' : ''}`}
                 type="button"
-                onClick={() => setResearchOn(v => !v)}
+                onClick={() => {
+                  setResearchOn(v => !v)
+                  setLeftMenuOpen(false)
+                }}
               >
                 <i className="ti ti-microscope" aria-hidden="true" />
                 <span>Research</span>

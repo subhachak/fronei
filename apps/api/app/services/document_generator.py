@@ -1,14 +1,39 @@
 from __future__ import annotations
 
 import re
+from datetime import date
 from io import BytesIO
 
 from docx import Document
 from docx.enum.text import WD_BREAK
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
 from docx.shared import Inches, Pt
+from docx.text.paragraph import Paragraph
 
 
 TABLE_SEPARATOR_RE = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$")
+INLINE_RE = re.compile(
+    r"!\[([^\]]*)\]\(([^)]+)\)"
+    r"|\[([^\]]+)\]\(([^)]+)\)"
+    r"|`([^`]+)`"
+    r"|\*\*([^*]+)\*\*"
+    r"|__([^_]+)__"
+    r"|\*([^*]+)\*"
+    r"|_([^_]+)_"
+)
+KNOWN_DOC_TYPES = {
+    "executive_report",
+    "proposal",
+    "memo",
+    "technical_spec",
+    "meeting_notes",
+    "one_pager",
+    "letter",
+}
+COVER_DOC_TYPES = {"executive_report", "proposal", "technical_spec"}
+COMPACT_HEADER_DOC_TYPES = {"memo", "one_pager"}
+TOC_DOC_TYPES = {"executive_report", "proposal"}
 
 
 def _clean_inline(text: str) -> str:
@@ -22,7 +47,7 @@ def _clean_inline(text: str) -> str:
 
 def _split_table_row(line: str) -> list[str]:
     trimmed = line.strip().strip("|")
-    return [_clean_inline(cell.strip()) for cell in trimmed.split("|")]
+    return [cell.strip() for cell in trimmed.split("|")]
 
 
 def _is_table_start(lines: list[str], idx: int) -> bool:
@@ -42,7 +67,9 @@ def _add_table(doc: Document, rows: list[list[str]]) -> None:
     for r_idx, row in enumerate(rows):
         for c_idx in range(width):
             cell = table.cell(r_idx, c_idx)
-            cell.text = row[c_idx] if c_idx < len(row) else ""
+            cell.text = ""
+            paragraph = cell.paragraphs[0]
+            _add_inline_runs(paragraph, row[c_idx] if c_idx < len(row) else "", base_bold=(r_idx == 0))
             if r_idx == 0:
                 for paragraph in cell.paragraphs:
                     for run in paragraph.runs:
@@ -58,7 +85,218 @@ def _add_code_block(doc: Document, code_lines: list[str]) -> None:
     run.font.size = Pt(9)
 
 
-def generate_docx_bytes(title: str, content: str, subtitle: str | None = None) -> bytes:
+def _add_hyperlink(paragraph: Paragraph, text: str, url: str, base_bold: bool, base_italic: bool) -> None:
+    part = paragraph.part
+    relationship_id = part.relate_to(
+        url,
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink",
+        is_external=True,
+    )
+    hyperlink = OxmlElement("w:hyperlink")
+    hyperlink.set(qn("r:id"), relationship_id)
+
+    run_element = OxmlElement("w:r")
+    properties = OxmlElement("w:rPr")
+
+    if base_bold:
+        properties.append(OxmlElement("w:b"))
+    if base_italic:
+        properties.append(OxmlElement("w:i"))
+
+    color = OxmlElement("w:color")
+    color.set(qn("w:val"), "0563C1")
+    properties.append(color)
+    underline = OxmlElement("w:u")
+    underline.set(qn("w:val"), "single")
+    properties.append(underline)
+
+    text_element = OxmlElement("w:t")
+    text_element.text = text
+    run_element.append(properties)
+    run_element.append(text_element)
+    hyperlink.append(run_element)
+    paragraph._p.append(hyperlink)
+
+
+def _add_run(
+    paragraph: Paragraph,
+    text: str,
+    *,
+    bold: bool = False,
+    italic: bool = False,
+    code: bool = False,
+    base_bold: bool = False,
+    base_italic: bool = False,
+) -> None:
+    if not text:
+        return
+    run = paragraph.add_run(text)
+    run.bold = base_bold or bold
+    run.italic = base_italic or italic
+    if code:
+        run.font.name = "Courier New"
+        run.font.size = Pt(9.5)
+
+
+def _add_inline_runs(
+    paragraph: Paragraph,
+    text: str,
+    *,
+    base_bold: bool = False,
+    base_italic: bool = False,
+) -> None:
+    """Add Markdown-ish inline text as formatted DOCX runs.
+
+    This intentionally handles the common inline shapes Fronei emits rather
+    than trying to be a complete Markdown parser.
+    """
+    pos = 0
+    for match in INLINE_RE.finditer(text.strip()):
+        _add_run(paragraph, text[pos:match.start()], base_bold=base_bold, base_italic=base_italic)
+
+        if match.group(1) is not None:
+            _add_run(paragraph, match.group(1), base_bold=base_bold, base_italic=base_italic)
+        elif match.group(3) is not None:
+            _add_hyperlink(paragraph, match.group(3), match.group(4), base_bold, base_italic)
+        elif match.group(5) is not None:
+            _add_run(paragraph, match.group(5), code=True, base_bold=base_bold, base_italic=base_italic)
+        elif match.group(6) is not None:
+            _add_run(paragraph, match.group(6), bold=True, base_bold=base_bold, base_italic=base_italic)
+        elif match.group(7) is not None:
+            _add_run(paragraph, match.group(7), bold=True, base_bold=base_bold, base_italic=base_italic)
+        elif match.group(8) is not None:
+            _add_run(paragraph, match.group(8), italic=True, base_bold=base_bold, base_italic=base_italic)
+        elif match.group(9) is not None:
+            _add_run(paragraph, match.group(9), italic=True, base_bold=base_bold, base_italic=base_italic)
+
+        pos = match.end()
+
+    _add_run(paragraph, text[pos:].strip() if pos == 0 else text[pos:], base_bold=base_bold, base_italic=base_italic)
+
+
+def _add_inline_paragraph(
+    doc: Document,
+    text: str,
+    *,
+    style: str | None = None,
+    base_bold: bool = False,
+    base_italic: bool = False,
+) -> None:
+    paragraph = doc.add_paragraph(style=style)
+    _add_inline_runs(paragraph, text, base_bold=base_bold, base_italic=base_italic)
+
+
+def _add_field(paragraph: Paragraph, instruction: str, placeholder: str = "") -> None:
+    run = paragraph.add_run()
+    begin = OxmlElement("w:fldChar")
+    begin.set(qn("w:fldCharType"), "begin")
+    run._r.append(begin)
+
+    instr = OxmlElement("w:instrText")
+    instr.set(qn("xml:space"), "preserve")
+    instr.text = instruction
+    run._r.append(instr)
+
+    separate = OxmlElement("w:fldChar")
+    separate.set(qn("w:fldCharType"), "separate")
+    run._r.append(separate)
+    if placeholder:
+        text = OxmlElement("w:t")
+        text.text = placeholder
+        run._r.append(text)
+
+    end = OxmlElement("w:fldChar")
+    end.set(qn("w:fldCharType"), "end")
+    run._r.append(end)
+
+
+def _enable_field_updates(doc: Document) -> None:
+    settings = doc.settings.element
+    if settings.find(qn("w:updateFields")) is not None:
+        return
+    update = OxmlElement("w:updateFields")
+    update.set(qn("w:val"), "true")
+    settings.append(update)
+
+
+def _add_footer(section) -> None:
+    paragraph = section.footer.paragraphs[0]
+    paragraph.text = "Fronei"
+    paragraph.add_run(" | Page ")
+    _add_field(paragraph, "PAGE", "1")
+
+
+def _apply_type_styles(doc: Document, doc_type: str) -> None:
+    section = doc.sections[0]
+    if doc_type == "executive_report":
+        section.top_margin = Inches(0.85)
+        section.bottom_margin = Inches(0.8)
+        section.left_margin = Inches(0.9)
+        section.right_margin = Inches(0.9)
+        sizes = [("Title", 28), ("Heading 1", 20), ("Heading 2", 15), ("Heading 3", 12)]
+    elif doc_type == "one_pager":
+        section.top_margin = Inches(0.55)
+        section.bottom_margin = Inches(0.55)
+        section.left_margin = Inches(0.6)
+        section.right_margin = Inches(0.6)
+        sizes = [("Title", 18), ("Heading 1", 14), ("Heading 2", 12), ("Heading 3", 11)]
+        doc.styles["Normal"].font.size = Pt(9.5)
+    elif doc_type == "proposal":
+        section.top_margin = Inches(0.8)
+        section.bottom_margin = Inches(0.8)
+        section.left_margin = Inches(0.85)
+        section.right_margin = Inches(0.85)
+        sizes = [("Title", 26), ("Heading 1", 18), ("Heading 2", 14), ("Heading 3", 12)]
+    else:
+        sizes = [("Title", 24), ("Heading 1", 18), ("Heading 2", 14), ("Heading 3", 12)]
+
+    for style_name, size in sizes:
+        doc.styles[style_name].font.size = Pt(size)
+
+
+def _add_cover(doc: Document, title: str, subtitle: str | None) -> None:
+    _add_inline_paragraph(doc, _clean_inline(title) or "Fronei document", style="Title")
+    if subtitle:
+        _add_inline_paragraph(doc, subtitle, base_italic=True)
+    doc.add_paragraph("")
+    prepared = doc.add_paragraph()
+    _add_inline_runs(prepared, f"Prepared for Fronei\n{date.today().isoformat()}")
+    doc.add_page_break()
+
+
+def _add_compact_header(doc: Document, title: str, subtitle: str | None) -> None:
+    _add_inline_paragraph(doc, _clean_inline(title) or "Fronei document", style="Heading 1")
+    meta = doc.add_paragraph()
+    meta_text = f"Prepared for Fronei | {date.today().isoformat()}"
+    if subtitle:
+        meta_text = f"{subtitle} | {meta_text}"
+    _add_inline_runs(meta, meta_text, base_italic=True)
+
+
+def _add_toc(doc: Document) -> None:
+    doc.add_heading("Table of Contents", level=1)
+    paragraph = doc.add_paragraph()
+    _add_field(paragraph, r'TOC \o "1-3" \h \z \u', "Right-click and update field to refresh.")
+    doc.add_page_break()
+    _enable_field_updates(doc)
+
+
+def _strip_leading_h1(content: str) -> str:
+    """Remove a leading top-level Markdown heading, if present.
+
+    Used when the title is already rendered separately (cover page or
+    compact header) so it doesn't appear a second time in the body.
+    """
+    lines = content.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    idx = 0
+    while idx < len(lines) and not lines[idx].strip():
+        idx += 1
+    if idx < len(lines) and re.match(r"^#\s+.+$", lines[idx].strip()):
+        return "\n".join(lines[idx + 1:])
+    return content
+
+
+def generate_docx_bytes(title: str, content: str, subtitle: str | None = None, doc_type: str | None = None) -> bytes:
     """Render Markdown-ish text into a simple, professional DOCX document."""
     doc = Document()
     section = doc.sections[0]
@@ -74,10 +312,23 @@ def generate_docx_bytes(title: str, content: str, subtitle: str | None = None) -
         styles[style_name].font.name = "Aptos Display"
         styles[style_name].font.size = Pt(size)
 
-    doc.add_heading(_clean_inline(title) or "Fronei document", 0)
-    if subtitle:
-        subtitle_para = doc.add_paragraph(_clean_inline(subtitle))
-        subtitle_para.runs[0].italic = True
+    enhanced_doc_type = doc_type if doc_type in KNOWN_DOC_TYPES else None
+    if enhanced_doc_type:
+        _apply_type_styles(doc, enhanced_doc_type)
+        _add_footer(section)
+        if enhanced_doc_type in COVER_DOC_TYPES:
+            _add_cover(doc, title, subtitle)
+            if enhanced_doc_type in TOC_DOC_TYPES:
+                _add_toc(doc)
+        elif enhanced_doc_type in COMPACT_HEADER_DOC_TYPES:
+            _add_compact_header(doc, title, subtitle)
+        # The cover / compact header already renders the title, so drop a
+        # leading "# Title" line from the body to avoid showing it twice.
+        content = _strip_leading_h1(content)
+    else:
+        _add_inline_paragraph(doc, _clean_inline(title) or "Fronei document", style="Title")
+        if subtitle:
+            _add_inline_paragraph(doc, subtitle, base_italic=True)
 
     lines = content.replace("\r\n", "\n").replace("\r", "\n").split("\n")
     idx = 0
@@ -126,30 +377,29 @@ def generate_docx_bytes(title: str, content: str, subtitle: str | None = None) -
         heading_match = re.match(r"^(#{1,6})\s+(.+)$", stripped)
         if heading_match:
             level = min(len(heading_match.group(1)), 3)
-            doc.add_heading(_clean_inline(heading_match.group(2)), level=level)
+            _add_inline_paragraph(doc, heading_match.group(2), style=f"Heading {level}")
             idx += 1
             continue
 
         bullet_match = re.match(r"^[-*+]\s+(.+)$", stripped)
         if bullet_match:
-            doc.add_paragraph(_clean_inline(bullet_match.group(1)), style="List Bullet")
+            _add_inline_paragraph(doc, bullet_match.group(1), style="List Bullet")
             idx += 1
             continue
 
         number_match = re.match(r"^\d+[.)]\s+(.+)$", stripped)
         if number_match:
-            doc.add_paragraph(_clean_inline(number_match.group(1)), style="List Number")
+            _add_inline_paragraph(doc, number_match.group(1), style="List Number")
             idx += 1
             continue
 
         blockquote_match = re.match(r"^>\s+(.+)$", stripped)
         if blockquote_match:
-            paragraph = doc.add_paragraph(_clean_inline(blockquote_match.group(1)))
-            paragraph.runs[0].italic = True
+            _add_inline_paragraph(doc, blockquote_match.group(1), base_italic=True)
             idx += 1
             continue
 
-        doc.add_paragraph(_clean_inline(stripped))
+        _add_inline_paragraph(doc, stripped)
         idx += 1
 
     if code_lines:

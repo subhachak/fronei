@@ -443,6 +443,15 @@ type MessageOut = {
   research?: ResearchMeta | null
   research_recommendation?: ResearchRecommendation | null
   attached_files?: { name: string; method: string; pages: number | null }[] | null
+  document_preview?: GeneratedDocument | null
+}
+
+type GeneratedDocument = {
+  title: string
+  docType: string
+  markdown: string
+  filename: string
+  docxBase64: string
 }
 
 type ConversationDetail = ConversationSummary & { messages: MessageOut[] }
@@ -706,6 +715,38 @@ function safeDownloadName(title: string, ext: string) {
   const stem = title.replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '').toLowerCase() || 'fronei-document'
   return `${stem}.${ext}`
 }
+
+function inferDocumentTitle(prompt: string) {
+  const cleaned = prompt
+    .replace(/\b(generate|create|write|draft|prepare|build)\b/gi, '')
+    .replace(/\b(a|an|the|report|document|doc|proposal|brief)\b/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return (cleaned || 'Fronei document').slice(0, 90)
+}
+
+function base64ToBlob(base64: string, mimeType: string): Blob {
+  const byteChars = atob(base64)
+  const byteArrays: BlobPart[] = []
+  for (let offset = 0; offset < byteChars.length; offset += 1024) {
+    const slice = byteChars.slice(offset, offset + 1024)
+    const bytes = new Uint8Array(slice.length)
+    for (let i = 0; i < slice.length; i++) bytes[i] = slice.charCodeAt(i)
+    byteArrays.push(bytes.buffer)
+  }
+  return new Blob(byteArrays, { type: mimeType })
+}
+
+function downloadBlob(blob: Blob, filename: string) {
+  const href = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = href
+  a.download = filename
+  a.click()
+  URL.revokeObjectURL(href)
+}
+
+const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
 
 function fmtTime(iso: string): string {
   const d = new Date(iso)
@@ -2261,6 +2302,65 @@ function SettingsView({
   )
 }
 
+// ── Document preview modal ──────────────────────────────────────────────────
+
+const DOC_TYPE_LABELS: Record<string, string> = {
+  executive_report: 'Executive report',
+  proposal:         'Proposal',
+  memo:             'Memo',
+  technical_spec:   'Technical spec',
+  meeting_notes:    'Meeting notes',
+  one_pager:        'One-pager',
+  letter:           'Letter',
+}
+
+function DocumentPreviewModal({ doc, onClose }: { doc: GeneratedDocument; onClose: () => void }) {
+  const html = useMemo(() => DOMPurify.sanitize(marked.parse(doc.markdown) as string), [doc.markdown])
+
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [onClose])
+
+  return (
+    <div className="doc-preview-backdrop" onClick={onClose}>
+      <div
+        className="doc-preview-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="doc-preview-title"
+        onClick={e => e.stopPropagation()}
+      >
+        <header className="doc-preview-header">
+          <div>
+            <span className="doc-preview-type">{DOC_TYPE_LABELS[doc.docType] ?? 'Document'}</span>
+            <h2 id="doc-preview-title">{doc.title}</h2>
+          </div>
+          <div className="doc-preview-actions">
+            <button
+              className="send-btn"
+              type="button"
+              onClick={() => downloadBlob(base64ToBlob(doc.docxBase64, DOCX_MIME), doc.filename)}
+            >
+              <i className="ti ti-file-download" aria-hidden="true" />
+              Download .docx
+            </button>
+            <button className="action-btn" type="button" onClick={onClose} aria-label="Close preview">
+              <i className="ti ti-x" aria-hidden="true" />
+            </button>
+          </div>
+        </header>
+        <div className="doc-preview-body">
+          <div className="markdown-body doc-preview-content" dangerouslySetInnerHTML={{ __html: html }} />
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── Onboarding modal ──────────────────────────────────────────────────────────
 
 function OnboardingModal({ onComplete }: { onComplete: (name: string, domain: string) => void }) {
@@ -3350,6 +3450,8 @@ export default function Home() {
   const [quality, setQuality]             = useState<Quality>('smart')
   const [researchOn, setResearchOn]       = useState(false)
   const [webSearchOn, setWebSearchOn]     = useState(false)
+  const [documentMode, setDocumentMode]   = useState(false)
+  const [previewDoc, setPreviewDoc]       = useState<GeneratedDocument | null>(null)
   const [forceModel, setForceModel]       = useState('')
   const [showWebSearch, setShowWebSearch] = useState(false)
   const [leftMenuOpen, setLeftMenuOpen]   = useState(false)
@@ -3949,6 +4051,42 @@ export default function Home() {
     URL.revokeObjectURL(href)
   }
 
+  async function generateDocumentFromPrompt(prompt: string, attachedDocs: AttachedDocument[]): Promise<GeneratedDocument> {
+    const title = inferDocumentTitle(prompt)
+    const res = await apiFetch('/documents/generate/from-prompt/docx', {
+      method: 'POST',
+      body: JSON.stringify({
+        prompt,
+        title,
+        profile: buildRequestFields(quality, false, false).profile,
+        force_model: forceModel.trim() || null,
+        attached_documents: attachedDocs.map(d => ({
+          name:       d.name,
+          text:       d.text,
+          char_count: d.char_count,
+          pages:      d.pages_extracted,
+          method:     d.method,
+        })),
+      }),
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Document generation failed' }))
+      throw new Error((err as { detail: string }).detail || 'Document generation failed')
+    }
+    const data = await res.json() as {
+      title: string; doc_type: string; markdown: string
+      filename: string; docx_base64: string
+    }
+    downloadBlob(base64ToBlob(data.docx_base64, DOCX_MIME), data.filename)
+    return {
+      title:      data.title,
+      docType:    data.doc_type,
+      markdown:   data.markdown,
+      filename:   data.filename,
+      docxBase64: data.docx_base64,
+    }
+  }
+
   function doExport(e: MouseEvent, conv: ConversationSummary) {
     e.stopPropagation()
     if (activeConvId === conv.id) {
@@ -4055,7 +4193,10 @@ export default function Home() {
     overrideText?: string,
     opts: { forceResearch?: boolean; suppressResearchRecommendation?: boolean } = {},
   ) {
-    const sent = (overrideText !== undefined ? overrideText : message).trim()
+    const rawText = (overrideText !== undefined ? overrideText : message).trim()
+    const sent = rawText || (documentMode && pendingFiles.length > 0
+      ? 'Generate a client-ready document from the attached files.'
+      : '')
     if ((!sent && pendingFiles.length === 0) || isBusy) return
     lastSentRef.current = sent
     setLoading(true)
@@ -4154,7 +4295,7 @@ export default function Home() {
 
         setLiveSteps(prev => [...prev, {
           stage:   'routing' as PipelineStage,
-          message: 'Files ready — sending to Fronei…',
+          message: documentMode ? 'Files ready — generating document…' : 'Files ready — sending to Fronei…',
           ts:      Date.now(),
         }])
 
@@ -4180,6 +4321,33 @@ export default function Home() {
     }
 
     try {
+      if (documentMode) {
+        if (!bubblePreCreated) {
+          setMessages(prev => [
+            ...prev,
+            { id: tempAsstId, role: 'assistant' as const, content: '', created_at: new Date().toISOString() },
+          ])
+        }
+        setLiveAssistantId(tempAsstId)
+        setLiveSteps([{
+          stage:   'routing' as PipelineStage,
+          message: 'Generating Word document…',
+          ts:      Date.now(),
+        }])
+        const generated = await generateDocumentFromPrompt(apiMessage, extractedDocs)
+        setMessages(prev => prev.map(m => m.id === tempAsstId ? {
+          ...m,
+          content: 'Generated a client-ready Word document from your prompt and downloaded it as a .docx file.',
+          created_at: new Date().toISOString(),
+          document_preview: generated,
+        } : m))
+        setPendingFiles([])
+        setLiveSteps([])
+        setLiveAssistantId(null)
+        setLoading(false)
+        return
+      }
+
       const res = await apiFetch('/conversations/chat/stream', {
         method: 'POST',
         body: JSON.stringify({
@@ -4787,6 +4955,17 @@ export default function Home() {
                             <i className="ti ti-file-download" aria-hidden="true" />
                           </button>
                         )}
+                        {m.role === 'assistant' && m.document_preview && (
+                          <button
+                            className="action-btn preview-doc-btn"
+                            onClick={() => setPreviewDoc(m.document_preview!)}
+                            title="Preview document"
+                            aria-label="Preview generated document"
+                          >
+                            <i className="ti ti-eye" aria-hidden="true" />
+                            <span>Preview</span>
+                          </button>
+                        )}
                         {m.created_at && (
                           <span className="msg-time" title={new Date(m.created_at).toLocaleString()}>
                             {fmtTime(m.created_at)}
@@ -5011,7 +5190,7 @@ export default function Home() {
 
               {/* Left: + button */}
               <button
-                className={`composer-plus${leftMenuOpen ? ' active' : ''}${(researchOn || webSearchOn || pendingFiles.length > 0) ? ' has-active' : ''}`}
+                className={`composer-plus${leftMenuOpen ? ' active' : ''}${(researchOn || webSearchOn || documentMode || pendingFiles.length > 0) ? ' has-active' : ''}`}
                 onClick={() => setLeftMenuOpen(v => !v)}
                 disabled={isBusy}
                 type="button"
@@ -5057,6 +5236,17 @@ export default function Home() {
                 )}
               </button>}
 
+              <button
+                className={`action-btn${documentMode ? ' active' : ''}`}
+                onClick={() => setDocumentMode(v => !v)}
+                disabled={isBusy}
+                type="button"
+                aria-label="Generate Word document"
+                title={documentMode ? 'Document generation on' : 'Generate a Word document from this prompt'}
+              >
+                <i className="ti ti-file-text" aria-hidden="true" />
+              </button>
+
               {/* Options popover trigger */}
               {(hasProfile || devMode || showWebSearch) && (
                 <button
@@ -5087,6 +5277,7 @@ export default function Home() {
                   <i className="ti ti-send" aria-hidden="true" />
                   {isExtracting
                     ? `Extracting${pendingFiles.length > 1 ? ` ${pendingFiles.length} files` : ''}…`
+                    : documentMode ? 'Generate'
                     : loading ? 'Routing…'
                     : streaming ? 'Streaming…'
                     : 'Send'}
@@ -5239,6 +5430,10 @@ export default function Home() {
 
       {showOnboarding && (
         <OnboardingModal onComplete={completeOnboarding} />
+      )}
+
+      {previewDoc && (
+        <DocumentPreviewModal doc={previewDoc} onClose={() => setPreviewDoc(null)} />
       )}
 
     </div>

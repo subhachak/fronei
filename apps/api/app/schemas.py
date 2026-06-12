@@ -54,6 +54,24 @@ class DocumentGenerateRequest(BaseModel):
     subtitle: str | None = Field(default=None, max_length=240)
 
 
+class DocumentGenerateFromPromptRequest(BaseModel):
+    prompt: str = Field(min_length=1, max_length=32000)
+    title: str | None = Field(default=None, max_length=180)
+    profile: Profile | None = None
+    force_model: str | None = None
+    attached_documents: list[AttachedDocument] = []
+
+
+class DocumentGenerateFromPromptResponse(BaseModel):
+    title: str
+    doc_type: str
+    markdown: str
+    filename: str
+    docx_base64: str
+    model_used: str
+    estimated_cost_usd: float | None = None
+
+
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=32000)
     profile: Profile | None = None

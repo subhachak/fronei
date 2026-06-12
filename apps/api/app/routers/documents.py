@@ -1,11 +1,28 @@
+import base64
 from pathlib import Path
 from urllib.parse import quote
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 
-from app.auth import CurrentUser
-from app.schemas import DocumentExtractResponse, DocumentGenerateRequest
+from app.auth import CurrentUser, CurrentUserIsAdmin
+from app.config import get_settings
+from app.db.models import (
+    RequestLog,
+    SessionLocal,
+    get_effective_monthly_budget,
+    get_monthly_spend,
+    is_user_pending,
+    is_user_suspended,
+)
+from app.schemas import (
+    DocumentExtractResponse,
+    DocumentGenerateFromPromptRequest,
+    DocumentGenerateFromPromptResponse,
+    DocumentGenerateRequest,
+)
+from app.services.budget_guard import enforce_global_monthly_budget
+from app.services.chat_pipeline import _build_doc_context
 from app.services.document_extractor import (
     MAX_PDF_PAGES,
     SUPPORTED,
@@ -13,10 +30,99 @@ from app.services.document_extractor import (
     extract_text,
 )
 from app.services.document_generator import generate_docx_bytes
+from app.services.llm_gateway import invoke_llm
 from app.services.rate_limit import rate_limiter
+from app.services.router import choose_route
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 MAX_UPLOAD_BYTES = 30 * 1024 * 1024   # 30 MB
+DOC_TYPES = {
+    "executive_report",
+    "proposal",
+    "memo",
+    "technical_spec",
+    "meeting_notes",
+    "one_pager",
+    "letter",
+}
+DOCUMENT_SYSTEM_PROMPT = """You are Fronei's document generation engine.
+
+Write a polished, client-presentable document from the user's request.
+
+Rules:
+- Output only the document body in clean Markdown. Do not include commentary about generating the document.
+- Start with a strong H1 title unless the user explicitly asks for a different format.
+- Use professional, client-ready language.
+- Include useful sections, headings, bullets, tables, and next steps when appropriate.
+- Use Markdown headings, tables for comparative or numeric data, and bold for key terms.
+- Make assumptions explicit when the prompt is underspecified.
+- Keep the document coherent enough to paste directly into a Word document.
+- Do not invent precise facts, metrics, dates, legal claims, or citations not supplied by the user.
+"""
+DOC_TYPE_PROMPTS = {
+    "executive_report": """Document type: executive_report
+Expected structure:
+- H1 title
+- Executive summary
+- Situation / background
+- Analysis, using tables where the information is data-heavy or comparative
+- Recommendations
+- Risks and mitigations
+- Next steps
+Use concise, decision-oriented language suitable for clients or senior stakeholders.""",
+    "proposal": """Document type: proposal
+Expected structure:
+- H1 title
+- Problem statement
+- Proposed approach
+- Scope and timeline
+- Cost / ROI, using tables where helpful
+- Terms, assumptions, or dependencies
+- Next steps
+Keep the tone confident, practical, and commercially credible.""",
+    "memo": """Document type: memo
+Expected structure:
+- H1 title
+- Header block with To, From, Date, and Re
+- Purpose
+- Body
+- Action items
+Keep it concise, direct, and easy to skim.""",
+    "technical_spec": """Document type: technical_spec
+Expected structure:
+- H1 title
+- Overview
+- Architecture
+- Requirements
+- Implementation notes
+- Risks / constraints
+- Open questions
+Use precise technical language and tables for requirements, interfaces, or trade-offs.""",
+    "meeting_notes": """Document type: meeting_notes
+Expected structure:
+- H1 title
+- Attendees
+- Agenda
+- Discussion summary
+- Decisions
+- Action items with owners and due dates when available
+Do not invent attendees, owners, or dates that were not provided.""",
+    "one_pager": """Document type: one_pager
+Expected structure:
+- H1 headline
+- 3-5 key points
+- Supporting facts or rationale
+- Single call-to-action
+Keep it tight enough to fit on one page.""",
+    "letter": """Document type: letter
+Expected structure:
+- Date
+- Recipient / salutation when provided
+- Opening purpose
+- Body
+- Closing and signature placeholder
+Use polished, professional letter language.""",
+}
 
 
 @router.post(
@@ -90,7 +196,129 @@ def generate_docx(
     )
 
 
+@router.post(
+    "/generate/from-prompt/docx",
+    dependencies=[rate_limiter("document_generation", "rate_limit_documents_per_minute", 60)],
+    response_model=DocumentGenerateFromPromptResponse,
+)
+def generate_docx_from_prompt(
+    req: DocumentGenerateFromPromptRequest,
+    user_id: str = CurrentUser,
+    is_admin: bool = CurrentUserIsAdmin,
+) -> DocumentGenerateFromPromptResponse:
+    settings = get_settings()
+    db = SessionLocal()
+    route = None
+    try:
+        if is_user_suspended(db, user_id):
+            raise HTTPException(status_code=403, detail="This account is suspended.")
+        if is_user_pending(db, user_id):
+            raise HTTPException(status_code=403, detail="Your account is pending admin approval.")
+        enforce_global_monthly_budget(db, is_admin)
+        if not is_admin:
+            monthly_spend = get_monthly_spend(db, user_id)
+            monthly_budget = get_effective_monthly_budget(db, user_id)
+            if monthly_spend >= monthly_budget:
+                raise HTTPException(
+                    status_code=429,
+                    detail=f"Monthly budget of ${monthly_budget:.2f} reached "
+                           f"(spent ${monthly_spend:.4f} this month). Ask an admin to adjust the limit.",
+                )
+
+        doc_context = _build_doc_context(req.attached_documents)
+        doc_type = _classify_doc_type(req.prompt)
+        route = choose_route(
+            req.prompt,
+            req.profile,
+            req.force_model,
+            task_override="writing",
+            complexity_override="high",
+        )
+        result = invoke_llm(
+            req.prompt,
+            route,
+            doc_context=doc_context or None,
+            artifact_context=_document_system_prompt(doc_type),
+        )
+        title = req.title or _title_from_markdown(result.answer) or "Fronei document"
+        content = generate_docx_bytes(title, result.answer, "Generated by Fronei", doc_type=doc_type)
+        db.add(RequestLog(
+            user_id=user_id,
+            message=req.prompt,
+            task_type="document_generation",
+            complexity=route.complexity,
+            profile=route.profile,
+            selected_model=route.primary_model,
+            model_used=result.model_used,
+            latency_ms=result.latency_ms,
+            prompt_tokens=result.prompt_tokens,
+            completion_tokens=result.completion_tokens,
+            estimated_cost_usd=result.estimated_cost_usd,
+            status="success",
+        ))
+        db.commit()
+        return DocumentGenerateFromPromptResponse(
+            title=title,
+            doc_type=doc_type,
+            markdown=result.answer,
+            filename=f"{_safe_filename(title)}.docx",
+            docx_base64=base64.b64encode(content).decode("ascii"),
+            model_used=result.model_used,
+            estimated_cost_usd=result.estimated_cost_usd,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        db.add(RequestLog(
+            user_id=user_id,
+            message=req.prompt,
+            task_type="document_generation",
+            complexity=route.complexity if route else "high",
+            profile=route.profile if route else (req.profile or settings.default_profile),
+            selected_model=route.primary_model if route else "none",
+            model_used="none",
+            latency_ms=0,
+            status="error",
+            error=str(exc),
+        ))
+        db.commit()
+        raise HTTPException(status_code=502, detail=str(exc))
+    finally:
+        db.close()
+
+
 def _safe_filename(title: str) -> str:
     safe = "".join(ch.lower() if ch.isalnum() else "-" for ch in title.strip())
     safe = "-".join(part for part in safe.split("-") if part)
     return (safe or "fronei-document")[:80]
+
+
+def _title_from_markdown(content: str) -> str | None:
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("# "):
+            return stripped[2:].strip()
+    return None
+
+
+def _classify_doc_type(prompt: str) -> str:
+    text = prompt.lower()
+    if any(term in text for term in ["meeting notes", "minutes", "meeting recap", "attendees", "agenda"]):
+        return "meeting_notes"
+    if any(term in text for term in ["technical spec", "technical specification", "implementation spec", "architecture spec", "requirements document"]):
+        return "technical_spec"
+    if any(term in text for term in ["proposal", "propose", "statement of work", "sow", "commercial offer"]):
+        return "proposal"
+    if any(term in text for term in ["one pager", "one-pager", "1 pager", "single page", "single-page"]):
+        return "one_pager"
+    if any(term in text for term in ["memo", "memorandum", "internal note"]):
+        return "memo"
+    if any(term in text for term in ["letter", "cover letter", "formal letter"]):
+        return "letter"
+    if any(term in text for term in ["executive report", "client report", "board report", "report", "assessment"]):
+        return "executive_report"
+    return "executive_report"
+
+
+def _document_system_prompt(doc_type: str) -> str:
+    return f"{DOCUMENT_SYSTEM_PROMPT}\n\n{DOC_TYPE_PROMPTS.get(doc_type, DOC_TYPE_PROMPTS['executive_report'])}"

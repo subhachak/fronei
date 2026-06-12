@@ -113,6 +113,15 @@ class ChatResponse(BaseModel):
 
 # ── Conversation schemas ──────────────────────────────────────────────────────
 
+class ConfirmedPlan(BaseModel):
+    """User-edited decisions from the plan_proposed confirmation popup."""
+    web_search: bool | None = None
+    deep_research: bool | None = None
+    document: bool | None = None
+    document_format: str | None = None
+    document_brief: dict | None = None
+
+
 class ConvChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=32000)
     profile: Profile | None = None
@@ -125,6 +134,11 @@ class ConvChatRequest(BaseModel):
     output_mode: OutputMode = "default"
     artifact_type: ArtifactType | None = None
     attached_documents: list[AttachedDocument] = []
+    confirmed_plan: ConfirmedPlan | None = None
+
+
+class ExecutePlanRequest(BaseModel):
+    confirmed_plan: ConfirmedPlan = Field(default_factory=ConfirmedPlan)
 
 
 class ResearchSourceOut(BaseModel):

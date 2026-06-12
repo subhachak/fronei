@@ -17,7 +17,7 @@ from app.db.models import (
     get_twin_profile, is_user_pending, is_user_suspended,
 )
 from app.schemas import (
-    ConvChatRequest, ConvChatResponse,
+    ConvChatRequest, ConvChatResponse, ExecutePlanRequest,
     ConversationDetail, ConversationSummary, ConversationUpdate, MessageOut,
     ExecutionLog, OutputMode, PlannerLog, RouteDecision, SubQueryLog, WebContextLog, WorkerLog,
 )
@@ -32,13 +32,13 @@ from app.services.personal_context import build_context
 from app.services.budget_guard import enforce_global_monthly_budget
 from app.services.chat_pipeline import (
     PipelineSetup, PipelineResult, SubQueryExecution,
-    run_pipeline, build_exec_log, build_pipeline_setup,
+    run_pipeline, build_exec_log, build_pipeline_setup, generate_document_output,
     _run_sub_queries, _conversation_state,
 )
-from app.routers.documents import build_document_preview
-from app.services.planner import passthrough, run_planner
+from app.routers.documents import build_document_artifact
+from app.services import plan_gate
+from app.services.planner import passthrough, plan_from_dict, plan_to_dict, run_planner
 from app.services.rate_limit import check_rate_limit, rate_limiter
-from app.services.research_advisor import advise_research
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
 
@@ -199,14 +199,11 @@ def _resolve_conversation(db, req: ConvChatRequest, user_id: str) -> tuple[Conve
     return conv, profile
 
 
-def _build_history(conv: Conversation, db) -> list[dict]:
-    msgs = (
-        db.query(ConversationMessage)
-        .filter(ConversationMessage.conversation_id == conv.id)
-        .order_by(ConversationMessage.id.desc())
-        .limit(20)
-        .all()
-    )
+def _build_history(conv: Conversation, db, before_id: int | None = None) -> list[dict]:
+    q = db.query(ConversationMessage).filter(ConversationMessage.conversation_id == conv.id)
+    if before_id is not None:
+        q = q.filter(ConversationMessage.id < before_id)
+    msgs = q.order_by(ConversationMessage.id.desc()).limit(20).all()
     return [{"role": m.role, "content": m.content} for m in reversed(msgs)]
 
 
@@ -449,6 +446,16 @@ def _get_last_research_run_id(db, conv: Conversation) -> int | None:
 _FOLLOWUP_TURN_TYPES = {"follow_up", "continuation", "correction", "constraint_change"}
 
 
+def _sse(event: str, data: dict) -> str:
+    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+
+
+def _pipeline_log(stage: str, message: str, **kwargs) -> str:
+    data: dict = {"stage": stage, "message": message}
+    data.update(kwargs)
+    return f"event: pipeline_log\ndata: {json.dumps(data)}\n\n"
+
+
 # ── Streaming endpoint ────────────────────────────────────────────────────────
 
 @router.post("/chat/stream", dependencies=[rate_limiter("chat", "rate_limit_chat_per_minute", 60)])
@@ -458,14 +465,6 @@ def chat_stream(req: ConvChatRequest, user_id: str = CurrentUser, is_admin: bool
     Events: start → pipeline_log × N → token × N → done  (or error on failure)
     """
     settings = get_settings()
-
-    def _sse(event: str, data: dict) -> str:
-        return f"event: {event}\ndata: {json.dumps(data)}\n\n"
-
-    def _pipeline_log(stage: str, message: str, **kwargs) -> str:
-        data: dict = {"stage": stage, "message": message}
-        data.update(kwargs)
-        return f"event: pipeline_log\ndata: {json.dumps(data)}\n\n"
 
     def event_generator():
         db = SessionLocal()
@@ -491,9 +490,28 @@ def chat_stream(req: ConvChatRequest, user_id: str = CurrentUser, is_admin: bool
 
             history = _build_history(conv, db)
             user_memory = build_context(db, user_id)
-            db.add(ConversationMessage(conversation_id=conv.id, role="user", content=req.message))
+            user_msg = ConversationMessage(conversation_id=conv.id, role="user", content=req.message)
+            db.add(user_msg)
             db.flush()
 
+            yield from _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memory, profile, user_msg)
+            return
+
+        except HTTPException as exc:
+            yield _sse("error", {"message": exc.detail})
+        except Exception as exc:
+            yield _sse("error", {"message": _friendly_error(exc)})
+        finally:
+            db.close()
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memory, profile, user_msg, preloaded_plan=None):
             yield _sse("start", {"conversation_id": conv.id})
             yield _pipeline_log("planning", "Analysing your request…")
 
@@ -501,7 +519,7 @@ def chat_stream(req: ConvChatRequest, user_id: str = CurrentUser, is_admin: bool
             output_mode: OutputMode = req.output_mode
             research_mode = req.research_mode if req.research_mode != "quick" else ("deep" if req.deep_research else "quick")
 
-            if research_mode != "quick":
+            if preloaded_plan is None and research_mode != "quick":
                 # ── Adaptive research routing ─────────────────────────────
                 # If a prior research run exists in this conversation, run the
                 # planner first to classify the turn. Follow-ups / continuations
@@ -644,7 +662,7 @@ def chat_stream(req: ConvChatRequest, user_id: str = CurrentUser, is_admin: bool
                         "execution_log": exec_log.model_dump(),
                         "route": route.model_dump(),
                         "was_refined": False,
-                        "document_preview": build_document_preview(req.message, final_answer),
+                        "document_preview": None,
                         "research": {
                             "run_id": existing_run_id,
                             "mode": "followup",
@@ -804,35 +822,94 @@ def chat_stream(req: ConvChatRequest, user_id: str = CurrentUser, is_admin: bool
                 })
                 return
 
-            setup         = build_pipeline_setup(req, conv, history, settings, user_memory=user_memory)
+            confirmed = req.confirmed_plan.model_dump(exclude_none=True) if req.confirmed_plan else None
+            setup         = build_pipeline_setup(
+                req, conv, history, settings, user_memory=user_memory,
+                plan=preloaded_plan, confirmed_plan=confirmed,
+            )
             plan          = setup.plan
             route         = setup.route
             wc            = setup.wc
             enable_native = setup.enable_native
             planner_ctx   = setup.planner_ctx
 
-            if req.allow_research_recommendation and not req.deep_research and req.research_mode == "quick":
-                recommendation = advise_research(
-                    req.message,
-                    plan,
-                    has_attached_documents=bool(req.attached_documents),
+            # ── Unified plan gate ───────────────────────────────────────────
+            # Decide whether this turn can execute immediately ("auto") or needs
+            # one bundled confirmation popup before execution starts. If the user
+            # has already confirmed (confirmed is not None — either inline or via
+            # execute-plan), we skip straight to execution regardless of gate mode.
+            gate = plan_gate.evaluate(plan)
+            if gate.mode == "confirm" and confirmed is None:
+                user_msg.plan_json = json.dumps(plan_to_dict(plan))
+                conv.updated_at = datetime.now(timezone.utc)
+                db.commit()
+                yield _sse("plan_proposed", {
+                    "conversation_id": conv.id,
+                    "message_id": user_msg.id,
+                    "plan_confidence": gate.plan_confidence,
+                    "open_questions": gate.open_questions,
+                    "capabilities": {k: v.to_dict() for k, v in gate.capabilities.items()},
+                    "intent": plan.intent,
+                })
+                return
+
+            # ── Document capability ──────────────────────────────────────────
+            # If the plan decided this turn should produce a document, that's
+            # just the outcome of this turn — not a separate flow. Generate the
+            # document body + a short chat-facing bullet outline in one call.
+            if plan.wants_document_output and gate.capabilities["document"].enabled:
+                yield _pipeline_log("working", "Drafting your document…")
+                doc_cap = gate.capabilities["document"]
+                fmt = doc_cap.extra.get("format_recommendation", "markdown")
+                result, doc_body, chat_summary, doc_type = generate_document_output(
+                    plan, route, history, wc, planner_ctx,
+                    setup.doc_context, req.deep_research, enable_native,
+                    artifact_context=setup.artifact_context or "",
                 )
-                if recommendation.recommend:
-                    yield _sse("research_recommendation", {
-                        "conversation_id": conv.id,
-                        "confidence": recommendation.confidence,
-                        "reason": recommendation.reason,
-                        "risk_factors": recommendation.risk_factors,
-                        "suggested_mode": recommendation.suggested_mode,
-                        "source": recommendation.source,
-                        "planner": {
-                            "model": plan.planner_model,
-                            "latency_ms": plan.planner_latency_ms,
-                            "intent": plan.intent,
-                            "needs_web_search": plan.needs_web_search,
-                        },
-                    })
-                    return
+                for chunk in [chat_summary[i:i + 80] for i in range(0, len(chat_summary), 80)]:
+                    yield _sse("token", {"text": chunk})
+
+                final_answer = chat_summary
+                sq_logs: list[SubQueryLog] = []
+                exec_log = build_exec_log(plan, wc, result, sq_logs, enable_native, req.deep_research)
+                result.estimated_cost_usd = (result.estimated_cost_usd or 0.0) + plan.planner_cost_usd
+
+                asst_msg = ConversationMessage(
+                    conversation_id=conv.id, role="assistant",
+                    content=final_answer, task_type=route.task_type, complexity=route.complexity,
+                    model_used=result.model_used, latency_ms=result.latency_ms,
+                    prompt_tokens=result.prompt_tokens, completion_tokens=result.completion_tokens,
+                    estimated_cost_usd=result.estimated_cost_usd,
+                    execution_log_json=exec_log.model_dump_json(),
+                )
+                rules_entry = _update_conversation_state(conv, plan, final_answer)
+                _maybe_update_title(conv, plan.intent or plan.enriched_prompt or req.message)
+                db.add(asst_msg)
+                conv.message_count += 2
+                conv.updated_at = datetime.now(timezone.utc)
+                db.commit()
+                db.refresh(asst_msg)
+
+                memory_writer.schedule(conv.id, plan.turn_type, plan.intent, final_answer, rules_entry)
+                memory_extractor.schedule(user_id, conv.id, req.message, final_answer)
+
+                title = (plan.document_brief or {}).get("title") or plan.intent
+                document_preview = build_document_artifact(title or "Fronei document", doc_body, doc_type, fmt)
+
+                yield _sse("done", {
+                    "message_id": asst_msg.id,
+                    "answer": final_answer,
+                    "model_used": result.model_used,
+                    "latency_ms": result.latency_ms,
+                    "estimated_cost_usd": result.estimated_cost_usd,
+                    "prompt_tokens": result.prompt_tokens,
+                    "completion_tokens": result.completion_tokens,
+                    "execution_log": exec_log.model_dump(),
+                    "route": route.model_dump(),
+                    "was_refined": False,
+                    "document_preview": document_preview,
+                })
+                return
 
             sq_previews = [
                 {"query": sq.query[:120], "task_type": sq.task_type, "model_hint": sq.preferred_model}
@@ -997,8 +1074,6 @@ def chat_stream(req: ConvChatRequest, user_id: str = CurrentUser, is_admin: bool
             memory_writer.schedule(conv.id, plan.turn_type, plan.intent, final_answer, rules_entry)
             memory_extractor.schedule(user_id, conv.id, req.message, final_answer)
 
-            document_preview = build_document_preview(req.message, final_answer)
-
             yield _sse("done", {
                 "message_id": asst_msg.id,
                 "answer": final_answer,
@@ -1010,8 +1085,85 @@ def chat_stream(req: ConvChatRequest, user_id: str = CurrentUser, is_admin: bool
                 "execution_log": exec_log.model_dump(),
                 "route": route.model_dump(),
                 "was_refined": final_answer != result.answer,
-                "document_preview": document_preview,
+                "document_preview": None,
             })
+
+
+# ── Execute-plan (confirmation popup follow-up) ────────────────────────────────
+
+@router.post(
+    "/{conv_id}/messages/{message_id}/execute-plan",
+    dependencies=[rate_limiter("chat", "rate_limit_chat_per_minute", 60)],
+)
+def execute_plan(
+    conv_id: int,
+    message_id: int,
+    body: ExecutePlanRequest,
+    user_id: str = CurrentUser,
+    is_admin: bool = CurrentUserIsAdmin,
+) -> StreamingResponse:
+    """
+    Resume a turn whose plan was surfaced via `plan_proposed`. The original
+    user message (and its persisted plan_json) is referenced by message_id —
+    the message text is not re-sent. Applies the user's confirmed overrides
+    and executes the plan to completion (fully autopilot from here).
+    """
+    settings = get_settings()
+
+    def event_generator():
+        db = SessionLocal()
+        try:
+            conv = db.get(Conversation, conv_id)
+            if not conv:
+                raise HTTPException(status_code=404, detail="Conversation not found")
+            if conv.user_id != user_id:
+                raise HTTPException(status_code=403, detail="Forbidden")
+            if is_user_suspended(db, user_id):
+                raise HTTPException(status_code=403, detail="This account is suspended.")
+            if is_user_pending(db, user_id):
+                raise HTTPException(status_code=403, detail="Your account is pending admin approval.")
+            enforce_global_monthly_budget(db, is_admin)
+            if not is_admin:
+                monthly_spend = get_monthly_spend(db, user_id)
+                monthly_budget = get_effective_monthly_budget(db, user_id)
+                if monthly_spend >= monthly_budget:
+                    raise HTTPException(
+                        status_code=429,
+                        detail=f"Monthly budget of ${monthly_budget:.2f} reached "
+                               f"(spent ${monthly_spend:.4f} this month). Ask an admin to adjust the limit."
+                    )
+
+            user_msg = db.get(ConversationMessage, message_id)
+            if not user_msg or user_msg.conversation_id != conv_id or user_msg.role != "user":
+                raise HTTPException(status_code=404, detail="Message not found")
+            if not user_msg.plan_json:
+                raise HTTPException(status_code=400, detail="No plan is pending confirmation for this message")
+
+            try:
+                plan_data = json.loads(user_msg.plan_json)
+            except (json.JSONDecodeError, ValueError):
+                raise HTTPException(status_code=500, detail="Stored plan is corrupted")
+            plan = plan_from_dict(plan_data, user_msg.content)
+
+            if plan.recommend_deep_research and body.confirmed_plan.deep_research:
+                check_rate_limit(f"research:{user_id}", settings.rate_limit_research_per_hour, 3600) if not is_admin else None
+
+            history = _build_history(conv, db, before_id=user_msg.id)
+            user_memory = build_context(db, user_id)
+            profile = conv.profile
+
+            req = ConvChatRequest(
+                message=user_msg.content,
+                conversation_id=conv_id,
+                profile=profile,
+                deep_research=bool(body.confirmed_plan.deep_research) if body.confirmed_plan.deep_research is not None else plan.recommend_deep_research,
+                confirmed_plan=body.confirmed_plan,
+            )
+
+            yield from _stream_turn(
+                db, conv, req, user_id, is_admin, settings, history, user_memory, profile, user_msg,
+                preloaded_plan=plan,
+            )
 
         except HTTPException as exc:
             yield _sse("error", {"message": exc.detail})

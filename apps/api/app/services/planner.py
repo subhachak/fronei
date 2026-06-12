@@ -45,6 +45,7 @@ class Plan:
     context_summary: str
     enriched_prompt: str
     needs_web_search: bool
+    web_search_criticality: str  # trivial | material
     search_query: str | None
     preferred_model: str | None # model hint for top-level routing
     sub_queries: list[SubQuery]
@@ -54,6 +55,13 @@ class Plan:
     research_reason: str
     research_risk_factors: list[str]
     research_confidence: str
+    # Unified plan additions (see docs/unified-plan-architecture.md)
+    wants_document_output: bool
+    document_brief: dict             # doc_type/title/audience/tone/length, values may be None
+    document_format_options: list[str]
+    document_format_recommendation: str | None
+    plan_confidence: str             # low | medium | high
+    open_questions: list[str]
     # Planner metadata
     planner_model: str
     planner_latency_ms: int
@@ -69,6 +77,7 @@ def passthrough(message: str) -> Plan:
         context_summary="",
         enriched_prompt=message,
         needs_web_search=False,
+        web_search_criticality="material",
         search_query=None,
         preferred_model=None,
         sub_queries=[],
@@ -78,6 +87,12 @@ def passthrough(message: str) -> Plan:
         research_reason="",
         research_risk_factors=[],
         research_confidence="low",
+        wants_document_output=False,
+        document_brief={},
+        document_format_options=[],
+        document_format_recommendation=None,
+        plan_confidence="low",
+        open_questions=[],
         planner_model="none",
         planner_latency_ms=0,
         planner_cost_usd=0.0,
@@ -101,6 +116,13 @@ def _parse_json(raw: str) -> dict | None:
 
 _VALID_TURN_TYPES = {"new_task", "continuation", "correction", "constraint_change", "follow_up"}
 _VALID_ACTIONS    = {"answer_directly", "use_workers", "decompose"}
+_VALID_CRITICALITIES = {"trivial", "material"}
+_VALID_CONFIDENCE = {"low", "medium", "high"}
+_VALID_DOC_TYPES = {
+    "executive_report", "proposal", "memo", "technical_spec",
+    "meeting_notes", "one_pager", "letter", "resume", None,
+}
+_VALID_DOCUMENT_FORMATS = {"markdown", "docx", "pptx", "pdf", "xlsx"}
 
 
 def _build_plan(data: dict, message: str, model: str, latency_ms: int, cost: float) -> Plan:
@@ -116,6 +138,28 @@ def _build_plan(data: dict, message: str, model: str, latency_ms: int, cost: flo
     ]
     raw_turn_type = data.get("turn_type") or "new_task"
     raw_action    = data.get("action") or "use_workers"
+
+    raw_criticality = data.get("web_search_criticality") or "material"
+    web_search_criticality = raw_criticality if raw_criticality in _VALID_CRITICALITIES else "material"
+
+    raw_brief = data.get("document_brief") or {}
+    document_brief = {
+        field: (raw_brief.get(field) or None)
+        for field in ("doc_type", "title", "audience", "tone", "length")
+    } if isinstance(raw_brief, dict) else {}
+    if document_brief.get("doc_type") not in _VALID_DOC_TYPES:
+        document_brief["doc_type"] = None
+
+    document_format_options = [
+        str(x) for x in (data.get("document_format_options") or [])
+        if isinstance(x, str) and x in _VALID_DOCUMENT_FORMATS
+    ]
+    raw_format_rec = data.get("document_format_recommendation")
+    document_format_recommendation = raw_format_rec if raw_format_rec in _VALID_DOCUMENT_FORMATS else None
+
+    raw_confidence = data.get("plan_confidence") or "low"
+    plan_confidence = raw_confidence if raw_confidence in _VALID_CONFIDENCE else "low"
+
     return Plan(
         turn_type=raw_turn_type if raw_turn_type in _VALID_TURN_TYPES else "new_task",
         action=raw_action if raw_action in _VALID_ACTIONS else "use_workers",
@@ -123,6 +167,7 @@ def _build_plan(data: dict, message: str, model: str, latency_ms: int, cost: flo
         context_summary=data.get("context_summary", ""),
         enriched_prompt=data.get("enriched_prompt") or message,
         needs_web_search=bool(data.get("needs_web_search", False)),
+        web_search_criticality=web_search_criticality,
         search_query=data.get("search_query") or None,
         preferred_model=data.get("preferred_model") or None,
         sub_queries=sub_queries,
@@ -135,10 +180,92 @@ def _build_plan(data: dict, message: str, model: str, latency_ms: int, cost: flo
             if isinstance(x, str) and x.strip()
         ][:6],
         research_confidence=data.get("research_confidence") or "low",
+        wants_document_output=bool(data.get("wants_document_output", False)),
+        document_brief=document_brief,
+        document_format_options=document_format_options,
+        document_format_recommendation=document_format_recommendation,
+        plan_confidence=plan_confidence,
+        open_questions=[
+            str(x) for x in (data.get("open_questions") or [])
+            if isinstance(x, str) and x.strip()
+        ][:6],
         planner_model=model,
         planner_latency_ms=latency_ms,
         planner_cost_usd=cost,
     )
+
+
+def plan_to_dict(plan: Plan) -> dict:
+    """Serialise a Plan for persistence on the user message row (plan_json)."""
+    return {
+        "turn_type": plan.turn_type,
+        "action": plan.action,
+        "intent": plan.intent,
+        "context_summary": plan.context_summary,
+        "enriched_prompt": plan.enriched_prompt,
+        "needs_web_search": plan.needs_web_search,
+        "web_search_criticality": plan.web_search_criticality,
+        "search_query": plan.search_query,
+        "preferred_model": plan.preferred_model,
+        "sub_queries": [
+            {
+                "query": sq.query, "purpose": sq.purpose,
+                "task_type": sq.task_type, "preferred_model": sq.preferred_model,
+            }
+            for sq in plan.sub_queries
+        ],
+        "task_type": plan.task_type,
+        "complexity": plan.complexity,
+        "recommend_deep_research": plan.recommend_deep_research,
+        "research_reason": plan.research_reason,
+        "research_risk_factors": plan.research_risk_factors,
+        "research_confidence": plan.research_confidence,
+        "wants_document_output": plan.wants_document_output,
+        "document_brief": plan.document_brief,
+        "document_format_options": plan.document_format_options,
+        "document_format_recommendation": plan.document_format_recommendation,
+        "plan_confidence": plan.plan_confidence,
+        "open_questions": plan.open_questions,
+        "planner_model": plan.planner_model,
+        "planner_latency_ms": plan.planner_latency_ms,
+        "planner_cost_usd": plan.planner_cost_usd,
+    }
+
+
+def plan_from_dict(data: dict, message: str = "") -> Plan:
+    """Reconstruct a Plan from a previously persisted plan_json blob."""
+    return _build_plan(
+        data, message,
+        data.get("planner_model", "none"),
+        int(data.get("planner_latency_ms") or 0),
+        float(data.get("planner_cost_usd") or 0.0),
+    )
+
+
+def apply_confirmed_plan(plan: Plan, confirmed: dict | None) -> Plan:
+    """Apply user-confirmed overrides (from the plan_proposed popup) onto a Plan.
+
+    Returns the same Plan instance, mutated in place, for convenience.
+    """
+    if not confirmed:
+        return plan
+    if confirmed.get("web_search") is not None:
+        plan.needs_web_search = bool(confirmed["web_search"])
+    if confirmed.get("deep_research") is not None:
+        plan.recommend_deep_research = bool(confirmed["deep_research"])
+    if confirmed.get("document") is not None:
+        plan.wants_document_output = bool(confirmed["document"])
+    if confirmed.get("document_format"):
+        fmt = confirmed["document_format"]
+        if fmt in _VALID_DOCUMENT_FORMATS:
+            plan.document_format_recommendation = fmt
+    if confirmed.get("document_brief"):
+        brief = dict(plan.document_brief or {})
+        for k, v in confirmed["document_brief"].items():
+            if k in ("doc_type", "title", "audience", "tone", "length") and v:
+                brief[k] = v
+        plan.document_brief = brief
+    return plan
 
 
 def run_planner(

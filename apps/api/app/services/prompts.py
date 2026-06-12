@@ -53,6 +53,7 @@ Output ONLY valid JSON — no markdown fences, no explanation, no extra text. Us
   "context_summary": "concise summary of relevant prior conversation the worker needs (empty string if none relevant)",
   "enriched_prompt": "the user query rewritten to be fully self-contained; inline any prior context the worker needs; improve clarity, not length",
   "needs_web_search": false,
+  "web_search_criticality": "trivial|material",
   "search_query": null,
   "preferred_model": null,
   "sub_queries": [],
@@ -61,7 +62,19 @@ Output ONLY valid JSON — no markdown fences, no explanation, no extra text. Us
   "recommend_deep_research": false,
   "research_reason": "",
   "research_risk_factors": [],
-  "research_confidence": "low|medium|high"
+  "research_confidence": "low|medium|high",
+  "wants_document_output": false,
+  "document_brief": {
+    "doc_type": "executive_report|proposal|memo|technical_spec|meeting_notes|one_pager|letter|resume|null",
+    "title": null,
+    "audience": null,
+    "tone": null,
+    "length": null
+  },
+  "document_format_options": [],
+  "document_format_recommendation": null,
+  "plan_confidence": "low|medium|high",
+  "open_questions": []
 }
 
 Rules:
@@ -88,6 +101,14 @@ sub_queries — only when action is "decompose". Each entry: \
 needs_web_search — true only for real-time or external data (current events, live pricing, latest \
   release notes, breaking news). False for conceptual or architectural questions.
 
+web_search_criticality — only meaningful when needs_web_search is true:
+  trivial  — a single, low-stakes, easily-verifiable fact that would not change the substance of the \
+    answer (today's date, a library's current version number, a unit conversion constant).
+  material — anything that shapes the content, recommendation, or framing of the response (pricing, \
+    vendor comparisons, regulatory status, current events analysis), or when the user's phrasing \
+    implies they want the answer scoped to information they supplied rather than external sources. \
+    Default to "material" when unsure.
+
 search_query — optimised search engine query when needs_web_search is true, otherwise null.
 
 recommend_deep_research — true when a quick answer would likely be materially weaker because the \
@@ -106,6 +127,39 @@ research_risk_factors — short machine-readable phrases such as "current_facts"
 
 research_confidence — high when deep research is strongly warranted, medium when it is likely useful, \
 low otherwise.
+
+wants_document_output — true when the user wants a standalone deliverable (resume, letter, memo, \
+  proposal, report, meeting notes, one-pager, spec, or similar) rather than a chat answer. True for \
+  "write/draft/create/generate a document/doc/report/write-up" style requests. False for ordinary \
+  questions, explanations, code, or short answers — even long ones.
+
+document_brief — only meaningful when wants_document_output is true. Infer each field from the \
+  request and conversation context; set a field to null when it genuinely cannot be inferred \
+  (this drives a one-time clarifying question, so don't guess wildly):
+  doc_type  — one of executive_report, proposal, memo, technical_spec, meeting_notes, one_pager, \
+    letter, resume; null if unclear.
+  title     — a short working title, or null.
+  audience  — who will read this (e.g. "Client", "Executive", "Internal team"), or null.
+  tone      — e.g. "Formal", "Concise", "Persuasive", "Technical", or null.
+  length    — e.g. "Short", "Standard", "Detailed", "One page", or null.
+
+document_format_options — only when wants_document_output is true: every output format plausible for \
+  this content, from ["markdown", "docx", "pptx", "pdf", "xlsx"]. Most documents are just \
+  ["markdown"] or ["markdown", "docx"]. Add "pptx" for board/exec-style decks, "xlsx" for tabular/financial \
+  content, "pdf" for formal external deliverables. Empty array (defaults to markdown) when only \
+  markdown makes sense.
+
+document_format_recommendation — when document_format_options has more than one entry, which one you'd \
+  recommend; null otherwise.
+
+plan_confidence — your overall confidence in this entire plan (task classification, search/research \
+  decisions, and — if applicable — the document brief and format). "low" if you're genuinely unsure \
+  about the user's intent or any major field above; "high" only when every relevant field is solidly \
+  grounded in the request.
+
+open_questions — short, user-facing strings describing anything you're unsure about (empty if \
+  plan_confidence is "high" and nothing else needs clarifying). These may be shown to the user before \
+  execution.
 
 enriched_prompt — if the query references prior context ("do that again", "use option 2"), spell it \
   out explicitly so the worker does not need conversation history to understand the request.

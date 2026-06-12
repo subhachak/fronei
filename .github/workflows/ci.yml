@@ -31,10 +31,7 @@ jobs:
         run: uv run ruff check .
 
       - name: Test
-        run: |
-          uv run python -m pytest \
-            --ignore=tests/test_conversation_refinement_stream.py \
-            --deselect=tests/test_twin_profile_api.py::test_trigger_extraction
+        run: uv run python -m pytest
 
       - name: Alembic upgrade on scratch SQLite
         run: uv run python -m alembic upgrade head

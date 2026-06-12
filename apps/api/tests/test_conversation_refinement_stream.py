@@ -7,7 +7,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.auth import get_current_user_id
+from app.auth import get_current_user_id, get_current_user_is_admin, get_current_user_payload
 from app.db.models import (
     Base,
     Conversation,
@@ -59,6 +59,8 @@ def client(monkeypatch):
     monkeypatch.setattr(conversations.memory_writer, "schedule", lambda *args, **kwargs: None)
     monkeypatch.setattr(conversations.memory_extractor, "schedule", lambda *args, **kwargs: None)
     app.dependency_overrides[get_current_user_id] = lambda: "u1"
+    app.dependency_overrides[get_current_user_payload] = lambda: {"sub": "u1"}
+    app.dependency_overrides[get_current_user_is_admin] = lambda: False
     with TestClient(app) as c:
         yield c, Session
     app.dependency_overrides.clear()

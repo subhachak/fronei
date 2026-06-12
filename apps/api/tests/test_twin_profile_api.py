@@ -4,7 +4,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.auth import get_current_user_id
+from app.auth import get_current_user_id, get_current_user_is_admin, get_current_user_payload
 from app.db.models import Base
 from app.main import app
 from app.routers import twin_profile
@@ -22,6 +22,8 @@ def client(monkeypatch):
 
     monkeypatch.setattr(twin_profile, "SessionLocal", Session)
     app.dependency_overrides[get_current_user_id] = lambda: "u1"
+    app.dependency_overrides[get_current_user_payload] = lambda: {"sub": "u1"}
+    app.dependency_overrides[get_current_user_is_admin] = lambda: False
     with TestClient(app) as c:
         yield c
     app.dependency_overrides.clear()

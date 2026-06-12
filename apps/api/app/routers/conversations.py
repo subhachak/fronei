@@ -35,6 +35,7 @@ from app.services.chat_pipeline import (
     run_pipeline, build_exec_log, build_pipeline_setup,
     _run_sub_queries, _conversation_state,
 )
+from app.routers.documents import build_document_preview
 from app.services.planner import passthrough, run_planner
 from app.services.rate_limit import check_rate_limit, rate_limiter
 from app.services.research_advisor import advise_research
@@ -643,6 +644,7 @@ def chat_stream(req: ConvChatRequest, user_id: str = CurrentUser, is_admin: bool
                         "execution_log": exec_log.model_dump(),
                         "route": route.model_dump(),
                         "was_refined": False,
+                        "document_preview": build_document_preview(req.message, final_answer),
                         "research": {
                             "run_id": existing_run_id,
                             "mode": "followup",
@@ -995,6 +997,8 @@ def chat_stream(req: ConvChatRequest, user_id: str = CurrentUser, is_admin: bool
             memory_writer.schedule(conv.id, plan.turn_type, plan.intent, final_answer, rules_entry)
             memory_extractor.schedule(user_id, conv.id, req.message, final_answer)
 
+            document_preview = build_document_preview(req.message, final_answer)
+
             yield _sse("done", {
                 "message_id": asst_msg.id,
                 "answer": final_answer,
@@ -1006,6 +1010,7 @@ def chat_stream(req: ConvChatRequest, user_id: str = CurrentUser, is_admin: bool
                 "execution_log": exec_log.model_dump(),
                 "route": route.model_dump(),
                 "was_refined": final_answer != result.answer,
+                "document_preview": document_preview,
             })
 
         except HTTPException as exc:

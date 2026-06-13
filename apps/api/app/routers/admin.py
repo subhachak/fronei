@@ -1234,6 +1234,7 @@ def system(admin: AdminPrincipal = Depends(require_admin)) -> dict:
         "default_profile": settings.default_profile,
         "monthly_budget_usd": settings.monthly_budget_usd,
         "planner_model": settings.planner_model,
+        "planner_fallback_models": settings.planner_fallback_model_list,
         "clerk_issuer_configured": bool(settings.clerk_issuer),
         "clerk_audience_configured": bool(settings.clerk_audience),
         "admin_user_ids_configured": len(settings.admin_id_set),

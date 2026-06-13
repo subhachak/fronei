@@ -1256,6 +1256,11 @@ function memoryConfidenceLabel(value: number): string {
 
 function renderMarkdownWithCitations(content: string, research?: ResearchMeta | null): string {
   let html = DOMPurify.sanitize(marked.parse(content) as string)
+  // Wrap tables in a horizontally-scrollable container so wide tables don't
+  // force the whole chat column (and page) to overflow on narrow/mobile
+  // viewports — without this, a grid item's default min-width:auto lets a
+  // wide <table> blow out .markdown-body's layout.
+  html = html.replace(/<table>/g, '<div class="md-table-wrap"><table>').replace(/<\/table>/g, '</table></div>')
   if (!research || research.sources.length === 0) return html
   const validRefs = new Set(research.sources.map((_, i) => `S${i + 1}`))
   html = html.replace(/\[S(\d+)\]/g, (match, n: string) => {

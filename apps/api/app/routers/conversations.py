@@ -393,6 +393,7 @@ def cancel_conversation_turn(conv_id: str, turn_id: str, user_id: str = CurrentU
         if not turn:
             raise HTTPException(status_code=404, detail="Turn not found")
         if turn.status in ACTIVE_TURN_STATUSES:
+            _mark_turn_cancel_requested(turn.public_id)
             now = datetime.now(timezone.utc)
             turn.status = "cancelled"
             turn.error_message = "Cancelled by user."
@@ -610,8 +611,43 @@ def _turn_kind_for_request(req: ConvChatRequest) -> str:
     return "quick"
 
 
-def _is_turn_cancelled(db, turn: ConversationTurn | None) -> bool:
+# In-memory registry of turn public_ids whose cancellation has been requested.
+# Checked on every streamed event (including tokens) without touching the DB;
+# avoids a db.refresh() round-trip per token. Cancel endpoints populate this,
+# and entries are cleared once the worker loop observes them.
+_CANCELLED_TURN_IDS: set[str] = set()
+_CANCELLED_TURN_LOCK = _threading.Lock()
+
+
+def _mark_turn_cancel_requested(turn_public_id: str | None) -> None:
+    if not turn_public_id:
+        return
+    with _CANCELLED_TURN_LOCK:
+        _CANCELLED_TURN_IDS.add(turn_public_id)
+
+
+def _consume_turn_cancel_requested(turn_public_id: str | None) -> bool:
+    if not turn_public_id:
+        return False
+    with _CANCELLED_TURN_LOCK:
+        if turn_public_id in _CANCELLED_TURN_IDS:
+            _CANCELLED_TURN_IDS.discard(turn_public_id)
+            return True
+    return False
+
+
+def _is_turn_cancelled(db, turn: ConversationTurn | None, *, allow_db_check: bool = True) -> bool:
     if turn is None or turn.id is None:
+        return False
+    # Fast in-memory check first (covers same-process cancel-button clicks
+    # without a DB hit on every token). The DB refresh (cross-process/admin
+    # cancellation) is only performed when `allow_db_check` is set — callers
+    # pass False for high-frequency token events so we don't add a query per
+    # token, and True for lower-frequency events (pipeline_log, etc.).
+    if _consume_turn_cancel_requested(turn.public_id):
+        turn.status = "cancelled"
+        return True
+    if not allow_db_check:
         return False
     db.refresh(turn)
     return turn.status == "cancelled"
@@ -667,6 +703,12 @@ def _record_turn_event(db, turn: ConversationTurn | None, payload: str) -> None:
     if not parsed:
         return
     event_type, data = parsed
+    if event_type == "token":
+        # Streamed answer tokens can number in the hundreds per turn. Persisting
+        # each one would mean a DB commit per token, which serializes the whole
+        # response behind disk I/O. Tokens aren't needed for recovery (the final
+        # "done" event carries the full answer), so skip them entirely.
+        return
     now = datetime.now(timezone.utc)
     turn.updated_at = now
     _append_turn_progress(turn, event_type, data)
@@ -879,7 +921,9 @@ def chat_stream(req: ConvChatRequest, user_id: str = CurrentUser, is_admin: bool
             db.commit()
 
             for payload in _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memory, profile, user_msg):
-                if _is_turn_cancelled(db, turn):
+                parsed_event = _parse_sse_event(payload)
+                is_token = bool(parsed_event) and parsed_event[0] == "token"
+                if _is_turn_cancelled(db, turn, allow_db_check=not is_token):
                     payload = _sse("error", {"message": "Turn cancelled."})
                     _record_turn_event(db, turn, payload)
                     yield payload
@@ -1741,7 +1785,9 @@ def execute_plan(
             for payload in _stream_turn(
                     db, conv, req, user_id, is_admin, settings, history, user_memory, profile, user_msg,
                     preloaded_plan=plan):
-                if _is_turn_cancelled(db, turn):
+                parsed_event = _parse_sse_event(payload)
+                is_token = bool(parsed_event) and parsed_event[0] == "token"
+                if _is_turn_cancelled(db, turn, allow_db_check=not is_token):
                     payload = _sse("error", {"message": "Turn cancelled."})
                     _record_turn_event(db, turn, payload)
                     yield payload

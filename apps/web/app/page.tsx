@@ -485,10 +485,12 @@ type GeneratedDocument = {
   markdown: string
   filename: string
   docxBase64: string
+  xlsxBase64?: string
+  format?: DocumentOutputFormat
   outputFormats?: DocumentOutputFormat[]
 }
 
-type DocumentOutputFormat = 'docx' | 'markdown'
+type DocumentOutputFormat = 'docx' | 'markdown' | 'xlsx'
 
 type ConversationDetail = ConversationSummary & { messages: MessageOut[] }
 
@@ -781,6 +783,7 @@ function downloadBlob(blob: Blob, filename: string) {
 }
 
 const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
 
 function fmtTime(iso: string): string {
   const d = new Date(iso)
@@ -4854,6 +4857,8 @@ export default function Home() {
                     markdown:   (data.document_preview as any).markdown,
                     filename:   (data.document_preview as any).filename,
                     docxBase64: (data.document_preview as any).docx_base64,
+                    xlsxBase64: (data.document_preview as any).xlsx_base64,
+                    format:     (data.document_preview as any).format,
                   } as GeneratedDocument
                 : null,
             } : m))
@@ -5336,24 +5341,38 @@ export default function Home() {
                         <div className="doc-generated-body">
                           <div className="doc-generated-title">Document generated</div>
                         </div>
-                        <button
-                          className="doc-generated-icon-btn"
-                          type="button"
-                          onClick={() => setPreviewDoc(m.document_preview!)}
-                          title="Preview document"
-                          aria-label="Preview document"
-                        >
-                          <i className="ti ti-eye" aria-hidden="true" />
-                        </button>
-                        <button
-                          className="doc-generated-icon-btn doc-generated-download"
-                          type="button"
-                          onClick={() => downloadBlob(base64ToBlob(m.document_preview!.docxBase64, DOCX_MIME), m.document_preview!.filename)}
-                          title="Download .docx"
-                          aria-label="Download document"
-                        >
-                          <i className="ti ti-file-download" aria-hidden="true" />
-                        </button>
+                        {m.document_preview.format !== 'xlsx' && (
+                          <button
+                            className="doc-generated-icon-btn"
+                            type="button"
+                            onClick={() => setPreviewDoc(m.document_preview!)}
+                            title="Preview document"
+                            aria-label="Preview document"
+                          >
+                            <i className="ti ti-eye" aria-hidden="true" />
+                          </button>
+                        )}
+                        {m.document_preview.format === 'xlsx' ? (
+                          <button
+                            className="doc-generated-icon-btn doc-generated-download"
+                            type="button"
+                            onClick={() => downloadBlob(base64ToBlob(m.document_preview!.xlsxBase64!, XLSX_MIME), m.document_preview!.filename)}
+                            title="Download .xlsx"
+                            aria-label="Download spreadsheet"
+                          >
+                            <i className="ti ti-file-download" aria-hidden="true" />
+                          </button>
+                        ) : (
+                          <button
+                            className="doc-generated-icon-btn doc-generated-download"
+                            type="button"
+                            onClick={() => downloadBlob(base64ToBlob(m.document_preview!.docxBase64, DOCX_MIME), m.document_preview!.filename)}
+                            title="Download .docx"
+                            aria-label="Download document"
+                          >
+                            <i className="ti ti-file-download" aria-hidden="true" />
+                          </button>
+                        )}
                         {m.document_preview.outputFormats?.includes('markdown') && (
                           <button
                             className="doc-generated-icon-btn"

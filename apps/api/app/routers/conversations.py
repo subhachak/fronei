@@ -534,6 +534,7 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                         running_summary=running_summary,
                         active_task=active_task,
                         user_memory=user_memory,
+                        user_hints={"deep_research": req.deep_research, "document": req.document_requested},
                     )
                 research_query = plan.enriched_prompt or req.message
                 yield _pipeline_log(

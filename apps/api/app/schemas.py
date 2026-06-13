@@ -126,7 +126,7 @@ class ConvChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=32000)
     profile: Profile | None = None
     force_model: str | None = None
-    conversation_id: int | None = None
+    conversation_id: str | None = None
     deep_research: bool = False
     research_mode: ResearchMode = "quick"
     web_search: bool = False
@@ -202,7 +202,7 @@ class MessageOut(BaseModel):
 
 
 class ConversationSummary(BaseModel):
-    id: int
+    id: str
     title: str
     profile: str
     message_count: int
@@ -216,7 +216,7 @@ class ConversationUpdate(BaseModel):
 
 
 class ConversationDetail(BaseModel):
-    id: int
+    id: str
     title: str
     profile: str
     message_count: int
@@ -276,7 +276,7 @@ class ExecutionLog(BaseModel):
     total_latency_ms: int
 
 class ConvChatResponse(BaseModel):
-    conversation_id: int
+    conversation_id: str
     message_id: int
     answer: str
     route: RouteDecision

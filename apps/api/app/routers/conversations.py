@@ -448,6 +448,22 @@ def _pipeline_log(stage: str, message: str, **kwargs) -> str:
     return f"event: pipeline_log\ndata: {json.dumps(data)}\n\n"
 
 
+def _planner_selected_log(plan) -> str:
+    model = plan.planner_model or "none"
+    message = (
+        "Planner unavailable — using safe passthrough"
+        if model == "none"
+        else f"Planner selected: {model}"
+    )
+    return _pipeline_log(
+        "planning",
+        message,
+        model=model,
+        latency_ms=plan.planner_latency_ms,
+        cost_usd=plan.planner_cost_usd,
+    )
+
+
 # ── Streaming endpoint ────────────────────────────────────────────────────────
 
 @router.post("/chat/stream", dependencies=[rate_limiter("chat", "rate_limit_chat_per_minute", 60)])
@@ -536,6 +552,7 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                         user_memory=user_memory,
                         user_hints={"deep_research": req.deep_research, "document": req.document_requested},
                     )
+                yield _planner_selected_log(plan)
                 research_query = plan.enriched_prompt or req.message
                 yield _pipeline_log(
                     "routing",
@@ -601,8 +618,9 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
 
                     exec_log = ExecutionLog(
                         planner=PlannerLog(
-                            model="research_followup",
-                            latency_ms=0, cost_usd=0.0,
+                            model=plan.planner_model,
+                            latency_ms=plan.planner_latency_ms,
+                            cost_usd=plan.planner_cost_usd,
                             turn_type=plan.turn_type,
                             action="research_followup",
                             intent=plan.intent or req.message,
@@ -626,9 +644,10 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                             cost_usd=result.estimated_cost_usd,
                             sub_queries_count=0, sub_query_logs=[],
                         ),
-                        total_cost_usd=result.estimated_cost_usd or 0.0,
-                        total_latency_ms=result.latency_ms,
+                        total_cost_usd=(result.estimated_cost_usd or 0.0) + plan.planner_cost_usd,
+                        total_latency_ms=result.latency_ms + plan.planner_latency_ms,
                     )
+                    result.estimated_cost_usd = (result.estimated_cost_usd or 0.0) + plan.planner_cost_usd
 
                     plan.action = "research_followup"
                     rules_entry = _update_conversation_state(conv, plan, final_answer)
@@ -785,11 +804,14 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                     for chunk in [final_answer[i:i + 80] for i in range(0, len(final_answer), 80)]:
                         yield _sse("token", {"text": chunk})
 
+                if document_preview is None:
+                    result.estimated_cost_usd = (result.estimated_cost_usd or 0.0) + plan.planner_cost_usd
+
                 exec_log = ExecutionLog(
                     planner=PlannerLog(
-                        model="research_orchestrator",
-                        latency_ms=0,
-                        cost_usd=0.0,
+                        model=plan.planner_model,
+                        latency_ms=plan.planner_latency_ms,
+                        cost_usd=plan.planner_cost_usd,
                         turn_type="new_task",
                         action=f"research_{research_mode}",
                         intent=plan.intent or req.message,
@@ -816,7 +838,7 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                         sub_query_logs=[],
                     ),
                     total_cost_usd=result.estimated_cost_usd or 0.0,
-                    total_latency_ms=result.latency_ms,
+                    total_latency_ms=result.latency_ms + plan.planner_latency_ms,
                 )
 
                 asst_msg = ConversationMessage(
@@ -877,6 +899,7 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
             wc            = setup.wc
             enable_native = setup.enable_native
             planner_ctx   = setup.planner_ctx
+            yield _planner_selected_log(plan)
 
             # ── Unified plan gate ───────────────────────────────────────────
             # Decide whether this turn can execute immediately ("auto") or needs

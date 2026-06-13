@@ -566,13 +566,16 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                 if existing_run_id:
                     is_followup = plan.turn_type in _FOLLOWUP_TURN_TYPES
 
-                # The follow-up fast path below bypasses the unified plan gate
-                # for speed. But if this turn's plan now warrants confirmation
-                # (e.g. the user explicitly re-toggled "Research" and the
-                # planner set recommend_deep_research=True per that hint), we
+                # Surface the bundled confirmation popup before running any
+                # deep/expert research — whether this is a brand-new research
+                # task or a follow-up. For follow-ups, this also covers the
+                # case where the user explicitly re-toggled "Research" and the
+                # planner set recommend_deep_research=True per that hint; we
                 # must surface plan_proposed instead of silently downgrading
                 # to a cheap follow-up synthesis that ignores that signal.
-                if is_followup and existing_run_id and req.confirmed_plan is None:
+                # Once the user has confirmed (req.confirmed_plan set), skip
+                # straight to execution.
+                if req.confirmed_plan is None:
                     pre_gate = plan_gate.evaluate(plan)
                     if pre_gate.mode == "confirm":
                         user_msg.plan_json = json.dumps(plan_to_dict(plan))

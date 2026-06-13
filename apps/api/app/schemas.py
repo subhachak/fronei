@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from pydantic import BaseModel, Field
 from typing import Any, Literal
 
@@ -151,6 +153,14 @@ class ResearchSourceOut(BaseModel):
     relevance_score: float | None = None
     freshness_score: float | None = None
     source_type: str | None = None
+    source_tier: str | None = None
+    source_family: str | None = None
+    source_role_prior: str | None = None
+    published_at: datetime | None = None
+    updated_at: datetime | None = None
+    source_date_confidence: str | None = None
+    admission_status: str | None = None
+    admission_reason: str | None = None
 
 
 class ResearchClaimOut(BaseModel):
@@ -159,6 +169,9 @@ class ResearchClaimOut(BaseModel):
     quote: str | None = None
     confidence: str | None = None
     relevance_score: float | None = None
+    claim_type: str | None = None
+    claim_role: str | None = None
+    freshness_risk: str | None = None
     source_id: int | None = None
     source_ref: str | None = None
     source_title: str | None = None
@@ -172,6 +185,20 @@ class ResearchFindingOut(BaseModel):
     confidence: str | None = None
 
 
+class ResearchQuestionOut(BaseModel):
+    id: int | None = None
+    question: str
+    search_query: str | None = None
+    status: str | None = None
+    claim_type: str | None = None
+    evidence_role: str | None = None
+    freshness_requirement: str | None = None
+    required_source_tiers: list[str] = []
+    budget: dict[str, Any] = {}
+    stop_reason: str | None = None
+    confidence: str | None = None
+
+
 class ResearchMeta(BaseModel):
     run_id: int
     mode: str
@@ -179,6 +206,8 @@ class ResearchMeta(BaseModel):
     claims: list[ResearchClaimOut] = []
     findings: list[ResearchFindingOut] = []
     questions: list[str] = []
+    question_threads: list[ResearchQuestionOut] = []
+    rejected_sources: list[ResearchSourceOut] = []
     gaps: list[str] = []
     contradictions: list[str] = []
     verifier_notes: str | None = None

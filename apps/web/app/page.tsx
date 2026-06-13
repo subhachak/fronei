@@ -378,6 +378,14 @@ type ResearchSourceLog = {
   relevance_score?: number
   freshness_score?: number
   source_type?: string | null
+  source_tier?: string | null
+  source_family?: string | null
+  source_role_prior?: string | null
+  published_at?: string | null
+  updated_at?: string | null
+  source_date_confidence?: string | null
+  admission_status?: string | null
+  admission_reason?: string | null
 }
 
 type ResearchClaimLog = {
@@ -386,6 +394,9 @@ type ResearchClaimLog = {
   quote?: string | null
   confidence?: string
   relevance_score?: number
+  claim_type?: string | null
+  claim_role?: string | null
+  freshness_risk?: string | null
   source_id?: number
   source_ref?: string
   source_title?: string | null
@@ -406,6 +417,20 @@ type ResearchFindingLog = {
   confidence?: string | null
 }
 
+type ResearchQuestionThreadLog = {
+  id?: number
+  question: string
+  search_query?: string | null
+  status?: string | null
+  claim_type?: string | null
+  evidence_role?: string | null
+  freshness_requirement?: string | null
+  required_source_tiers?: string[]
+  budget?: Record<string, unknown>
+  stop_reason?: string | null
+  confidence?: string | null
+}
+
 type ResearchMeta = {
   run_id: number
   mode: ResearchMode | string
@@ -413,6 +438,8 @@ type ResearchMeta = {
   claims?: ResearchClaimLog[]
   findings?: ResearchFindingLog[]
   questions: string[]
+  question_threads?: ResearchQuestionThreadLog[]
+  rejected_sources?: ResearchSourceLog[]
   gaps: string[]
   contradictions: string[]
   verifier_notes?: string | null
@@ -1127,6 +1154,34 @@ function ResearchEvidence({
             </details>
           )}
 
+          {(research.question_threads?.length ?? 0) > 0 && (
+            <details className="research-section">
+              <summary>Research threads</summary>
+              <div className="research-finding-list">
+                {research.question_threads?.map((t, i) => (
+                  <div key={t.id ?? i} className="research-finding-card">
+                    <div className="research-finding-head">
+                      <span>{t.question}</span>
+                      {t.confidence && <strong>{t.confidence}</strong>}
+                    </div>
+                    <div className="research-finding-evidence">
+                      {[t.claim_type, t.evidence_role, t.freshness_requirement, t.status]
+                        .filter(Boolean)
+                        .map((v, j) => <span key={j}>{v}</span>)}
+                      {(t.required_source_tiers?.length ?? 0) > 0 && (
+                        <span>requires: {t.required_source_tiers?.join(', ')}</span>
+                      )}
+                      {t.budget && Object.keys(t.budget).length > 0 && (
+                        <span>budget: {Object.entries(t.budget).map(([k, v]) => `${k}=${v}`).join(', ')}</span>
+                      )}
+                    </div>
+                    {t.stop_reason && <p>{t.stop_reason}</p>}
+                  </div>
+                ))}
+              </div>
+            </details>
+          )}
+
           {findings.length > 0 && (
             <details className="research-section" open>
               <summary>Key findings</summary>
@@ -1171,6 +1226,11 @@ function ResearchEvidence({
                   <span className="research-source-main">
                     <span className="research-source-title">{s.title || s.url}</span>
                     <span className="research-source-url">{s.url}</span>
+                    <span className="research-source-url">
+                      {[s.source_tier, s.source_role_prior, s.source_family, s.updated_at || s.published_at || s.source_date_confidence]
+                        .filter(Boolean)
+                        .join(' · ')}
+                    </span>
                   </span>
                   <span className="research-source-scores">
                     <span>{s.source_type ?? 'web'}</span>
@@ -1194,7 +1254,7 @@ function ResearchEvidence({
                   >
                     <div className="research-claim-head">
                       <span>{c.source_ref ?? 'S?'}</span>
-                      <span>{c.confidence ?? 'medium'}</span>
+                      <span>{[c.confidence ?? 'medium', c.claim_type, c.freshness_risk].filter(Boolean).join(' · ')}</span>
                       <span>R {scorePct(c.relevance_score)}</span>
                     </div>
                     <p>{c.claim}</p>
@@ -1208,7 +1268,7 @@ function ResearchEvidence({
             </details>
           )}
 
-          {(research.gaps.length > 0 || research.contradictions.length > 0 || verifier) && (
+          {(research.gaps.length > 0 || research.contradictions.length > 0 || verifier || (research.rejected_sources?.length ?? 0) > 0) && (
             <details className="research-section">
               <summary>Gaps, conflicts, verifier</summary>
               {research.gaps.length > 0 && (
@@ -1233,6 +1293,19 @@ function ResearchEvidence({
                         .map((issue, i) => <li key={i}>{issue}</li>)}
                     </ul>
                   )}
+                </div>
+              )}
+              {(research.rejected_sources?.length ?? 0) > 0 && (
+                <div className="research-note-block">
+                  <h4>Rejected sources ({research.rejected_sources?.length})</h4>
+                  <ul>
+                    {research.rejected_sources?.slice(0, 12).map((s, i) => (
+                      <li key={`${s.url}-${i}`}>
+                        {s.title || s.url}
+                        {s.admission_reason ? ` — ${s.admission_reason}` : ''}
+                      </li>
+                    ))}
+                  </ul>
                 </div>
               )}
             </details>

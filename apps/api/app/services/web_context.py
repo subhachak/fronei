@@ -233,7 +233,12 @@ def crawl_url(url: str) -> WebSource | None:
         return None
 
 
-def tavily_search(query: str) -> list[WebSource]:
+_TAVILY_TIME_RANGE = {"day": "day", "week": "week", "month": "month", "year": "year"}
+_BRAVE_FRESHNESS = {"day": "pd", "week": "pw", "month": "pm", "year": "py"}
+_DDGS_TIMELIMIT = {"day": "d", "week": "w", "month": "m", "year": "y"}
+
+
+def tavily_search(query: str, recency: str | None = None) -> list[WebSource]:
     settings = get_settings()
     if not settings.tavily_api_key:
         return []
@@ -244,6 +249,8 @@ def tavily_search(query: str) -> list[WebSource]:
         "include_answer": False,
         "include_raw_content": "text",
     }
+    if recency in _TAVILY_TIME_RANGE:
+        payload["time_range"] = _TAVILY_TIME_RANGE[recency]
     headers = {
         "Authorization": f"Bearer {settings.tavily_api_key}",
         "Content-Type": "application/json",
@@ -265,7 +272,7 @@ def tavily_search(query: str) -> list[WebSource]:
     return sources
 
 
-def brave_search(query: str) -> list[WebSource]:
+def brave_search(query: str, recency: str | None = None) -> list[WebSource]:
     settings = get_settings()
     if not settings.brave_api_key:
         return []
@@ -275,6 +282,8 @@ def brave_search(query: str) -> list[WebSource]:
         "X-Subscription-Token": settings.brave_api_key,
     }
     params = {"q": query, "count": MAX_SEARCH_RESULTS, "text_decorations": False}
+    if recency in _BRAVE_FRESHNESS:
+        params["freshness"] = _BRAVE_FRESHNESS[recency]
     try:
         with httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS) as client:
             response = client.get(
@@ -344,15 +353,16 @@ def test_brave_connection() -> dict:
         return {"success": False, "latency_ms": int((time.perf_counter() - started) * 1000), "error": str(exc)[:300]}
 
 
-def ddg_search(query: str) -> list[WebSource]:
+def ddg_search(query: str, recency: str | None = None) -> list[WebSource]:
     try:
         from ddgs import DDGS
     except ImportError:
         return []
+    timelimit = _DDGS_TIMELIMIT.get(recency or "")
     try:
         sources: list[WebSource] = []
         with DDGS() as ddgs:
-            for result in ddgs.text(query, max_results=MAX_SEARCH_RESULTS):
+            for result in ddgs.text(query, max_results=MAX_SEARCH_RESULTS, timelimit=timelimit):
                 url = result.get("href", "")
                 title = result.get("title", source_title(url))
                 body = result.get("body", "")
@@ -363,7 +373,7 @@ def ddg_search(query: str) -> list[WebSource]:
         return []
 
 
-def gather_web_context(query: str, enable_search: bool) -> WebContextResult:
+def gather_web_context(query: str, enable_search: bool, recency: str | None = None) -> WebContextResult:
     direct_sources = [source for url in find_urls(query) if (source := crawl_url(url))]
 
     search_sources: list[WebSource] = []
@@ -371,13 +381,13 @@ def gather_web_context(query: str, enable_search: bool) -> WebContextResult:
     if enable_search:
         settings = get_settings()
         if settings.tavily_api_key:
-            search_sources = tavily_search(query)
+            search_sources = tavily_search(query, recency)
             search_provider = "Tavily"
         elif settings.brave_api_key:
-            search_sources = brave_search(query)
+            search_sources = brave_search(query, recency)
             search_provider = "Brave"
         else:
-            search_sources = ddg_search(query)
+            search_sources = ddg_search(query, recency)
             search_provider = "DuckDuckGo" if search_sources else ""
 
     sources: list[WebSource] = []

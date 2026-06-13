@@ -130,6 +130,7 @@ class ConvChatRequest(BaseModel):
     deep_research: bool = False
     research_mode: ResearchMode = "quick"
     web_search: bool = False
+    document_requested: bool = False
     allow_research_recommendation: bool = True
     output_mode: OutputMode = "default"
     artifact_type: ArtifactType | None = None

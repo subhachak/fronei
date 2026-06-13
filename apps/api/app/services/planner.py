@@ -276,6 +276,7 @@ def run_planner(
     active_task: dict | None = None,
     user_memory: str = "",
     doc_context: str = "",
+    user_hints: dict | None = None,
 ) -> Plan:
     """
     Runs the planner LLM and returns a Plan.
@@ -304,6 +305,30 @@ def run_planner(
         state_parts.append(
             f"ATTACHED DOCUMENT (preview — full text sent to worker):\n{preview}"
         )
+    if user_hints:
+        hint_lines: list[str] = []
+        if user_hints.get("deep_research"):
+            hint_lines.append(
+                "- The user explicitly turned on 'Deep Research' mode for this turn via the "
+                "composer. Treat this as a strong signal that recommend_deep_research should "
+                "be true and research_confidence high, unless the request is trivial or purely "
+                "conversational (in which case use your judgement and explain why in research_reason)."
+            )
+        if user_hints.get("document"):
+            hint_lines.append(
+                "- The user explicitly selected 'Document' output for this turn via the "
+                "composer. Treat this as a strong signal that wants_document_output should be "
+                "true. Infer document_brief fields (doc_type, audience, tone, length) and "
+                "document_format_options/document_format_recommendation as confidently as "
+                "possible from the request and conversation context — only leave a field null "
+                "if it genuinely cannot be inferred."
+            )
+        if hint_lines:
+            state_parts.append(
+                "USER-PROVIDED HINTS (explicit signals from the composer — weigh heavily, "
+                "but still apply judgement and your own reasoning):\n" + "\n".join(hint_lines)
+            )
+
     if state_parts:
         msgs.append({"role": "system", "content": "\n\n".join(state_parts)})
 

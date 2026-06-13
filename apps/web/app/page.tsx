@@ -3778,6 +3778,7 @@ export default function Home() {
   const [quality, setQuality]             = useState<Quality>('smart')
   const [researchOn, setResearchOn]       = useState(false)
   const [webSearchOn, setWebSearchOn]     = useState(false)
+  const [documentOn, setDocumentOn]       = useState(false)
   const [previewDoc, setPreviewDoc]       = useState<GeneratedDocument | null>(null)
   const [activePlanProposalMsgId, setActivePlanProposalMsgId] = useState<number | null>(null)
   const [forceModel, setForceModel]       = useState('')
@@ -4630,6 +4631,7 @@ export default function Home() {
         body: JSON.stringify({
           message: apiMessage,
           ...buildRequestFields(quality, opts.forceResearch ? true : researchOn, webSearchOn),
+          document_requested: documentOn,
           force_model: forceModel.trim() || null,
           conversation_id: activeConvId,
           allow_research_recommendation: !opts.suppressResearchRecommendation,
@@ -5622,7 +5624,7 @@ export default function Home() {
 
               {/* Left: + button */}
               <button
-                className={`composer-plus${leftMenuOpen ? ' active' : ''}${(researchOn || webSearchOn || pendingFiles.length > 0) ? ' has-active' : ''}`}
+                className={`composer-plus${leftMenuOpen ? ' active' : ''}${(researchOn || webSearchOn || documentOn || pendingFiles.length > 0) ? ' has-active' : ''}`}
                 onClick={() => setLeftMenuOpen(v => !v)}
                 disabled={isBusy}
                 type="button"
@@ -5642,6 +5644,34 @@ export default function Home() {
                 >
                   <i className="ti ti-microscope" aria-hidden="true" />
                   <span>Research</span>
+                  <i className="ti ti-x" aria-hidden="true" />
+                </button>
+              )}
+
+              {documentOn && (
+                <button
+                  className="composer-mode-chip"
+                  type="button"
+                  onClick={() => setDocumentOn(false)}
+                  title="Cancel document mode"
+                  aria-label="Cancel document mode"
+                >
+                  <i className="ti ti-file-text" aria-hidden="true" />
+                  <span>Document</span>
+                  <i className="ti ti-x" aria-hidden="true" />
+                </button>
+              )}
+
+              {webSearchOn && !researchOn && (
+                <button
+                  className="composer-mode-chip"
+                  type="button"
+                  onClick={() => setWebSearchOn(false)}
+                  title="Cancel web search"
+                  aria-label="Cancel web search"
+                >
+                  <i className="ti ti-world" aria-hidden="true" />
+                  <span>Web search</span>
                   <i className="ti ti-x" aria-hidden="true" />
                 </button>
               )}
@@ -5726,6 +5756,30 @@ export default function Home() {
                 <i className="ti ti-microscope" aria-hidden="true" />
                 <span>Research</span>
                 <span className="left-menu-status">{researchOn ? 'On' : 'Off'}</span>
+              </button>
+              <button
+                className={`left-menu-item${documentOn ? ' on' : ''}`}
+                type="button"
+                onClick={() => {
+                  setDocumentOn(v => !v)
+                  setLeftMenuOpen(false)
+                }}
+              >
+                <i className="ti ti-file-text" aria-hidden="true" />
+                <span>Document</span>
+                <span className="left-menu-status">{documentOn ? 'On' : 'Off'}</span>
+              </button>
+              <button
+                className={`left-menu-item${webSearchOn ? ' on' : ''}`}
+                type="button"
+                onClick={() => {
+                  setWebSearchOn(v => !v)
+                  setLeftMenuOpen(false)
+                }}
+              >
+                <i className="ti ti-world" aria-hidden="true" />
+                <span>Web search</span>
+                <span className="left-menu-status">{webSearchOn ? 'On' : 'Off'}</span>
               </button>
             </div>
           )}

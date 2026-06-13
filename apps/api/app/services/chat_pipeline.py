@@ -337,6 +337,7 @@ def build_pipeline_setup(
             req.message, history, settings.planner_model,
             running_summary=running_summary, active_task=active_task,
             user_memory=user_memory, doc_context=doc_context,
+            user_hints={"deep_research": req.deep_research, "document": req.document_requested},
         )
     plan = apply_confirmed_plan(plan, confirmed_plan)
     use_web = (req.web_search or plan.needs_web_search) and plan.action != "answer_directly"

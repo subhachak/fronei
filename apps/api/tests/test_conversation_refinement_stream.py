@@ -667,6 +667,107 @@ def test_execute_plan_research_followup_with_document_confirmed_generates_docume
     assert "Existing evidence" in captured_doc_call["doc_context"]
 
 
+def test_execute_plan_confirmed_expert_mode_bypasses_followup_fast_path(client, monkeypatch):
+    """A user-confirmed "expert" research mode on a follow-up turn must run
+    fresh research, not the cheap existing-evidence synthesis fast path —
+    even though the turn type otherwise qualifies for that fast path.
+    """
+    c, Session = client
+
+    plan = passthrough("Now go deeper and verify everything with primary sources.")
+    plan.turn_type = "constraint_change"
+    plan.intent = "Re-run research with expert-grade verification."
+    plan.enriched_prompt = "Re-run research with expert-grade verification of all claims."
+    plan.needs_web_search = True
+    plan.recommend_deep_research = True
+    plan.plan_confidence = "medium"
+
+    with Session() as db:
+        conv = Conversation(user_id="u1", title="Prior research", profile="balanced", message_count=2)
+        db.add(conv)
+        db.flush()
+        db.add(ConversationMessage(
+            conversation_id=conv.id,
+            role="user",
+            content="Research platform options.",
+        ))
+        db.add(ConversationMessage(
+            conversation_id=conv.id,
+            role="assistant",
+            content="Prior research answer [S1].",
+            task_type="research",
+            complexity="high",
+            research_run_id=77,
+        ))
+        user_msg = ConversationMessage(
+            conversation_id=conv.id,
+            role="user",
+            content="Now go deeper and verify everything with primary sources.",
+            plan_json=json.dumps(plan_to_dict(plan)),
+        )
+        db.add(user_msg)
+        db.commit()
+        conv_id = conv.public_id
+        message_id = user_msg.id
+
+    route = RouteDecision(
+        task_type="research",
+        complexity="high",
+        profile="balanced",
+        primary_model="gpt-4.1",
+        fallbacks=[],
+        reason="expert mode test",
+    )
+
+    followup_calls: list = []
+
+    def fake_run_research_followup(_db, **kwargs):
+        followup_calls.append(kwargs)
+        raise AssertionError("followup fast path should not run for confirmed expert mode")
+
+    def fake_run_research(_db, **kwargs):
+        kwargs["progress"]("searching", "Searching targeted sources…", {"query": kwargs["query"]})
+        return ResearchPipelineResult(
+            run=SimpleNamespace(id=99, confidence="high"),
+            result=LLMResult(
+                answer="Expert-verified findings [S1].",
+                model_used="gpt-4.1",
+                latency_ms=300,
+                prompt_tokens=60,
+                completion_tokens=90,
+                estimated_cost_usd=0.02,
+            ),
+            route=route,
+            source_logs=[{"title": "Primary source", "url": "https://example.com/primary", "credibility_score": 0.9}],
+            questions=["Are the claims verified against primary sources?"],
+            gaps=[],
+            contradictions=[],
+            verifier_notes=None,
+        )
+
+    monkeypatch.setattr(conversations, "run_research_followup", fake_run_research_followup)
+    monkeypatch.setattr(conversations, "run_research", fake_run_research)
+
+    response = c.post(
+        f"/conversations/{conv_id}/messages/{message_id}/execute-plan",
+        json={
+            "confirmed_plan": {
+                "web_search": True,
+                "deep_research": True,
+                "research_mode": "expert",
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    events = _events(response.text)
+    done = events[-1][1]
+
+    assert followup_calls == []
+    assert done["research_run_id"] == 99
+    assert "Expert-verified findings" in done["answer"]
+
+
 def test_stream_refinement_skips_raw_mode(client, monkeypatch):
     c, Session = client
     raw_answer = " ".join(["This response has enough words to trigger refinement"] * 8)

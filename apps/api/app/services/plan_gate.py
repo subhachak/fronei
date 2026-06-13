@@ -78,11 +78,14 @@ def evaluate(plan: Plan) -> PlanGateResult:
     # ── Deep research ────────────────────────────────────────────────────
     research_cfg = policy.get("deep_research", {})
     research_gates = bool(plan.recommend_deep_research) and bool(research_cfg.get("always_gate", True))
+    risk_factors = list(plan.research_risk_factors or [])
+    suggested_mode_risk_factors = set(research_cfg.get("suggested_mode_risk_factors", []))
+    suggested_mode = "expert" if suggested_mode_risk_factors.intersection(risk_factors) else "deep"
     research_state = CapabilityState(
         enabled=bool(plan.recommend_deep_research),
         recommended=bool(plan.recommend_deep_research),
         reason=plan.research_reason or "",
-        extra={"risk_factors": list(plan.research_risk_factors or [])},
+        extra={"risk_factors": risk_factors, "suggested_mode": suggested_mode},
     )
     if research_gates:
         gate_reasons.append("deep_research")

@@ -1,7 +1,7 @@
 import json
 import secrets
 from datetime import datetime, date, timezone
-from sqlalchemy import Boolean, create_engine, DateTime, Float, ForeignKey, Integer, String, Text, event, func, inspect, text
+from sqlalchemy import Boolean, create_engine, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, event, func, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
 from app.config import get_settings
 
@@ -88,7 +88,7 @@ class Conversation(Base):
     # payloads, and shareable URLs. The integer `id` above remains the
     # internal primary key used for foreign keys.
     public_id: Mapped[str] = mapped_column(
-        String(16), unique=True, index=True, nullable=False, default=lambda: secrets.token_hex(6)
+        String(24), unique=True, index=True, nullable=False, default=lambda: secrets.token_hex(12)
     )
     user_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True, default="")
     title: Mapped[str] = mapped_column(String(120), default="New conversation")
@@ -317,7 +317,14 @@ class ResearchSourceCache(Base):
     __tablename__ = "research_source_cache"
 
     id:                     Mapped[int]             = mapped_column(Integer, primary_key=True, autoincrement=True)
-    url:                    Mapped[str]             = mapped_column(String(2048), nullable=False, unique=True, index=True)
+    url:                    Mapped[str]             = mapped_column(String(2048), nullable=False, index=True)
+    # Short hash of the normalized research question this cache row's
+    # claims_json was extracted for. Claim extraction is query-specific
+    # (top-N ranked claims relevant to the asking question), so a single
+    # URL can have multiple cache rows — one per distinct question. Source
+    # metadata fields are duplicated across rows for simplicity; only
+    # claims_json reuse is gated on a query_signature match.
+    query_signature:        Mapped[str]             = mapped_column(String(32), nullable=False, default="", server_default="")
     title:                  Mapped[str]             = mapped_column(Text, default="")
     source_type:            Mapped[str | None]      = mapped_column(String(64), nullable=True)
     source_tier:            Mapped[str]             = mapped_column(String(32), default="tier_2_expert")
@@ -334,6 +341,10 @@ class ResearchSourceCache(Base):
     claims_json:             Mapped[str | None]     = mapped_column(Text, nullable=True)
     cached_at:               Mapped[datetime]       = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
     expires_at:              Mapped[datetime]       = mapped_column(DateTime, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("url", "query_signature", name="uq_research_source_cache_url_query"),
+    )
 
 
 class ResearchFinding(Base):

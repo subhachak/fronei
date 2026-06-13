@@ -588,7 +588,25 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                         })
                         return
 
-                if is_followup and existing_run_id:
+                # The plan_proposed popup only surfaces a "Research depth"
+                # (Deep/Expert) picker when deep_research is enabled, and
+                # always sends `research_mode` in that case. So a confirmed
+                # plan carrying `deep_research: true` *and* an explicit
+                # `research_mode` represents a deliberate decision to (re-)run
+                # research for this turn — honor it with fresh research
+                # rather than silently downgrading to the cheap follow-up
+                # synthesis, which performs no new web searching. A plain
+                # `deep_research: true` with no research_mode (e.g. "keep
+                # research context on for this continuation" without going
+                # through the depth picker) keeps the normal follow-up fast
+                # path.
+                confirmed_fresh_research = bool(
+                    req.confirmed_plan is not None
+                    and req.confirmed_plan.deep_research is True
+                    and req.confirmed_plan.research_mode is not None
+                )
+
+                if is_followup and existing_run_id and not confirmed_fresh_research:
                     # ── Fast path: synthesize from existing evidence ───────
                     followup_holder: list[ResearchFollowupResult | None] = [None]
                     followup_error: list[BaseException | None] = [None]
@@ -1282,6 +1300,7 @@ def execute_plan(
                 conversation_id=conv_id,
                 profile=profile,
                 deep_research=bool(body.confirmed_plan.deep_research) if body.confirmed_plan.deep_research is not None else plan.recommend_deep_research,
+                research_mode=body.confirmed_plan.research_mode or "quick",
                 confirmed_plan=body.confirmed_plan,
             )
 

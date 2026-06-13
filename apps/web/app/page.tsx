@@ -846,10 +846,26 @@ function KV({ label, value, mono, dim }: { label: string; value: string | null |
   )
 }
 
+// Rolling-window size for the Pipeline Trace list — keeps the dev log
+// readable on smaller panels/screens while still letting the user expand
+// to the full trace for deep debugging.
+const TRACE_WINDOW = 25
+
 function DevTraceSections({ data }: { data: NonNullable<ExecPanelData> }) {
   const hasTurnInfo = data.turn_type || data.action || data.research_run_id != null
   const trace = data.pipeline_trace ?? []
   const research = data.research
+  const [showAllTrace, setShowAllTrace] = useState(false)
+  const traceScrollRef = useRef<HTMLDivElement | null>(null)
+
+  const visibleTrace = showAllTrace ? trace : trace.slice(-TRACE_WINDOW)
+
+  // Keep the trace view pinned to the most recent entries (rolling
+  // commentary), like a log tail.
+  useEffect(() => {
+    const el = traceScrollRef.current
+    if (el) el.scrollTop = el.scrollHeight
+  }, [trace.length, showAllTrace])
 
   if (!hasTurnInfo && trace.length === 0 && !research) return null
 
@@ -876,23 +892,41 @@ function DevTraceSections({ data }: { data: NonNullable<ExecPanelData> }) {
       {trace.length > 0 && (
         <div className="exec-section">
           <div className="exec-dot" />
-          <div className="exec-tag">Pipeline Trace ({trace.length} steps)</div>
+          <div className="exec-tag">
+            Pipeline Trace ({trace.length} steps)
+            {trace.length > TRACE_WINDOW && (
+              <button
+                type="button"
+                className="exec-trace-toggle"
+                onClick={() => setShowAllTrace(v => !v)}
+              >
+                {showAllTrace ? 'Show last ' + TRACE_WINDOW : 'Show all'}
+              </button>
+            )}
+          </div>
           <div className="exec-details">
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-              {trace.map((step, i) => (
-                <div key={i} style={{ display: 'flex', gap: 6, alignItems: 'flex-start', fontSize: 11 }}>
-                  <span className="exec-kv-v dim mono" style={{ minWidth: 50, textAlign: 'right' }}>
-                    +{((step.ts - t0) / 1000).toFixed(1)}s
-                  </span>
-                  <span className="exec-pill" style={{ flexShrink: 0 }}>{step.stage}</span>
-                  <span className="exec-kv-v" style={{ flex: 1 }}>
-                    {step.message}
-                    {step.model && <span className="dim"> · {step.model}</span>}
-                    {step.latency_ms != null && <span className="dim"> · {step.latency_ms} ms</span>}
-                    {step.cost_usd != null && <span className="dim"> · ${step.cost_usd.toFixed(5)}</span>}
-                  </span>
-                </div>
-              ))}
+            {!showAllTrace && trace.length > TRACE_WINDOW && (
+              <div className="exec-kv-v dim" style={{ fontSize: 10, marginBottom: 4 }}>
+                Showing last {TRACE_WINDOW} of {trace.length} steps
+              </div>
+            )}
+            <div className="exec-trace-scroll" ref={traceScrollRef}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                {visibleTrace.map((step, i) => (
+                  <div key={i} style={{ display: 'flex', gap: 6, alignItems: 'flex-start', fontSize: 11 }}>
+                    <span className="exec-kv-v dim mono" style={{ minWidth: 50, textAlign: 'right' }}>
+                      +{((step.ts - t0) / 1000).toFixed(1)}s
+                    </span>
+                    <span className="exec-pill" style={{ flexShrink: 0 }}>{step.stage}</span>
+                    <span className="exec-kv-v" style={{ flex: 1 }}>
+                      {step.message}
+                      {step.model && <span className="dim"> · {step.model}</span>}
+                      {step.latency_ms != null && <span className="dim"> · {step.latency_ms} ms</span>}
+                      {step.cost_usd != null && <span className="dim"> · ${step.cost_usd.toFixed(5)}</span>}
+                    </span>
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
         </div>
@@ -3029,6 +3063,11 @@ const PLAN_STEP_LABELS: Record<PlanStepGroup, string> = {
 
 const PLAN_STEP_ORDER: PlanStepGroup[] = ['planning', 'routing', 'working', 'refining']
 
+// Rolling-window size for the live "running commentary" sub-steps shown
+// under each pipeline stage — keeps the in-progress view compact even when
+// a stage (e.g. "working") emits many steps.
+const SUBSTEP_WINDOW = 5
+
 function PipelineLog({
   steps,
   startTs,
@@ -3081,8 +3120,13 @@ function PipelineLog({
 
               {groupSteps.length > 0 && (
                 <div className="pl-substeps">
-                  {groupSteps.map((step, j) => {
-                    const isCurrent = isActive && j === groupSteps.length - 1
+                  {groupSteps.length > SUBSTEP_WINDOW && (
+                    <div className="pl-substep-overflow">
+                      +{groupSteps.length - SUBSTEP_WINDOW} earlier
+                    </div>
+                  )}
+                  {groupSteps.slice(-SUBSTEP_WINDOW).map((step, j, windowed) => {
+                    const isCurrent = isActive && j === windowed.length - 1
                     return (
                       <div key={j} className={`pl-substep${isCurrent ? ' pl-substep-active' : ' pl-substep-done'}`}>
                         <span className="pl-substep-status">

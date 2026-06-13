@@ -2121,7 +2121,10 @@ option { background: var(--bg-modal); color: var(--t2); }
 }
 
 .exec-tag {
-  display: inline-block;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   font-size: 9px;
   font-weight: 700;
   letter-spacing: 0.1em;
@@ -2132,6 +2135,30 @@ option { background: var(--bg-modal); color: var(--t2); }
   padding: 1px 6px;
   border-radius: 4px;
   margin-bottom: 5px;
+}
+
+.exec-trace-toggle {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: none;
+  color: var(--t4);
+  background: var(--bg-s1);
+  border: 1px solid var(--bd);
+  border-radius: 4px;
+  padding: 1px 6px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.exec-trace-toggle:hover {
+  color: var(--t2);
+  border-color: var(--t5);
+}
+
+.exec-trace-scroll {
+  max-height: min(320px, 40vh);
+  overflow-y: auto;
+  padding-right: 4px;
 }
 
 .exec-head {
@@ -2639,6 +2666,13 @@ pre:hover .code-copy-btn { opacity: 1; }
 .pl-substep-active .pl-substep-text {
   color: var(--t2);
   font-weight: 500;
+}
+
+.pl-substep-overflow {
+  font-size: 10px;
+  color: var(--t6);
+  padding-left: 20px;
+  margin-top: -1px;
 }
 
 .pl-body {

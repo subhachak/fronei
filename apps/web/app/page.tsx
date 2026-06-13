@@ -484,7 +484,7 @@ type GeneratedDocument = {
   docType: string
   markdown: string
   filename: string
-  docxBase64: string
+  docxBase64?: string
   xlsxBase64?: string
   format?: DocumentOutputFormat
   outputFormats?: DocumentOutputFormat[]
@@ -2526,13 +2526,20 @@ function PlanModal({
 function DocumentPreviewModal({ doc, onClose }: { doc: GeneratedDocument; onClose: () => void }) {
   const [html, setHtml] = useState<string | null>(null)
   const [error, setError] = useState(false)
+  const isXlsx = doc.format === 'xlsx'
+  const isMarkdownOnly = !isXlsx && !doc.docxBase64
 
   useEffect(() => {
     let cancelled = false
     setHtml(null)
     setError(false)
+    const docxBase64 = doc.docxBase64
+    if (isXlsx || !docxBase64) {
+      setError(true)
+      return () => { cancelled = true }
+    }
     import('mammoth')
-      .then(mammoth => mammoth.convertToHtml({ arrayBuffer: base64ToArrayBuffer(doc.docxBase64) }))
+      .then(mammoth => mammoth.convertToHtml({ arrayBuffer: base64ToArrayBuffer(docxBase64) }))
       .then(result => {
         if (!cancelled) setHtml(DOMPurify.sanitize(result.value))
       })
@@ -2540,7 +2547,7 @@ function DocumentPreviewModal({ doc, onClose }: { doc: GeneratedDocument; onClos
         if (!cancelled) setError(true)
       })
     return () => { cancelled = true }
-  }, [doc.docxBase64])
+  }, [doc.docxBase64, isXlsx])
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
@@ -2568,10 +2575,18 @@ function DocumentPreviewModal({ doc, onClose }: { doc: GeneratedDocument; onClos
             <button
               className="send-btn"
               type="button"
-              onClick={() => downloadBlob(base64ToBlob(doc.docxBase64, DOCX_MIME), doc.filename)}
+              onClick={() => {
+                if (isXlsx && doc.xlsxBase64) {
+                  downloadBlob(base64ToBlob(doc.xlsxBase64, XLSX_MIME), doc.filename)
+                } else if (doc.docxBase64) {
+                  downloadBlob(base64ToBlob(doc.docxBase64, DOCX_MIME), doc.filename)
+                } else {
+                  downloadBlob(new Blob([doc.markdown], { type: 'text/markdown;charset=utf-8' }), safeDownloadName(doc.title, 'md'))
+                }
+              }}
             >
               <i className="ti ti-file-download" aria-hidden="true" />
-              Download .docx
+              {isXlsx ? 'Download .xlsx' : isMarkdownOnly ? 'Download .md' : 'Download .docx'}
             </button>
             {doc.outputFormats?.includes('markdown') && (
               <button
@@ -5335,23 +5350,15 @@ export default function Home() {
 
                     {m.role === 'assistant' && m.document_preview && (
                       <div className="doc-generated-callout">
-                        <div className="doc-generated-icon">
-                          <i className="ti ti-file-text" aria-hidden="true" />
-                        </div>
-                        <div className="doc-generated-body">
-                          <div className="doc-generated-title">Document generated</div>
-                        </div>
-                        {m.document_preview.format !== 'xlsx' && (
-                          <button
-                            className="doc-generated-icon-btn"
-                            type="button"
-                            onClick={() => setPreviewDoc(m.document_preview!)}
-                            title="Preview document"
-                            aria-label="Preview document"
-                          >
-                            <i className="ti ti-eye" aria-hidden="true" />
-                          </button>
-                        )}
+                        <button
+                          className="doc-generated-icon-btn"
+                          type="button"
+                          onClick={() => setPreviewDoc(m.document_preview!)}
+                          title={m.document_preview.format === 'xlsx' ? 'Preview spreadsheet' : 'Preview document'}
+                          aria-label={m.document_preview.format === 'xlsx' ? 'Preview spreadsheet' : 'Preview document'}
+                        >
+                          <i className="ti ti-eye" aria-hidden="true" />
+                        </button>
                         {m.document_preview.format === 'xlsx' ? (
                           <button
                             className="doc-generated-icon-btn doc-generated-download"
@@ -5362,18 +5369,31 @@ export default function Home() {
                           >
                             <i className="ti ti-file-download" aria-hidden="true" />
                           </button>
+                        ) : !m.document_preview.docxBase64 ? (
+                          <button
+                            className="doc-generated-icon-btn doc-generated-download"
+                            type="button"
+                            onClick={() => downloadBlob(
+                              new Blob([m.document_preview!.markdown], { type: 'text/markdown;charset=utf-8' }),
+                              safeDownloadName(m.document_preview!.title, 'md')
+                            )}
+                            title="Download Markdown"
+                            aria-label="Download Markdown"
+                          >
+                            <i className="ti ti-markdown" aria-hidden="true" />
+                          </button>
                         ) : (
                           <button
                             className="doc-generated-icon-btn doc-generated-download"
                             type="button"
-                            onClick={() => downloadBlob(base64ToBlob(m.document_preview!.docxBase64, DOCX_MIME), m.document_preview!.filename)}
+                            onClick={() => downloadBlob(base64ToBlob(m.document_preview!.docxBase64!, DOCX_MIME), m.document_preview!.filename)}
                             title="Download .docx"
                             aria-label="Download document"
                           >
                             <i className="ti ti-file-download" aria-hidden="true" />
                           </button>
                         )}
-                        {m.document_preview.outputFormats?.includes('markdown') && (
+                        {m.document_preview.docxBase64 && m.document_preview.outputFormats?.includes('markdown') && (
                           <button
                             className="doc-generated-icon-btn"
                             type="button"

@@ -3781,38 +3781,14 @@ pre:hover .code-copy-btn { opacity: 1; }
 }
 
 .doc-generated-callout {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
   margin-top: 10px;
-  padding: 12px 14px;
+  padding: 8px;
   border-radius: 12px;
   background: var(--ac-bg);
   border: 1px solid var(--ac-bd);
-}
-
-.doc-generated-icon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 36px;
-  height: 36px;
-  flex-shrink: 0;
-  border-radius: 9px;
-  background: var(--ac);
-  color: #fff;
-  font-size: 18px;
-}
-
-.doc-generated-body {
-  flex: 1;
-  min-width: 0;
-}
-
-.doc-generated-title {
-  font-weight: 700;
-  font-size: 13.5px;
-  color: var(--ac-text);
 }
 
 .doc-generated-icon-btn {
@@ -3842,7 +3818,7 @@ pre:hover .code-copy-btn { opacity: 1; }
 
 @media (max-width: 640px) {
   .doc-generated-callout {
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
   }
 }
 

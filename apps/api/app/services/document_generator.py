@@ -10,6 +10,9 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Inches, Pt
 from docx.text.paragraph import Paragraph
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.utils import get_column_letter
 
 
 TABLE_SEPARATOR_RE = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$")
@@ -426,4 +429,194 @@ def generate_docx_bytes(title: str, content: str, subtitle: str | None = None, d
 
     output = BytesIO()
     doc.save(output)
+    return output.getvalue()
+
+
+# --- XLSX generation ------------------------------------------------------
+
+_XLSX_HEADER_FILL = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
+_XLSX_HEADER_FONT = Font(bold=True, color="FFFFFF")
+_XLSX_TITLE_FONT = Font(bold=True, size=14)
+_XLSX_SUBTITLE_FONT = Font(italic=True, size=10, color="595959")
+_XLSX_HEADING_FONTS = {1: Font(bold=True, size=12), 2: Font(bold=True, size=11), 3: Font(bold=True, size=10.5)}
+_XLSX_MAX_COL_WIDTH = 60
+_XLSX_MIN_COL_WIDTH = 10
+
+
+def _xlsx_sheet_title(base: str, used: set[str]) -> str:
+    """Return a unique, Excel-safe sheet title (<=31 chars, no [] : * ? / \\)."""
+    safe = re.sub(r"[\[\]:*?/\\]", " ", base).strip()
+    safe = re.sub(r"\s+", " ", safe) or "Sheet"
+    safe = safe[:31]
+    candidate = safe
+    n = 2
+    while candidate in used:
+        suffix = f" ({n})"
+        candidate = safe[: 31 - len(suffix)] + suffix
+        n += 1
+    used.add(candidate)
+    return candidate
+
+
+def _xlsx_autosize_columns(ws, rows: list[list[str]]) -> None:
+    if not rows:
+        return
+    widths: dict[int, int] = {}
+    for row in rows:
+        for c_idx, value in enumerate(row, start=1):
+            length = len(str(value)) if value is not None else 0
+            widths[c_idx] = max(widths.get(c_idx, 0), length)
+    for c_idx, width in widths.items():
+        ws.column_dimensions[get_column_letter(c_idx)].width = max(
+            _XLSX_MIN_COL_WIDTH, min(_XLSX_MAX_COL_WIDTH, width + 2)
+        )
+
+
+def _xlsx_write_table(wb: Workbook, sheet_name: str, rows: list[list[str]], used_sheet_names: set[str]):
+    title = _xlsx_sheet_title(sheet_name, used_sheet_names)
+    ws = wb.create_sheet(title=title)
+    for row in rows:
+        ws.append(row)
+    if rows:
+        width = max(len(row) for row in rows)
+        for c_idx in range(1, width + 1):
+            cell = ws.cell(row=1, column=c_idx)
+            cell.font = _XLSX_HEADER_FONT
+            cell.fill = _XLSX_HEADER_FILL
+            cell.alignment = Alignment(vertical="center", wrap_text=True)
+        ws.freeze_panes = "A2"
+        ws.auto_filter.ref = f"A1:{get_column_letter(width)}{len(rows)}"
+        for row in ws.iter_rows(min_row=2):
+            for cell in row:
+                cell.alignment = Alignment(vertical="top", wrap_text=True)
+    _xlsx_autosize_columns(ws, rows)
+    return ws
+
+
+def generate_xlsx_bytes(title: str, content: str, subtitle: str | None = None, doc_type: str | None = None) -> bytes:
+    """Render Markdown-ish text into a multi-sheet XLSX workbook.
+
+    Any Markdown tables in `content` become their own sheets (named after the
+    nearest preceding heading, falling back to "Table N"), styled with a bold
+    header row, autofilter, and frozen header. All remaining narrative content
+    (headings, paragraphs, bullets) is collected into an "Overview" sheet.
+    """
+    wb = Workbook()
+    overview = wb.active
+    overview.title = "Overview"
+    used_sheet_names = {"Overview"}
+
+    overview_rows: list[list[str]] = []
+
+    title_cell_row = 1
+    overview.cell(row=title_cell_row, column=1, value=_clean_inline(title) or "Fronei document").font = _XLSX_TITLE_FONT
+    overview_rows.append([title])
+    next_row = 2
+    if subtitle:
+        overview.cell(row=next_row, column=1, value=subtitle).font = _XLSX_SUBTITLE_FONT
+        overview_rows.append([subtitle])
+        next_row += 1
+    meta = f"Prepared for Fronei | {date.today().isoformat()}"
+    overview.cell(row=next_row, column=1, value=meta).font = _XLSX_SUBTITLE_FONT
+    overview_rows.append([meta])
+    next_row += 1
+    overview.cell(row=next_row, column=1, value="")
+    next_row += 1
+
+    # The title is already rendered above, so drop a leading "# Title" line
+    # from the body to avoid showing it twice in the Overview sheet.
+    content = _strip_leading_h1(content)
+
+    lines = content.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    idx = 0
+    in_code = False
+    code_lines: list[str] = []
+    last_heading = ""
+    table_count = 0
+
+    def _write_overview(value: str, *, font: Font | None = None) -> None:
+        nonlocal next_row
+        cell = overview.cell(row=next_row, column=1, value=value)
+        if font:
+            cell.font = font
+        overview_rows.append([value])
+        next_row += 1
+
+    while idx < len(lines):
+        raw = lines[idx]
+        line = raw.rstrip()
+        stripped = line.strip()
+
+        if stripped.startswith("```"):
+            in_code = not in_code
+            if not in_code and code_lines:
+                _write_overview("\n".join(code_lines))
+                code_lines = []
+            idx += 1
+            continue
+
+        if in_code:
+            code_lines.append(raw)
+            idx += 1
+            continue
+
+        if not stripped:
+            idx += 1
+            continue
+
+        if _is_table_start(lines, idx):
+            rows = [_split_table_row(lines[idx])]
+            idx += 2
+            while idx < len(lines) and lines[idx].strip().startswith("|"):
+                rows.append(_split_table_row(lines[idx]))
+                idx += 1
+            table_count += 1
+            sheet_name = last_heading or f"Table {table_count}"
+            _xlsx_write_table(wb, sheet_name, rows, used_sheet_names)
+            continue
+
+        if stripped in {"---", "***", "___"}:
+            idx += 1
+            continue
+
+        heading_match = re.match(r"^(#{1,6})\s+(.+)$", stripped)
+        if heading_match:
+            level = min(len(heading_match.group(1)), 3)
+            text = _clean_inline(heading_match.group(2))
+            _write_overview(text, font=_XLSX_HEADING_FONTS.get(level))
+            last_heading = text
+            idx += 1
+            continue
+
+        bullet_match = re.match(r"^[-*+]\s+(.+)$", stripped)
+        if bullet_match:
+            _write_overview(f"• {_clean_inline(bullet_match.group(1))}")
+            idx += 1
+            continue
+
+        number_match = re.match(r"^\d+[.)]\s+(.+)$", stripped)
+        if number_match:
+            _write_overview(_clean_inline(number_match.group(1)))
+            idx += 1
+            continue
+
+        blockquote_match = re.match(r"^>\s+(.+)$", stripped)
+        if blockquote_match:
+            _write_overview(_clean_inline(blockquote_match.group(1)))
+            idx += 1
+            continue
+
+        _write_overview(_clean_inline(stripped))
+        idx += 1
+
+    if code_lines:
+        _write_overview("\n".join(code_lines))
+
+    overview.column_dimensions["A"].width = 100
+    for row in overview.iter_rows(min_row=1, max_row=next_row - 1, max_col=1):
+        for cell in row:
+            cell.alignment = Alignment(wrap_text=True, vertical="top")
+
+    output = BytesIO()
+    wb.save(output)
     return output.getvalue()

@@ -19,12 +19,11 @@ from dataclasses import dataclass
 
 from litellm import completion, completion_cost
 
+from app.config import get_settings
 from app.services.prompts import PLANNER_SYSTEM_PROMPT
 
 # Planner sees last 6 raw turns; older context arrives via running_summary injection
 MAX_HISTORY_FOR_PLANNER = 6
-# Fallback model if the configured planner model fails
-_PLANNER_FALLBACK_MODEL = "gemini/gemini-2.5-flash"
 
 
 @dataclass
@@ -335,10 +334,10 @@ def run_planner(
     msgs.extend(recent)
     msgs.append({"role": "user", "content": message})
 
-    # Deduplicated model list: configured planner → fallback
+    # Deduplicated model list: configured planner → configured fallbacks.
     seen: set[str] = set()
     models_to_try: list[str] = []
-    for m in [planner_model, _PLANNER_FALLBACK_MODEL]:
+    for m in [planner_model, *get_settings().planner_fallback_model_list]:
         if m not in seen:
             seen.add(m)
             models_to_try.append(m)

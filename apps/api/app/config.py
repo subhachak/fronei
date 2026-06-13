@@ -19,7 +19,8 @@ class Settings(BaseSettings):
     openrouter_api_key: str | None = None
     tavily_api_key: str | None = None
     brave_api_key: str | None = None
-    planner_model: str = "claude-sonnet-4-6"
+    planner_model: str = "openrouter/qwen/qwen3.7-max"
+    planner_fallback_models: str = "claude-sonnet-4-6,gemini/gemini-2.5-flash"
     clerk_issuer: str = ""
     # Required in production. When unset, JWT audience verification (`verify_aud`)
     # is disabled in app/auth.py — acceptable for local dev only.
@@ -87,6 +88,10 @@ class Settings(BaseSettings):
     def notification_email_list(self) -> list[str]:
         raw = self.notification_emails or self.admin_emails
         return [v.strip() for v in raw.split(",") if v.strip()]
+
+    @property
+    def planner_fallback_model_list(self) -> list[str]:
+        return [v.strip() for v in self.planner_fallback_models.split(",") if v.strip()]
 
 
 @lru_cache

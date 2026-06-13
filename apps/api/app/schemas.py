@@ -127,6 +127,7 @@ class ConfirmedPlan(BaseModel):
 
 class ConvChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=32000)
+    client_request_id: str | None = Field(default=None, max_length=128)
     profile: Profile | None = None
     force_model: str | None = None
     conversation_id: str | None = None
@@ -143,6 +144,7 @@ class ConvChatRequest(BaseModel):
 
 class ExecutePlanRequest(BaseModel):
     confirmed_plan: ConfirmedPlan = Field(default_factory=ConfirmedPlan)
+    client_request_id: str | None = Field(default=None, max_length=128)
 
 
 class ResearchSourceOut(BaseModel):
@@ -246,6 +248,21 @@ class ConversationUpdate(BaseModel):
     title: str = Field(min_length=1, max_length=120)
 
 
+class ConversationTurnOut(BaseModel):
+    id: str
+    status: str
+    turn_kind: str = "quick"
+    progress: list[dict[str, Any]] = []
+    lifecycle: list[dict[str, Any]] = []
+    result: dict[str, Any] | None = None
+    error_message: str | None = None
+    user_message_id: int | None = None
+    assistant_message_id: int | None = None
+    created_at: str
+    updated_at: str
+    completed_at: str | None = None
+
+
 class ConversationDetail(BaseModel):
     id: str
     title: str
@@ -254,6 +271,7 @@ class ConversationDetail(BaseModel):
     created_at: str
     updated_at: str
     messages: list[MessageOut]
+    active_turn: ConversationTurnOut | None = None
 
 
 class PlannerSubQuery(BaseModel):

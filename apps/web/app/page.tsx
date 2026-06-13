@@ -331,6 +331,11 @@ function buildRequestFields(
   return             { profile: QUALITY_PROFILE[quality], web_search: webSearchOn, deep_research: false, research_mode: 'quick' }
 }
 
+function newClientRequestId(): string {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return crypto.randomUUID()
+  return `req-${Date.now()}-${Math.random().toString(16).slice(2)}`
+}
+
 type RouteDecision = {
   task_type: string; complexity: string; profile: string
   primary_model: string; fallbacks: string[]; reason: string
@@ -510,6 +515,49 @@ type MessageOut = {
   pipeline_trace?: PipelineStep[] | null
 }
 
+type ConversationTurn = {
+  id: string
+  status: string
+  turn_kind: string
+  progress: { stage?: string; message?: string; ts?: string }[]
+  lifecycle: { event?: string; ts?: string; [key: string]: unknown }[]
+  result?: Record<string, unknown> | null
+  error_message?: string | null
+  user_message_id?: number | null
+  assistant_message_id?: number | null
+  created_at: string
+  updated_at: string
+  completed_at?: string | null
+}
+
+type AdminTurnRow = {
+  id: string
+  user_id: string
+  conversation_id?: string | null
+  turn_kind?: string | null
+  status: string
+  client_request_id?: string | null
+  user_message_id?: number | null
+  assistant_message_id?: number | null
+  last_progress?: { stage?: string; message?: string; ts?: string } | null
+  lifecycle?: { event?: string; ts?: string; [key: string]: unknown }[]
+  progress_count: number
+  error_message?: string | null
+  created_at: string
+  updated_at: string
+  completed_at?: string | null
+  age_seconds: number
+  idle_seconds: number
+}
+
+type ActiveTurnNotice = {
+  convId: string
+  turnId: string
+  status: string
+  message: string
+  userMessage?: string
+}
+
 type GeneratedDocument = {
   title: string
   docType: string
@@ -523,7 +571,7 @@ type GeneratedDocument = {
 
 type DocumentOutputFormat = 'docx' | 'markdown' | 'xlsx'
 
-type ConversationDetail = ConversationSummary & { messages: MessageOut[] }
+type ConversationDetail = ConversationSummary & { messages: MessageOut[]; active_turn?: ConversationTurn | null }
 
 type WritingSample = {
   id: number; content: string; label: string | null; char_count: number; created_at: string
@@ -832,6 +880,17 @@ function shortModel(m: string): string {
 
 function fmt$(n: number, digits = 4): string {
   return `$${n.toFixed(digits)}`
+}
+
+function fmtDuration(seconds: number | null | undefined): string {
+  const s = Math.max(0, Math.floor(seconds ?? 0))
+  if (s < 60) return `${s}s`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m}m ${s % 60}s`
+  const h = Math.floor(m / 60)
+  if (h < 24) return `${h}h ${m % 60}m`
+  const d = Math.floor(h / 24)
+  return `${d}d ${h % 24}h`
 }
 
 // ── Exec log component ────────────────────────────────────────────────────────
@@ -3444,7 +3503,7 @@ type AdminUserRow = {
   last_seen_at: string | null
 }
 
-type AdminTab = 'overview' | 'users' | 'usage' | 'providers' | 'routing' | 'research' | 'errors' | 'audit' | 'system'
+type AdminTab = 'overview' | 'users' | 'usage' | 'providers' | 'routing' | 'research' | 'turns' | 'errors' | 'audit' | 'system'
 
 function AdminView({
   apiFetch,
@@ -3461,6 +3520,11 @@ function AdminView({
   const [providerTestResults, setProviderTestResults] = useState<any>({})
   const [policy, setPolicy] = useState<any>(null)
   const [research, setResearch] = useState<any[]>([])
+  const [turns, setTurns] = useState<AdminTurnRow[]>([])
+  const [turnStatus, setTurnStatus] = useState('active')
+  const [turnUserFilter, setTurnUserFilter] = useState('')
+  const [turnIdleFilter, setTurnIdleFilter] = useState('')
+  const [turnRuntime, setTurnRuntime] = useState<any>(null)
   const [errors, setErrors] = useState<any[]>([])
   const [audit, setAudit] = useState<any[]>([])
   const [system, setSystem] = useState<any>(null)
@@ -3481,6 +3545,7 @@ function AdminView({
     { id: 'providers', label: 'Providers', icon: 'ti-plug-connected' },
     { id: 'routing',   label: 'Routing',   icon: 'ti-route' },
     { id: 'research',  label: 'Research',  icon: 'ti-microscope' },
+    { id: 'turns',     label: 'Turns',     icon: 'ti-activity' },
     { id: 'errors',    label: 'Errors',    icon: 'ti-alert-triangle' },
     { id: 'audit',     label: 'Audit',     icon: 'ti-clipboard-list' },
     { id: 'system',    label: 'System',    icon: 'ti-server-cog' },
@@ -3505,6 +3570,8 @@ function AdminView({
       ['providers', json('/admin/providers')],
       ['policy', json('/admin/routing/policy')],
       ['research', json('/admin/research-runs')],
+      ['turns', json(`/admin/turns?status=${encodeURIComponent(turnStatus)}${turnUserFilter.trim() ? `&user_id=${encodeURIComponent(turnUserFilter.trim())}` : ''}${turnIdleFilter.trim() ? `&min_idle_seconds=${encodeURIComponent(turnIdleFilter.trim())}` : ''}`)],
+      ['turnRuntime', json('/admin/turn-runtime')],
       ['errors', json('/admin/errors')],
       ['audit', json('/admin/audit')],
       ['system', json('/admin/system')],
@@ -3524,6 +3591,8 @@ function AdminView({
       if (key === 'providers') setProviders(value)
       if (key === 'policy') setPolicy(value)
       if (key === 'research') setResearch(value.items ?? [])
+      if (key === 'turns') setTurns(value.items ?? [])
+      if (key === 'turnRuntime') setTurnRuntime(value)
       if (key === 'errors') setErrors(value.items ?? [])
       if (key === 'audit') setAudit(value.items ?? [])
       if (key === 'system') setSystem(value)
@@ -3659,6 +3728,37 @@ function AdminView({
         ...prev,
         [name]: { success: false, error: e instanceof Error ? e.message : 'Test failed' },
       }))
+    }
+  }
+
+  async function cancelTurn(turnId: string) {
+    try {
+      await json(`/admin/turns/${encodeURIComponent(turnId)}/cancel`, {
+        method: 'POST',
+        body: JSON.stringify({ reason: 'Cancelled from admin dashboard.' }),
+      })
+      setError('')
+      await loadAll()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Turn cancellation failed')
+    }
+  }
+
+  async function saveTurnRuntime(patch: Record<string, unknown>) {
+    const next = {
+      quick_timeout_minutes: Number(turnRuntime?.quick_timeout_minutes ?? 30),
+      research_timeout_minutes: Number(turnRuntime?.research_timeout_minutes ?? 180),
+      document_timeout_minutes: Number(turnRuntime?.document_timeout_minutes ?? 120),
+      ...patch,
+    }
+    try {
+      setTurnRuntime(await json('/admin/turn-runtime', {
+        method: 'PATCH',
+        body: JSON.stringify(next),
+      }))
+      setError('')
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Runtime settings update failed')
     }
   }
 
@@ -3999,6 +4099,86 @@ function AdminView({
           </div>
         )}
 
+        {tab === 'turns' && (
+          <div className="card admin-table-card">
+            <div className="admin-card-head">
+              <div>
+                <div className="chart-card-title" style={{ marginBottom: 0 }}>Active turns</div>
+                <div className="muted-text" style={{ fontSize: 12, marginTop: 4 }}>Live and recently stuck chat executions.</div>
+              </div>
+              <button className="toggle-chip" onClick={loadAll} disabled={busy} type="button">Refresh</button>
+            </div>
+            <div className="settings-grid" style={{ marginBottom: 14 }}>
+              <label className="settings-field">Status
+                <select className="conv-search-input" value={turnStatus} onChange={e => setTurnStatus(e.target.value)}>
+                  <option value="active">Active</option>
+                  <option value="running">Running</option>
+                  <option value="pending">Pending</option>
+                  <option value="failed">Failed</option>
+                  <option value="cancelled">Cancelled</option>
+                  <option value="completed">Completed</option>
+                  <option value="awaiting_confirmation">Awaiting confirmation</option>
+                  <option value="all">All</option>
+                </select>
+              </label>
+              <label className="settings-field">User id
+                <input className="conv-search-input" value={turnUserFilter} onChange={e => setTurnUserFilter(e.target.value)} placeholder="Optional" />
+              </label>
+              <label className="settings-field">Min idle seconds
+                <input className="conv-search-input" value={turnIdleFilter} onChange={e => setTurnIdleFilter(e.target.value.replace(/\D/g, ''))} placeholder="Optional" />
+              </label>
+              <button className="nav-chat-cta settings-secondary" onClick={loadAll} type="button" style={{ alignSelf: 'end' }}>Apply filters</button>
+            </div>
+            {turnRuntime && (
+              <div className="settings-grid" style={{ marginBottom: 14 }}>
+                <label className="settings-field">Quick timeout
+                  <input className="conv-search-input" type="number" min={5} max={240} defaultValue={turnRuntime.quick_timeout_minutes} onBlur={e => saveTurnRuntime({ quick_timeout_minutes: Number(e.target.value) })} />
+                </label>
+                <label className="settings-field">Research timeout
+                  <input className="conv-search-input" type="number" min={30} max={720} defaultValue={turnRuntime.research_timeout_minutes} onBlur={e => saveTurnRuntime({ research_timeout_minutes: Number(e.target.value) })} />
+                </label>
+                <label className="settings-field">Document timeout
+                  <input className="conv-search-input" type="number" min={15} max={720} defaultValue={turnRuntime.document_timeout_minutes} onBlur={e => saveTurnRuntime({ document_timeout_minutes: Number(e.target.value) })} />
+                </label>
+              </div>
+            )}
+            <div className="admin-table-wrap"><table className="admin-table"><thead><tr><th>Turn</th><th>User</th><th>Status</th><th>Last progress</th><th>Age</th><th>Idle</th><th></th></tr></thead><tbody>
+              {turns.map(t => (
+                <tr key={t.id}>
+                  <td>
+                    <div className="mono">{t.id}</div>
+                    {t.conversation_id && <div className="muted-text" style={{ fontSize: 11 }}>Conversation {t.conversation_id}</div>}
+                    <div className="muted-text" style={{ fontSize: 11 }}>{t.turn_kind || 'quick'}</div>
+                  </td>
+                  <td>{userLabel(t.user_id)}</td>
+                  <td><span className={`exec-pill ${t.status === 'failed' ? 'danger-pill' : t.status === 'running' ? 'ok-pill' : ''}`}>{t.status}</span></td>
+                  <td>
+                    <div>{t.last_progress?.message || t.error_message || 'No progress recorded yet.'}</div>
+                    {t.last_progress?.stage && <div className="muted-text" style={{ fontSize: 11 }}>{t.last_progress.stage} · {t.progress_count} event{t.progress_count === 1 ? '' : 's'}</div>}
+                    {t.lifecycle && t.lifecycle.length > 0 && (
+                      <div className="muted-text" style={{ fontSize: 11 }}>
+                        Last event: {String(t.lifecycle[t.lifecycle.length - 1]?.event || 'unknown')}
+                      </div>
+                    )}
+                  </td>
+                  <td>{fmtDuration(t.age_seconds)}</td>
+                  <td className={t.idle_seconds > 600 ? 'warn-text' : ''}>{fmtDuration(t.idle_seconds)}</td>
+                  <td>
+                    {['pending', 'running'].includes(t.status) ? (
+                      <button className="toggle-chip danger" onClick={() => cancelTurn(t.id)} type="button">Cancel</button>
+                    ) : (
+                      <span className="muted-text">—</span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+              {turns.length === 0 && (
+                <tr><td colSpan={7} className="muted-text">No active turns.</td></tr>
+              )}
+            </tbody></table></div>
+          </div>
+        )}
+
         {tab === 'errors' && (
           <div className="card admin-table-card">
             <div className="chart-card-title">Request errors</div>
@@ -4117,6 +4297,8 @@ export default function Home() {
   const [subCompletions, setSubCompletions] = useState<Map<number, PipelineStep>>(new Map())
   const [pipelineTs, setPipelineTs] = useState<number>(0)
   const [liveAssistantId, setLiveAssistantId] = useState<number | null>(null)
+  const [activeTurnId, setActiveTurnId] = useState<string | null>(null)
+  const [activeTurnNotice, setActiveTurnNotice] = useState<ActiveTurnNotice | null>(null)
   const [, setTick] = useState(0)
 
   // Memory
@@ -4145,6 +4327,7 @@ export default function Home() {
   const taRef          = useRef<HTMLTextAreaElement>(null)
   const fileInputRef   = useRef<HTMLInputElement>(null)
   const readerRef      = useRef<ReadableStreamDefaultReader<Uint8Array> | null>(null)
+  const pollingTurnRef = useRef<string | null>(null)
   const renderedIdsRef = useRef<Set<number>>(new Set())
   const lastSentRef    = useRef('')
 
@@ -4491,10 +4674,128 @@ export default function Home() {
     setLiveSteps([])
     setSubCompletions(new Map())
     setLiveAssistantId(null)
+    setActiveTurnId(null)
+    setActiveTurnNotice(null)
     try {
       const detail: ConversationDetail = await apiFetch(`/conversations/${id}`).then(r => r.json())
-      setMessages(detail.messages)
+      const activeTurn = detail.active_turn
+      const activeAssistantId = -Date.now()
+      const activeUserMessage = activeTurn?.user_message_id
+        ? detail.messages.find(m => m.id === activeTurn.user_message_id)?.content
+        : undefined
+      setMessages(
+        activeTurn && ['pending', 'running'].includes(activeTurn.status)
+          ? [
+              ...detail.messages,
+              {
+                id: activeAssistantId,
+                role: 'assistant' as const,
+                content: activeTurn.progress.at(-1)?.message || 'Fronei is still working on this turn…',
+                created_at: new Date().toISOString(),
+                pipeline_trace: activeTurn.progress.map(p => ({
+                  stage: (p.stage || 'working') as PipelineStage,
+                  message: p.message || '',
+                  ts: p.ts ? Date.parse(p.ts) : Date.now(),
+                })),
+              },
+            ]
+          : detail.messages
+      )
+      if (activeTurn && ['pending', 'running'].includes(activeTurn.status)) {
+        setLiveAssistantId(activeAssistantId)
+        setActiveTurnId(activeTurn.id)
+        setActiveTurnNotice({
+          convId: id,
+          turnId: activeTurn.id,
+          status: activeTurn.status,
+          message: activeTurn.progress.at(-1)?.message || 'Fronei is still working on this turn.',
+          userMessage: activeUserMessage,
+        })
+        void pollActiveTurn(id, activeTurn.id)
+      }
     } catch { setError('Failed to load conversation') }
+  }
+
+  async function pollActiveTurn(convId: string, turnId: string) {
+    if (pollingTurnRef.current === turnId) return
+    pollingTurnRef.current = turnId
+    for (let attempt = 0; attempt < 80; attempt++) {
+      if (pollingTurnRef.current !== turnId) return
+      if (typeof navigator !== 'undefined' && !navigator.onLine) {
+        await new Promise<void>(resolve => {
+          const done = () => { window.removeEventListener('online', done); resolve() }
+          window.addEventListener('online', done, { once: true })
+        })
+      }
+      if (typeof document !== 'undefined' && document.hidden) {
+        await new Promise<void>(resolve => {
+          const done = () => {
+            if (!document.hidden) {
+              document.removeEventListener('visibilitychange', done)
+              resolve()
+            }
+          }
+          document.addEventListener('visibilitychange', done)
+        })
+      }
+      await new Promise(r => setTimeout(r, attempt === 0 ? 1500 : 3000))
+      try {
+        const turn: ConversationTurn = await apiFetch(`/conversations/${convId}/turns/${turnId}`).then(r => r.json())
+        if (turn.status === 'completed' || turn.status === 'failed' || turn.status === 'cancelled' || turn.status === 'awaiting_confirmation') {
+          const detail: ConversationDetail = await apiFetch(`/conversations/${convId}`).then(r => r.json())
+          setMessages(detail.messages)
+          setLiveAssistantId(null)
+          setActiveTurnId(null)
+          pollingTurnRef.current = null
+          const userMessage = turn.user_message_id
+            ? detail.messages.find(m => m.id === turn.user_message_id)?.content
+            : undefined
+          if (turn.status === 'failed') {
+            setActiveTurnNotice({
+              convId,
+              turnId,
+              status: turn.status,
+              message: turn.error_message || 'This turn failed before it completed.',
+              userMessage,
+            })
+            if (turn.error_message) setError(turn.error_message)
+          } else if (turn.status === 'cancelled') {
+            setActiveTurnNotice({
+              convId,
+              turnId,
+              status: turn.status,
+              message: turn.error_message || 'Turn cancelled.',
+              userMessage,
+            })
+          } else {
+            setActiveTurnNotice(null)
+          }
+          return
+        }
+        const last = turn.progress.at(-1)
+        if (last) {
+          setActiveTurnNotice(prev => prev && prev.turnId === turnId
+            ? { ...prev, status: turn.status, message: last.message || prev.message }
+            : prev)
+          setMessages(prev => prev.map(m =>
+            m.id < 0 && m.role === 'assistant'
+              ? {
+                  ...m,
+                  content: last.message || m.content,
+                  pipeline_trace: turn.progress.map(p => ({
+                    stage: (p.stage || 'working') as PipelineStage,
+                    message: p.message || '',
+                    ts: p.ts ? Date.parse(p.ts) : Date.now(),
+                  })),
+                }
+              : m
+          ))
+        }
+      } catch {
+        // Keep polling; mobile/network recovery is best-effort.
+      }
+    }
+    if (pollingTurnRef.current === turnId) pollingTurnRef.current = null
   }
 
   function newConversation() {
@@ -4512,6 +4813,8 @@ export default function Home() {
     setLiveSteps([])
     setSubCompletions(new Map())
     setLiveAssistantId(null)
+    setActiveTurnId(null)
+    setActiveTurnNotice(null)
   }
 
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null)
@@ -4800,7 +5103,12 @@ export default function Home() {
     submit(`Reformat your previous response as a ${artifact.hint.toLowerCase()}.`)
   }
 
-  function abortStream() {
+  async function abortStream() {
+    const convId = activeConvId
+    const turnId = activeTurnId
+    if (convId && turnId) {
+      apiFetch(`/conversations/${convId}/turns/${turnId}/cancel`, { method: 'POST' }).catch(() => {})
+    }
     readerRef.current?.cancel()
     readerRef.current = null
     setStreaming(false)
@@ -4809,6 +5117,17 @@ export default function Home() {
     setLiveSteps([])
     setSubCompletions(new Map())
     setLiveAssistantId(null)
+    setActiveTurnId(null)
+    if (convId && turnId) {
+      setActiveTurnNotice({ convId, turnId, status: 'cancelled', message: 'Turn cancelled.', userMessage: lastSentRef.current })
+    }
+  }
+
+  function retryActiveTurnNotice() {
+    const text = activeTurnNotice?.userMessage?.trim()
+    if (!text) return
+    setActiveTurnNotice(null)
+    submit(text, { suppressResearchRecommendation: true })
   }
 
   // ── Submit ────────────────────────────────────────────────────────────────
@@ -4835,12 +5154,15 @@ export default function Home() {
     setLeftMenuOpen(false)
     setArtifactPickerOpen(false)
     setLiveAssistantId(null)
+    setActiveTurnId(null)
+    setActiveTurnNotice(null)
     setError('')
     setAttachError('')
 
     const tempUserId = -Date.now()
     const tempAsstId = -Date.now() - 1
     const wasNew = activeConvId === null
+    const clientRequestId = newClientRequestId()
 
     setMessages(prev => [...prev, {
       id: tempUserId, role: 'user', content: sent, created_at: new Date().toISOString(),
@@ -4950,6 +5272,7 @@ export default function Home() {
         method: 'POST',
         body: JSON.stringify({
           message: apiMessage,
+          client_request_id: clientRequestId,
           ...buildRequestFields(quality, opts.forceResearch ? true : researchOn, webSearchOn, researchMode),
           document_requested: documentOn,
           force_model: forceModel.trim() || null,
@@ -5005,6 +5328,7 @@ export default function Home() {
     let startRoute: RouteDecision | null = null
     let startTurnType: string | null = null
     let startAction: string | null = null
+    let currentTurnId: string | null = null
 
     try {
       if (!res.body) throw new Error('Empty response body')
@@ -5034,6 +5358,15 @@ export default function Home() {
           if (eventType === 'start') {
             traceStepsRef.current = []
             startConvId = data.conversation_id as string
+            currentTurnId = (data.turn_id as string | undefined) ?? currentTurnId
+            if (currentTurnId) setActiveTurnId(currentTurnId)
+            setActiveTurnNotice(currentTurnId ? {
+              convId: startConvId,
+              turnId: currentTurnId,
+              status: 'running',
+              message: 'Fronei is working on this turn.',
+              userMessage: sent,
+            } : null)
             setActiveConvId(startConvId)
             setConvUrlParam(startConvId)
             if (!bubblePreCreated) {
@@ -5090,6 +5423,7 @@ export default function Home() {
             setLiveSteps([])
             setSubCompletions(new Map())
             setLiveAssistantId(null)
+            setActiveTurnId(null)
             setMessages(prev => prev.map(m =>
               m.id === tempAsstId
                 ? { ...m, research_recommendation: rec, pipeline_trace: traceStepsRef.current }
@@ -5110,6 +5444,7 @@ export default function Home() {
             setLiveSteps([])
             setSubCompletions(new Map())
             setLiveAssistantId(null)
+            setActiveTurnId(null)
             setMessages(prev => prev.map(m =>
               m.id === tempAsstId
                 ? { ...m, plan_proposal: proposal, pipeline_trace: traceStepsRef.current }
@@ -5147,6 +5482,8 @@ export default function Home() {
             setLiveSteps([])
             setSubCompletions(new Map())
             setLiveAssistantId(null)
+            setActiveTurnId(null)
+            setActiveTurnNotice(null)
             const execLog = (data.execution_log as ExecutionLog) ?? null
             const researchMeta = (data.research as ResearchMeta | undefined) ?? null
             startTurnType = execLog?.planner?.turn_type ?? null
@@ -5215,24 +5552,40 @@ export default function Home() {
         || /load failed|failed to fetch|network/i.test(e instanceof Error ? e.message : '')
 
       if (isNetworkError && startConvId) {
+        // The backend turn runs to completion in a background thread even
+        // after the client connection drops, but it can easily take 30-90s+
+        // for research/document turns. Poll generously — every 3s for up to
+        // ~2 minutes — before giving up. The original assistant count lets us
+        // detect "a new message was added" even if content matching is fuzzy.
+        const originalAssistantCount = messages.filter(m => m.role === 'assistant' && m.id > 0).length
         let recovered = false
-        for (const delayMs of [400, 1500, 3000]) {
-          await new Promise(r => setTimeout(r, delayMs))
+        for (let attempt = 0; attempt < 40; attempt++) {
+          await new Promise(r => setTimeout(r, attempt === 0 ? 1000 : 3000))
           try {
             const detail: ConversationDetail = await apiFetch(`/conversations/${startConvId}`).then(r => r.json())
             const last = detail.messages[detail.messages.length - 1]
-            if (last && last.role === 'assistant' && last.content) {
+            const newAssistantCount = detail.messages.filter(m => m.role === 'assistant' && m.id > 0).length
+            if (last && last.role === 'assistant' && last.content && newAssistantCount > originalAssistantCount) {
               setMessages(detail.messages)
               if (wasNew) {
                 const list: ConversationSummary[] = await apiFetch('/conversations').then(r => r.json())
                 setConversations(list)
               }
               recovered = true
+              setActiveTurnId(null)
+              setActiveTurnNotice(null)
               break
             }
           } catch { /* keep retrying */ }
         }
         if (!recovered) {
+          setActiveTurnNotice(startConvId && currentTurnId ? {
+            convId: startConvId,
+            turnId: currentTurnId,
+            status: 'running',
+            message: 'Connection paused while Fronei was responding. Reopen this chat or retry if it does not finish.',
+            userMessage: sent,
+          } : null)
           setError('Connection lost while Fronei was responding — reopen the chat to see if it finished.')
           setMessages(prev => prev.filter(m => m.id !== tempUserId && m.id !== tempAsstId))
         }
@@ -5249,6 +5602,7 @@ export default function Home() {
       setLiveSteps([])
       setSubCompletions(new Map())
       setLiveAssistantId(null)
+      setActiveTurnId(null)
     }
   }
 
@@ -5273,11 +5627,12 @@ export default function Home() {
     setPipelineTs(Date.now())
     setLiveAssistantId(tempAsstId)
     setError('')
+    const clientRequestId = newClientRequestId()
 
     try {
       const res = await apiFetch(`/conversations/${proposal.conv_id}/messages/${proposal.message_id}/execute-plan`, {
         method: 'POST',
-        body: JSON.stringify({ confirmed_plan: confirmed }),
+        body: JSON.stringify({ confirmed_plan: confirmed, client_request_id: clientRequestId }),
       })
 
       if (!res.ok || !res.body) {
@@ -5963,6 +6318,29 @@ export default function Home() {
               className="error-dismiss"
               onClick={() => setError('')}
               aria-label="Dismiss error"
+            >
+              <i className="ti ti-x" aria-hidden="true" />
+            </button>
+          </div>
+        )}
+
+        {activeTurnNotice && (
+          <div className="error-bar" role="status" style={{ alignItems: 'center' }}>
+            <span>
+              {activeTurnNotice.status === 'failed'
+                ? `Turn failed: ${activeTurnNotice.message}`
+                : activeTurnNotice.status === 'cancelled'
+                  ? activeTurnNotice.message
+                  : activeTurnNotice.message}
+            </span>
+            {(activeTurnNotice.status === 'failed' || activeTurnNotice.status === 'cancelled') && activeTurnNotice.userMessage && (
+              <button className="toggle-chip" onClick={retryActiveTurnNotice} type="button">Retry</button>
+            )}
+            <button
+              className="error-dismiss"
+              onClick={() => setActiveTurnNotice(null)}
+              aria-label="Dismiss turn status"
+              type="button"
             >
               <i className="ti ti-x" aria-hidden="true" />
             </button>

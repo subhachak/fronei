@@ -1,4 +1,7 @@
 import json
+import threading
+import time
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -16,6 +19,7 @@ from app.db.models import (
     ResearchQuestion,
     ResearchRun,
     ResearchSource,
+    ConversationTurn,
     TwinProfile,
 )
 from app.main import app
@@ -42,6 +46,159 @@ def _events(body: str) -> list[tuple[str, dict]]:
                 data = json.loads(line.removeprefix("data: "))
         parsed.append((event_type, data))
     return parsed
+
+
+def test_durable_stream_worker_continues_after_client_iterator_closes():
+    finished = threading.Event()
+    emitted: list[str] = []
+
+    def worker():
+        emitted.append("started")
+        yield conversations._sse("start", {"conversation_id": "abc"})
+        time.sleep(0.02)
+        emitted.append("finished")
+        finished.set()
+        yield conversations._sse("done", {"answer": "ok"})
+
+    iterator = conversations._durable_event_iterator(worker)
+    first = next(iterator)
+    assert "event: start" in first
+
+    iterator.close()
+
+    assert finished.wait(timeout=1)
+    assert emitted == ["started", "finished"]
+
+
+def test_stream_creates_completed_turn_and_idempotent_replay(client, monkeypatch):
+    c, Session = client
+    _patch_pipeline(monkeypatch, "Durable answer.")
+
+    response = c.post(
+        "/conversations/chat/stream",
+        json={
+            "message": "Explain the durable path",
+            "client_request_id": "client-req-1",
+            "output_mode": "raw",
+        },
+    )
+
+    assert response.status_code == 200
+    events = _events(response.text)
+    done = events[-1][1]
+
+    with Session() as db:
+        turns = db.query(ConversationTurn).all()
+        assert len(turns) == 1
+        turn = turns[0]
+        assert turn.client_request_id == "client-req-1"
+        assert turn.status == "completed"
+        assert turn.assistant_message_id == done["message_id"]
+        assert json.loads(turn.result_json or "{}")["message_id"] == done["message_id"]
+        assert turn.completed_at is not None
+        assert db.query(ConversationMessage).count() == 2
+
+    replay = c.post(
+        "/conversations/chat/stream",
+        json={
+            "message": "Explain the durable path",
+            "client_request_id": "client-req-1",
+            "output_mode": "raw",
+        },
+    )
+
+    assert replay.status_code == 200
+    replay_events = _events(replay.text)
+    assert replay_events[-1][0] == "done"
+    assert replay_events[-1][1]["message_id"] == done["message_id"]
+    assert replay_events[-1][1]["answer"] == done["answer"]
+    with Session() as db:
+        assert db.query(ConversationTurn).count() == 1
+        assert db.query(ConversationMessage).count() == 2
+
+
+def test_get_conversation_includes_active_turn(client):
+    c, Session = client
+    with Session() as db:
+        conv = Conversation(user_id="u1", title="Active", profile="balanced", message_count=1)
+        db.add(conv)
+        db.flush()
+        db.add(ConversationMessage(conversation_id=conv.id, role="user", content="Work on this"))
+        turn = ConversationTurn(
+            user_id="u1",
+            conversation_id=conv.id,
+            status="running",
+            progress_json=json.dumps([{"stage": "working", "message": "Still working", "ts": datetime.now(timezone.utc).isoformat()}]),
+        )
+        db.add(turn)
+        db.commit()
+        conv_id = conv.public_id
+        turn_id = turn.public_id
+
+    response = c.get(f"/conversations/{conv_id}")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["active_turn"]["id"] == turn_id
+    assert body["active_turn"]["status"] == "running"
+    assert body["active_turn"]["progress"][0]["message"] == "Still working"
+
+
+def test_cancel_conversation_turn_marks_turn_cancelled(client):
+    c, Session = client
+    with Session() as db:
+        conv = Conversation(user_id="u1", title="Cancel", profile="balanced", message_count=1)
+        db.add(conv)
+        db.flush()
+        turn = ConversationTurn(
+            user_id="u1",
+            conversation_id=conv.id,
+            status="running",
+            progress_json=json.dumps([{"stage": "working", "message": "Thinking"}]),
+        )
+        db.add(turn)
+        db.commit()
+        conv_id = conv.public_id
+        turn_id = turn.public_id
+
+    response = c.post(f"/conversations/{conv_id}/turns/{turn_id}/cancel")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "cancelled"
+    assert body["error_message"] == "Cancelled by user."
+    assert body["completed_at"] is not None
+
+    with Session() as db:
+        turn = db.query(ConversationTurn).filter(ConversationTurn.public_id == turn_id).one()
+        assert turn.status == "cancelled"
+
+
+def test_mark_stale_conversation_turns_marks_old_running_turns_failed(client):
+    _c, Session = client
+    old_time = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=2)
+    with Session() as db:
+        conv = Conversation(user_id="u1", title="Stale", profile="balanced", message_count=1)
+        db.add(conv)
+        db.flush()
+        turn = ConversationTurn(
+            user_id="u1",
+            conversation_id=conv.id,
+            status="running",
+            created_at=old_time,
+            updated_at=old_time,
+        )
+        db.add(turn)
+        db.commit()
+        turn_id = turn.id
+
+    count = conversations.mark_stale_conversation_turns(timeout_minutes=30)
+
+    assert count == 1
+    with Session() as db:
+        turn = db.get(ConversationTurn, turn_id)
+        assert turn.status == "failed"
+        assert "interrupted" in turn.error_message
 
 
 @pytest.fixture
@@ -133,7 +290,7 @@ def test_stream_refinement_events_fire_with_profile(client, monkeypatch):
     events = _events(response.text)
     event_names = [event for event, _ in events]
     assert "refine_start" in event_names
-    assert ("refine_token", {"text": "Refined answer."}) in events
+    assert any(event == "refine_token" and data["text"] == "Refined answer." for event, data in events)
     assert events[-1][0] == "done"
     assert events[-1][1]["answer"] == "Refined answer."
     assert events[-1][1]["was_refined"] is True

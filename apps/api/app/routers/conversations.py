@@ -3,7 +3,7 @@ import json
 import queue as _queue_module
 import re
 import threading as _threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import func
@@ -12,13 +12,13 @@ from fastapi.responses import StreamingResponse
 from app.auth import CurrentUser, CurrentUserIsAdmin
 from app.config import get_settings
 from app.db.models import (
-    Conversation, ConversationMessage, RequestLog, SessionLocal,
-    get_effective_monthly_budget, get_monthly_spend,
+    Conversation, ConversationMessage, ConversationTurn, RequestLog, SessionLocal,
+    get_effective_monthly_budget, get_monthly_spend, get_turn_runtime_config,
     get_twin_profile, is_user_pending, is_user_suspended,
 )
 from app.schemas import (
     ConvChatRequest, ConvChatResponse, ExecutePlanRequest,
-    ConversationDetail, ConversationSummary, ConversationUpdate, MessageOut,
+    ConversationDetail, ConversationSummary, ConversationTurnOut, ConversationUpdate, MessageOut,
     ExecutionLog, OutputMode, PlannerLog, RouteDecision, SubQueryLog, WebContextLog, WorkerLog,
 )
 from app.services.llm_gateway import LLMResult, stream_llm, stream_synthesis
@@ -118,6 +118,86 @@ def _msg_out(m: ConversationMessage, db=None, user_id: str | None = None) -> Mes
         research=research,
         created_at=_fmt(m.created_at),
     )
+
+
+ACTIVE_TURN_STATUSES = {"pending", "running"}
+
+
+def _turn_out(turn: ConversationTurn | None) -> ConversationTurnOut | None:
+    if not turn:
+        return None
+    try:
+        progress = json.loads(turn.progress_json or "[]")
+    except (TypeError, ValueError):
+        progress = []
+    try:
+        lifecycle = json.loads(turn.lifecycle_json or "[]")
+    except (TypeError, ValueError):
+        lifecycle = []
+    try:
+        result = json.loads(turn.result_json) if turn.result_json else None
+    except (TypeError, ValueError):
+        result = None
+    return ConversationTurnOut(
+        id=turn.public_id,
+        status=turn.status,
+        turn_kind=turn.turn_kind or "quick",
+        progress=progress if isinstance(progress, list) else [],
+        lifecycle=lifecycle if isinstance(lifecycle, list) else [],
+        result=result if isinstance(result, dict) else None,
+        error_message=turn.error_message,
+        user_message_id=turn.user_message_id,
+        assistant_message_id=turn.assistant_message_id,
+        created_at=_fmt(turn.created_at),
+        updated_at=_fmt(turn.updated_at),
+        completed_at=_fmt(turn.completed_at) if turn.completed_at else None,
+    )
+
+
+def _latest_active_turn(db, conv: Conversation) -> ConversationTurn | None:
+    return (
+        db.query(ConversationTurn)
+        .filter(
+            ConversationTurn.conversation_id == conv.id,
+            ConversationTurn.status.in_(ACTIVE_TURN_STATUSES),
+        )
+        .order_by(ConversationTurn.updated_at.desc(), ConversationTurn.id.desc())
+        .first()
+    )
+
+
+def mark_stale_conversation_turns(timeout_minutes: int = 30) -> int:
+    """Fail old active turns after restart/timeout so reopen UX is deterministic."""
+    db = SessionLocal()
+    try:
+        config = get_turn_runtime_config(db)
+        now = datetime.now(timezone.utc)
+        cutoffs = {
+            "quick": now.replace(tzinfo=None) - timedelta(minutes=config.get("quick_timeout_minutes", timeout_minutes)),
+            "research": now.replace(tzinfo=None) - timedelta(minutes=config.get("research_timeout_minutes", timeout_minutes)),
+            "document": now.replace(tzinfo=None) - timedelta(minutes=config.get("document_timeout_minutes", timeout_minutes)),
+        }
+        stale = (
+            db.query(ConversationTurn)
+            .filter(ConversationTurn.status.in_(ACTIVE_TURN_STATUSES))
+            .all()
+        )
+        marked = 0
+        for turn in stale:
+            kind = turn.turn_kind or "quick"
+            cutoff = cutoffs.get(kind, cutoffs["quick"])
+            if turn.updated_at >= cutoff:
+                continue
+            turn.status = "failed"
+            turn.completed_at = now
+            turn.updated_at = now
+            turn.error_message = "Turn was interrupted by a server restart or timeout. Please retry."
+            _append_turn_lifecycle(turn, "stale_failed", {"timeout_kind": kind})
+            marked += 1
+        db.commit()
+        return marked
+    finally:
+        db.close()
 
 
 # ── Chat helpers (DB/HTTP-layer concerns) ─────────────────────────────────────
@@ -266,7 +346,61 @@ def get_conversation(conv_id: str, user_id: str = CurrentUser) -> ConversationDe
     db = SessionLocal()
     try:
         conv = _get_conversation(db, conv_id, user_id)
-        return ConversationDetail(**_summary(conv).model_dump(), messages=[_msg_out(m, db, user_id) for m in conv.messages])
+        return ConversationDetail(
+            **_summary(conv).model_dump(),
+            messages=[_msg_out(m, db, user_id) for m in conv.messages],
+            active_turn=_turn_out(_latest_active_turn(db, conv)),
+        )
+    finally:
+        db.close()
+
+
+@router.get("/{conv_id}/turns/{turn_id}", response_model=ConversationTurnOut)
+def get_conversation_turn(conv_id: str, turn_id: str, user_id: str = CurrentUser) -> ConversationTurnOut:
+    db = SessionLocal()
+    try:
+        conv = _get_conversation(db, conv_id, user_id)
+        turn = (
+            db.query(ConversationTurn)
+            .filter(
+                ConversationTurn.conversation_id == conv.id,
+                ConversationTurn.public_id == turn_id,
+                ConversationTurn.user_id == user_id,
+            )
+            .first()
+        )
+        if not turn:
+            raise HTTPException(status_code=404, detail="Turn not found")
+        return _turn_out(turn)
+    finally:
+        db.close()
+
+
+@router.post("/{conv_id}/turns/{turn_id}/cancel", response_model=ConversationTurnOut)
+def cancel_conversation_turn(conv_id: str, turn_id: str, user_id: str = CurrentUser) -> ConversationTurnOut:
+    db = SessionLocal()
+    try:
+        conv = _get_conversation(db, conv_id, user_id)
+        turn = (
+            db.query(ConversationTurn)
+            .filter(
+                ConversationTurn.conversation_id == conv.id,
+                ConversationTurn.public_id == turn_id,
+                ConversationTurn.user_id == user_id,
+            )
+            .first()
+        )
+        if not turn:
+            raise HTTPException(status_code=404, detail="Turn not found")
+        if turn.status in ACTIVE_TURN_STATUSES:
+            now = datetime.now(timezone.utc)
+            turn.status = "cancelled"
+            turn.error_message = "Cancelled by user."
+            turn.completed_at = now
+            turn.updated_at = now
+            _append_turn_lifecycle(turn, "cancelled_by_user")
+            db.commit()
+        return _turn_out(turn)
     finally:
         db.close()
 
@@ -442,6 +576,200 @@ def _sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
 
+def _parse_sse_event(payload: str) -> tuple[str, dict] | None:
+    event_type = "message"
+    data_str = ""
+    for line in payload.splitlines():
+        if line.startswith("event: "):
+            event_type = line.removeprefix("event: ").strip()
+        elif line.startswith("data: "):
+            data_str = line.removeprefix("data: ")
+    if not data_str:
+        return None
+    try:
+        data = json.loads(data_str)
+    except (TypeError, ValueError):
+        data = {}
+    return event_type, data
+
+
+def _sse_with_extra(payload: str, extra: dict) -> str:
+    parsed = _parse_sse_event(payload)
+    if not parsed:
+        return payload
+    event_type, data = parsed
+    data.update(extra)
+    return _sse(event_type, data)
+
+
+def _turn_kind_for_request(req: ConvChatRequest) -> str:
+    if req.document_requested:
+        return "document"
+    if req.deep_research or req.research_mode in {"deep", "expert"}:
+        return "research"
+    return "quick"
+
+
+def _is_turn_cancelled(db, turn: ConversationTurn | None) -> bool:
+    if turn is None or turn.id is None:
+        return False
+    db.refresh(turn)
+    return turn.status == "cancelled"
+
+
+def _append_turn_progress(turn: ConversationTurn, event_type: str, data: dict) -> None:
+    if event_type != "pipeline_log":
+        return
+    try:
+        rows = json.loads(turn.progress_json or "[]")
+    except (TypeError, ValueError):
+        rows = []
+    rows.append({
+        "stage": data.get("stage"),
+        "message": data.get("message"),
+        "ts": datetime.now(timezone.utc).isoformat(),
+    })
+    turn.progress_json = json.dumps(rows[-80:])
+
+
+def _append_turn_lifecycle(turn: ConversationTurn, event: str, data: dict | None = None) -> None:
+    try:
+        rows = json.loads(turn.lifecycle_json or "[]")
+    except (TypeError, ValueError):
+        rows = []
+    rows.append({
+        "event": event,
+        "ts": datetime.now(timezone.utc).isoformat(),
+        **(data or {}),
+    })
+    turn.lifecycle_json = json.dumps(rows[-120:])
+
+
+def _record_turn_lifecycle_by_public_id(turn_public_id: str | None, event: str, data: dict | None = None) -> None:
+    if not turn_public_id:
+        return
+    db = SessionLocal()
+    try:
+        turn = db.query(ConversationTurn).filter(ConversationTurn.public_id == turn_public_id).first()
+        if not turn:
+            return
+        _append_turn_lifecycle(turn, event, data)
+        turn.updated_at = datetime.now(timezone.utc)
+        db.commit()
+    finally:
+        db.close()
+
+
+def _record_turn_event(db, turn: ConversationTurn | None, payload: str) -> None:
+    if turn is None:
+        return
+    parsed = _parse_sse_event(payload)
+    if not parsed:
+        return
+    event_type, data = parsed
+    now = datetime.now(timezone.utc)
+    turn.updated_at = now
+    _append_turn_progress(turn, event_type, data)
+    if event_type == "done":
+        turn.status = "completed"
+        turn.completed_at = now
+        turn.result_json = json.dumps(data)
+        _append_turn_lifecycle(turn, "completed", {"assistant_message_id": data.get("message_id")})
+        if data.get("message_id") is not None:
+            turn.assistant_message_id = int(data["message_id"])
+    elif event_type == "error":
+        was_cancelled = turn.status == "cancelled"
+        turn.status = "cancelled" if turn.status == "cancelled" else "failed"
+        turn.completed_at = now
+        turn.error_message = str(data.get("message") or "Unknown error")[:1000]
+        _append_turn_lifecycle(turn, "cancelled" if was_cancelled else "failed", {"message": turn.error_message})
+    elif event_type == "plan_proposed":
+        turn.status = "awaiting_confirmation"
+        turn.completed_at = now
+        _append_turn_lifecycle(turn, "awaiting_confirmation", {"message_id": data.get("message_id")})
+    elif turn.status == "pending":
+        turn.status = "running"
+        _append_turn_lifecycle(turn, "running")
+    db.commit()
+
+
+def _turn_completed_done_event(db, turn: ConversationTurn) -> str | None:
+    if turn.result_json:
+        try:
+            return _sse("done", json.loads(turn.result_json))
+        except (TypeError, ValueError):
+            pass
+    if not turn.assistant_message_id:
+        return None
+    msg = db.get(ConversationMessage, turn.assistant_message_id)
+    if not msg:
+        return None
+    route = RouteDecision(
+        task_type=msg.task_type or "unknown",
+        complexity=msg.complexity or "medium",
+        profile="balanced",
+        primary_model=msg.model_used or "",
+        fallbacks=[],
+        reason="Recovered completed durable turn.",
+    )
+    return _sse("done", {
+        "message_id": msg.id,
+        "answer": msg.content,
+        "model_used": msg.model_used,
+        "latency_ms": msg.latency_ms,
+        "estimated_cost_usd": msg.estimated_cost_usd,
+        "prompt_tokens": msg.prompt_tokens,
+        "completion_tokens": msg.completion_tokens,
+        "execution_log": json.loads(msg.execution_log_json) if msg.execution_log_json else None,
+        "route": route.model_dump(),
+        "was_refined": False,
+        "research_run_id": msg.research_run_id,
+        "document_preview": None,
+    })
+
+
+def _durable_event_iterator(worker, on_client_disconnect=None):
+    """Return an SSE iterator while `worker` runs independently in a thread."""
+    q: _queue_module.Queue = _queue_module.Queue()
+
+    def _worker() -> None:
+        try:
+            for event in worker():
+                q.put(event)
+        except HTTPException as exc:
+            q.put(_sse("error", {"message": exc.detail}))
+        except Exception as exc:
+            q.put(_sse("error", {"message": _friendly_error(exc)}))
+        finally:
+            q.put(None)
+
+    _threading.Thread(target=_worker, daemon=True).start()
+
+    def _events():
+        try:
+            while True:
+                item = q.get()
+                if item is None:
+                    break
+                yield item
+        except GeneratorExit:
+            # Client went away; the worker owns persistence and should continue.
+            if on_client_disconnect:
+                on_client_disconnect()
+            return
+
+    return _events()
+
+
+def _run_durable_stream(worker, on_client_disconnect=None) -> StreamingResponse:
+    """Run a streaming turn independently of the client SSE connection."""
+    return StreamingResponse(
+        _durable_event_iterator(worker, on_client_disconnect=on_client_disconnect),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 def _pipeline_log(stage: str, message: str, **kwargs) -> str:
     data: dict = {"stage": stage, "message": message}
     data.update(kwargs)
@@ -473,11 +801,44 @@ def chat_stream(req: ConvChatRequest, user_id: str = CurrentUser, is_admin: bool
     Events: start → pipeline_log × N → token × N → done  (or error on failure)
     """
     settings = get_settings()
+    turn_public_id: dict[str, str | None] = {"id": None}
 
-    def event_generator():
+    def run_turn_worker():
         db = SessionLocal()
+        turn: ConversationTurn | None = None
         try:
             conv, profile = _resolve_conversation(db, req, user_id)
+
+            if req.client_request_id:
+                existing_turn = (
+                    db.query(ConversationTurn)
+                    .filter(
+                        ConversationTurn.user_id == user_id,
+                        ConversationTurn.client_request_id == req.client_request_id,
+                    )
+                    .first()
+                )
+                if existing_turn:
+                    turn_public_id["id"] = existing_turn.public_id
+                    _append_turn_lifecycle(existing_turn, "idempotent_replay", {"status": existing_turn.status})
+                    existing_turn.updated_at = datetime.now(timezone.utc)
+                    db.commit()
+                    existing_conv = db.get(Conversation, existing_turn.conversation_id)
+                    yield _sse("start", {
+                        "conversation_id": existing_conv.public_id if existing_conv else conv.public_id,
+                        "turn_id": existing_turn.public_id,
+                    })
+                    if existing_turn.status == "completed":
+                        done_event = _turn_completed_done_event(db, existing_turn)
+                        if done_event:
+                            yield done_event
+                            return
+                    yield _pipeline_log(
+                        "working",
+                        f"Turn is already {existing_turn.status}; reconnecting to the conversation when it finishes.",
+                        turn_id=existing_turn.public_id,
+                    )
+                    return
 
             if is_user_suspended(db, user_id):
                 raise HTTPException(status_code=403, detail="This account is suspended.")
@@ -501,21 +862,47 @@ def chat_stream(req: ConvChatRequest, user_id: str = CurrentUser, is_admin: bool
             user_msg = ConversationMessage(conversation_id=conv.id, role="user", content=req.message)
             db.add(user_msg)
             db.flush()
+            turn = ConversationTurn(
+                user_id=user_id,
+                conversation_id=conv.id,
+                user_message_id=user_msg.id,
+                client_request_id=req.client_request_id,
+                status="running",
+                turn_kind=_turn_kind_for_request(req),
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+            )
+            db.add(turn)
+            db.flush()
+            turn_public_id["id"] = turn.public_id
+            _append_turn_lifecycle(turn, "created", {"kind": turn.turn_kind})
+            db.commit()
 
-            yield from _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memory, profile, user_msg)
+            for payload in _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memory, profile, user_msg):
+                if _is_turn_cancelled(db, turn):
+                    payload = _sse("error", {"message": "Turn cancelled."})
+                    _record_turn_event(db, turn, payload)
+                    yield payload
+                    return
+                payload = _sse_with_extra(payload, {"turn_id": turn.public_id})
+                _record_turn_event(db, turn, payload)
+                yield payload
             return
 
         except HTTPException as exc:
-            yield _sse("error", {"message": exc.detail})
+            payload = _sse("error", {"message": exc.detail})
+            _record_turn_event(db, turn, payload)
+            yield payload
         except Exception as exc:
-            yield _sse("error", {"message": _friendly_error(exc)})
+            payload = _sse("error", {"message": _friendly_error(exc)})
+            _record_turn_event(db, turn, payload)
+            yield payload
         finally:
             db.close()
 
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    return _run_durable_stream(
+        run_turn_worker,
+        on_client_disconnect=lambda: _record_turn_lifecycle_by_public_id(turn_public_id["id"], "client_disconnected"),
     )
 
 
@@ -1259,9 +1646,11 @@ def execute_plan(
     and executes the plan to completion (fully autopilot from here).
     """
     settings = get_settings()
+    turn_public_id: dict[str, str | None] = {"id": None}
 
-    def event_generator():
+    def run_turn_worker():
         db = SessionLocal()
+        turn: ConversationTurn | None = None
         try:
             conv = _get_conversation(db, conv_id, user_id)
             if is_user_suspended(db, user_id):
@@ -1285,6 +1674,33 @@ def execute_plan(
             if not user_msg.plan_json:
                 raise HTTPException(status_code=400, detail="No plan is pending confirmation for this message")
 
+            if body.client_request_id:
+                existing_turn = (
+                    db.query(ConversationTurn)
+                    .filter(
+                        ConversationTurn.user_id == user_id,
+                        ConversationTurn.client_request_id == body.client_request_id,
+                    )
+                    .first()
+                )
+                if existing_turn:
+                    turn_public_id["id"] = existing_turn.public_id
+                    _append_turn_lifecycle(existing_turn, "idempotent_replay", {"status": existing_turn.status})
+                    existing_turn.updated_at = datetime.now(timezone.utc)
+                    db.commit()
+                    yield _sse("start", {"conversation_id": conv.public_id, "turn_id": existing_turn.public_id})
+                    if existing_turn.status == "completed":
+                        done_event = _turn_completed_done_event(db, existing_turn)
+                        if done_event:
+                            yield done_event
+                            return
+                    yield _pipeline_log(
+                        "working",
+                        f"Turn is already {existing_turn.status}; reconnecting to the conversation when it finishes.",
+                        turn_id=existing_turn.public_id,
+                    )
+                    return
+
             try:
                 plan_data = json.loads(user_msg.plan_json)
             except (json.JSONDecodeError, ValueError):
@@ -1306,21 +1722,46 @@ def execute_plan(
                 research_mode=body.confirmed_plan.research_mode or "quick",
                 confirmed_plan=body.confirmed_plan,
             )
-
-            yield from _stream_turn(
-                db, conv, req, user_id, is_admin, settings, history, user_memory, profile, user_msg,
-                preloaded_plan=plan,
+            turn = ConversationTurn(
+                user_id=user_id,
+                conversation_id=conv.id,
+                user_message_id=user_msg.id,
+                client_request_id=body.client_request_id,
+                status="running",
+                turn_kind=_turn_kind_for_request(req),
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
             )
+            db.add(turn)
+            db.flush()
+            turn_public_id["id"] = turn.public_id
+            _append_turn_lifecycle(turn, "created", {"kind": turn.turn_kind, "source": "execute_plan"})
+            db.commit()
+
+            for payload in _stream_turn(
+                    db, conv, req, user_id, is_admin, settings, history, user_memory, profile, user_msg,
+                    preloaded_plan=plan):
+                if _is_turn_cancelled(db, turn):
+                    payload = _sse("error", {"message": "Turn cancelled."})
+                    _record_turn_event(db, turn, payload)
+                    yield payload
+                    return
+                payload = _sse_with_extra(payload, {"turn_id": turn.public_id})
+                _record_turn_event(db, turn, payload)
+                yield payload
 
         except HTTPException as exc:
-            yield _sse("error", {"message": exc.detail})
+            payload = _sse("error", {"message": exc.detail})
+            _record_turn_event(db, turn, payload)
+            yield payload
         except Exception as exc:
-            yield _sse("error", {"message": _friendly_error(exc)})
+            payload = _sse("error", {"message": _friendly_error(exc)})
+            _record_turn_event(db, turn, payload)
+            yield payload
         finally:
             db.close()
 
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    return _run_durable_stream(
+        run_turn_worker,
+        on_client_disconnect=lambda: _record_turn_lifecycle_by_public_id(turn_public_id["id"], "client_disconnected"),
     )

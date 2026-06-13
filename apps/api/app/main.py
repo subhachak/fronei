@@ -9,7 +9,7 @@ from app.db.schema_check import check_schema_version
 from app.routers.admin import router as admin_router
 from app.routers.analytics import router as analytics_router
 from app.routers.chat import router as chat_router
-from app.routers.conversations import router as conversations_router
+from app.routers.conversations import mark_stale_conversation_turns, router as conversations_router
 from app.routers.documents import router as documents_router
 from app.routers.internal import router as internal_router
 from app.routers.memory import router as memory_router
@@ -29,6 +29,7 @@ async def lifespan(app: FastAPI):
     init_db()
     check_schema_version(engine)
     configure_provider_keys()
+    mark_stale_conversation_turns()
     yield
 
 

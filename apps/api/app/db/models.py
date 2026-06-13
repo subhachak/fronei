@@ -132,6 +132,35 @@ class ConversationMessage(Base):
     conversation: Mapped["Conversation"] = relationship("Conversation", back_populates="messages")
 
 
+class ConversationTurn(Base):
+    __tablename__ = "conversation_turns"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    public_id: Mapped[str] = mapped_column(
+        String(24), unique=True, index=True, nullable=False, default=lambda: secrets.token_hex(12)
+    )
+    user_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True, default="")
+    conversation_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_message_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    assistant_message_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    client_request_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    turn_kind: Mapped[str] = mapped_column(String(24), default="quick", index=True)
+    status: Mapped[str] = mapped_column(String(24), default="running", index=True)
+    progress_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    result_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    lifecycle_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "client_request_id", name="uq_conversation_turns_user_client_request"),
+    )
+
+
 class RequestLog(Base):
     __tablename__ = "request_logs"
 
@@ -658,6 +687,13 @@ def _ensure_sqlite_schema(bind) -> None:
             if not has_column("research_questions", column):
                 statements.append(f"ALTER TABLE research_questions ADD COLUMN {column} {ddl}")
 
+    if has_table("conversation_turns"):
+        for column in ["result_json", "lifecycle_json"]:
+            if not has_column("conversation_turns", column):
+                statements.append(f"ALTER TABLE conversation_turns ADD COLUMN {column} TEXT")
+        if not has_column("conversation_turns", "turn_kind"):
+            statements.append("ALTER TABLE conversation_turns ADD COLUMN turn_kind VARCHAR(24) DEFAULT 'quick'")
+
     if not statements:
         return
 
@@ -711,6 +747,7 @@ def get_effective_monthly_budget(db, user_id: str) -> float:
 
 
 GLOBAL_BUDGET_SETTING_KEY = "global_budget"
+TURN_RUNTIME_SETTING_KEY = "turn_runtime"
 
 
 def get_admin_setting(db, key: str) -> dict:
@@ -752,6 +789,34 @@ def set_global_budget_config(db, monthly_budget_usd: float | None, admin_overrid
     return set_admin_setting(db, GLOBAL_BUDGET_SETTING_KEY, {
         "monthly_budget_usd": monthly_budget_usd,
         "admin_override_enabled": admin_override_enabled,
+    })
+
+
+def get_turn_runtime_config(db) -> dict:
+    raw = get_admin_setting(db, TURN_RUNTIME_SETTING_KEY)
+    def _minutes(key: str, default: int, min_value: int, max_value: int) -> int:
+        try:
+            value = int(raw.get(key, default))
+        except (TypeError, ValueError):
+            value = default
+        return max(min_value, min(max_value, value))
+    return {
+        "quick_timeout_minutes": _minutes("quick_timeout_minutes", 30, 5, 240),
+        "research_timeout_minutes": _minutes("research_timeout_minutes", 180, 30, 720),
+        "document_timeout_minutes": _minutes("document_timeout_minutes", 120, 15, 720),
+    }
+
+
+def set_turn_runtime_config(
+    db,
+    quick_timeout_minutes: int,
+    research_timeout_minutes: int,
+    document_timeout_minutes: int,
+) -> AdminSetting:
+    return set_admin_setting(db, TURN_RUNTIME_SETTING_KEY, {
+        "quick_timeout_minutes": quick_timeout_minutes,
+        "research_timeout_minutes": research_timeout_minutes,
+        "document_timeout_minutes": document_timeout_minutes,
     })
 
 

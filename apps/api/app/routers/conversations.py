@@ -566,6 +566,28 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                 if existing_run_id:
                     is_followup = plan.turn_type in _FOLLOWUP_TURN_TYPES
 
+                # The follow-up fast path below bypasses the unified plan gate
+                # for speed. But if this turn's plan now warrants confirmation
+                # (e.g. the user explicitly re-toggled "Research" and the
+                # planner set recommend_deep_research=True per that hint), we
+                # must surface plan_proposed instead of silently downgrading
+                # to a cheap follow-up synthesis that ignores that signal.
+                if is_followup and existing_run_id and req.confirmed_plan is None:
+                    pre_gate = plan_gate.evaluate(plan)
+                    if pre_gate.mode == "confirm":
+                        user_msg.plan_json = json.dumps(plan_to_dict(plan))
+                        conv.updated_at = datetime.now(timezone.utc)
+                        db.commit()
+                        yield _sse("plan_proposed", {
+                            "conversation_id": conv.public_id,
+                            "message_id": user_msg.id,
+                            "plan_confidence": pre_gate.plan_confidence,
+                            "open_questions": pre_gate.open_questions,
+                            "capabilities": {k: v.to_dict() for k, v in pre_gate.capabilities.items()},
+                            "intent": plan.intent,
+                        })
+                        return
+
                 if is_followup and existing_run_id:
                     # ── Fast path: synthesize from existing evidence ───────
                     followup_holder: list[ResearchFollowupResult | None] = [None]

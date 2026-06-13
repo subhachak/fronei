@@ -325,8 +325,9 @@ function buildRequestFields(
   quality: Quality,
   researchOn: boolean,
   webSearchOn: boolean,
+  researchMode: 'deep' | 'expert' = 'expert',
 ): { profile: Profile; web_search: boolean; deep_research: boolean; research_mode: ResearchMode } {
-  if (researchOn) return { profile: 'best_quality', web_search: true,  deep_research: true,  research_mode: 'expert' }
+  if (researchOn) return { profile: 'best_quality', web_search: true,  deep_research: true,  research_mode: researchMode }
   return             { profile: QUALITY_PROFILE[quality], web_search: webSearchOn, deep_research: false, research_mode: 'quick' }
 }
 
@@ -3868,6 +3869,7 @@ export default function Home() {
   const [message, setMessage]             = useState('')
   const [quality, setQuality]             = useState<Quality>('smart')
   const [researchOn, setResearchOn]       = useState(false)
+  const [researchMode, setResearchMode]   = useState<'deep' | 'expert'>('expert')
   const [webSearchOn, setWebSearchOn]     = useState(false)
   const [documentOn, setDocumentOn]       = useState(false)
   const [previewDoc, setPreviewDoc]       = useState<GeneratedDocument | null>(null)
@@ -4721,7 +4723,7 @@ export default function Home() {
         method: 'POST',
         body: JSON.stringify({
           message: apiMessage,
-          ...buildRequestFields(quality, opts.forceResearch ? true : researchOn, webSearchOn),
+          ...buildRequestFields(quality, opts.forceResearch ? true : researchOn, webSearchOn, researchMode),
           document_requested: documentOn,
           force_model: forceModel.trim() || null,
           conversation_id: activeConvId,
@@ -5233,7 +5235,7 @@ export default function Home() {
           <div className="topbar-controls">
             <div className="topbar-chip">
               <i className="ti ti-adjustments-horizontal" />
-              {researchOn ? 'Research' : quality === 'quick' ? 'Quick' : quality === 'thorough' ? 'Thorough' : 'Smart'}
+              {researchOn ? `Research · ${researchMode === 'deep' ? 'Deep' : 'Expert'}` : quality === 'quick' ? 'Quick' : quality === 'thorough' ? 'Thorough' : 'Smart'}
               {webSearchOn && ' · Web'}
               {documentOn && ' · Doc'}
             </div>
@@ -5286,7 +5288,7 @@ export default function Home() {
                 </div>
                 <div className="workbench-rail">
                   <div><span>Role</span><strong>{workbench.railLabel}</strong></div>
-                  <div><span>Mode</span><strong>{researchOn ? 'Research' : quality}</strong></div>
+                  <div><span>Mode</span><strong>{researchOn ? `Research (${researchMode === 'deep' ? 'Deep' : 'Expert'})` : quality}</strong></div>
                   <div><span>Voice</span><strong>{hasProfile ? 'Active' : 'Not trained'}</strong></div>
                   <div><span>Artifacts</span><strong>{visibleArtifacts.length}</strong></div>
                 </div>
@@ -5897,6 +5899,26 @@ export default function Home() {
                 <span>Research</span>
                 <span className="left-menu-status">{researchOn ? 'On' : 'Off'}</span>
               </button>
+              {researchOn && (
+                <div className="left-menu-submenu">
+                  <button
+                    className={`left-menu-subitem${researchMode === 'expert' ? ' active' : ''}`}
+                    type="button"
+                    onClick={() => setResearchMode('expert')}
+                    title="Expert: faster, fewer sources, good for most questions"
+                  >
+                    Expert
+                  </button>
+                  <button
+                    className={`left-menu-subitem${researchMode === 'deep' ? ' active' : ''}`}
+                    type="button"
+                    onClick={() => setResearchMode('deep')}
+                    title="Deep: more sources and verification passes, slower"
+                  >
+                    Deep
+                  </button>
+                </div>
+              )}
               <button
                 className={`left-menu-item${documentOn ? ' on' : ''}`}
                 type="button"

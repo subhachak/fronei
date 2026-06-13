@@ -5681,8 +5681,9 @@ export default function Home() {
               }}
               onInput={(e) => {
                 const ta = e.currentTarget
+                const maxHeight = window.matchMedia('(max-width: 640px)').matches ? 130 : 180
                 ta.style.height = 'auto'
-                ta.style.height = Math.min(ta.scrollHeight, 180) + 'px'
+                ta.style.height = Math.min(ta.scrollHeight, maxHeight) + 'px'
               }}
               aria-label="Message input"
             />

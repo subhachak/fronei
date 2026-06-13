@@ -3726,12 +3726,32 @@ pre:hover .code-copy-btn { opacity: 1; }
   }
   .left-menu-popup {
     left: 10px;
+    right: auto;
+    width: min(280px, calc(100vw - 20px));
     max-width: calc(100vw - 20px);
   }
   .artifact-picker,
   .options-popover {
     right: 10px;
+    left: 10px;
+    width: auto;
+    min-width: 0;
     max-width: calc(100vw - 20px);
+  }
+  .options-row {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .options-label {
+    min-width: 0;
+  }
+  .options-segment {
+    justify-content: stretch;
+  }
+  .options-segment .theme-btn-opt {
+    flex: 1;
+    justify-content: center;
   }
 
   .chat-thread { padding: 16px; }
@@ -4256,15 +4276,67 @@ pre:hover .code-copy-btn { opacity: 1; }
 }
 
 @media (max-width: 640px) {
+  .doc-preview-backdrop {
+    align-items: stretch;
+    justify-content: stretch;
+    padding:
+      max(8px, env(safe-area-inset-top))
+      max(8px, env(safe-area-inset-right))
+      max(8px, env(safe-area-inset-bottom))
+      max(8px, env(safe-area-inset-left));
+  }
+
   .doc-brief-modal {
-    width: 100vw;
-    height: 100vh;
-    max-height: none;
-    border-radius: 0;
+    width: 100%;
+    height: auto;
+    max-height: calc(100dvh - max(16px, env(safe-area-inset-top) + env(safe-area-inset-bottom)));
+    border-radius: 16px;
+  }
+
+  .doc-brief-header,
+  .doc-brief-footer {
+    padding: 14px 16px;
+  }
+
+  .doc-brief-header h2 {
+    font-size: 17px;
+    line-height: 1.25;
+  }
+
+  .doc-brief-body {
+    padding: 16px;
   }
 
   .doc-brief-grid {
     grid-template-columns: 1fr;
+  }
+
+  .doc-brief-footer {
+    align-items: stretch;
+    flex-direction: column-reverse;
+  }
+
+  .doc-brief-footer .send-btn,
+  .doc-brief-footer .doc-brief-cancel {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .doc-plan-option {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .doc-plan-option-status {
+    justify-self: start;
+  }
+
+  .doc-plan-option-main {
+    flex-wrap: wrap;
+  }
+
+  .doc-format-pill {
+    flex: 1 1 calc(50% - 5px);
+    justify-content: center;
   }
 }
 

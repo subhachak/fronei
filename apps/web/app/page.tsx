@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
 import Link from 'next/link'
 import { marked } from 'marked'
 import { markedHighlight } from 'marked-highlight'
@@ -3143,7 +3143,7 @@ function PipelineLog({
               )}
 
               {groupSteps.map((step, j) => (
-                <div key={`detail-${j}`}>
+                <Fragment key={`detail-${j}`}>
                   {step.stage === 'routing' && step.sub_queries && step.sub_queries.length > 0 && (
                     <div className="pl-subqueries">
                       {step.sub_queries.map((sq, k) => (
@@ -3188,7 +3188,7 @@ function PipelineLog({
                       })}
                     </div>
                   )}
-                </div>
+                </Fragment>
               ))}
 
               {isActive && group === 'planning' && (

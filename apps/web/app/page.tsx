@@ -5248,6 +5248,8 @@ export default function Home() {
                 ? { ...m, plan_proposal: proposal }
                 : m
             ))
+            // Open the confirmation popup immediately — no inline click required.
+            setActivePlanProposalMsgId(tempAsstId)
 
           } else if (eventType === 'token') {
             setLiveSteps([])
@@ -5705,15 +5707,17 @@ export default function Home() {
                                 {m.plan_proposal.open_questions.length > 0 && (
                                   <p>{m.plan_proposal.open_questions.join(' ')}</p>
                                 )}
-                                <div className="research-rec-actions">
-                                  <button
-                                    className="send-btn"
-                                    type="button"
-                                    onClick={() => setActivePlanProposalMsgId(m.id)}
-                                  >
-                                    Review plan
-                                  </button>
-                                </div>
+                                {activePlanProposalMsgId !== m.id && (
+                                  <div className="research-rec-actions">
+                                    <button
+                                      className="send-btn"
+                                      type="button"
+                                      onClick={() => setActivePlanProposalMsgId(m.id)}
+                                    >
+                                      Review plan
+                                    </button>
+                                  </div>
+                                )}
                               </div>
                             </div>
                           )

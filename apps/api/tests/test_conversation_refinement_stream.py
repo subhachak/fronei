@@ -23,7 +23,7 @@ from app.routers import conversations, research_runs
 from app.schemas import RouteDecision
 from app.services.chat_pipeline import PipelineSetup
 from app.services.llm_gateway import LLMResult
-from app.services.research_orchestrator import ResearchPipelineResult
+from app.services.research_orchestrator import ResearchPipelineResult, ResearchFollowupResult
 from app.services.planner import passthrough, plan_to_dict
 from app.services.web_context import WebContextResult
 
@@ -156,8 +156,9 @@ def test_stream_starts_before_route_and_reports_pipeline_logs(client, monkeypatc
     assert "route" not in events[0][1]
 
     pipeline_logs = [data for event, data in events if event == "pipeline_log"]
-    assert [log["stage"] for log in pipeline_logs[:3]] == ["planning", "routing", "working"]
-    assert pipeline_logs[1]["route"]["task_type"] == "writing"
+    assert [log["stage"] for log in pipeline_logs[:4]] == ["planning", "planning", "routing", "working"]
+    assert pipeline_logs[1]["message"].startswith(("Planner selected:", "Planner unavailable"))
+    assert pipeline_logs[2]["route"]["task_type"] == "writing"
 
     assert events[-1][0] == "done"
     assert events[-1][1]["route"]["task_type"] == "writing"
@@ -207,7 +208,8 @@ def test_stream_research_mode_uses_research_pipeline(client, monkeypatch):
     assert response.status_code == 200
     events = _events(response.text)
     logs = [data for event, data in events if event == "pipeline_log"]
-    assert [log["stage"] for log in logs] == ["planning", "routing", "searching", "synthesising"]
+    assert [log["stage"] for log in logs] == ["planning", "planning", "routing", "searching", "synthesising"]
+    assert logs[1]["message"].startswith(("Planner selected:", "Planner unavailable"))
     assert events[-1][0] == "done"
     assert events[-1][1]["research"]["run_id"] == 7
     assert events[-1][1]["research_run_id"] == 7
@@ -545,6 +547,124 @@ def test_execute_plan_with_research_and_document_confirmed_generates_document(cl
     assert captured_doc_call["wants_document_output"] is True
     assert "Bedrock and Snowflake Cortex both have trade-offs" in captured_doc_call["doc_context"]
     assert "AWS Bedrock docs" in captured_doc_call["doc_context"]
+
+
+def test_execute_plan_research_followup_with_document_confirmed_generates_document(client, monkeypatch):
+    """Regression test for confirmed document output being dropped by the fast
+    research-followup path for continuation/correction/constraint_change turns.
+    """
+    c, Session = client
+
+    plan = passthrough("Now make it CFO-ready and add a recommendation.")
+    plan.turn_type = "constraint_change"
+    plan.intent = "Revise the existing research into a CFO-ready recommendation."
+    plan.enriched_prompt = "Use the previous research and make the recommendation CFO-ready."
+    plan.needs_web_search = True
+    plan.recommend_deep_research = True
+    plan.wants_document_output = False  # confirmed_plan.document flips this on
+    plan.document_brief = {"doc_type": "executive_report", "title": "CFO Recommendation"}
+    plan.plan_confidence = "medium"
+
+    with Session() as db:
+        conv = Conversation(user_id="u1", title="Prior research", profile="balanced", message_count=2)
+        db.add(conv)
+        db.flush()
+        db.add(ConversationMessage(
+            conversation_id=conv.id,
+            role="user",
+            content="Research platform options.",
+        ))
+        db.add(ConversationMessage(
+            conversation_id=conv.id,
+            role="assistant",
+            content="Prior research answer [S1].",
+            task_type="research",
+            complexity="high",
+            research_run_id=77,
+        ))
+        user_msg = ConversationMessage(
+            conversation_id=conv.id,
+            role="user",
+            content="Now make it CFO-ready and add a recommendation.",
+            plan_json=json.dumps(plan_to_dict(plan)),
+        )
+        db.add(user_msg)
+        db.commit()
+        conv_id = conv.public_id
+        message_id = user_msg.id
+
+    route = RouteDecision(
+        task_type="research",
+        complexity="high",
+        profile="balanced",
+        primary_model="gpt-4.1",
+        fallbacks=[],
+        reason="followup test",
+    )
+
+    def fake_run_research_followup(_db, **kwargs):
+        kwargs["progress"]("synthesising", "Synthesising from existing evidence…", {"source_count": 1})
+        return ResearchFollowupResult(
+            run=SimpleNamespace(id=77, confidence="medium"),
+            result=LLMResult(
+                answer="Updated CFO-ready findings from prior evidence [S1].",
+                model_used="gpt-4.1",
+                latency_ms=250,
+                prompt_tokens=50,
+                completion_tokens=80,
+                estimated_cost_usd=0.01,
+            ),
+            route=route,
+            source_logs=[{"title": "Existing evidence", "url": "https://example.com/evidence"}],
+            questions=["What changed for the CFO audience?"],
+        )
+
+    monkeypatch.setattr(conversations, "run_research_followup", fake_run_research_followup)
+
+    captured_doc_call: dict = {}
+
+    def fake_generate_document_output(plan_arg, route_arg, history, wc, planner_ctx, doc_context, deep_research, enable_native, artifact_context=""):
+        captured_doc_call["doc_context"] = doc_context
+        captured_doc_call["wants_document_output"] = plan_arg.wants_document_output
+        return (
+            LLMResult(
+                answer="# CFO Recommendation\n\nFull document body.\n\n---SUMMARY---\n- CFO-ready recommendation",
+                model_used="gpt-4.1",
+                latency_ms=500,
+                prompt_tokens=120,
+                completion_tokens=180,
+                estimated_cost_usd=0.03,
+            ),
+            "# CFO Recommendation\n\nFull document body.",
+            "- CFO-ready recommendation",
+            "executive_report",
+        )
+
+    monkeypatch.setattr(conversations, "generate_document_output", fake_generate_document_output)
+
+    response = c.post(
+        f"/conversations/{conv_id}/messages/{message_id}/execute-plan",
+        json={
+            "confirmed_plan": {
+                "web_search": True,
+                "deep_research": True,
+                "document": True,
+                "document_format": "docx",
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    events = _events(response.text)
+    done = events[-1][1]
+
+    assert done["research_run_id"] == 77
+    assert done["document_preview"] is not None
+    assert done["document_preview"]["doc_type"] == "executive_report"
+    assert done["answer"] == "- CFO-ready recommendation"
+    assert captured_doc_call["wants_document_output"] is True
+    assert "Updated CFO-ready findings from prior evidence" in captured_doc_call["doc_context"]
+    assert "Existing evidence" in captured_doc_call["doc_context"]
 
 
 def test_stream_refinement_skips_raw_mode(client, monkeypatch):

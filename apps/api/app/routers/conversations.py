@@ -613,8 +613,47 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                     final_answer = result.answer
                     route = followup.route
 
-                    for chunk in [final_answer[i:i+80] for i in range(0, len(final_answer), 80)]:
-                        yield _sse("token", {"text": chunk})
+                    gate = plan_gate.evaluate(plan)
+                    document_preview = None
+                    if plan.wants_document_output and gate.capabilities["document"].enabled:
+                        yield _pipeline_log("working", "Drafting your document from research findings…")
+                        doc_cap = gate.capabilities["document"]
+                        fmt = doc_cap.extra.get("format_recommendation", "markdown")
+
+                        followup_context_parts = [f"Research follow-up findings:\n{result.answer}"]
+                        if followup.source_logs:
+                            src_lines = "\n".join(
+                                f"- {s.get('title', '')}: {s.get('url', '')}" for s in followup.source_logs[:15]
+                            )
+                            followup_context_parts.append(f"Sources:\n{src_lines}")
+                        followup_context = "\n\n".join(followup_context_parts)
+                        base_doc_context = _build_doc_context(req.attached_documents)
+                        doc_context = f"{base_doc_context}\n\n{followup_context}".strip() if base_doc_context else followup_context
+
+                        planner_ctx = _build_worker_context(plan, running_summary)
+                        empty_wc = WebContextResult(context=None, status="", provider="", sources_count=0, search_query=None)
+                        artifact_context = ARTIFACT_PROMPTS.get(req.artifact_type or "", "")
+                        followup_cost = result.estimated_cost_usd or 0.0
+
+                        result, doc_body, chat_summary, doc_type = generate_document_output(
+                            plan, route, history, empty_wc, planner_ctx,
+                            doc_context, False, False,
+                            artifact_context=artifact_context,
+                        )
+                        for chunk in [chat_summary[i:i + 80] for i in range(0, len(chat_summary), 80)]:
+                            yield _sse("token", {"text": chunk})
+                        final_answer = chat_summary
+                        result.estimated_cost_usd = (
+                            (result.estimated_cost_usd or 0.0)
+                            + followup_cost
+                            + plan.planner_cost_usd
+                        )
+                        title = (plan.document_brief or {}).get("title") or plan.intent
+                        document_preview = build_document_artifact(title or "Fronei document", doc_body, doc_type, fmt)
+                    else:
+                        for chunk in [final_answer[i:i+80] for i in range(0, len(final_answer), 80)]:
+                            yield _sse("token", {"text": chunk})
+                        result.estimated_cost_usd = (result.estimated_cost_usd or 0.0) + plan.planner_cost_usd
 
                     exec_log = ExecutionLog(
                         planner=PlannerLog(
@@ -644,10 +683,9 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                             cost_usd=result.estimated_cost_usd,
                             sub_queries_count=0, sub_query_logs=[],
                         ),
-                        total_cost_usd=(result.estimated_cost_usd or 0.0) + plan.planner_cost_usd,
+                        total_cost_usd=result.estimated_cost_usd or 0.0,
                         total_latency_ms=result.latency_ms + plan.planner_latency_ms,
                     )
-                    result.estimated_cost_usd = (result.estimated_cost_usd or 0.0) + plan.planner_cost_usd
 
                     plan.action = "research_followup"
                     rules_entry = _update_conversation_state(conv, plan, final_answer)
@@ -684,7 +722,8 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                         "execution_log": exec_log.model_dump(),
                         "route": route.model_dump(),
                         "was_refined": False,
-                        "document_preview": None,
+                        "research_run_id": existing_run_id,
+                        "document_preview": document_preview,
                         "research": {
                             "run_id": existing_run_id,
                             "mode": "followup",

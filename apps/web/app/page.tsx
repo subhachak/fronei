@@ -5202,8 +5202,44 @@ export default function Home() {
         }
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Unknown error')
-      setMessages(prev => prev.filter(m => m.id !== tempUserId && m.id !== tempAsstId))
+      // Mobile browsers (notably iOS Safari) abort the in-flight fetch when the
+      // screen locks or the tab is backgrounded long enough, surfacing as a
+      // generic "Load failed" / "Failed to fetch" network error here — even
+      // though the backend keeps running the turn to completion and persists
+      // the result regardless of whether the client is still connected.
+      // Rather than discarding the in-progress messages and showing a hard
+      // error in that case, re-fetch the conversation from the server: if the
+      // turn finished server-side, the real messages replace our placeholders
+      // seamlessly; if it genuinely didn't, fall back to the error path.
+      const isNetworkError = e instanceof TypeError
+        || /load failed|failed to fetch|network/i.test(e instanceof Error ? e.message : '')
+
+      if (isNetworkError && startConvId) {
+        let recovered = false
+        for (const delayMs of [400, 1500, 3000]) {
+          await new Promise(r => setTimeout(r, delayMs))
+          try {
+            const detail: ConversationDetail = await apiFetch(`/conversations/${startConvId}`).then(r => r.json())
+            const last = detail.messages[detail.messages.length - 1]
+            if (last && last.role === 'assistant' && last.content) {
+              setMessages(detail.messages)
+              if (wasNew) {
+                const list: ConversationSummary[] = await apiFetch('/conversations').then(r => r.json())
+                setConversations(list)
+              }
+              recovered = true
+              break
+            }
+          } catch { /* keep retrying */ }
+        }
+        if (!recovered) {
+          setError('Connection lost while Fronei was responding — reopen the chat to see if it finished.')
+          setMessages(prev => prev.filter(m => m.id !== tempUserId && m.id !== tempAsstId))
+        }
+      } else {
+        setError(e instanceof Error ? e.message : 'Unknown error')
+        setMessages(prev => prev.filter(m => m.id !== tempUserId && m.id !== tempAsstId))
+      }
     } finally {
       setLoading(false)
       setStreaming(false)

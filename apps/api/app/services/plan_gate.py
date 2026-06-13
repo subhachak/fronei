@@ -127,9 +127,13 @@ def evaluate(plan: Plan) -> PlanGateResult:
     )
 
     # ── Overall confidence ───────────────────────────────────────────────
-    # Low confidence only warrants a confirmation popup if there's actually
-    # something to ask the user about (open questions). A passthrough/no-op
-    # plan with low confidence but no open questions has nothing to confirm.
+    # Low confidence with open questions is recorded for visibility, but it
+    # does NOT by itself trigger the confirmation popup: the popup only has
+    # toggles for web_search / deep_research / document, so a plan whose only
+    # issue is a clarifying question has nothing actionable to show there.
+    # In that case the assistant asks the clarifying question conversationally
+    # in the chat response instead. If a capability gate *also* fires, the
+    # open question is still surfaced inside that popup for context.
     confidence_cfg = policy.get("plan_confidence", {})
     confidence_gates = (
         plan.plan_confidence in confidence_cfg.get("gating_levels", ["low"])
@@ -138,7 +142,8 @@ def evaluate(plan: Plan) -> PlanGateResult:
     if confidence_gates:
         gate_reasons.append("plan_confidence")
 
-    mode = "confirm" if gate_reasons else "auto"
+    capability_gate_reasons = [r for r in gate_reasons if r != "plan_confidence"]
+    mode = "confirm" if capability_gate_reasons else "auto"
 
     return PlanGateResult(
         mode=mode,

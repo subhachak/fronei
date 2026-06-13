@@ -1,22 +1,35 @@
 import threading
 import time
+import json
+from pathlib import Path
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.db.models import Base, ResearchClaim, ResearchFinding, ResearchQuestion, ResearchRun, ResearchSource
+from datetime import timedelta
+
+from app.db.models import Base, ResearchClaim, ResearchFinding, ResearchQuestion, ResearchRun, ResearchSource, ResearchSourceCache
 from app.services.research_metadata import research_meta_for_run
 from app.services.research_orchestrator import (
     CLAIM_EXTRACTOR_MODEL,
     ClaimRecord,
+    _cache_category_and_ttl,
+    _claim_records_from_cache,
     _claim_records_from_data,
     _confidence,
+    _get_cached_source,
+    _hard_max_sources,
+    _max_iterations,
+    _now,
+    _planned_questions_cap,
+    _store_source_cache,
     _llm_extract_claim_records,
     _llm_extract_claim_records_parallel,
     _credibility,
     _extract_published_year,
     _evaluation_from_data,
     _find_gaps,
+    _find_contradictions,
     _freshness,
     _host_counts,
     _make_questions,
@@ -24,9 +37,12 @@ from app.services.research_orchestrator import (
     _parse_json_object,
     _persist_research_findings,
     _planned_questions_from_data,
+    _apply_thread_contract_status,
+    _freshness_is_explicit,
     _primary_source_gaps,
     _query_variants,
     _question_needs_more_sources,
+    _thread_source_budget_reached,
     _question_primary_source_counts,
     _question_source_counts,
     _relevance,
@@ -38,6 +54,19 @@ from app.services.research_orchestrator import (
     _source_quality,
     _source_type,
     _verification_from_data,
+)
+from app.services.research_evidence import (
+    ROLE_ANECDOTAL_CASE,
+    ROLE_OPERATIONAL_REALITY,
+    ROLE_OFFICIAL_POLICY,
+    SOURCE_TIER_ANECDOTAL,
+    SOURCE_TIER_EXPERT,
+    SOURCE_TIER_OFFICIAL,
+    build_source_evidence_metadata,
+    classify_source_role_prior,
+    classify_source_tier,
+    extract_source_dates,
+    source_family_for_url,
 )
 from app.services.web_context import WebSource
 
@@ -66,6 +95,53 @@ def test_source_type_detects_primary_source_pages():
     assert _source_type("https://vendor.com/changelog") == "release_notes"
     assert _source_type("https://docs.vendor.com/guide") == "documentation"
     assert _source_type("https://example.gov/policy") == "government"
+
+
+def test_research_evidence_classifies_tier_family_and_role_prior():
+    assert source_family_for_url("https://www.uscis.gov/forms/all-forms/how-do-i-request-premium-processing") == "uscis.gov"
+    assert classify_source_tier("https://www.uscis.gov/policy", "USCIS policy", "", "government") == SOURCE_TIER_OFFICIAL
+    assert classify_source_tier("https://www.lawfully.com/community/posts/abc", "Timeline report", "", "forum") == SOURCE_TIER_ANECDOTAL
+    assert classify_source_role_prior(
+        "https://www.uscis.gov/processing-times",
+        "Processing times",
+        "Check current processing time and service center wait time.",
+        "government",
+    ) == ROLE_OPERATIONAL_REALITY
+    assert classify_source_role_prior(
+        "https://www.uscis.gov/forms/i-907",
+        "Premium processing",
+        "Official eligibility guidance and Form I-907 instructions.",
+        "government",
+    ) == ROLE_OFFICIAL_POLICY
+
+
+def test_research_evidence_extracts_dates_with_confidence():
+    published, updated, confidence = extract_source_dates("Last updated: April 4, 2026")
+    assert published is None
+    assert updated is not None
+    assert updated.year == 2026
+    assert confidence == "exact"
+
+    published, updated, confidence = extract_source_dates("This policy changed in 2024 and 2026.")
+    assert published is None
+    assert updated is not None
+    assert updated.year == 2026
+    assert confidence == "year"
+
+
+def test_research_evidence_metadata_admits_anecdotal_operational_sources():
+    meta = build_source_evidence_metadata(
+        url="https://www.immihelp.com/forum/topic",
+        title="H4 EAD timelines",
+        content="Users report receipt dates and approval timelines for H4 EAD.",
+        source_type="forum",
+        credibility=0.35,
+        relevance=0.8,
+        freshness=0.9,
+    )
+    assert meta.source_tier == SOURCE_TIER_ANECDOTAL
+    assert meta.source_role_prior in {ROLE_ANECDOTAL_CASE, ROLE_OPERATIONAL_REALITY}
+    assert meta.admission_status == "admitted"
 
 
 def test_source_quality_penalizes_seo_commentary():
@@ -134,6 +210,63 @@ def test_gap_detection_finds_questions_without_claims():
     q1 = ResearchQuestion(id=1, run_id=1, question="covered")
     q2 = ResearchQuestion(id=2, run_id=1, question="missing")
     assert _find_gaps([q1, q2], {1: 2}) == ["missing"]
+
+
+def test_find_contradictions_detects_policy_polarity_by_thread():
+    source_a = ResearchSource(id=1, run_id=1, question_id=1, title="Official", url="https://uscis.gov/a", provider="test")
+    source_b = ResearchSource(id=2, run_id=1, question_id=1, title="Guide", url="https://example.com/b", provider="test")
+    claims = [
+        ResearchClaim(
+            id=1,
+            run_id=1,
+            source_id=1,
+            claim="H-4 EAD is not eligible for premium processing.",
+            claim_type="policy",
+        ),
+        ResearchClaim(
+            id=2,
+            run_id=1,
+            source_id=2,
+            claim="H-4 EAD is eligible for premium processing.",
+            claim_type="policy",
+        ),
+    ]
+    contradictions = _find_contradictions(claims, [source_a, source_b])
+    assert any("Policy/capability conflict" in c for c in contradictions)
+
+
+def test_find_contradictions_detects_timeline_range_conflicts():
+    source_a = ResearchSource(id=1, run_id=1, question_id=1, title="Official", url="https://uscis.gov/a", provider="test")
+    source_b = ResearchSource(id=2, run_id=1, question_id=1, title="Forum", url="https://immihelp.com/b", provider="test")
+    claims = [
+        ResearchClaim(
+            id=1,
+            run_id=1,
+            source_id=1,
+            claim="H-1B premium processing takes 15 calendar days.",
+            claim_type="timeline",
+        ),
+        ResearchClaim(
+            id=2,
+            run_id=1,
+            source_id=2,
+            claim="Recent H-4 EAD approvals are taking 4 to 6 months.",
+            claim_type="timeline",
+        ),
+    ]
+    contradictions = _find_contradictions(claims, [source_a, source_b])
+    assert any("Timeline conflict" in c for c in contradictions)
+
+
+def test_find_contradictions_ignores_compatible_timeline_ranges():
+    source_a = ResearchSource(id=1, run_id=1, question_id=1, title="A", url="https://example.com/a", provider="test")
+    source_b = ResearchSource(id=2, run_id=1, question_id=1, title="B", url="https://example.org/b", provider="test")
+    claims = [
+        ResearchClaim(id=1, run_id=1, source_id=1, claim="Processing is taking 2 to 3 months.", claim_type="timeline"),
+        ResearchClaim(id=2, run_id=1, source_id=2, claim="Processing is often taking 8 to 10 weeks.", claim_type="timeline"),
+    ]
+    contradictions = _find_contradictions(claims, [source_a, source_b])
+    assert not any("Timeline conflict" in c for c in contradictions)
 
 
 def test_primary_source_detection_prefers_official_sources():
@@ -256,14 +389,101 @@ def test_planned_questions_from_data_normalizes_plan():
                 "question": "What are the official capabilities?",
                 "search_query": "official capabilities",
                 "priority": "high",
+                "claim_type": "capability",
+                "evidence_role": "official_policy",
+                "freshness_requirement": "current",
                 "required_source_types": ["official_docs"],
+                "required_source_tiers": ["tier_1_official"],
+                "budget": {"max_rounds": 2, "max_sources": 3},
             }
         ]
     }
-    planned = _planned_questions_from_data(data, [("fallback question", "fallback query")])
+    planned = _planned_questions_from_data(data, [("fallback question", "fallback query")], parent_query="current feature support")
     assert planned[0].question == "What are the official capabilities?"
     assert planned[0].search_query == "official capabilities"
     assert planned[0].required_source_types == ["official_docs"]
+    assert planned[0].claim_type == "capability"
+    assert planned[0].evidence_role == "official_policy"
+    assert planned[0].freshness_requirement == "current"
+    assert planned[0].required_source_tiers == ["tier_1_official"]
+    assert planned[0].budget["max_sources"] == 3
+
+
+def test_planned_questions_fallback_infers_operational_timeline_thread():
+    planned = _planned_questions_from_data(
+        None,
+        [("Currently how long is H4 EAD taking to approve?", "H4 EAD approval timeline")],
+        parent_query="currently H4 EAD processing timeline",
+    )
+    assert planned[0].claim_type == "timeline"
+    assert planned[0].evidence_role == ROLE_OPERATIONAL_REALITY
+    assert planned[0].freshness_requirement == "current"
+
+
+def test_thread_contract_status_records_policy_and_operational_gaps():
+    policy_q = ResearchQuestion(
+        id=1,
+        run_id=1,
+        question="Is H4 EAD eligible for premium processing?",
+        claim_type="policy",
+        evidence_role=ROLE_OFFICIAL_POLICY,
+        required_source_tiers_json=json.dumps(["tier_1_official"]),
+    )
+    timeline_q = ResearchQuestion(
+        id=2,
+        run_id=1,
+        question="How long is H4 EAD taking?",
+        claim_type="timeline",
+        evidence_role=ROLE_OPERATIONAL_REALITY,
+        freshness_requirement="current",
+    )
+    blog = ResearchSource(
+        id=1,
+        run_id=1,
+        question_id=policy_q.id,
+        title="Blog",
+        url="https://example-blog.com/h4",
+        provider="test",
+        source_tier="tier_2_expert",
+        source_family="example-blog.com",
+        source_role_prior="expert_interpretation",
+        credibility_score=0.5,
+        relevance_score=0.8,
+        freshness_score=0.9,
+        admission_status="admitted",
+    )
+    one_timeline = ResearchSource(
+        id=2,
+        run_id=1,
+        question_id=timeline_q.id,
+        title="Forum",
+        url="https://www.immihelp.com/h4",
+        provider="test",
+        source_tier="tier_3_anecdotal",
+        source_family="immihelp.com",
+        source_role_prior=ROLE_ANECDOTAL_CASE,
+        credibility_score=0.35,
+        relevance_score=0.8,
+        freshness_score=0.9,
+        admission_status="admitted",
+    )
+    gaps = _apply_thread_contract_status([policy_q, timeline_q], [blog, one_timeline])
+    assert policy_q.confidence == "low"
+    assert "Missing required source tier" in (policy_q.stop_reason or "")
+    assert timeline_q.confidence == "medium"
+    assert "low independent source diversity" in (timeline_q.stop_reason or "")
+    assert len(gaps) == 2
+
+
+def test_thread_source_budget_reached_uses_planned_budget():
+    q = ResearchQuestion(
+        id=1,
+        run_id=1,
+        question="q",
+        budget_json=json.dumps({"max_sources": 2}),
+    )
+    assert _thread_source_budget_reached(q, {1: 2})
+    assert not _thread_source_budget_reached(q, {1: 1})
 
 
 def test_claim_records_from_data_falls_back_on_bad_shape():
@@ -318,9 +538,36 @@ def test_claim_extraction_parallelizes_sources(monkeypatch):
     assert max_active > 1
 
 
-def test_research_verifier_only_runs_for_expert_mode():
+def test_research_verifier_runs_for_expert_mode_and_risky_deep_cases():
     assert _should_verify_research("expert") is True
     assert _should_verify_research("deep") is False
+    assert _should_verify_research(
+        "deep",
+        domain="legal_regulatory",
+        confidence="medium",
+        gaps=[],
+        contradictions=[],
+        sources=[],
+        query="currently how long is H4 EAD taking",
+    ) is True
+    anecdotal_sources = [
+        ResearchSource(
+            id=1, run_id=1, title="A", url="https://www.immihelp.com/a", provider="test",
+            source_role_prior=ROLE_ANECDOTAL_CASE, source_tier=SOURCE_TIER_ANECDOTAL,
+            admission_status="admitted",
+        ),
+        ResearchSource(
+            id=2, run_id=1, title="B", url="https://www.lawfully.com/b", provider="test",
+            source_role_prior=ROLE_OPERATIONAL_REALITY, source_tier=SOURCE_TIER_ANECDOTAL,
+            admission_status="admitted",
+        ),
+    ]
+    assert _should_verify_research(
+        "deep",
+        domain="general",
+        confidence="medium",
+        sources=anecdotal_sources,
+    ) is True
 
 
 def test_question_source_workers_run_in_parallel(monkeypatch):
@@ -328,7 +575,7 @@ def test_question_source_workers_run_in_parallel(monkeypatch):
     active = 0
     max_active = 0
 
-    def fake_search(query):
+    def fake_search(query, recency=None):
         nonlocal active, max_active
         key = query.split()[0]
         with lock:
@@ -360,7 +607,7 @@ def test_question_source_workers_run_in_parallel(monkeypatch):
 
 
 def test_question_source_workers_dedupe_parallel_results(monkeypatch):
-    def fake_search(_query):
+    def fake_search(_query, recency=None):
         return "test", [WebSource(title="Same", url="https://example.com/same", content="official documentation pricing governance")]
 
     monkeypatch.setattr("app.services.research_orchestrator._search", fake_search)
@@ -477,3 +724,181 @@ def test_verification_from_data_falls_back_to_draft():
     verification = _verification_from_data(None, "Draft answer.")
     assert verification.verified_answer == "Draft answer."
     assert "structured output" in verification.verifier_notes
+
+
+def test_research_eval_fixture_cases_have_expected_triage_signals():
+    fixture_path = Path(__file__).parent / "fixtures" / "research_eval_cases.json"
+    cases = json.loads(fixture_path.read_text())
+    assert len(cases) >= 6
+    for case in cases:
+        query = case["query"]
+        strategy = _research_domain_strategy(query)
+        if case.get("domain") != "general":
+            assert strategy.domain == case["domain"]
+        if case.get("freshness_required"):
+            assert _freshness_is_explicit(query) or strategy.recency in {"month", "year"}
+        planned = _planned_questions_from_data(
+            None,
+            _make_questions(query, "deep"),
+            parent_query=query,
+            mode="deep",
+        )
+        if case.get("anecdotal_evidence") == "primary_for_operational_reality":
+            assert any(p.evidence_role == ROLE_OPERATIONAL_REALITY for p in planned)
+        if case.get("anecdotal_evidence") == "disallowed_for_recommendation":
+            assert all(p.evidence_role != ROLE_ANECDOTAL_CASE for p in planned)
+
+
+# ---------------------------------------------------------------------------
+# Phase 11 — Tiered Research Budgets
+# ---------------------------------------------------------------------------
+
+def test_tiered_budgets_increase_from_deep_to_expert():
+    assert _hard_max_sources("deep") == 16
+    assert _hard_max_sources("expert") == 28
+    assert _max_iterations("deep") == 3
+    assert _max_iterations("expert") == 4
+    assert _planned_questions_cap("deep") == 5
+    assert _planned_questions_cap("expert") == 6
+
+
+def test_planned_questions_respect_mode_cap():
+    fallback = [(f"question {i}", f"query {i}") for i in range(10)]
+    deep = _planned_questions_from_data(None, fallback, parent_query="q", mode="deep")
+    expert = _planned_questions_from_data(None, fallback, parent_query="q", mode="expert")
+    assert len(deep) == _planned_questions_cap("deep")
+    assert len(expert) == _planned_questions_cap("expert")
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 — Caching / Reuse Layer
+# ---------------------------------------------------------------------------
+
+def test_cache_category_and_ttl_classification():
+    # Stable: official policy from a tier-1 official source, non-sensitive domain.
+    category, ttl = _cache_category_and_ttl(SOURCE_TIER_OFFICIAL, ROLE_OFFICIAL_POLICY, "enterprise_technology")
+    assert category == "stable"
+    assert ttl == timedelta(days=21)
+
+    # Conservative: sensitive domain overrides tier/role.
+    category, ttl = _cache_category_and_ttl(SOURCE_TIER_OFFICIAL, ROLE_OFFICIAL_POLICY, "medical")
+    assert category == "conservative"
+    assert ttl == timedelta(hours=12)
+
+    category, ttl = _cache_category_and_ttl(SOURCE_TIER_ANECDOTAL, ROLE_ANECDOTAL_CASE, "financial")
+    assert category == "conservative"
+    assert ttl == timedelta(hours=12)
+
+    # Current: operational/anecdotal evidence in a non-sensitive domain.
+    category, ttl = _cache_category_and_ttl(SOURCE_TIER_ANECDOTAL, ROLE_OPERATIONAL_REALITY, "legal_regulatory")
+    assert category == "conservative"  # legal_regulatory is sensitive
+    assert ttl == timedelta(hours=12)
+
+    category, ttl = _cache_category_and_ttl(SOURCE_TIER_EXPERT, ROLE_OPERATIONAL_REALITY, "enterprise_technology")
+    assert category == "current"
+    assert ttl == timedelta(hours=4)
+
+
+def _make_run_and_source(db, **source_kwargs):
+    run = ResearchRun(user_id="u1", query="test query", mode="deep", status="running")
+    db.add(run)
+    db.commit()
+    db.refresh(run)
+
+    defaults = dict(
+        run_id=run.id,
+        title="Official docs",
+        url="https://docs.vendor.com/cache-test",
+        provider="test",
+        source_type="documentation",
+        source_tier=SOURCE_TIER_OFFICIAL,
+        source_role_prior=ROLE_OFFICIAL_POLICY,
+        credibility_score=0.9,
+        relevance_score=0.8,
+        freshness_score=0.9,
+    )
+    defaults.update(source_kwargs)
+    source = ResearchSource(**defaults)
+    db.add(source)
+    db.commit()
+    db.refresh(source)
+    return run, source
+
+
+def test_store_and_get_cached_source_round_trips_claims():
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    db = sessionmaker(bind=engine)()
+    try:
+        _run, source = _make_run_and_source(db)
+        claims = [
+            ClaimRecord(
+                claim="Premium processing is available for H-4 EAD filed with I-129.",
+                score=0.8,
+                quote="Premium processing eligibility now includes Form I-765 H-4 EAD",
+                confidence="high",
+                claim_type="policy",
+                claim_role=ROLE_OFFICIAL_POLICY,
+                freshness_risk="low",
+            )
+        ]
+        assert _get_cached_source(db, source.url) is None
+
+        _store_source_cache(db, source, claims, "enterprise_technology")
+        db.commit()
+
+        cached = _get_cached_source(db, source.url)
+        assert cached is not None
+        assert cached.cache_category == "stable"
+        assert cached.expires_at - cached.cached_at == timedelta(days=21)
+
+        restored = _claim_records_from_cache(cached)
+        assert len(restored) == 1
+        assert restored[0].claim == claims[0].claim
+        assert restored[0].claim_role == ROLE_OFFICIAL_POLICY
+    finally:
+        db.close()
+
+
+def test_get_cached_source_returns_none_when_expired():
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    db = sessionmaker(bind=engine)()
+    try:
+        _run, source = _make_run_and_source(
+            db,
+            url="https://www.reddit.com/r/cache-test",
+            source_tier=SOURCE_TIER_ANECDOTAL,
+            source_role_prior=ROLE_ANECDOTAL_CASE,
+        )
+        _store_source_cache(db, source, [], "enterprise_technology")
+        db.commit()
+
+        # Force expiry directly.
+        row = db.query(ResearchSourceCache).filter(ResearchSourceCache.url == source.url).first()
+        row.expires_at = _now() - timedelta(seconds=1)
+        db.commit()
+
+        assert _get_cached_source(db, source.url) is None
+    finally:
+        db.close()
+
+
+def test_store_source_cache_upserts_by_url():
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    db = sessionmaker(bind=engine)()
+    try:
+        _run, source = _make_run_and_source(db)
+        _store_source_cache(db, source, [], "enterprise_technology")
+        db.commit()
+
+        source.title = "Updated docs title"
+        _store_source_cache(db, source, [], "enterprise_technology")
+        db.commit()
+
+        rows = db.query(ResearchSourceCache).filter(ResearchSourceCache.url == source.url).all()
+        assert len(rows) == 1
+        assert rows[0].title == "Updated docs title"
+    finally:
+        db.close()

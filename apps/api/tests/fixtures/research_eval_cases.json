@@ -1,0 +1,50 @@
+[
+  {
+    "id": "immigration_current_operational_timeline",
+    "query": "Currently how long is H4 and H4 EAD taking to be approved if filed together with H1B renewal on premium processing?",
+    "domain": "legal_regulatory",
+    "freshness_required": true,
+    "anecdotal_evidence": "primary_for_operational_reality",
+    "required_outcome": "Separate official premium-processing eligibility from observed current H4/H4 EAD approval timelines; do not frame stale 2023/2024 evidence as current."
+  },
+  {
+    "id": "immigration_official_policy_single_source",
+    "query": "Is H4 EAD eligible for USCIS premium processing right now?",
+    "domain": "legal_regulatory",
+    "freshness_required": true,
+    "anecdotal_evidence": "not_load_bearing",
+    "required_outcome": "Use official USCIS/I-907 eligibility evidence as load-bearing; anecdotal sources should not override official eligibility."
+  },
+  {
+    "id": "anecdote_noisy_operational_reality",
+    "query": "Are recent complaints about a payment processor's support delays representative of current average resolution time?",
+    "domain": "general",
+    "freshness_required": true,
+    "anecdotal_evidence": "noisy_possible_outlier",
+    "required_outcome": "Do not treat a few recent anecdotes as consensus without independent source diversity or statistical/official support."
+  },
+  {
+    "id": "medical_current_guidance",
+    "query": "What is the current first-line treatment guidance for uncomplicated hypertension in adults?",
+    "domain": "medical",
+    "freshness_required": true,
+    "anecdotal_evidence": "disallowed_for_recommendation",
+    "required_outcome": "Use official/clinical guideline sources; verify currentness and avoid unsupported medical advice."
+  },
+  {
+    "id": "finance_company_current_fact",
+    "query": "What was Nvidia's latest reported quarterly revenue and what source supports it?",
+    "domain": "financial",
+    "freshness_required": true,
+    "anecdotal_evidence": "not_load_bearing",
+    "required_outcome": "Use company filing/earnings release or SEC source; include report date and avoid stale quarter framing."
+  },
+  {
+    "id": "technology_current_capability",
+    "query": "Does Anthropic currently support prompt caching in the API and what are the limits?",
+    "domain": "enterprise_technology",
+    "freshness_required": true,
+    "anecdotal_evidence": "supporting_only",
+    "required_outcome": "Use official docs/release notes for capability and limits; community posts may only illustrate usage."
+  }
+]

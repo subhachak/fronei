@@ -254,6 +254,13 @@ class ResearchQuestion(Base):
     question:        Mapped[str]        = mapped_column(Text, nullable=False)
     search_query:    Mapped[str | None] = mapped_column(Text, nullable=True)
     status:          Mapped[str]        = mapped_column(String(32), default="pending")
+    claim_type:      Mapped[str]        = mapped_column(String(32), default="unknown")
+    evidence_role:   Mapped[str]        = mapped_column(String(48), default="background_context")
+    freshness_requirement: Mapped[str]  = mapped_column(String(16), default="default")
+    required_source_tiers_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    budget_json:     Mapped[str | None] = mapped_column(Text, nullable=True)
+    stop_reason:     Mapped[str | None] = mapped_column(Text, nullable=True)
+    confidence:      Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_at:      Mapped[datetime]   = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
@@ -271,6 +278,14 @@ class ResearchSource(Base):
     relevance_score:     Mapped[float]      = mapped_column(Float, default=0.0)
     freshness_score:     Mapped[float]      = mapped_column(Float, default=0.0)
     source_type:         Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source_tier:         Mapped[str]        = mapped_column(String(32), default="tier_2_expert")
+    source_family:       Mapped[str | None] = mapped_column(String(255), nullable=True)
+    source_role_prior:   Mapped[str]        = mapped_column(String(48), default="background_context")
+    published_at:        Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    updated_at:          Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    source_date_confidence: Mapped[str]     = mapped_column(String(16), default="unknown")
+    admission_status:    Mapped[str]        = mapped_column(String(24), default="admitted")
+    admission_reason:    Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at:          Mapped[datetime]   = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
@@ -284,7 +299,41 @@ class ResearchClaim(Base):
     quote:             Mapped[str | None] = mapped_column(Text, nullable=True)
     confidence:        Mapped[str]        = mapped_column(String(32), default="medium")
     relevance_score:   Mapped[float]      = mapped_column(Float, default=0.0)
+    claim_type:        Mapped[str]        = mapped_column(String(32), default="unknown")
+    claim_role:        Mapped[str]        = mapped_column(String(48), default="background_context")
+    freshness_risk:    Mapped[str]        = mapped_column(String(16), default="unknown")
     created_at:        Mapped[datetime]   = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class ResearchSourceCache(Base):
+    """Cross-run cache of source evidence metadata + extracted claims, keyed
+    by URL (Deep Research v2 Phase 5 — caching/reuse layer).
+
+    Stable policy/framework sources (tier_1_official + official_policy) get a
+    long TTL; operational-reality/anecdotal sources (timelines, prices,
+    status) get a short TTL; sensitive domains (medical/financial/legal) get
+    a conservative TTL regardless of tier.
+    """
+    __tablename__ = "research_source_cache"
+
+    id:                     Mapped[int]             = mapped_column(Integer, primary_key=True, autoincrement=True)
+    url:                    Mapped[str]             = mapped_column(String(2048), nullable=False, unique=True, index=True)
+    title:                  Mapped[str]             = mapped_column(Text, default="")
+    source_type:            Mapped[str | None]      = mapped_column(String(64), nullable=True)
+    source_tier:            Mapped[str]             = mapped_column(String(32), default="tier_2_expert")
+    source_family:          Mapped[str | None]      = mapped_column(String(255), nullable=True)
+    source_role_prior:       Mapped[str]            = mapped_column(String(48), default="background_context")
+    published_at:           Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    updated_at:             Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    source_date_confidence: Mapped[str]             = mapped_column(String(16), default="unknown")
+    admission_status:       Mapped[str]             = mapped_column(String(24), default="admitted")
+    admission_reason:       Mapped[str | None]      = mapped_column(Text, nullable=True)
+    credibility_score:       Mapped[float]          = mapped_column(Float, default=0.0)
+    freshness_score:         Mapped[float]          = mapped_column(Float, default=0.0)
+    cache_category:          Mapped[str]            = mapped_column(String(16), default="current")
+    claims_json:             Mapped[str | None]     = mapped_column(Text, nullable=True)
+    cached_at:               Mapped[datetime]       = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    expires_at:              Mapped[datetime]       = mapped_column(DateTime, nullable=False)
 
 
 class ResearchFinding(Base):
@@ -477,6 +526,13 @@ def _ensure_sqlite_schema(bind) -> None:
                 question TEXT NOT NULL,
                 search_query TEXT,
                 status VARCHAR(32) DEFAULT 'pending',
+                claim_type VARCHAR(32) DEFAULT 'unknown',
+                evidence_role VARCHAR(48) DEFAULT 'background_context',
+                freshness_requirement VARCHAR(16) DEFAULT 'default',
+                required_source_tiers_json TEXT,
+                budget_json TEXT,
+                stop_reason TEXT,
+                confidence VARCHAR(32),
                 created_at DATETIME NOT NULL,
                 FOREIGN KEY(run_id) REFERENCES research_runs (id) ON DELETE CASCADE
             )
@@ -494,6 +550,14 @@ def _ensure_sqlite_schema(bind) -> None:
                 relevance_score FLOAT DEFAULT 0.0,
                 freshness_score FLOAT DEFAULT 0.0,
                 source_type VARCHAR(64),
+                source_tier VARCHAR(32) DEFAULT 'tier_2_expert',
+                source_family VARCHAR(255),
+                source_role_prior VARCHAR(48) DEFAULT 'background_context',
+                published_at DATETIME,
+                updated_at DATETIME,
+                source_date_confidence VARCHAR(16) DEFAULT 'unknown',
+                admission_status VARCHAR(24) DEFAULT 'admitted',
+                admission_reason TEXT,
                 created_at DATETIME NOT NULL,
                 FOREIGN KEY(run_id) REFERENCES research_runs (id) ON DELETE CASCADE
             )
@@ -507,6 +571,9 @@ def _ensure_sqlite_schema(bind) -> None:
                 quote TEXT,
                 confidence VARCHAR(32) DEFAULT 'medium',
                 relevance_score FLOAT DEFAULT 0.0,
+                claim_type VARCHAR(32) DEFAULT 'unknown',
+                claim_role VARCHAR(48) DEFAULT 'background_context',
+                freshness_risk VARCHAR(16) DEFAULT 'unknown',
                 created_at DATETIME NOT NULL,
                 FOREIGN KEY(run_id) REFERENCES research_runs (id) ON DELETE CASCADE,
                 FOREIGN KEY(source_id) REFERENCES research_sources (id) ON DELETE CASCADE
@@ -541,6 +608,44 @@ def _ensure_sqlite_schema(bind) -> None:
     ]:
         if has_table(table):
             statements.append(f"CREATE INDEX IF NOT EXISTS ix_{table}_{column} ON {table} ({column})")
+
+    if has_table("research_sources"):
+        for column, ddl in [
+            ("source_tier", "VARCHAR(32) DEFAULT 'tier_2_expert'"),
+            ("source_family", "VARCHAR(255)"),
+            ("source_role_prior", "VARCHAR(48) DEFAULT 'background_context'"),
+            ("published_at", "DATETIME"),
+            ("updated_at", "DATETIME"),
+            ("source_date_confidence", "VARCHAR(16) DEFAULT 'unknown'"),
+            ("admission_status", "VARCHAR(24) DEFAULT 'admitted'"),
+            ("admission_reason", "TEXT"),
+        ]:
+            if not has_column("research_sources", column):
+                statements.append(f"ALTER TABLE research_sources ADD COLUMN {column} {ddl}")
+        statements.append("CREATE INDEX IF NOT EXISTS ix_research_sources_source_tier ON research_sources (source_tier)")
+        statements.append("CREATE INDEX IF NOT EXISTS ix_research_sources_source_family ON research_sources (source_family)")
+
+    if has_table("research_claims"):
+        for column, ddl in [
+            ("claim_type", "VARCHAR(32) DEFAULT 'unknown'"),
+            ("claim_role", "VARCHAR(48) DEFAULT 'background_context'"),
+            ("freshness_risk", "VARCHAR(16) DEFAULT 'unknown'"),
+        ]:
+            if not has_column("research_claims", column):
+                statements.append(f"ALTER TABLE research_claims ADD COLUMN {column} {ddl}")
+
+    if has_table("research_questions"):
+        for column, ddl in [
+            ("claim_type", "VARCHAR(32) DEFAULT 'unknown'"),
+            ("evidence_role", "VARCHAR(48) DEFAULT 'background_context'"),
+            ("freshness_requirement", "VARCHAR(16) DEFAULT 'default'"),
+            ("required_source_tiers_json", "TEXT"),
+            ("budget_json", "TEXT"),
+            ("stop_reason", "TEXT"),
+            ("confidence", "VARCHAR(32)"),
+        ]:
+            if not has_column("research_questions", column):
+                statements.append(f"ALTER TABLE research_questions ADD COLUMN {column} {ddl}")
 
     if not statements:
         return

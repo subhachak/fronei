@@ -11,7 +11,7 @@ import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Callable, Iterable
 from urllib.parse import urlparse
 
@@ -24,9 +24,20 @@ from app.db.models import (
     ResearchQuestion,
     ResearchRun,
     ResearchSource,
+    ResearchSourceCache,
 )
 from app.schemas import Profile, RouteDecision
 from app.services.llm_gateway import LLMResult, invoke_llm
+from app.services.research_evidence import (
+    ROLE_ANECDOTAL_CASE,
+    ROLE_OPERATIONAL_REALITY,
+    ROLE_OFFICIAL_POLICY,
+    ROLE_STATISTICAL_DATA,
+    SOURCE_TIER_OFFICIAL,
+    build_source_evidence_metadata,
+    host_for_url,
+    source_family_for_url,
+)
 from app.services.router import choose_route
 from app.services.web_context import (
     WebSource,
@@ -37,8 +48,35 @@ from app.services.web_context import (
     tavily_search,
 )
 
-MAX_ITERATIONS         = 3     # up to 3 gap-filling passes
-HARD_MAX_SOURCES       = 40    # emergency brake — never exceed
+MAX_ITERATIONS         = 3     # up to 3 gap-filling passes (deep default; see _max_iterations)
+HARD_MAX_SOURCES       = 40    # emergency brake — never exceed (legacy default; see _hard_max_sources)
+
+# Phase 11 — Tiered Research Budgets (deep-research-v2-plan.md §4.11).
+# "deep" and "expert" are the two modes _run_pipeline currently supports;
+# quick/focused tiers are reserved for future entry points but the helpers
+# below are written so they extend cleanly.
+TIERED_BUDGETS = {
+    "quick":   {"max_threads": 1, "rounds_per_thread": 1, "max_sources": 3,  "planned_questions": 1, "verifier": "none"},
+    "focused": {"max_threads": 3, "rounds_per_thread": 2, "max_sources": 8,  "planned_questions": 3, "verifier": "conditional"},
+    "deep":    {"max_threads": 5, "rounds_per_thread": 3, "max_sources": 16, "planned_questions": 5, "verifier": "conditional"},
+    "expert":  {"max_threads": 6, "rounds_per_thread": 4, "max_sources": 28, "planned_questions": 6, "verifier": "always"},
+}
+
+
+def _tiered_budget(mode: str) -> dict:
+    return TIERED_BUDGETS.get(mode, TIERED_BUDGETS["deep"])
+
+
+def _hard_max_sources(mode: str) -> int:
+    return _tiered_budget(mode)["max_sources"]
+
+
+def _max_iterations(mode: str) -> int:
+    return _tiered_budget(mode)["rounds_per_thread"]
+
+
+def _planned_questions_cap(mode: str) -> int:
+    return _tiered_budget(mode)["planned_questions"]
 MIN_TOTAL_SOURCES      = 6     # don't stop before this many sources
 MIN_SOURCES_PER_QUESTION = 2   # each question needs this many sources before skipping
 MIN_PRIMARY_SOURCES_DEEP = 1
@@ -68,6 +106,7 @@ class ResearchPipelineResult:
     contradictions: list[str]
     verifier_notes: str | None
     claim_logs: list[dict] = field(default_factory=list)
+    rejected_source_logs: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -76,6 +115,11 @@ class PlannedQuestion:
     search_query: str
     priority: str = "medium"
     required_source_types: list[str] | None = None
+    claim_type: str = "unknown"
+    evidence_role: str = "background_context"
+    freshness_requirement: str = "default"
+    required_source_tiers: list[str] = field(default_factory=list)
+    budget: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -84,6 +128,9 @@ class ClaimRecord:
     score: float
     quote: str | None = None
     confidence: str = "medium"
+    claim_type: str = "unknown"
+    claim_role: str = "background_context"
+    freshness_risk: str = "unknown"
 
 
 @dataclass
@@ -102,6 +149,10 @@ class ResearchDomainStrategy:
     preferred_source_types: set[str]
     query_suffixes: list[str]
     primary_source_hint: str
+    # Search-provider recency filter ("day"/"week"/"month"/"year"), or None for
+    # no filter. Used for domains where stale results are especially misleading
+    # (e.g. immigration processing times, drug/medical guidance, financial data).
+    recency: str | None = None
 
 
 @dataclass
@@ -133,6 +184,123 @@ Progress = Callable[[str, str, dict], None]
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _today_str() -> str:
+    """Human-readable current date (UTC), for grounding LLM prompts.
+
+    Without this, synthesis/verifier models fall back to whatever "today" they
+    implicitly assume from training data — typically yielding stale years
+    (e.g. 2023/2024) in report titles, framing, and freshness judgements.
+    """
+    return _now().strftime("%B %d, %Y")
+
+
+# Phase 5 — Caching/Reuse Layer (deep-research-v2-plan.md §4.5).
+#
+# Stable policy/framework sources get a long TTL; current operational
+# evidence (timelines/prices/status/anecdotes) gets a short TTL; sensitive
+# domains (medical/financial/legal) get a conservative TTL regardless of
+# source tier, since being wrong there is costlier than a cache miss.
+CACHE_TTL_STABLE = timedelta(days=21)
+CACHE_TTL_CONSERVATIVE = timedelta(hours=12)
+CACHE_TTL_CURRENT = timedelta(hours=4)
+
+SENSITIVE_CACHE_DOMAINS = {"medical", "financial", "legal_regulatory"}
+
+
+def _cache_category_and_ttl(source_tier: str, source_role_prior: str, domain: str) -> tuple[str, timedelta]:
+    """Classify a source for cross-run caching and return (category, ttl)."""
+    if domain in SENSITIVE_CACHE_DOMAINS:
+        return "conservative", CACHE_TTL_CONSERVATIVE
+    if source_tier == SOURCE_TIER_OFFICIAL and source_role_prior == ROLE_OFFICIAL_POLICY:
+        return "stable", CACHE_TTL_STABLE
+    return "current", CACHE_TTL_CURRENT
+
+
+def _get_cached_source(db, url: str) -> ResearchSourceCache | None:
+    """Return a non-expired cache row for `url`, or None on miss/expiry."""
+    row = db.query(ResearchSourceCache).filter(ResearchSourceCache.url == url).first()
+    if row is None:
+        return None
+    expires_at = row.expires_at
+    if expires_at is not None:
+        now = _now()
+        if expires_at.tzinfo is None:
+            now = now.replace(tzinfo=None)
+        if expires_at < now:
+            return None
+    return row
+
+
+def _claim_records_from_cache(row: ResearchSourceCache) -> list[ClaimRecord]:
+    if not row.claims_json:
+        return []
+    try:
+        rows = json.loads(row.claims_json)
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(rows, list):
+        return []
+    records: list[ClaimRecord] = []
+    for item in rows:
+        if not isinstance(item, dict):
+            continue
+        try:
+            records.append(ClaimRecord(**item))
+        except TypeError:
+            continue
+    return records
+
+
+def _store_source_cache(db, source: ResearchSource, claims: list[ClaimRecord], domain: str) -> None:
+    """Upsert cache metadata + extracted claims for `source.url`, keyed by url."""
+    category, ttl = _cache_category_and_ttl(source.source_tier, source.source_role_prior, domain)
+    claims_json = json.dumps([
+        {
+            "claim": c.claim,
+            "score": c.score,
+            "quote": c.quote,
+            "confidence": c.confidence,
+            "claim_type": c.claim_type,
+            "claim_role": c.claim_role,
+            "freshness_risk": c.freshness_risk,
+        }
+        for c in claims
+    ])
+    now = _now()
+    row = db.query(ResearchSourceCache).filter(ResearchSourceCache.url == source.url).first()
+    if row is None:
+        row = ResearchSourceCache(url=source.url, cached_at=now, expires_at=now + ttl)
+        db.add(row)
+    row.title = source.title
+    row.source_type = source.source_type
+    row.source_tier = source.source_tier
+    row.source_family = source.source_family
+    row.source_role_prior = source.source_role_prior
+    row.published_at = source.published_at
+    row.updated_at = source.updated_at
+    row.source_date_confidence = source.source_date_confidence
+    row.admission_status = source.admission_status
+    row.admission_reason = source.admission_reason
+    row.credibility_score = source.credibility_score
+    row.freshness_score = source.freshness_score
+    row.cache_category = category
+    row.claims_json = claims_json
+    row.cached_at = now
+    row.expires_at = now + ttl
+
+
+def _freshness_is_explicit(query: str) -> bool:
+    return bool(re.search(
+        r"\b(current|currently|latest|today|right now|as of now|as of today|recent|recently|this month|this year)\b",
+        query,
+        re.IGNORECASE,
+    ))
+
+
+def _query_recency(query: str, default: str | None) -> str | None:
+    return "month" if _freshness_is_explicit(query) else default
 
 
 def _tokens(text: str) -> set[str]:
@@ -216,6 +384,9 @@ def _research_domain_strategy(query: str) -> ResearchDomainStrategy:
             preferred_source_types={"government", "pdf", "documentation"},
             query_suffixes=["official site:.gov", "policy guidance", "regulation"],
             primary_source_hint="government/legal primary sources",
+            # Processing times, fee schedules, and policy guidance (e.g. USCIS)
+            # change frequently — bias toward results indexed in the last year.
+            recency=_query_recency(query, "year"),
         )
     if tokens & medical_markers:
         return ResearchDomainStrategy(
@@ -223,6 +394,7 @@ def _research_domain_strategy(query: str) -> ResearchDomainStrategy:
             preferred_source_types={"government", "academic", "pdf"},
             query_suffixes=["site:nih.gov", "site:fda.gov", "clinical study"],
             primary_source_hint="government, institutional, or peer-reviewed sources",
+            recency=_query_recency(query, "year"),
         )
     if tokens & finance_markers and not (tokens & enterprise_markers):
         return ResearchDomainStrategy(
@@ -230,6 +402,7 @@ def _research_domain_strategy(query: str) -> ResearchDomainStrategy:
             preferred_source_types={"government", "pdf", "news"},
             query_suffixes=["official filing", "site:sec.gov", "investor relations"],
             primary_source_hint="regulatory filings and official company sources",
+            recency=_query_recency(query, "year"),
         )
     if tokens & enterprise_markers:
         return ResearchDomainStrategy(
@@ -248,8 +421,9 @@ def _research_domain_strategy(query: str) -> ResearchDomainStrategy:
     return ResearchDomainStrategy(
         domain="general",
         preferred_source_types=PRIMARY_SOURCE_TYPES,
-        query_suffixes=["official source", "2026", "analysis"],
+        query_suffixes=["official source", str(_now().year), "analysis"],
         primary_source_hint="primary or official sources",
+        recency=_query_recency(query, None),
     )
 
 
@@ -383,6 +557,47 @@ def _source_quality(
     )
 
 
+def _build_research_source(
+    *,
+    run_id: int,
+    question_id: int | None,
+    provider: str,
+    web_source: WebSource,
+    quality: SourceQuality,
+) -> ResearchSource:
+    excerpt = web_source.content[:SOURCE_EXCERPT_CHARS]
+    evidence = build_source_evidence_metadata(
+        url=web_source.url,
+        title=source_title(web_source),
+        content=excerpt,
+        source_type=quality.source_type,
+        credibility=quality.credibility,
+        relevance=quality.relevance,
+        freshness=quality.freshness,
+    )
+    return ResearchSource(
+        run_id=run_id,
+        question_id=question_id,
+        title=source_title(web_source),
+        url=web_source.url,
+        provider=provider,
+        excerpt=excerpt,
+        credibility_score=quality.credibility,
+        relevance_score=quality.relevance,
+        freshness_score=quality.freshness,
+        source_type=quality.source_type,
+        source_tier=evidence.source_tier,
+        source_family=evidence.source_family,
+        source_role_prior=evidence.source_role_prior,
+        published_at=evidence.published_at,
+        updated_at=evidence.updated_at,
+        source_date_confidence=evidence.source_date_confidence,
+        admission_status=evidence.admission_status,
+        admission_reason=evidence.admission_reason,
+        created_at=_now(),
+    )
+
+
 def _parse_json_object(raw: str) -> dict | None:
     try:
         data = json.loads(raw)
@@ -424,14 +639,113 @@ def _json_model(
         return None
 
 
-def _planned_questions_from_data(data: dict | None, fallback: list[tuple[str, str]]) -> list[PlannedQuestion]:
+def _normalize_claim_type(value: str | None, text: str = "") -> str:
+    candidate = (value or "").lower().strip()
+    allowed = {"policy", "timeline", "price", "statistic", "capability", "anecdote", "interpretation", "unknown"}
+    if candidate in allowed:
+        return candidate
+    return _claim_type_for_text(text)
+
+
+def _infer_evidence_role_for_question(question: str, claim_type: str) -> str:
+    lower = question.lower()
+    if claim_type == "timeline" or any(x in lower for x in ["how long", "taking", "timeline", "delay", "backlog", "approval time", "processing time"]):
+        return ROLE_OPERATIONAL_REALITY
+    if claim_type in {"policy", "capability", "price"} or any(x in lower for x in ["eligible", "policy", "rule", "sla", "guarantee", "official", "premium processing"]):
+        return ROLE_OFFICIAL_POLICY
+    if claim_type == "statistic":
+        return ROLE_STATISTICAL_DATA
+    if claim_type == "anecdote":
+        return ROLE_ANECDOTAL_CASE
+    return "background_context"
+
+
+def _infer_freshness_requirement(question: str, parent_query: str = "") -> str:
+    combined = f"{parent_query} {question}"
+    return "current" if _freshness_is_explicit(combined) else "default"
+
+
+def _required_tiers_for_thread(evidence_role: str, claim_type: str) -> list[str]:
+    if evidence_role == ROLE_OFFICIAL_POLICY or claim_type in {"policy", "capability", "price"}:
+        return [SOURCE_TIER_OFFICIAL]
+    return []
+
+
+def _budget_for_thread(mode: str, priority: str, evidence_role: str) -> dict:
+    base_rounds = 4 if mode == "expert" else 3
+    if priority == "low":
+        base_rounds -= 1
+    if evidence_role == ROLE_OPERATIONAL_REALITY:
+        max_sources = 6 if mode == "expert" else 4
+    else:
+        max_sources = 4 if mode == "expert" else 3
+    return {"max_rounds": max(1, base_rounds), "max_sources": max_sources}
+
+
+def _planned_question_with_inferred_metadata(
+    *,
+    question: str,
+    search_query: str,
+    priority: str = "medium",
+    required_source_types: list[str] | None = None,
+    claim_type: str | None = None,
+    evidence_role: str | None = None,
+    freshness_requirement: str | None = None,
+    required_source_tiers: list[str] | None = None,
+    budget: dict | None = None,
+    parent_query: str = "",
+    mode: str = "deep",
+) -> PlannedQuestion:
+    normalized_claim_type = _normalize_claim_type(claim_type, question)
+    role = (evidence_role or "").strip() or _infer_evidence_role_for_question(question, normalized_claim_type)
+    freshness = (freshness_requirement or "").strip() or _infer_freshness_requirement(question, parent_query)
+    tiers = [str(t) for t in (required_source_tiers or []) if str(t).strip()]
+    if not tiers:
+        tiers = _required_tiers_for_thread(role, normalized_claim_type)
+    return PlannedQuestion(
+        question=question[:600],
+        search_query=search_query[:140],
+        priority=priority[:16],
+        required_source_types=required_source_types,
+        claim_type=normalized_claim_type,
+        evidence_role=role[:48],
+        freshness_requirement=freshness[:16],
+        required_source_tiers=tiers,
+        budget=budget or _budget_for_thread(mode, priority, role),
+    )
+
+
+def _planned_questions_from_data(
+    data: dict | None,
+    fallback: list[tuple[str, str]],
+    *,
+    parent_query: str = "",
+    mode: str = "deep",
+) -> list[PlannedQuestion]:
+    cap = _planned_questions_cap(mode)
     if not data:
-        return [PlannedQuestion(question=q, search_query=s) for q, s in fallback]
+        return [
+            _planned_question_with_inferred_metadata(
+                question=q,
+                search_query=s,
+                parent_query=parent_query,
+                mode=mode,
+            )
+            for q, s in fallback
+        ][:cap]
     rows = data.get("subquestions")
     if not isinstance(rows, list):
         rows = data.get("questions")
     if not isinstance(rows, list):
-        return [PlannedQuestion(question=q, search_query=s) for q, s in fallback]
+        return [
+            _planned_question_with_inferred_metadata(
+                question=q,
+                search_query=s,
+                parent_query=parent_query,
+                mode=mode,
+            )
+            for q, s in fallback
+        ][:cap]
     planned: list[PlannedQuestion] = []
     for row in rows:
         if not isinstance(row, dict):
@@ -443,13 +757,29 @@ def _planned_questions_from_data(data: dict | None, fallback: list[tuple[str, st
         if not search_query:
             search_query = _distill_search_query(question)
         source_types = row.get("required_source_types")
-        planned.append(PlannedQuestion(
+        budget = row.get("budget")
+        planned.append(_planned_question_with_inferred_metadata(
             question=question[:600],
             search_query=search_query[:140],
             priority=str(row.get("priority") or "medium")[:16],
             required_source_types=source_types if isinstance(source_types, list) else None,
+            claim_type=str(row.get("claim_type") or row.get("type") or "") or None,
+            evidence_role=str(row.get("evidence_role") or row.get("source_role") or "") or None,
+            freshness_requirement=str(row.get("freshness_requirement") or "") or None,
+            required_source_tiers=row.get("required_source_tiers") if isinstance(row.get("required_source_tiers"), list) else None,
+            budget=budget if isinstance(budget, dict) else None,
+            parent_query=parent_query,
+            mode=mode,
         ))
-    return planned[:6] or [PlannedQuestion(question=q, search_query=s) for q, s in fallback]
+    return planned[:cap] or [
+        _planned_question_with_inferred_metadata(
+            question=q,
+            search_query=s,
+            parent_query=parent_query,
+            mode=mode,
+        )
+        for q, s in fallback
+    ][:cap]
 
 
 def _llm_plan_research(query: str, mode: str) -> list[PlannedQuestion]:
@@ -467,7 +797,12 @@ Schema:
       "question": "clear research subquestion",
       "search_query": "short keyword search query, no prose framing",
       "priority": "high|medium|low",
-      "required_source_types": ["official_docs", "pricing", "release_notes", "primary_sources"]
+      "claim_type": "policy|timeline|price|statistic|capability|anecdote|interpretation|unknown",
+      "evidence_role": "official_policy|operational_reality|expert_interpretation|anecdotal_case|statistical_data|background_context",
+      "freshness_requirement": "current|default|historical",
+      "required_source_types": ["official_docs", "pricing", "release_notes", "primary_sources"],
+      "required_source_tiers": ["tier_1_official"],
+      "budget": {"max_rounds": 3, "max_sources": 4}
     }
   ],
   "stopping_criteria": {
@@ -477,10 +812,14 @@ Schema:
   }
 }
 
-Create 3-5 subquestions. Prefer primary/official sources for current, legal,
-technical, pricing, medical, financial, immigration, or enterprise architecture topics."""
+Create 3-5 subquestions. Split compound questions by entity, form/product,
+claim type, and evidence role. For example, separate official policy/eligibility
+questions from real-world timeline/backlog questions. Prefer primary/official
+sources for current legal, technical, pricing, medical, financial, immigration,
+or enterprise architecture policy/capability questions; use recent independent
+operational/anecdotal evidence for real-world timing/backlog questions."""
     user = f"Mode: {mode}\nResearch request:\n{query}"
-    return _planned_questions_from_data(_json_model(system, user), fallback)
+    return _planned_questions_from_data(_json_model(system, user), fallback, parent_query=query, mode=mode)
 
 
 def _distill_search_query(text: str, max_len: int = 72) -> str:
@@ -568,7 +907,7 @@ def _query_variants(
     variants = [base]
     if iteration == 0:
         variants.append(f"{base} review")
-        variants.append(f"{base} 2026")
+        variants.append(f"{base} {_now().year}")
     else:
         variants.append(f"{base} issues caveats")
         variants.append(f"{base} enterprise guide")
@@ -599,14 +938,14 @@ def _query_variants(
     return deduped[:8]
 
 
-def _search(query: str) -> tuple[str, list[WebSource]]:
-    sources = tavily_search(query)
+def _search(query: str, recency: str | None = None) -> tuple[str, list[WebSource]]:
+    sources = tavily_search(query, recency)
     if sources:
         return "Tavily", sources
-    sources = brave_search(query)
+    sources = brave_search(query, recency)
     if sources:
         return "Brave", sources
-    sources = ddg_search(query)
+    sources = ddg_search(query, recency)
     return ("DuckDuckGo" if sources else "", sources)
 
 
@@ -644,6 +983,16 @@ def _host_counts(sources: Iterable[ResearchSource]) -> dict[str, int]:
     return counts
 
 
+def _source_family_counts(sources: Iterable[ResearchSource]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for source in sources:
+        family = source.source_family or source_family_for_url(source.url)
+        if not family:
+            continue
+        counts[family] = counts.get(family, 0) + 1
+    return counts
+
+
 def _select_diverse_candidates(
     query: str,
     candidates: list[tuple[str, WebSource, int | None]],
@@ -657,6 +1006,7 @@ def _select_diverse_candidates(
     if remaining_slots <= 0:
         return []
     host_counts = _host_counts(existing_sources)
+    family_counts = _source_family_counts(existing_sources)
     host_cap = _max_sources_per_host(mode)
 
     scored: list[tuple[float, bool, str, tuple[str, WebSource, int | None]]] = []
@@ -680,10 +1030,14 @@ def _select_diverse_candidates(
     for _quality, _preferred, host, item in scored:
         if len(selected) >= remaining_slots:
             break
+        family = source_family_for_url(item[1].url)
         if host_counts.get(host, 0) >= host_cap:
+            continue
+        if family_counts.get(family, 0) >= host_cap + 1:
             continue
         selected.append(item)
         host_counts[host] = host_counts.get(host, 0) + 1
+        family_counts[family] = family_counts.get(family, 0) + 1
     return selected
 
 
@@ -710,7 +1064,7 @@ def _run_question_source_worker(
     raw_candidates: list[tuple[float, str, WebSource, int | None]] = []
     local_seen: set[str] = set()
     for variant in variants:
-        provider, found = _search(variant)
+        provider, found = _search(variant, strategy.recency)
         for source in found:
             key = source.url.split("#")[0].rstrip("/")
             if key in seen_urls or key in local_seen:
@@ -801,9 +1155,52 @@ def _extract_claims(query: str, source: ResearchSource) -> list[tuple[str, float
     return scored[:MAX_CLAIMS_PER_SOURCE]
 
 
+def _claim_type_for_text(text: str) -> str:
+    lower = text.lower()
+    # Check timeline phrasing first: "currently how long is X taking ... premium
+    # processing" is fundamentally a timeline/operational question even though it
+    # mentions a policy term like "premium processing".
+    if any(x in lower for x in ["how long", "taking", "processing time", "approval time", "backlog"]):
+        return "timeline"
+    if any(x in lower for x in ["eligible", "eligibility", "must", "may file", "premium processing", "policy", "rule", "regulation"]):
+        return "policy"
+    if any(x in lower for x in ["day", "week", "month", "timeline", "approved", "delay"]):
+        return "timeline"
+    if any(x in lower for x in ["$", "cost", "fee", "price", "pricing"]):
+        return "price"
+    if any(x in lower for x in ["percent", "%", "revenue", "quarter", "statistic", "rate"]):
+        return "statistic"
+    if any(x in lower for x in ["supports", "available", "feature", "limit", "capability"]):
+        return "capability"
+    if any(x in lower for x in ["reported", "users", "community", "case", "experience"]):
+        return "anecdote"
+    return "unknown"
+
+
+def _claim_freshness_risk(claim_type: str, source: ResearchSource | None = None) -> str:
+    if claim_type in {"timeline", "price", "statistic", "capability"}:
+        if source and source.source_date_confidence == "unknown" and source.source_tier != SOURCE_TIER_OFFICIAL:
+            return "high"
+        if source and source.freshness_score >= 0.75:
+            return "low"
+        return "medium"
+    if claim_type == "policy":
+        return "medium" if source and source.source_date_confidence == "year" else "low"
+    return "unknown"
+
+
 def _claim_records_from_data(data: dict | None, fallback: list[tuple[str, float]]) -> list[ClaimRecord]:
     if not data:
-        return [ClaimRecord(claim=c, score=s, quote=c[:260], confidence="medium") for c, s in fallback]
+        return [
+            ClaimRecord(
+                claim=c,
+                score=s,
+                quote=c[:260],
+                confidence="medium",
+                claim_type=_claim_type_for_text(c),
+            )
+            for c, s in fallback
+        ]
     rows = data.get("claims")
     if not isinstance(rows, list):
         return [ClaimRecord(claim=c, score=s, quote=c[:260], confidence="medium") for c, s in fallback]
@@ -822,14 +1219,25 @@ def _claim_records_from_data(data: dict | None, fallback: list[tuple[str, float]
         if confidence not in {"low", "medium", "high"}:
             confidence = "medium"
         quote = str(row.get("quote") or claim[:260]).strip()
+        claim_type = str(row.get("claim_type") or row.get("type") or _claim_type_for_text(claim)).lower()
+        if claim_type not in {"policy", "timeline", "price", "statistic", "capability", "anecdote", "interpretation", "unknown"}:
+            claim_type = "unknown"
+        claim_role = str(row.get("claim_role") or row.get("role") or "background_context").lower()
+        freshness_risk = str(row.get("freshness_risk") or "unknown").lower()
+        if freshness_risk not in {"low", "medium", "high", "unknown"}:
+            freshness_risk = "unknown"
         claims.append(ClaimRecord(
             claim=claim[:600],
             score=max(0.0, min(1.0, score)),
             quote=quote[:500] if quote else None,
             confidence=confidence,
+            claim_type=claim_type,
+            claim_role=claim_role,
+            freshness_risk=freshness_risk,
         ))
     return claims[:MAX_CLAIMS_PER_SOURCE] or [
-        ClaimRecord(claim=c, score=s, quote=c[:260], confidence="medium") for c, s in fallback
+        ClaimRecord(claim=c, score=s, quote=c[:260], confidence="medium", claim_type=_claim_type_for_text(c))
+        for c, s in fallback
     ]
 
 
@@ -847,6 +1255,9 @@ Schema:
       "claim": "atomic factual claim supported by the source excerpt",
       "quote": "short direct supporting excerpt",
       "confidence": "high|medium|low",
+      "claim_type": "policy|timeline|price|statistic|capability|anecdote|interpretation|unknown",
+      "claim_role": "official_policy|operational_reality|expert_interpretation|anecdotal_case|statistical_data|background_context",
+      "freshness_risk": "low|medium|high|unknown",
       "relevance_score": 0.0
     }
   ]
@@ -856,6 +1267,7 @@ Rules:
 - Extract at most 4 claims.
 - Claims must be directly supported by the source excerpt.
 - Prefer specific facts, dates, limits, capabilities, pricing, availability, caveats, or trade-offs.
+- Use claim_type/claim_role to distinguish official policy from observed operational reality.
 - Do not invent facts not present in the excerpt."""
     user = f"""Research question:
 {query}
@@ -912,7 +1324,63 @@ def _find_gaps(questions: list[ResearchQuestion], claims_by_question: dict[int, 
     return gaps[:4]
 
 
-def _find_contradictions(claims: list[ResearchClaim]) -> list[str]:
+def _duration_range_days(text: str) -> tuple[float, float] | None:
+    lower = text.lower()
+    matches = list(re.finditer(
+        r"(?P<a>\d+(?:\.\d+)?)\s*(?:-|–|to)?\s*(?P<b>\d+(?:\.\d+)?)?\s*(?P<unit>business days|calendar days|days|weeks|months)",
+        lower,
+    ))
+    if not matches:
+        return None
+    ranges: list[tuple[float, float]] = []
+    for match in matches:
+        a = float(match.group("a"))
+        b = float(match.group("b") or match.group("a"))
+        unit = match.group("unit")
+        multiplier = 30.0 if "month" in unit else 7.0 if "week" in unit else 1.0
+        ranges.append((min(a, b) * multiplier, max(a, b) * multiplier))
+    if not ranges:
+        return None
+    return min(r[0] for r in ranges), max(r[1] for r in ranges)
+
+
+def _ranges_overlap(left: tuple[float, float], right: tuple[float, float], tolerance: float = 0.20) -> bool:
+    left_min, left_max = left
+    right_min, right_max = right
+    spread = max(left_max - left_min, right_max - right_min, 1.0)
+    padding = spread * tolerance
+    return max(left_min, right_min) <= min(left_max, right_max) + padding
+
+
+def _policy_polarity(text: str) -> str | None:
+    lower = text.lower()
+    negative_markers = [
+        "not eligible", "not available", "not covered", "does not apply",
+        "do not apply", "no guarantee", "not guaranteed", "cannot", "can't",
+        "is not included", "are not included",
+    ]
+    positive_markers = [
+        "eligible", "available", "covered", "guaranteed", "applies",
+        "included", "may request", "can request",
+    ]
+    if any(marker in lower for marker in negative_markers):
+        return "negative"
+    if any(marker in lower for marker in positive_markers):
+        return "positive"
+    return None
+
+
+def _claim_group_key(claim: ResearchClaim, source_by_id: dict[int | None, ResearchSource]) -> tuple[int | None, str]:
+    source = source_by_id.get(claim.source_id)
+    return (source.question_id if source else None, claim.claim_type or "unknown")
+
+
+def _claim_source_ref(claim: ResearchClaim, source_index: dict[int | None, int]) -> str:
+    idx = source_index.get(claim.source_id)
+    return f"S{idx}" if idx is not None else "S?"
+
+
+def _find_contradictions(claims: list[ResearchClaim], sources: list[ResearchSource] | None = None) -> list[str]:
     """Cheap fallback used when the LLM evaluator cannot identify conflicts."""
     contradictions: list[str] = []
     lowers = [(c.claim.lower(), c.claim) for c in claims]
@@ -929,7 +1397,55 @@ def _find_contradictions(claims: list[ResearchClaim]) -> list[str]:
         right = [raw for low, raw in lowers if b in low]
         if left and right:
             contradictions.append(f"Potential conflict: '{a}' vs '{b}' appears across extracted claims.")
-    return contradictions[:4]
+
+    source_by_id = {s.id: s for s in (sources or [])}
+    source_index = {s.id: i for i, s in enumerate(sources or [], 1)}
+    grouped: dict[tuple[int | None, str], list[ResearchClaim]] = {}
+    for claim in claims:
+        grouped.setdefault(_claim_group_key(claim, source_by_id), []).append(claim)
+
+    for (_question_id, claim_type), rows in grouped.items():
+        if len(rows) < 2:
+            continue
+        polarities: dict[str, list[ResearchClaim]] = {"positive": [], "negative": []}
+        for row in rows:
+            polarity = _policy_polarity(row.claim)
+            if polarity:
+                polarities[polarity].append(row)
+        if polarities["positive"] and polarities["negative"]:
+            left = polarities["positive"][0]
+            right = polarities["negative"][0]
+            contradictions.append(
+                f"Policy/capability conflict in {claim_type} evidence: "
+                f"{_claim_source_ref(left, source_index)} says positive/available, "
+                f"{_claim_source_ref(right, source_index)} says negative/unavailable."
+            )
+
+        if claim_type == "timeline":
+            ranges = [(row, rng) for row in rows if (rng := _duration_range_days(row.claim))]
+            found_timeline_conflict = False
+            for i, (left, left_range) in enumerate(ranges):
+                for right, right_range in ranges[i + 1:]:
+                    if not _ranges_overlap(left_range, right_range):
+                        contradictions.append(
+                            f"Timeline conflict: {_claim_source_ref(left, source_index)} implies "
+                            f"{left_range[0]:.0f}-{left_range[1]:.0f} days, while "
+                            f"{_claim_source_ref(right, source_index)} implies {right_range[0]:.0f}-{right_range[1]:.0f} days."
+                        )
+                        found_timeline_conflict = True
+                        break
+                if found_timeline_conflict:
+                    break
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for contradiction in contradictions:
+        key = contradiction.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(contradiction)
+    return deduped[:6]
 
 
 def _evaluation_from_data(
@@ -977,7 +1493,11 @@ def _llm_evaluate_research(
 ) -> ResearchEvaluation:
     fallback_confidence = _confidence(len(sources), len(claims), fallback_gaps, fallback_contradictions)
     source_rows = [
-        f"- {s.title} ({s.source_type}, credibility={s.credibility_score:.2f}, relevance={s.relevance_score:.2f})"
+        (
+            f"- {s.title} ({s.source_type}, tier={s.source_tier}, role={s.source_role_prior}, "
+            f"family={s.source_family or source_family_for_url(s.url)}, date={_source_date_label(s)}, "
+            f"credibility={s.credibility_score:.2f}, relevance={s.relevance_score:.2f})"
+        )
         for s in sources[:24]
     ]
     claim_rows = [f"- {c.claim}" for c in claims[:40]]
@@ -994,12 +1514,16 @@ Schema:
 }
 
 Evaluate whether the gathered evidence is enough for a citation-backed answer.
-Prefer primary and official sources. Penalize stale, low-authority, or thin evidence."""
+Prefer primary and official sources for policy/eligibility/legal/pricing/capability claims.
+For operational reality claims (timelines, delays, backlogs, real-world approvals),
+recent independent anecdotal/practitioner evidence can be load-bearing, but only
+when it is labeled and not overgeneralized. Penalize stale, low-authority,
+single-family, or thin evidence."""
     user = f"""Original research request:
 {query}
 
 Subquestions:
-{chr(10).join(f"- {q.question}" for q in questions)}
+{chr(10).join(f"- ({q.claim_type}/{q.evidence_role}; freshness={q.freshness_requirement}) {q.question}" for q in questions)}
 
 Sources:
 {chr(10).join(source_rows) if source_rows else "- none"}
@@ -1036,6 +1560,8 @@ def _question_source_counts(
 
 def _is_primary_source(source: ResearchSource) -> bool:
     """Return True for official/primary-ish sources useful for grounded research."""
+    if (source.source_tier or "") == SOURCE_TIER_OFFICIAL:
+        return source.credibility_score >= 0.45
     source_type = source.source_type or ""
     if source_type in PRIMARY_SOURCE_TYPES:
         return source.credibility_score >= 0.55
@@ -1073,6 +1599,108 @@ def _primary_source_gaps(
     return gaps[:5]
 
 
+def _json_string_list(raw: str | None) -> list[str]:
+    if not raw:
+        return []
+    try:
+        value = json.loads(raw)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return []
+    if not isinstance(value, list):
+        return []
+    return [str(v) for v in value if str(v).strip()]
+
+
+def _sources_for_question(sources: list[ResearchSource], question: ResearchQuestion) -> list[ResearchSource]:
+    return [s for s in sources if s.question_id == question.id and (s.admission_status or "admitted") != "rejected"]
+
+
+def _independent_family_count(sources: list[ResearchSource]) -> int:
+    return len({s.source_family or source_family_for_url(s.url) for s in sources if s.url})
+
+
+def _thread_contract_status(
+    question: ResearchQuestion,
+    sources: list[ResearchSource],
+) -> tuple[str, str | None]:
+    q_sources = _sources_for_question(sources, question)
+    if not q_sources:
+        return "low", "No admitted evidence found for this research thread."
+
+    required_tiers = _json_string_list(question.required_source_tiers_json)
+    if required_tiers and not any((s.source_tier or "") in required_tiers for s in q_sources):
+        return "low", f"Missing required source tier(s): {', '.join(required_tiers)}."
+
+    role = question.evidence_role or "background_context"
+    claim_type = question.claim_type or "unknown"
+    if role == ROLE_OFFICIAL_POLICY or claim_type in {"policy", "price", "capability"}:
+        if not any(_is_primary_source(s) for s in q_sources):
+            return "low", "Official/primary evidence required for this policy or capability thread."
+
+    if role == ROLE_OPERATIONAL_REALITY or claim_type == "timeline":
+        operational = [
+            s for s in q_sources
+            if (s.source_role_prior or "") in {ROLE_OPERATIONAL_REALITY, ROLE_ANECDOTAL_CASE}
+            or (s.source_tier or "") == SOURCE_TIER_OFFICIAL
+        ]
+        if _independent_family_count(operational) < 2:
+            return "medium", "Operational reality evidence has low independent source diversity."
+
+    if question.freshness_requirement == "current":
+        fresh_or_official_unknown = [
+            s for s in q_sources
+            if s.freshness_score >= 0.75
+            or ((s.source_tier or "") == SOURCE_TIER_OFFICIAL and (s.source_date_confidence or "unknown") == "unknown")
+        ]
+        if not fresh_or_official_unknown:
+            return "medium", "Currentness requirement not fully satisfied by admitted evidence."
+
+    if _independent_family_count(q_sources) < 2 and len(q_sources) >= 2:
+        return "medium", "Evidence comes from a narrow source family."
+    return "high", None
+
+
+def _apply_thread_contract_status(
+    questions: list[ResearchQuestion],
+    sources: list[ResearchSource],
+) -> list[str]:
+    gaps: list[str] = []
+    for question in questions:
+        confidence, stop_reason = _thread_contract_status(question, sources)
+        question.confidence = confidence
+        question.stop_reason = stop_reason
+        if stop_reason:
+            gaps.append(f"{question.question} ({stop_reason})")
+    return gaps[:6]
+
+
+def _source_date_label(source: ResearchSource) -> str:
+    date_value = source.updated_at or source.published_at
+    if date_value is None:
+        return f"unknown ({source.source_date_confidence or 'unknown'})"
+    return f"{date_value.date().isoformat()} ({source.source_date_confidence or 'exact'})"
+
+
+def _source_manifest_line(index: int, source: ResearchSource, include_scores: bool = False) -> str:
+    parts = [
+        f"[S{index}] {source.title}",
+        f"URL: {source.url}",
+        (
+            f"Type: {source.source_type or 'web'}; tier={source.source_tier or 'unknown'}; "
+            f"role_prior={source.source_role_prior or 'unknown'}; family={source.source_family or source_family_for_url(source.url)}; "
+            f"date={_source_date_label(source)}; admission={source.admission_status or 'admitted'}"
+        ),
+    ]
+    if include_scores:
+        parts[-1] += (
+            f"; credibility={source.credibility_score:.2f}; relevance={source.relevance_score:.2f}; "
+            f"freshness={source.freshness_score:.2f}"
+        )
+    if source.admission_reason:
+        parts.append(f"Admission note: {source.admission_reason}")
+    return "\n".join(parts)
+
+
 def _question_needs_more_sources(
     q: ResearchQuestion,
     source_counts: dict[int, int],
@@ -1088,22 +1716,45 @@ def _question_needs_more_sources(
     return source_counts.get(q.id or -1, 0) < MIN_SOURCES_PER_QUESTION
 
 
+def _thread_budget(question: ResearchQuestion) -> dict:
+    if not question.budget_json:
+        return {}
+    try:
+        value = json.loads(question.budget_json)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _thread_source_budget_reached(
+    question: ResearchQuestion,
+    source_counts: dict[int, int],
+) -> bool:
+    budget = _thread_budget(question)
+    try:
+        max_sources = int(budget.get("max_sources", 0))
+    except (TypeError, ValueError):
+        max_sources = 0
+    return max_sources > 0 and source_counts.get(question.id or -1, 0) >= max_sources
+
+
 def _build_followup_synthesis_prompt(
     original_query: str,
     follow_up_question: str,
     sources: list[ResearchSource],
     claims: list[ResearchClaim],
 ) -> str:
-    source_lines = [
-        f"[S{i}] {s.title} ({s.source_type})\nURL: {s.url}"
-        for i, s in enumerate(sources[:20], 1)
-    ]
+    source_lines = [_source_manifest_line(i, s) for i, s in enumerate(sources[:20], 1)]
     source_label = {s.id: f"S{i}" for i, s in enumerate(sources[:20], 1)}
     claim_lines = [
-        f"- [{source_label.get(c.source_id, 'S?')}] {c.claim}"
+        f"- [{source_label.get(c.source_id, 'S?')}] ({c.claim_type}/{c.claim_role}, freshness_risk={c.freshness_risk}) {c.claim}"
         for c in claims[:40]
     ]
     return f"""You are Fronei answering a follow-up question using prior research evidence.
+
+Today's date is {_today_str()}. Use this as the current date for any
+"currently"/"latest"/"as of now" framing — do not assume an earlier date
+from your training data.
 
 Prior research question:
 {original_query}
@@ -1208,6 +1859,14 @@ def run_research_followup(
             "relevance_score": s.relevance_score,
             "freshness_score": s.freshness_score,
             "source_type": s.source_type,
+            "source_tier": s.source_tier,
+            "source_family": s.source_family,
+            "source_role_prior": s.source_role_prior,
+            "published_at": s.published_at.isoformat() if s.published_at else None,
+            "updated_at": s.updated_at.isoformat() if s.updated_at else None,
+            "source_date_confidence": s.source_date_confidence,
+            "admission_status": s.admission_status,
+            "admission_reason": s.admission_reason,
         }
         for s in sources
     ]
@@ -1235,23 +1894,25 @@ def _build_synthesis_prompt(
     contradictions: list[str],
     mode: str,
 ) -> str:
-    source_lines = [
-        f"[S{i}] {s.title}\nURL: {s.url}\nType: {s.source_type}; credibility={s.credibility_score:.2f}; relevance={s.relevance_score:.2f}"
-        for i, s in enumerate(sources, 1)
-    ]
+    source_lines = [_source_manifest_line(i, s, include_scores=True) for i, s in enumerate(sources, 1)]
     source_label = {s.id: f"S{i}" for i, s in enumerate(sources, 1)}
     claim_lines = [
-        f"- [{source_label.get(c.source_id, 'S?')}] {c.claim}"
+        f"- [{source_label.get(c.source_id, 'S?')}] ({c.claim_type}/{c.claim_role}, freshness_risk={c.freshness_risk}) {c.claim}"
         for c in claims[:36]
     ]
     return f"""You are Fronei running a frontier-style research synthesis.
+
+Today's date is {_today_str()}. Treat this as the current date for all
+"currently"/"latest"/"as of now" framing, report titles/headings, and when
+judging whether a source is current or stale — do not assume an earlier date
+from your training data.
 
 Research mode: {mode}
 Original question:
 {query}
 
 Research questions:
-{chr(10).join(f"- {q.question}" for q in questions)}
+{chr(10).join(f"- ({q.claim_type}/{q.evidence_role}; freshness={q.freshness_requirement}; confidence={q.confidence or 'unknown'}) {q.question}" for q in questions)}
 
 Sources:
 {chr(10).join(source_lines) if source_lines else "- No external sources were successfully retrieved."}
@@ -1265,20 +1926,29 @@ Known gaps:
 Potential contradictions:
 {chr(10).join(f"- {c}" for c in contradictions) if contradictions else "- None identified."}
 
+Evidence weighting rules:
+- For official policy, eligibility, legal rules, pricing, and product capability claims, prefer tier_1_official sources.
+- For operational reality claims such as real-world timelines, delays, backlogs, support response times, and case outcomes, recent independent anecdotal/practitioner/case-tracker evidence may be the primary signal. Label it as observed/anecdotal rather than official.
+- Unknown date is not automatically stale for tier_1_official sources; dated old sources should not support current operational claims unless clearly framed as historical.
+- Resolve conflicts by weighing source tier, role, date, independence/source family, and claim type together. Do not use "newer wins" as the only rule.
+
 Write the final answer as an executive research brief with:
 1. Bottom line
 2. Key findings with inline citations like [S1]
 3. Trade-offs / risks / caveats
 4. What is still uncertain
 5. Recommended next steps
-6. Source table
 
+Do not create a source table or bibliography in the prose; the app renders sources from a structured citation manifest.
 Do not cite unsupported claims. If evidence is thin, say so plainly."""
 
 
 def _build_verifier_prompt(draft: str, claims: list[ResearchClaim], gaps: list[str], contradictions: list[str]) -> str:
     evidence = "\n".join(f"- {c.claim}" for c in claims[:40]) or "- No extracted claims."
     return f"""Review this research draft for unsupported claims, stale/currentness risk, citation mismatch, and overconfidence.
+
+Today's date is {_today_str()}. Use this — not any date implied by your
+training data — when judging whether claims, sources, or framing are stale.
 
 Draft:
 {draft}
@@ -1342,12 +2012,13 @@ def _build_citation_verifier_prompt(
     mode: str,
 ) -> str:
     source_label = {s.id: f"S{i}" for i, s in enumerate(sources, 1)}
-    source_rows = [
-        f"[S{i}] {s.title}\nURL: {s.url}\nType: {s.source_type}; credibility={s.credibility_score:.2f}; freshness={s.freshness_score:.2f}"
-        for i, s in enumerate(sources, 1)
-    ]
+    source_rows = [_source_manifest_line(i, s, include_scores=True) for i, s in enumerate(sources, 1)]
     evidence_rows = [
-        f"- [{source_label.get(c.source_id, 'S?')}] claim: {c.claim}\n  quote: {c.quote or '(no quote)'}"
+        (
+            f"- [{source_label.get(c.source_id, 'S?')}] "
+            f"claim_type={c.claim_type}; claim_role={c.claim_role}; freshness_risk={c.freshness_risk}\n"
+            f"  claim: {c.claim}\n  quote: {c.quote or '(no quote)'}"
+        )
         for c in claims[:60]
     ]
     strictness = (
@@ -1357,6 +2028,10 @@ def _build_citation_verifier_prompt(
     )
     return f"""You are Fronei's citation verifier. Check whether the draft's factual
 claims are directly supported by the evidence store.
+
+Today's date is {_today_str()}. Use this — not any date implied by your
+training data — when flagging stale or overconfident claims, and when
+repairing dates/years in the verified answer (including its title/heading).
 
 Return ONLY valid JSON. No markdown.
 
@@ -1372,6 +2047,9 @@ Schema:
 Rules:
 - {strictness}
 - A citation like [S1] must support the sentence it appears in.
+- Check source tier, role_prior, date/date confidence, and admission status before allowing current or high-confidence wording.
+- Official/policy claims need official or primary evidence. Operational reality claims may rely on recent independent anecdotal/practitioner evidence, but must be labeled as observed/anecdotal.
+- Unknown date is not automatically stale for tier_1_official sources. Known old sources must not support current operational claims unless framed as historical.
 - Do not invent new sources, URLs, numbers, dates, or capabilities.
 - Preserve useful analysis, but label it as analysis when it goes beyond evidence.
 - If evidence is thin or gaps remain, say so in the answer.
@@ -1420,8 +2098,42 @@ def _llm_verify_and_repair(
         return _verification_from_data(None, draft), None
 
 
-def _should_verify_research(mode: str) -> bool:
-    return mode == "expert"
+def _has_load_bearing_anecdotal_sources(sources: list[ResearchSource] | None) -> bool:
+    if not sources:
+        return False
+    admitted = [s for s in sources if (s.admission_status or "admitted") != "rejected"]
+    if not admitted:
+        return False
+    anecdotal_roles = {ROLE_ANECDOTAL_CASE, ROLE_OPERATIONAL_REALITY}
+    anecdotal = [s for s in admitted if (s.source_role_prior or "") in anecdotal_roles]
+    official = [s for s in admitted if (s.source_tier or "") == SOURCE_TIER_OFFICIAL]
+    return len(anecdotal) >= 2 and len(anecdotal) >= len(official)
+
+
+def _should_verify_research(
+    mode: str,
+    *,
+    domain: str | None = None,
+    confidence: str | None = None,
+    gaps: list[str] | None = None,
+    contradictions: list[str] | None = None,
+    sources: list[ResearchSource] | None = None,
+    query: str = "",
+) -> bool:
+    if mode == "expert":
+        return True
+    confidence = (confidence or "low").lower()
+    sensitive = domain in {"legal_regulatory", "medical", "financial"}
+    has_gaps = bool(gaps)
+    has_conflicts = bool(contradictions)
+    freshness_critical = _freshness_is_explicit(query)
+    if sensitive and confidence != "high" and (has_gaps or has_conflicts or freshness_critical):
+        return True
+    if freshness_critical and confidence == "low":
+        return True
+    if _has_load_bearing_anecdotal_sources(sources) and confidence != "high":
+        return True
+    return False
 
 
 def _claim_confidence_rank(confidence: str | None) -> int:
@@ -1520,7 +2232,7 @@ def run_research(
         query=query,
         mode=mode,
         status="running",
-        max_sources=HARD_MAX_SOURCES,
+        max_sources=_hard_max_sources(mode),
         created_at=_now(),
         updated_at=_now(),
     )
@@ -1569,6 +2281,11 @@ def _run_pipeline(
             run_id=run.id,
             question=planned.question,
             search_query=planned.search_query,   # concise keyword query, not the prose question
+            claim_type=planned.claim_type,
+            evidence_role=planned.evidence_role,
+            freshness_requirement=planned.freshness_requirement,
+            required_source_tiers_json=json.dumps(planned.required_source_tiers),
+            budget_json=json.dumps(planned.budget),
             created_at=_now(),
         )
         db.add(q)
@@ -1592,23 +2309,22 @@ def _run_pipeline(
         seen_urls.add(key)
         excerpt = source.content[:SOURCE_EXCERPT_CHARS]
         quality = _source_quality(query, source_title(source), source.url, excerpt, strategy)
-        db.add(ResearchSource(
+        research_source = _build_research_source(
             run_id=run.id,
             question_id=None,
-            title=source_title(source),
-            url=source.url,
             provider=provider,
-            excerpt=excerpt,
-            credibility_score=quality.credibility,
-            relevance_score=quality.relevance,
-            freshness_score=quality.freshness,
-            source_type=quality.source_type,
-            created_at=_now(),
-        ))
+            web_source=source,
+            quality=quality,
+        )
+        db.add(research_source)
     db.commit()
-    all_sources = db.query(ResearchSource).filter(ResearchSource.run_id == run.id).all()
+    all_sources = (
+        db.query(ResearchSource)
+        .filter(ResearchSource.run_id == run.id, ResearchSource.admission_status != "rejected")
+        .all()
+    )
 
-    for iteration in range(MAX_ITERATIONS):
+    for iteration in range(_max_iterations(mode)):
         run.iterations = iteration + 1
         db.commit()
         progress("searching", f"Search pass {iteration + 1}…", {"iteration": iteration + 1})
@@ -1618,12 +2334,13 @@ def _run_pipeline(
         q_primary_counts = _question_primary_source_counts(all_sources, questions)
         required_by_question = question_required_source_types
 
-        remaining_slots = HARD_MAX_SOURCES - len(all_sources)
+        remaining_slots = _hard_max_sources(mode) - len(all_sources)
         if remaining_slots <= 0:
             break
         eligible_questions = [
             q for q in questions
-            if _question_needs_more_sources(q, q_source_counts, q_primary_counts, len(all_sources), mode)
+            if not _thread_source_budget_reached(q, q_source_counts)
+            and _question_needs_more_sources(q, q_source_counts, q_primary_counts, len(all_sources), mode)
         ]
         if eligible_questions:
             progress("searching", f"Running {len(eligible_questions)} question worker(s) in parallel…", {
@@ -1648,6 +2365,7 @@ def _run_pipeline(
             required_by_question,
             remaining_slots,
         )
+        admitted_this_round = 0
         for _provider, selected_source, _question_id in candidate_sources:
             seen_urls.add(selected_source.url.split("#")[0].rstrip("/"))
 
@@ -1658,37 +2376,66 @@ def _run_pipeline(
                 query, source_title(web_source), web_source.url, excerpt,
                 strategy, required_source_types,
             )
-            # Rule 3 — quality floor: discard low-signal sources
-            if quality.quality < MIN_CREDIBILITY_SCORE:
-                continue
-            source = ResearchSource(
+            source = _build_research_source(
                 run_id=run.id,
                 question_id=question_id,
-                title=source_title(web_source),
-                url=web_source.url,
                 provider=provider,
-                excerpt=excerpt,
-                credibility_score=quality.credibility,
-                relevance_score=quality.relevance,
-                freshness_score=quality.freshness,
-                source_type=quality.source_type,
-                created_at=_now(),
+                web_source=web_source,
+                quality=quality,
             )
+            # Rule 3 — quality floor: persist but exclude low-signal sources
+            if quality.quality < MIN_CREDIBILITY_SCORE and source.admission_status != "rejected":
+                source.admission_status = "rejected"
+                source.admission_reason = f"below credibility floor (quality={quality.quality:.2f})"
             db.add(source)
+            if source.admission_status == "rejected":
+                continue
             all_sources.append(source)
+            admitted_this_round += 1
         db.commit()
         for source in all_sources:
             if source.id is None:
                 db.refresh(source)
 
+        if iteration > 0 and admitted_this_round == 0 and len(all_sources) >= MIN_TOTAL_SOURCES:
+            progress("checking", "Stopping: latest pass added no new admitted evidence.", {
+                "iteration": iteration + 1,
+                "source_count": len(all_sources),
+            })
+            break
+
         progress("extracting", f"Extracting claims from {len(all_sources)} sources…", {"source_count": len(all_sources)})
         existing_source_ids = {c.source_id for c in db.query(ResearchClaim).filter(ResearchClaim.run_id == run.id).all()}
         pending_extract_sources = [source for source in all_sources if source.id not in existing_source_ids]
-        claim_records_by_source = _llm_extract_claim_records_parallel(query, pending_extract_sources)
+
+        # Phase 5 — reuse cached claim extractions for sources we've already
+        # processed in a prior run, keyed by URL with category-aware TTLs.
+        claim_records_by_source: dict[int, list[ClaimRecord]] = {}
+        cache_misses: list[ResearchSource] = []
+        cache_hits = 0
+        for source in pending_extract_sources:
+            cached = _get_cached_source(db, source.url)
+            if cached is not None:
+                claim_records_by_source[source.id] = _claim_records_from_cache(cached)
+                cache_hits += 1
+            else:
+                cache_misses.append(source)
+        if cache_hits:
+            progress("extracting", f"Reused cached evidence for {cache_hits} source(s).", {"cache_hits": cache_hits})
+        claim_records_by_source.update(_llm_extract_claim_records_parallel(query, cache_misses))
+        for source in cache_misses:
+            if source.id is not None:
+                _store_source_cache(db, source, claim_records_by_source.get(source.id, []), strategy.domain)
         for source in pending_extract_sources:
             if source.id is None:
                 continue
             for record in claim_records_by_source.get(source.id, []):
+                claim_role = record.claim_role
+                if claim_role == "background_context" and source.source_role_prior:
+                    claim_role = source.source_role_prior
+                freshness_risk = record.freshness_risk
+                if freshness_risk == "unknown":
+                    freshness_risk = _claim_freshness_risk(record.claim_type, source)
                 db.add(ResearchClaim(
                     run_id=run.id,
                     source_id=source.id,
@@ -1696,6 +2443,9 @@ def _run_pipeline(
                     quote=record.quote or record.claim[:260],
                     confidence=record.confidence,
                     relevance_score=record.score,
+                    claim_type=record.claim_type,
+                    claim_role=claim_role,
+                    freshness_risk=freshness_risk,
                     created_at=_now(),
                 ))
         db.commit()
@@ -1708,14 +2458,24 @@ def _run_pipeline(
                 claims_by_question[source.question_id] = claims_by_question.get(source.question_id, 0) + len(source_claims)
         fallback_gaps = _find_gaps(questions, claims_by_question)
         primary_gaps = _primary_source_gaps(questions, _question_primary_source_counts(all_sources, questions), mode)
-        fallback_gaps = [*fallback_gaps, *[g for g in primary_gaps if g not in fallback_gaps]][:5]
-        fallback_contradictions = _find_contradictions(claims)
+        contract_gaps = _apply_thread_contract_status(questions, all_sources)
+        fallback_gaps = [
+            *fallback_gaps,
+            *[g for g in primary_gaps if g not in fallback_gaps],
+            *[g for g in contract_gaps if g not in fallback_gaps],
+        ][:6]
+        db.commit()
+        fallback_contradictions = _find_contradictions(claims, all_sources)
         evaluation = _llm_evaluate_research(
             query, questions, all_sources, claims,
             fallback_gaps=fallback_gaps,
             fallback_contradictions=fallback_contradictions,
         )
-        gaps = [*evaluation.gaps, *[g for g in primary_gaps if g not in evaluation.gaps]][:5]
+        gaps = [
+            *evaluation.gaps,
+            *[g for g in primary_gaps if g not in evaluation.gaps],
+            *[g for g in contract_gaps if g not in evaluation.gaps],
+        ][:6]
         progress("checking", f"Checking gaps after pass {iteration + 1}…", {
             "gaps": gaps,
             "confidence": evaluation.confidence,
@@ -1725,15 +2485,27 @@ def _run_pipeline(
         if not gaps and (evaluation.enough_evidence or evaluation.confidence == "high"):
             progress("checking", "Confidence is high — stopping early.", {})
             break
-        if not gaps or iteration == MAX_ITERATIONS - 1:
+        if not gaps or iteration == _max_iterations(mode) - 1:
             break
         followups = evaluation.follow_up_queries or [f"{gap[:100]} 2026" for gap in gaps]
         for gap, followup in zip(gaps, followups):
-            questions.append(ResearchQuestion(
-                run_id=run.id,
+            planned_followup = _planned_question_with_inferred_metadata(
                 question=gap,
                 search_query=followup,
+                priority="medium",
+                parent_query=query,
+                mode=mode,
+            )
+            questions.append(ResearchQuestion(
+                run_id=run.id,
+                question=planned_followup.question,
+                search_query=planned_followup.search_query,
                 status="follow_up",
+                claim_type=planned_followup.claim_type,
+                evidence_role=planned_followup.evidence_role,
+                freshness_requirement=planned_followup.freshness_requirement,
+                required_source_tiers_json=json.dumps(planned_followup.required_source_tiers),
+                budget_json=json.dumps(planned_followup.budget),
                 created_at=_now(),
             ))
             db.add(questions[-1])
@@ -1744,9 +2516,14 @@ def _run_pipeline(
             if q.id is not None and q.id not in question_required_source_types:
                 question_required_source_types[q.id] = strategy.preferred_source_types
 
-    sources = db.query(ResearchSource).filter(ResearchSource.run_id == run.id).order_by(
+    sources = db.query(ResearchSource).filter(
+        ResearchSource.run_id == run.id, ResearchSource.admission_status != "rejected"
+    ).order_by(
         ResearchSource.credibility_score.desc(), ResearchSource.relevance_score.desc()
     ).all()
+    rejected_sources = db.query(ResearchSource).filter(
+        ResearchSource.run_id == run.id, ResearchSource.admission_status == "rejected"
+    ).order_by(ResearchSource.relevance_score.desc()).all()
     claims = db.query(ResearchClaim).filter(ResearchClaim.run_id == run.id).order_by(
         ResearchClaim.relevance_score.desc()
     ).all()
@@ -1756,14 +2533,23 @@ def _run_pipeline(
             claims_by_question[source.question_id] = claims_by_question.get(source.question_id, 0) + len([c for c in claims if c.source_id == source.id])
     fallback_gaps = _find_gaps(questions, claims_by_question)
     primary_gaps = _primary_source_gaps(questions, _question_primary_source_counts(sources, questions), mode)
-    fallback_gaps = [*fallback_gaps, *[g for g in primary_gaps if g not in fallback_gaps]][:5]
-    fallback_contradictions = _find_contradictions(claims)
+    contract_gaps = _apply_thread_contract_status(questions, sources)
+    fallback_gaps = [
+        *fallback_gaps,
+        *[g for g in primary_gaps if g not in fallback_gaps],
+        *[g for g in contract_gaps if g not in fallback_gaps],
+    ][:6]
+    fallback_contradictions = _find_contradictions(claims, sources)
     final_evaluation = _llm_evaluate_research(
         query, questions, sources, claims,
         fallback_gaps=fallback_gaps,
         fallback_contradictions=fallback_contradictions,
     )
-    gaps = [*final_evaluation.gaps, *[g for g in primary_gaps if g not in final_evaluation.gaps]][:5]
+    gaps = [
+        *final_evaluation.gaps,
+        *[g for g in primary_gaps if g not in final_evaluation.gaps],
+        *[g for g in contract_gaps if g not in final_evaluation.gaps],
+    ][:6]
     contradictions = final_evaluation.contradictions
     confidence = final_evaluation.confidence
     _persist_research_findings(db, run, questions, sources, claims, confidence)
@@ -1804,8 +2590,17 @@ def _run_pipeline(
     verifier_notes = None
     final_answer = draft.answer
 
-    if mode == "expert":
-        progress("verifying", "Verifying citation support…", {"research_run_id": run.id})
+    should_verify = _should_verify_research(
+        mode,
+        domain=strategy.domain,
+        confidence=confidence,
+        gaps=gaps,
+        contradictions=contradictions,
+        sources=sources,
+        query=query,
+    )
+    if should_verify:
+        progress("verifying", "Verifying citation support and currentness…", {"research_run_id": run.id})
         verification, verified = _llm_verify_and_repair(
             query, draft.answer, sources, claims, gaps, contradictions, route, mode,
         )
@@ -1836,7 +2631,7 @@ def _run_pipeline(
                 fallback_errors=draft.fallback_errors,
             )
     else:
-        progress("verifying", "Skipping verifier for deep mode.", {"research_run_id": run.id})
+        progress("verifying", "Skipping verifier; evidence checks did not cross verification threshold.", {"research_run_id": run.id})
 
     run.status = "complete"
     run.verifier_notes = verifier_notes
@@ -1845,8 +2640,8 @@ def _run_pipeline(
     db.commit()
     db.refresh(run)
 
-    source_logs = [
-        {
+    def _source_log(s: ResearchSource) -> dict:
+        return {
             "id": s.id,
             "title": s.title,
             "url": s.url,
@@ -1855,9 +2650,18 @@ def _run_pipeline(
             "relevance_score": s.relevance_score,
             "freshness_score": s.freshness_score,
             "source_type": s.source_type,
+            "source_tier": s.source_tier,
+            "source_family": s.source_family,
+            "source_role_prior": s.source_role_prior,
+            "published_at": s.published_at.isoformat() if s.published_at else None,
+            "updated_at": s.updated_at.isoformat() if s.updated_at else None,
+            "source_date_confidence": s.source_date_confidence,
+            "admission_status": s.admission_status,
+            "admission_reason": s.admission_reason,
         }
-        for s in sources
-    ]
+
+    source_logs = [_source_log(s) for s in sources]
+    rejected_source_logs = [_source_log(s) for s in rejected_sources]
     source_by_id = {s.id: s for s in sources}
     source_index = {s.id: i for i, s in enumerate(sources, 1)}
     claim_logs = [
@@ -1867,6 +2671,9 @@ def _run_pipeline(
             "quote": c.quote,
             "confidence": c.confidence,
             "relevance_score": c.relevance_score,
+            "claim_type": c.claim_type,
+            "claim_role": c.claim_role,
+            "freshness_risk": c.freshness_risk,
             "source_id": c.source_id,
             "source_ref": f"S{source_index.get(c.source_id, '?')}",
             "source_title": source_by_id.get(c.source_id).title if source_by_id.get(c.source_id) else None,
@@ -1879,6 +2686,8 @@ def _run_pipeline(
         "elapsed_ms": int((time.perf_counter() - started) * 1000),
         "sources": source_logs,
         "claims": claim_logs,
+        "rejected_sources": rejected_source_logs,
+        "rejected_count": len(rejected_source_logs),
     })
     return ResearchPipelineResult(
         run=run,
@@ -1888,6 +2697,7 @@ def _run_pipeline(
         questions=[q.question for q in questions],
         gaps=gaps,
         contradictions=contradictions,
+        rejected_source_logs=rejected_source_logs,
         verifier_notes=verifier_notes,
         claim_logs=claim_logs,
     )

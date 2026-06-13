@@ -6325,7 +6325,7 @@ export default function Home() {
         )}
 
         {activeTurnNotice && (
-          <div className="error-bar" role="status" style={{ alignItems: 'center' }}>
+          <div className={`error-bar ${activeTurnNotice.status === 'failed' ? '' : 'status-bar'}`} role="status" style={{ alignItems: 'center' }}>
             <span>
               {activeTurnNotice.status === 'failed'
                 ? `Turn failed: ${activeTurnNotice.message}`

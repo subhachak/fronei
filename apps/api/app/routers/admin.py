@@ -582,6 +582,8 @@ def cancel_turn(
         if not turn:
             raise HTTPException(status_code=404, detail="Turn not found")
         if turn.status in {"pending", "running"}:
+            from app.routers.conversations import _mark_turn_cancel_requested
+            _mark_turn_cancel_requested(turn.public_id)
             now = _now()
             turn.status = "cancelled"
             turn.completed_at = now

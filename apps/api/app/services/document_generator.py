@@ -211,15 +211,6 @@ def _add_field(paragraph: Paragraph, instruction: str, placeholder: str = "") ->
     run._r.append(end)
 
 
-def _enable_field_updates(doc: Document) -> None:
-    settings = doc.settings.element
-    if settings.find(qn("w:updateFields")) is not None:
-        return
-    update = OxmlElement("w:updateFields")
-    update.set(qn("w:val"), "true")
-    settings.append(update)
-
-
 def _add_footer(section) -> None:
     paragraph = section.footer.paragraphs[0]
     paragraph.text = "Fronei"
@@ -274,16 +265,39 @@ def _add_compact_header(doc: Document, title: str, subtitle: str | None) -> None
     _add_inline_runs(meta, meta_text, base_italic=True)
 
 
-def _add_toc(doc: Document) -> None:
+def _add_toc(doc: Document, content: str) -> None:
+    """Render a static table of contents from the document's headings.
+
+    Deliberately avoids a Word TOC field (w:fldChar / instrText "TOC ...").
+    Field codes — even without w:updateFields set — make Word show
+    "This document contains fields that may refer to other files. Do you
+    want to update the fields in this document?" on open for some users/
+    Word configurations. A plain heading list has identical informational
+    value without any field codes.
+    """
+    headings: list[tuple[int, str]] = []
+    skipped_first_h1 = False
+    for raw in content.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        match = re.match(r"^(#{1,3})\s+(.+)$", raw.strip())
+        if not match:
+            continue
+        level = len(match.group(1))
+        text = _clean_inline(match.group(2)).strip()
+        if level == 1 and not skipped_first_h1:
+            # Skip the document's own title heading (rendered separately).
+            skipped_first_h1 = True
+            continue
+        if text:
+            headings.append((level, text))
+
+    if not headings:
+        return
+
     doc.add_heading("Table of Contents", level=1)
-    paragraph = doc.add_paragraph()
-    _add_field(paragraph, r'TOC \o "1-3" \h \z \u', "Right-click and update field to refresh.")
+    for level, text in headings:
+        paragraph = doc.add_paragraph(text)
+        paragraph.paragraph_format.left_indent = Inches(0.25 * (level - 1))
     doc.add_page_break()
-    # Note: deliberately NOT calling _enable_field_updates here. Setting
-    # w:updateFields makes Word prompt "This document contains fields that
-    # may refer to other files. Do you want to update the fields..." every
-    # time the document is opened. The TOC field still works via the normal
-    # right-click "Update Field" / F9, per the placeholder text above.
 
 
 def _strip_leading_h1(content: str) -> str:
@@ -324,7 +338,7 @@ def generate_docx_bytes(title: str, content: str, subtitle: str | None = None, d
         if enhanced_doc_type in COVER_DOC_TYPES:
             _add_cover(doc, title, subtitle)
             if enhanced_doc_type in TOC_DOC_TYPES:
-                _add_toc(doc)
+                _add_toc(doc, content)
         elif enhanced_doc_type in COMPACT_HEADER_DOC_TYPES:
             _add_compact_header(doc, title, subtitle)
         # The cover / compact header already renders the title, so drop a

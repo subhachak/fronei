@@ -5115,7 +5115,8 @@ export default function Home() {
             <div className="topbar-chip">
               <i className="ti ti-adjustments-horizontal" />
               {researchOn ? 'Research' : quality === 'quick' ? 'Quick' : quality === 'thorough' ? 'Thorough' : 'Smart'}
-              {webSearchOn && !researchOn && ' · Web'}
+              {webSearchOn && ' · Web'}
+              {documentOn && ' · Doc'}
             </div>
             {devMode && (
               <button
@@ -5662,7 +5663,7 @@ export default function Home() {
                 </button>
               )}
 
-              {webSearchOn && !researchOn && (
+              {webSearchOn && (
                 <button
                   className="composer-mode-chip"
                   type="button"

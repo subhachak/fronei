@@ -22,6 +22,7 @@ from app.db.models import (
     AdminAuditLog,
     Conversation,
     ConversationMessage,
+    ConversationTurn,
     RequestLog,
     ResearchClaim,
     ResearchFinding,
@@ -38,7 +39,9 @@ from app.db.models import (
     get_global_budget_config,
     get_global_monthly_spend,
     get_monthly_spend,
+    get_turn_runtime_config,
     set_global_budget_config,
+    set_turn_runtime_config,
 )
 from app.services.llm_gateway import (
     PROVIDER_TEST_MODELS,
@@ -75,6 +78,12 @@ class GlobalBudgetUpdate(BaseModel):
     admin_override_enabled: bool = True
 
 
+class TurnRuntimeUpdate(BaseModel):
+    quick_timeout_minutes: int = Field(default=30, ge=5, le=240)
+    research_timeout_minutes: int = Field(default=180, ge=30, le=720)
+    document_timeout_minutes: int = Field(default=120, ge=15, le=720)
+
+
 class PrivacyDeleteRequest(BaseModel):
     conversations: bool = False
     memories: bool = False
@@ -98,6 +107,10 @@ class RouteTestRequest(BaseModel):
     task_override: str | None = None
     complexity_override: str | None = None
     preferred_model: str | None = None
+
+
+class AdminTurnCancelRequest(BaseModel):
+    reason: str | None = Field(default=None, max_length=500)
 
 
 def require_admin(request: Request, payload: dict = Depends(get_current_user_payload)) -> AdminPrincipal:
@@ -396,6 +409,19 @@ def _ops_recommendations(db, budget: dict) -> list[dict]:
             "detail": f"{running_research} research run{'s' if running_research != 1 else ''} currently marked running.",
             "action": "Open Research and check for long-running or stuck jobs.",
         })
+    stale_cutoff = _now().replace(tzinfo=None) - timedelta(minutes=10)
+    idle_turns = (
+        db.query(ConversationTurn)
+        .filter(ConversationTurn.status.in_(["pending", "running"]), ConversationTurn.updated_at < stale_cutoff)
+        .count()
+    )
+    if idle_turns:
+        recs.append({
+            "severity": "medium",
+            "title": "Chat turns may be stuck",
+            "detail": f"{idle_turns} active turn{'s' if idle_turns != 1 else ''} idle for more than 10 minutes.",
+            "action": "Open Turns and cancel or inspect long-running work.",
+        })
     return recs
 
 
@@ -436,12 +462,19 @@ def ops_summary(admin: AdminPrincipal = Depends(require_admin)) -> dict:
         )
         pending_users = db.query(UserAdminControl).filter(UserAdminControl.status == "pending").count()
         failed_research = db.query(ResearchRun).filter(ResearchRun.status == "failed").count()
+        active_turns = db.query(ConversationTurn).filter(ConversationTurn.status.in_(["pending", "running"])).count()
+        failed_turns_today = db.query(ConversationTurn).filter(
+            ConversationTurn.status == "failed",
+            ConversationTurn.completed_at >= _today_start(),
+        ).count()
         recent_errors = db.query(RequestLog).filter(RequestLog.status == "error").order_by(RequestLog.created_at.desc()).limit(5).all()
         return {
             "budget": budget,
             "pending": {
                 "user_approvals": pending_users,
                 "failed_research_runs": failed_research,
+                "active_turns": active_turns,
+                "failed_turns_today": failed_turns_today,
                 "users_near_budget": sorted(users_near_budget, key=lambda x: -x["percent_used"])[:10],
             },
             "top_models_month": [
@@ -460,6 +493,131 @@ def ops_summary(admin: AdminPrincipal = Depends(require_admin)) -> dict:
             ],
             "recommendations": _ops_recommendations(db, budget),
         }
+    finally:
+        db.close()
+
+
+def _turn_row(turn: ConversationTurn, conv_public_id: str | None = None) -> dict:
+    try:
+        progress = json.loads(turn.progress_json or "[]")
+    except (TypeError, ValueError):
+        progress = []
+    try:
+        lifecycle = json.loads(turn.lifecycle_json or "[]")
+    except (TypeError, ValueError):
+        lifecycle = []
+    age_seconds = max(0, int((_now().replace(tzinfo=None) - turn.created_at).total_seconds()))
+    idle_seconds = max(0, int((_now().replace(tzinfo=None) - turn.updated_at).total_seconds()))
+    return {
+        "id": turn.public_id,
+        "user_id": turn.user_id,
+        "conversation_id": conv_public_id,
+        "turn_kind": turn.turn_kind or "quick",
+        "status": turn.status,
+        "client_request_id": turn.client_request_id,
+        "user_message_id": turn.user_message_id,
+        "assistant_message_id": turn.assistant_message_id,
+        "last_progress": progress[-1] if isinstance(progress, list) and progress else None,
+        "progress_count": len(progress) if isinstance(progress, list) else 0,
+        "lifecycle": lifecycle[-20:] if isinstance(lifecycle, list) else [],
+        "error_message": turn.error_message,
+        "created_at": _fmt(turn.created_at),
+        "updated_at": _fmt(turn.updated_at),
+        "completed_at": _fmt(turn.completed_at),
+        "age_seconds": age_seconds,
+        "idle_seconds": idle_seconds,
+    }
+
+
+def _append_turn_lifecycle(turn: ConversationTurn, event: str, data: dict | None = None) -> None:
+    try:
+        rows = json.loads(turn.lifecycle_json or "[]")
+    except (TypeError, ValueError):
+        rows = []
+    rows.append({
+        "event": event,
+        "ts": _now().isoformat(),
+        **(data or {}),
+    })
+    turn.lifecycle_json = json.dumps(rows[-120:])
+
+
+@router.get("/turns")
+def turns(
+    status: str = Query(default="active"),
+    user_id: str | None = Query(default=None),
+    min_idle_seconds: int | None = Query(default=None, ge=0),
+    limit: int = Query(default=50, ge=1, le=200),
+    admin: AdminPrincipal = Depends(require_admin),
+) -> dict:
+    db = SessionLocal()
+    try:
+        q = db.query(ConversationTurn, Conversation.public_id).join(
+            Conversation, ConversationTurn.conversation_id == Conversation.id
+        )
+        if status == "active":
+            q = q.filter(ConversationTurn.status.in_(["pending", "running"]))
+        elif status != "all":
+            q = q.filter(ConversationTurn.status == status)
+        if user_id:
+            q = q.filter(ConversationTurn.user_id == user_id)
+        if min_idle_seconds is not None:
+            cutoff = _now().replace(tzinfo=None) - timedelta(seconds=min_idle_seconds)
+            q = q.filter(ConversationTurn.updated_at <= cutoff)
+        rows = q.order_by(ConversationTurn.updated_at.desc()).limit(limit).all()
+        return {"items": [_turn_row(turn, conv_public_id) for turn, conv_public_id in rows]}
+    finally:
+        db.close()
+
+
+@router.post("/turns/{turn_id}/cancel")
+def cancel_turn(
+    turn_id: str,
+    body: AdminTurnCancelRequest | None = None,
+    admin: AdminPrincipal = Depends(require_admin),
+) -> dict:
+    db = SessionLocal()
+    try:
+        turn = db.query(ConversationTurn).filter(ConversationTurn.public_id == turn_id).first()
+        if not turn:
+            raise HTTPException(status_code=404, detail="Turn not found")
+        if turn.status in {"pending", "running"}:
+            now = _now()
+            turn.status = "cancelled"
+            turn.completed_at = now
+            turn.updated_at = now
+            turn.error_message = (body.reason if body and body.reason else "Cancelled by admin.")
+            _append_turn_lifecycle(turn, "cancelled_by_admin", {"admin_user_id": admin.user_id, "reason": turn.error_message})
+            _audit(db, admin, "turn.cancel", turn.user_id, {"turn_id": turn.public_id, "reason": turn.error_message})
+            db.commit()
+        conv_public_id = db.query(Conversation.public_id).filter(Conversation.id == turn.conversation_id).scalar()
+        return _turn_row(turn, conv_public_id)
+    finally:
+        db.close()
+
+
+@router.get("/turn-runtime")
+def turn_runtime(admin: AdminPrincipal = Depends(require_admin)) -> dict:
+    db = SessionLocal()
+    try:
+        return get_turn_runtime_config(db)
+    finally:
+        db.close()
+
+
+@router.patch("/turn-runtime")
+def update_turn_runtime(body: TurnRuntimeUpdate, admin: AdminPrincipal = Depends(require_admin)) -> dict:
+    db = SessionLocal()
+    try:
+        set_turn_runtime_config(
+            db,
+            body.quick_timeout_minutes,
+            body.research_timeout_minutes,
+            body.document_timeout_minutes,
+        )
+        _audit(db, admin, "turn_runtime.update", None, body.model_dump())
+        db.commit()
+        return get_turn_runtime_config(db)
     finally:
         db.close()
 

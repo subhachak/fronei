@@ -5076,6 +5076,32 @@ export default function Home() {
 
       {/* ── Main area ── */}
       <div className="main-area workbench-ui">
+        <div className="mobile-topbar" role="navigation" aria-label="Mobile navigation">
+          <button
+            className="mobile-topbar-btn"
+            onClick={() => setMobileNavOpen(v => !v)}
+            aria-label="Open menu"
+            aria-expanded={mobileNavOpen}
+            type="button"
+          >
+            <i className="ti ti-menu-2" aria-hidden="true" />
+          </button>
+          <span className="mobile-topbar-title">
+            {settingsViewOpen ? 'Settings' : activeConv ? activeConv.title : 'Fronei'}
+          </span>
+          <button
+            className="mobile-topbar-btn"
+            onClick={() => {
+              setMobileNavOpen(false)
+              newConversation()
+              taRef.current?.focus()
+            }}
+            aria-label="New chat"
+            type="button"
+          >
+            <i className="ti ti-plus" aria-hidden="true" />
+          </button>
+        </div>
 
         {settingsViewOpen ? (
           <SettingsView
@@ -5907,39 +5933,6 @@ export default function Home() {
         </>
         )}
 
-      </div>
-
-      {/* ── Mobile bottom nav ── */}
-      <div className="mobile-nav" role="navigation" aria-label="Mobile navigation">
-        <button
-          className={`mobile-nav-btn${mobileNavOpen ? ' active' : ''}`}
-          onClick={() => setMobileNavOpen(v => !v)}
-          aria-label="Open menu"
-          aria-expanded={mobileNavOpen}
-        >
-          <i className="ti ti-menu-2" aria-hidden="true" />
-          <span>Menu</span>
-        </button>
-        <button
-          className="mobile-nav-btn"
-          onClick={newConversation}
-          aria-label="New chat"
-        >
-          <i className="ti ti-plus" aria-hidden="true" />
-          <span>New</span>
-        </button>
-        <button
-          className={`mobile-nav-btn${!settingsViewOpen ? ' active' : ''}`}
-          onClick={() => {
-            setSettingsViewOpen(false)
-            taRef.current?.focus()
-          }}
-          aria-label="Chat"
-          aria-current={!settingsViewOpen ? 'page' : undefined}
-        >
-          <i className="ti ti-message" aria-hidden="true" />
-          <span>Chat</span>
-        </button>
       </div>
 
       {showOnboarding && (

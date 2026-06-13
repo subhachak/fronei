@@ -5,26 +5,26 @@ import Link from 'next/link'
 import { SignOutButton, useUser } from '@clerk/nextjs'
 
 export type ConversationSummary = {
-  id: number; title: string; profile: string
+  id: string; title: string; profile: string
   message_count: number; total_cost_usd?: number; created_at: string; updated_at: string
 }
 
 interface SidebarProps {
   activePage: 'chat' | 'admin'
   conversations?: ConversationSummary[]
-  activeConvId?: number | null
-  onLoadConversation?: (id: number) => void
+  activeConvId?: string | null
+  onLoadConversation?: (id: string) => void
   onNewConversation?: () => void
-  onDeleteConversation?: (e: MouseEvent, id: number) => void
+  onDeleteConversation?: (e: MouseEvent, id: string) => void
   onExport?: (e: MouseEvent, conv: ConversationSummary) => void
   onDevModeChange?: (v: boolean) => void
   mobileNavOpen?: boolean
-  deleteConfirmId?: number | null
-  onRenameConversation?: (id: number, title: string) => void
-  editingTitleId?: number | null
+  deleteConfirmId?: string | null
+  onRenameConversation?: (id: string, title: string) => void
+  editingTitleId?: string | null
   editingTitle?: string
   onEditingTitleChange?: (v: string) => void
-  onStartEdit?: (id: number, currentTitle: string) => void
+  onStartEdit?: (id: string, currentTitle: string) => void
   onCancelEdit?: () => void
   onOpenSettings?: () => void
   settingsActive?: boolean

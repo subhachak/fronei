@@ -448,7 +448,7 @@ type PlanCapabilities = {
 }
 
 type PlanProposal = {
-  conv_id: number
+  conv_id: string
   message_id: number
   plan_confidence: string
   open_questions: string[]
@@ -4043,7 +4043,7 @@ export default function Home() {
 
   // Conversation state
   const [conversations, setConversations] = useState<ConversationSummary[]>([])
-  const [activeConvId, setActiveConvId]   = useState<number | null>(null)
+  const [activeConvId, setActiveConvId]   = useState<string | null>(null)
   const [messages, setMessages]           = useState<MessageOut[]>([])
 
   // Input state
@@ -4140,8 +4140,8 @@ export default function Home() {
       .then((list: ConversationSummary[]) => {
         setConversations(list)
         if (shouldAutoLoadConversation) {
-          const id = parseInt(initialConvId as string, 10)
-          if (!Number.isNaN(id) && list.some(c => c.id === id)) loadConversation(id)
+          const id = initialConvId as string
+          if (list.some(c => c.id === id)) loadConversation(id)
         }
       }).catch(() => {})
 
@@ -4433,7 +4433,7 @@ export default function Home() {
 
   // ── Data actions ──────────────────────────────────────────────────────────
 
-  function setConvUrlParam(id: number | null) {
+  function setConvUrlParam(id: string | null) {
     try {
       const url = new URL(window.location.href)
       if (id != null) url.searchParams.set('c', String(id))
@@ -4443,7 +4443,7 @@ export default function Home() {
     } catch {}
   }
 
-  async function loadConversation(id: number) {
+  async function loadConversation(id: string) {
     setMobileNavOpen(false)
     setSettingsViewOpen(false)
     setActiveConvId(id)
@@ -4479,13 +4479,13 @@ export default function Home() {
     setLiveAssistantId(null)
   }
 
-  const [deleteConfirmId, setDeleteConfirmId] = useState<number | null>(null)
-  const [editingTitleId, setEditingTitleId]   = useState<number | null>(null)
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null)
+  const [editingTitleId, setEditingTitleId]   = useState<string | null>(null)
   const [editingTitle, setEditingTitle]       = useState('')
   const [editingMsgId, setEditingMsgId]       = useState<number | null>(null)
   const [editText, setEditText]               = useState('')
 
-  async function deleteConversation(e: MouseEvent, id: number) {
+  async function deleteConversation(e: MouseEvent, id: string) {
     e.stopPropagation()
     if (deleteConfirmId === id) {
       await apiFetch(`/conversations/${id}`, { method: 'DELETE' })
@@ -4498,7 +4498,7 @@ export default function Home() {
     }
   }
 
-  async function renameConversation(id: number, title: string) {
+  async function renameConversation(id: string, title: string) {
     const trimmed = title.trim()
     if (!trimmed) { setEditingTitleId(null); return }
     await apiFetch(`/conversations/${id}`, {
@@ -5129,7 +5129,7 @@ export default function Home() {
     tempAsstId: number
     tempUserId: number
     wasNew: boolean
-    startConvId: number | null
+    startConvId: string | null
     sent: string
     isArtifactRequest: boolean
     bubblePreCreated: boolean
@@ -5167,7 +5167,7 @@ export default function Home() {
           const data = JSON.parse(dataStr)
 
           if (eventType === 'start') {
-            startConvId = data.conversation_id as number
+            startConvId = data.conversation_id as string
             setActiveConvId(startConvId)
             setConvUrlParam(startConvId)
             if (!bubblePreCreated) {
@@ -5231,7 +5231,7 @@ export default function Home() {
 
           } else if (eventType === 'plan_proposed') {
             const proposal: PlanProposal = {
-              conv_id: (startConvId ?? data.conversation_id) as number,
+              conv_id: (startConvId ?? data.conversation_id) as string,
               message_id: data.message_id as number,
               plan_confidence: (data.plan_confidence as string) ?? 'low',
               open_questions: (data.open_questions as string[]) ?? [],

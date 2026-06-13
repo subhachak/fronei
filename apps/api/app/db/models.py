@@ -1,4 +1,5 @@
 import json
+import secrets
 from datetime import datetime, date, timezone
 from sqlalchemy import Boolean, create_engine, DateTime, Float, ForeignKey, Integer, String, Text, event, func, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
@@ -83,6 +84,12 @@ class Conversation(Base):
     __tablename__ = "conversations"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # Externally-facing identifier (hex token) used in API routes, SSE
+    # payloads, and shareable URLs. The integer `id` above remains the
+    # internal primary key used for foreign keys.
+    public_id: Mapped[str] = mapped_column(
+        String(16), unique=True, index=True, nullable=False, default=lambda: secrets.token_hex(6)
+    )
     user_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True, default="")
     title: Mapped[str] = mapped_column(String(120), default="New conversation")
     profile: Mapped[str] = mapped_column(String(32), default="balanced")

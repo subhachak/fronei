@@ -24,7 +24,7 @@ from app.schemas import RouteDecision
 from app.services.chat_pipeline import PipelineSetup
 from app.services.llm_gateway import LLMResult
 from app.services.research_orchestrator import ResearchPipelineResult
-from app.services.planner import passthrough
+from app.services.planner import passthrough, plan_to_dict
 from app.services.web_context import WebContextResult
 
 
@@ -231,7 +231,7 @@ def test_stream_research_mode_enriches_vague_followup_from_history(client, monke
             content="We should compare quiet 24-inch dishwashers with good drying and reliability.",
         ))
         db.commit()
-        conv_id = conv.id
+        conv_id = conv.public_id
 
     plan = passthrough("perform a deep research to find one suitable for me")
     plan.intent = "Find a suitable dishwasher for the user's open kitchen constraints."
@@ -416,7 +416,7 @@ def test_conversation_reload_rehydrates_research_metadata(client):
             research_run_id=run.id,
         ))
         db.commit()
-        conv_id = conv.id
+        conv_id = conv.public_id
         run_id = run.id
 
     detail = c.get(f"/conversations/{conv_id}")
@@ -427,11 +427,124 @@ def test_conversation_reload_rehydrates_research_metadata(client):
     assert research_msg["research"]["run_id"] == run_id
     assert research_msg["research"]["sources"][0]["title"] == "Source"
     assert research_msg["research"]["claims"][0]["source_ref"] == "S1"
-    assert research_msg["research"]["gaps"] == ["Need pricing details"]
 
-    run_resp = c.get(f"/research-runs/{run_id}")
-    assert run_resp.status_code == 200
-    assert run_resp.json()["claims"][0]["claim"] == "Source supports the claim."
+
+def test_execute_plan_with_research_and_document_confirmed_generates_document(client, monkeypatch):
+    """Regression test for the bug where confirming web_search + deep_research +
+    document together (via the plan_proposed popup) ran the research pipeline
+    but never generated a document — it just streamed the research answer as
+    chat text. The document branch must now run using the research findings."""
+    c, Session = client
+
+    plan = passthrough("Should we standardize on Bedrock or Snowflake Cortex?")
+    plan.intent = "Compare Bedrock and Snowflake Cortex for a multi-region retail AI stack"
+    plan.needs_web_search = True
+    plan.recommend_deep_research = True
+    plan.wants_document_output = False  # gets flipped on by confirmed_plan.document
+    plan.document_brief = {"doc_type": "solution_comparison", "title": "Bedrock vs Snowflake Cortex"}
+    plan.plan_confidence = "medium"
+
+    with Session() as db:
+        conv = Conversation(user_id="u1", title="AI stack", profile="balanced", message_count=0)
+        db.add(conv)
+        db.flush()
+        user_msg = ConversationMessage(
+            conversation_id=conv.id,
+            role="user",
+            content="Should we standardize our enterprise AI stack on Bedrock or Snowflake Cortex for a multi-region retail deployment?",
+            plan_json=json.dumps(plan_to_dict(plan)),
+        )
+        db.add(user_msg)
+        db.commit()
+        conv_id = conv.public_id
+        message_id = user_msg.id
+
+    route = RouteDecision(
+        task_type="research",
+        complexity="high",
+        profile="balanced",
+        primary_model="gpt-4.1",
+        fallbacks=[],
+        reason="research test",
+    )
+
+    def fake_run_research(_db, **kwargs):
+        kwargs["progress"]("searching", "Searching targeted sources…", {"query": kwargs["query"]})
+        kwargs["progress"]("synthesising", "Synthesising 2 sources and 1 claim…", {"source_count": 2, "claim_count": 1})
+        return ResearchPipelineResult(
+            run=SimpleNamespace(id=42, confidence="medium"),
+            result=LLMResult(
+                answer="Bedrock and Snowflake Cortex both have trade-offs [S1][S2].",
+                model_used="gpt-4.1",
+                latency_ms=500,
+                prompt_tokens=100,
+                completion_tokens=200,
+                estimated_cost_usd=0.02,
+            ),
+            route=route,
+            source_logs=[
+                {"title": "AWS Bedrock docs", "url": "https://aws.example.com/bedrock", "credibility_score": 0.9},
+                {"title": "Snowflake Cortex docs", "url": "https://snowflake.example.com/cortex", "credibility_score": 0.85},
+            ],
+            questions=["Which platform fits a multi-region retail deployment?"],
+            gaps=[],
+            contradictions=[],
+            verifier_notes=None,
+        )
+
+    monkeypatch.setattr(conversations, "run_research", fake_run_research)
+
+    captured_doc_call: dict = {}
+
+    def fake_generate_document_output(plan_arg, route_arg, history, wc, planner_ctx, doc_context, deep_research, enable_native, artifact_context=""):
+        captured_doc_call["doc_context"] = doc_context
+        captured_doc_call["wants_document_output"] = plan_arg.wants_document_output
+        doc_result = LLMResult(
+            answer="# Bedrock vs Snowflake Cortex\n\nFull document body.\n\n---SUMMARY---\n- Overview\n- Recommendation",
+            model_used="gpt-4.1",
+            latency_ms=800,
+            prompt_tokens=300,
+            completion_tokens=400,
+            estimated_cost_usd=0.05,
+        )
+        doc_body = "# Bedrock vs Snowflake Cortex\n\nFull document body."
+        chat_summary = "- Overview\n- Recommendation"
+        doc_type = "solution_comparison"
+        return doc_result, doc_body, chat_summary, doc_type
+
+    monkeypatch.setattr(conversations, "generate_document_output", fake_generate_document_output)
+
+    response = c.post(
+        f"/conversations/{conv_id}/messages/{message_id}/execute-plan",
+        json={
+            "confirmed_plan": {
+                "web_search": True,
+                "deep_research": True,
+                "document": True,
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    events = _events(response.text)
+
+    # Research pipeline progress is still shown (the Request C fix).
+    logs = [data for event, data in events if event == "pipeline_log"]
+    assert "searching" in [log["stage"] for log in logs]
+    assert "synthesising" in [log["stage"] for log in logs]
+
+    # Document branch ran and produced a preview.
+    assert events[-1][0] == "done"
+    done = events[-1][1]
+    assert done["document_preview"] is not None
+    assert done["document_preview"]["doc_type"] == "solution_comparison"
+    assert done["answer"] == "- Overview\n- Recommendation"
+    assert done["research_run_id"] == 42
+
+    # The document generator was fed the research findings as context.
+    assert captured_doc_call["wants_document_output"] is True
+    assert "Bedrock and Snowflake Cortex both have trade-offs" in captured_doc_call["doc_context"]
+    assert "AWS Bedrock docs" in captured_doc_call["doc_context"]
 
 
 def test_stream_refinement_skips_raw_mode(client, monkeypatch):

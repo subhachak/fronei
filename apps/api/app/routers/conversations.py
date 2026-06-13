@@ -33,11 +33,13 @@ from app.services.budget_guard import enforce_global_monthly_budget
 from app.services.chat_pipeline import (
     PipelineSetup, PipelineResult, SubQueryExecution,
     run_pipeline, build_exec_log, build_pipeline_setup, generate_document_output,
-    _run_sub_queries, _conversation_state,
+    _run_sub_queries, _conversation_state, _build_worker_context, _build_doc_context,
 )
 from app.routers.documents import build_document_artifact
 from app.services import plan_gate
 from app.services.planner import apply_confirmed_plan, passthrough, plan_from_dict, plan_to_dict, run_planner
+from app.services.prompts import ARTIFACT_PROMPTS
+from app.services.web_context import WebContextResult
 from app.services.rate_limit import check_rate_limit, rate_limiter
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
@@ -80,10 +82,20 @@ def _fmt(dt: datetime) -> str:
 
 def _summary(conv: Conversation) -> ConversationSummary:
     return ConversationSummary(
-        id=conv.id, title=conv.title, profile=conv.profile,
+        id=conv.public_id, title=conv.title, profile=conv.profile,
         message_count=conv.message_count, total_cost_usd=0.0,
         created_at=_fmt(conv.created_at), updated_at=_fmt(conv.updated_at),
     )
+
+
+def _get_conversation(db, conv_id: str, user_id: str) -> Conversation:
+    """Look up a conversation by its external hex public_id, enforcing ownership."""
+    conv = db.query(Conversation).filter(Conversation.public_id == conv_id).first()
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    if conv.user_id != user_id:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    return conv
 
 
 def _msg_out(m: ConversationMessage, db=None, user_id: str | None = None) -> MessageOut:
@@ -190,11 +202,7 @@ def _resolve_conversation(db, req: ConvChatRequest, user_id: str) -> tuple[Conve
         db.add(conv)
         db.flush()
     else:
-        conv = db.get(Conversation, req.conversation_id)
-        if not conv:
-            raise HTTPException(status_code=404, detail="Conversation not found")
-        if conv.user_id != user_id:
-            raise HTTPException(status_code=403, detail="Forbidden")
+        conv = _get_conversation(db, req.conversation_id, user_id)
         profile = req.profile or conv.profile
     return conv, profile
 
@@ -239,7 +247,7 @@ def list_conversations(
         )
         return [
             ConversationSummary(
-                id=conv.id,
+                id=conv.public_id,
                 title=conv.title,
                 profile=conv.profile,
                 message_count=conv.message_count,
@@ -254,14 +262,10 @@ def list_conversations(
 
 
 @router.get("/{conv_id}", response_model=ConversationDetail)
-def get_conversation(conv_id: int, user_id: str = CurrentUser) -> ConversationDetail:
+def get_conversation(conv_id: str, user_id: str = CurrentUser) -> ConversationDetail:
     db = SessionLocal()
     try:
-        conv = db.get(Conversation, conv_id)
-        if not conv:
-            raise HTTPException(status_code=404, detail="Conversation not found")
-        if conv.user_id != user_id:
-            raise HTTPException(status_code=403, detail="Forbidden")
+        conv = _get_conversation(db, conv_id, user_id)
         return ConversationDetail(**_summary(conv).model_dump(), messages=[_msg_out(m, db, user_id) for m in conv.messages])
     finally:
         db.close()
@@ -269,17 +273,13 @@ def get_conversation(conv_id: int, user_id: str = CurrentUser) -> ConversationDe
 
 @router.patch("/{conv_id}", response_model=ConversationSummary)
 def update_conversation(
-    conv_id: int,
+    conv_id: str,
     body: ConversationUpdate,
     user_id: str = CurrentUser,
 ) -> ConversationSummary:
     db = SessionLocal()
     try:
-        conv = db.get(Conversation, conv_id)
-        if not conv:
-            raise HTTPException(status_code=404, detail="Conversation not found")
-        if conv.user_id != user_id:
-            raise HTTPException(status_code=403, detail="Forbidden")
+        conv = _get_conversation(db, conv_id, user_id)
         conv.title = body.title.strip()
         conv.updated_at = datetime.now(timezone.utc)
         db.commit()
@@ -290,14 +290,10 @@ def update_conversation(
 
 
 @router.delete("/{conv_id}", status_code=204)
-def delete_conversation(conv_id: int, user_id: str = CurrentUser) -> None:
+def delete_conversation(conv_id: str, user_id: str = CurrentUser) -> None:
     db = SessionLocal()
     try:
-        conv = db.get(Conversation, conv_id)
-        if not conv:
-            raise HTTPException(status_code=404, detail="Conversation not found")
-        if conv.user_id != user_id:
-            raise HTTPException(status_code=403, detail="Forbidden")
+        conv = _get_conversation(db, conv_id, user_id)
         db.delete(conv)
         db.commit()
     finally:
@@ -306,27 +302,23 @@ def delete_conversation(conv_id: int, user_id: str = CurrentUser) -> None:
 
 @router.delete("/{conv_id}/messages/from/{message_id}", status_code=204)
 def truncate_conversation(
-    conv_id: int,
+    conv_id: str,
     message_id: int,
     user_id: str = CurrentUser,
 ) -> None:
     """Delete message_id and all subsequent messages in the conversation."""
     db = SessionLocal()
     try:
-        conv = db.get(Conversation, conv_id)
-        if not conv:
-            raise HTTPException(status_code=404, detail="Conversation not found")
-        if conv.user_id != user_id:
-            raise HTTPException(status_code=403, detail="Forbidden")
+        conv = _get_conversation(db, conv_id, user_id)
         target = db.get(ConversationMessage, message_id)
-        if not target or target.conversation_id != conv_id:
+        if not target or target.conversation_id != conv.id:
             raise HTTPException(status_code=404, detail="Message not found")
         db.query(ConversationMessage).filter(
-            ConversationMessage.conversation_id == conv_id,
+            ConversationMessage.conversation_id == conv.id,
             ConversationMessage.id >= message_id,
         ).delete(synchronize_session=False)
         conv.message_count = db.query(ConversationMessage).filter(
-            ConversationMessage.conversation_id == conv_id
+            ConversationMessage.conversation_id == conv.id
         ).count()
         conv.updated_at = datetime.now(timezone.utc)
         db.commit()
@@ -394,7 +386,7 @@ def chat(req: ConvChatRequest, user_id: str = CurrentUser, is_admin: bool = Curr
         memory_extractor.schedule(user_id, conv.id, req.message, pr.result.answer)
 
         return ConvChatResponse(
-            conversation_id=conv.id,
+            conversation_id=conv.public_id,
             message_id=asst_msg.id,
             answer=pr.result.answer,
             route=pr.route,
@@ -512,7 +504,7 @@ def chat_stream(req: ConvChatRequest, user_id: str = CurrentUser, is_admin: bool
 
 
 def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memory, profile, user_msg, preloaded_plan=None):
-            yield _sse("start", {"conversation_id": conv.id})
+            yield _sse("start", {"conversation_id": conv.public_id})
             yield _pipeline_log("planning", "Analysing your request…")
 
             twin_profile = get_twin_profile(db, user_id)
@@ -735,7 +727,48 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                 result = research.result
                 final_answer = result.answer
                 route = research.route
-                if should_refine(result.answer, output_mode, twin_profile):
+
+                # ── Document capability (post-research) ─────────────────────
+                # If the confirmed plan also wants a document, feed the research
+                # findings into the document generator instead of just streaming
+                # the research answer as chat text.
+                gate = plan_gate.evaluate(plan)
+                document_preview = None
+                if plan.wants_document_output and gate.capabilities["document"].enabled:
+                    yield _pipeline_log("working", "Drafting your document from research findings…")
+                    doc_cap = gate.capabilities["document"]
+                    fmt = doc_cap.extra.get("format_recommendation", "markdown")
+
+                    research_context_parts = [f"Research findings:\n{result.answer}"]
+                    if research.source_logs:
+                        src_lines = "\n".join(
+                            f"- {s.get('title', '')}: {s.get('url', '')}" for s in research.source_logs[:15]
+                        )
+                        research_context_parts.append(f"Sources:\n{src_lines}")
+                    research_context = "\n\n".join(research_context_parts)
+                    base_doc_context = _build_doc_context(req.attached_documents)
+                    doc_context = f"{base_doc_context}\n\n{research_context}".strip() if base_doc_context else research_context
+
+                    planner_ctx = _build_worker_context(plan, running_summary)
+                    empty_wc = WebContextResult(context=None, status="", provider="", sources_count=0, search_query=None)
+                    artifact_context = ARTIFACT_PROMPTS.get(req.artifact_type or "", "")
+
+                    result, doc_body, chat_summary, doc_type = generate_document_output(
+                        plan, route, history, empty_wc, planner_ctx,
+                        doc_context, False, False,
+                        artifact_context=artifact_context,
+                    )
+                    for chunk in [chat_summary[i:i + 80] for i in range(0, len(chat_summary), 80)]:
+                        yield _sse("token", {"text": chunk})
+                    final_answer = chat_summary
+                    result.estimated_cost_usd = (
+                        (result.estimated_cost_usd or 0.0)
+                        + (research.result.estimated_cost_usd or 0.0)
+                        + plan.planner_cost_usd
+                    )
+                    title = (plan.document_brief or {}).get("title") or plan.intent
+                    document_preview = build_document_artifact(title or "Fronei document", doc_body, doc_type, fmt)
+                elif should_refine(result.answer, output_mode, twin_profile):
                     yield _sse("refine_start", {})
                     refined_text = ""
                     try:
@@ -816,8 +849,9 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                     "completion_tokens": result.completion_tokens,
                     "execution_log": exec_log.model_dump(),
                     "route": route.model_dump(),
-                    "was_refined": final_answer != result.answer,
+                    "was_refined": document_preview is None and final_answer != research.result.answer,
                     "research_run_id": research.run.id,
+                    "document_preview": document_preview,
                     "research": {
                         "run_id": research.run.id,
                         "mode": research_mode,
@@ -854,7 +888,7 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                 conv.updated_at = datetime.now(timezone.utc)
                 db.commit()
                 yield _sse("plan_proposed", {
-                    "conversation_id": conv.id,
+                    "conversation_id": conv.public_id,
                     "message_id": user_msg.id,
                     "plan_confidence": gate.plan_confidence,
                     "open_questions": gate.open_questions,
@@ -1106,7 +1140,7 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
     dependencies=[rate_limiter("chat", "rate_limit_chat_per_minute", 60)],
 )
 def execute_plan(
-    conv_id: int,
+    conv_id: str,
     message_id: int,
     body: ExecutePlanRequest,
     user_id: str = CurrentUser,
@@ -1123,11 +1157,7 @@ def execute_plan(
     def event_generator():
         db = SessionLocal()
         try:
-            conv = db.get(Conversation, conv_id)
-            if not conv:
-                raise HTTPException(status_code=404, detail="Conversation not found")
-            if conv.user_id != user_id:
-                raise HTTPException(status_code=403, detail="Forbidden")
+            conv = _get_conversation(db, conv_id, user_id)
             if is_user_suspended(db, user_id):
                 raise HTTPException(status_code=403, detail="This account is suspended.")
             if is_user_pending(db, user_id):
@@ -1144,7 +1174,7 @@ def execute_plan(
                     )
 
             user_msg = db.get(ConversationMessage, message_id)
-            if not user_msg or user_msg.conversation_id != conv_id or user_msg.role != "user":
+            if not user_msg or user_msg.conversation_id != conv.id or user_msg.role != "user":
                 raise HTTPException(status_code=404, detail="Message not found")
             if not user_msg.plan_json:
                 raise HTTPException(status_code=400, detail="No plan is pending confirmation for this message")

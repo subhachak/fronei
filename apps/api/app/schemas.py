@@ -119,6 +119,7 @@ class ConfirmedPlan(BaseModel):
     """User-edited decisions from the plan_proposed confirmation popup."""
     web_search: bool | None = None
     deep_research: bool | None = None
+    research_mode: ResearchMode | None = None
     document: bool | None = None
     document_format: str | None = None
     document_brief: dict | None = None

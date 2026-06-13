@@ -6,6 +6,7 @@ check gaps/contradictions, synthesize, and optionally verify.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import time
@@ -218,9 +219,25 @@ def _cache_category_and_ttl(source_tier: str, source_role_prior: str, domain: st
     return "current", CACHE_TTL_CURRENT
 
 
-def _get_cached_source(db, url: str) -> ResearchSourceCache | None:
-    """Return a non-expired cache row for `url`, or None on miss/expiry."""
-    row = db.query(ResearchSourceCache).filter(ResearchSourceCache.url == url).first()
+def _query_signature(query: str) -> str:
+    """Short, stable hash of a normalized research question.
+
+    Claim extraction is query-specific (top-N ranked claims relevant to the
+    asking question), so cached claims must only be reused for the same
+    question — otherwise a broad source reused across different questions
+    would return the first run's claims, not ones relevant to the new run.
+    """
+    normalized = re.sub(r"\s+", " ", query or "").strip().lower()
+    return hashlib.sha1(normalized.encode("utf-8")).hexdigest()[:24]
+
+
+def _get_cached_source(db, url: str, query_signature: str) -> ResearchSourceCache | None:
+    """Return a non-expired cache row for `(url, query_signature)`, or None on miss/expiry."""
+    row = (
+        db.query(ResearchSourceCache)
+        .filter(ResearchSourceCache.url == url, ResearchSourceCache.query_signature == query_signature)
+        .first()
+    )
     if row is None:
         return None
     expires_at = row.expires_at
@@ -253,8 +270,8 @@ def _claim_records_from_cache(row: ResearchSourceCache) -> list[ClaimRecord]:
     return records
 
 
-def _store_source_cache(db, source: ResearchSource, claims: list[ClaimRecord], domain: str) -> None:
-    """Upsert cache metadata + extracted claims for `source.url`, keyed by url."""
+def _store_source_cache(db, source: ResearchSource, claims: list[ClaimRecord], domain: str, query_signature: str) -> None:
+    """Upsert cache metadata + extracted claims for `source.url`, keyed by (url, query_signature)."""
     category, ttl = _cache_category_and_ttl(source.source_tier, source.source_role_prior, domain)
     claims_json = json.dumps([
         {
@@ -269,9 +286,13 @@ def _store_source_cache(db, source: ResearchSource, claims: list[ClaimRecord], d
         for c in claims
     ])
     now = _now()
-    row = db.query(ResearchSourceCache).filter(ResearchSourceCache.url == source.url).first()
+    row = (
+        db.query(ResearchSourceCache)
+        .filter(ResearchSourceCache.url == source.url, ResearchSourceCache.query_signature == query_signature)
+        .first()
+    )
     if row is None:
-        row = ResearchSourceCache(url=source.url, cached_at=now, expires_at=now + ttl)
+        row = ResearchSourceCache(url=source.url, query_signature=query_signature, cached_at=now, expires_at=now + ttl)
         db.add(row)
     row.title = source.title
     row.source_type = source.source_type
@@ -2409,12 +2430,16 @@ def _run_pipeline(
         pending_extract_sources = [source for source in all_sources if source.id not in existing_source_ids]
 
         # Phase 5 — reuse cached claim extractions for sources we've already
-        # processed in a prior run, keyed by URL with category-aware TTLs.
+        # processed for this exact question in a prior run, keyed by
+        # (URL, query_signature) with category-aware TTLs. A different
+        # question against the same URL is a cache miss, so claims stay
+        # relevant to the question actually being asked.
+        qsig = _query_signature(query)
         claim_records_by_source: dict[int, list[ClaimRecord]] = {}
         cache_misses: list[ResearchSource] = []
         cache_hits = 0
         for source in pending_extract_sources:
-            cached = _get_cached_source(db, source.url)
+            cached = _get_cached_source(db, source.url, qsig)
             if cached is not None:
                 claim_records_by_source[source.id] = _claim_records_from_cache(cached)
                 cache_hits += 1
@@ -2425,7 +2450,7 @@ def _run_pipeline(
         claim_records_by_source.update(_llm_extract_claim_records_parallel(query, cache_misses))
         for source in cache_misses:
             if source.id is not None:
-                _store_source_cache(db, source, claim_records_by_source.get(source.id, []), strategy.domain)
+                _store_source_cache(db, source, claim_records_by_source.get(source.id, []), strategy.domain, qsig)
         for source in pending_extract_sources:
             if source.id is None:
                 continue

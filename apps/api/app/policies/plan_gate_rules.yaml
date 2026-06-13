@@ -13,8 +13,14 @@ web_search:
   default_criticality: material
 
 # Deep research: recommend_deep_research always gates, regardless of confidence.
+# suggested_mode_risk_factors: if any of the plan's research_risk_factors match
+# this list, the gate suggests the "expert" tier (more sources, mandatory
+# verifier pass, stricter source filtering) instead of the "deep" default.
+# This is only a suggestion surfaced in the plan_proposed popup — the user's
+# explicit choice in the popup or composer always wins.
 deep_research:
   always_gate: true
+  suggested_mode_risk_factors: [medical, financial, legal_regulatory]
 
 # Document output: gates when the brief is incomplete or there's a format choice.
 document:

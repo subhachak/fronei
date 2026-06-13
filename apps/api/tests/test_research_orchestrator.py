@@ -842,12 +842,12 @@ def test_store_and_get_cached_source_round_trips_claims():
                 freshness_risk="low",
             )
         ]
-        assert _get_cached_source(db, source.url) is None
+        assert _get_cached_source(db, source.url, "qsig") is None
 
-        _store_source_cache(db, source, claims, "enterprise_technology")
+        _store_source_cache(db, source, claims, "enterprise_technology", "qsig")
         db.commit()
 
-        cached = _get_cached_source(db, source.url)
+        cached = _get_cached_source(db, source.url, "qsig")
         assert cached is not None
         assert cached.cache_category == "stable"
         assert cached.expires_at - cached.cached_at == timedelta(days=21)
@@ -871,7 +871,7 @@ def test_get_cached_source_returns_none_when_expired():
             source_tier=SOURCE_TIER_ANECDOTAL,
             source_role_prior=ROLE_ANECDOTAL_CASE,
         )
-        _store_source_cache(db, source, [], "enterprise_technology")
+        _store_source_cache(db, source, [], "enterprise_technology", "qsig")
         db.commit()
 
         # Force expiry directly.
@@ -879,7 +879,7 @@ def test_get_cached_source_returns_none_when_expired():
         row.expires_at = _now() - timedelta(seconds=1)
         db.commit()
 
-        assert _get_cached_source(db, source.url) is None
+        assert _get_cached_source(db, source.url, "qsig") is None
     finally:
         db.close()
 
@@ -890,15 +890,45 @@ def test_store_source_cache_upserts_by_url():
     db = sessionmaker(bind=engine)()
     try:
         _run, source = _make_run_and_source(db)
-        _store_source_cache(db, source, [], "enterprise_technology")
+        _store_source_cache(db, source, [], "enterprise_technology", "qsig")
         db.commit()
 
         source.title = "Updated docs title"
-        _store_source_cache(db, source, [], "enterprise_technology")
+        _store_source_cache(db, source, [], "enterprise_technology", "qsig")
         db.commit()
 
         rows = db.query(ResearchSourceCache).filter(ResearchSourceCache.url == source.url).all()
         assert len(rows) == 1
         assert rows[0].title == "Updated docs title"
+    finally:
+        db.close()
+
+
+def test_store_source_cache_separates_by_query_signature():
+    """A cache row for one question must not be reused by a different one."""
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    db = sessionmaker(bind=engine)()
+    try:
+        _run, source = _make_run_and_source(db)
+        claims_a = [ClaimRecord(claim="Claim relevant to question A", score=0.8, quote="A", confidence="high", claim_type="policy", claim_role=ROLE_OFFICIAL_POLICY, freshness_risk="low")]
+        claims_b = [ClaimRecord(claim="Claim relevant to question B", score=0.8, quote="B", confidence="high", claim_type="policy", claim_role=ROLE_OFFICIAL_POLICY, freshness_risk="low")]
+
+        _store_source_cache(db, source, claims_a, "enterprise_technology", "sig-a")
+        db.commit()
+
+        # Different question against the same URL is a cache miss.
+        assert _get_cached_source(db, source.url, "sig-b") is None
+
+        _store_source_cache(db, source, claims_b, "enterprise_technology", "sig-b")
+        db.commit()
+
+        rows = db.query(ResearchSourceCache).filter(ResearchSourceCache.url == source.url).all()
+        assert len(rows) == 2
+
+        cached_a = _get_cached_source(db, source.url, "sig-a")
+        cached_b = _get_cached_source(db, source.url, "sig-b")
+        assert _claim_records_from_cache(cached_a)[0].claim == claims_a[0].claim
+        assert _claim_records_from_cache(cached_b)[0].claim == claims_b[0].claim
     finally:
         db.close()

@@ -1830,6 +1830,47 @@ option { background: var(--bg-modal); color: var(--t2); }
   border-color: var(--ac);
 }
 
+.composer-mode-chip-research {
+  padding: 0 4px 0 9px;
+  cursor: default;
+}
+
+.composer-mode-subtoggle {
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--ac-text);
+  background: var(--bg-modal);
+  border: 1px solid var(--ac-bd);
+  border-radius: 999px;
+  padding: 2px 8px;
+  cursor: pointer;
+  line-height: 1.4;
+}
+.composer-mode-subtoggle:hover {
+  border-color: var(--ac);
+  background: var(--bg-s2);
+}
+
+.composer-mode-chip-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  background: transparent;
+  color: var(--ac-text);
+  cursor: pointer;
+  border-radius: 999px;
+}
+.composer-mode-chip-close:hover {
+  background: var(--bg-s2);
+}
+.composer-mode-chip-close i {
+  font-size: 13px;
+}
+
 /* ── Left menu popup ─────────────────────────────────────────────── */
 .left-menu-popup {
   position: absolute;

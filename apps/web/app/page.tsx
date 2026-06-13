@@ -325,7 +325,7 @@ function buildRequestFields(
   quality: Quality,
   researchOn: boolean,
   webSearchOn: boolean,
-  researchMode: 'deep' | 'expert' = 'expert',
+  researchMode: 'deep' | 'expert' = 'deep',
 ): { profile: Profile; web_search: boolean; deep_research: boolean; research_mode: ResearchMode } {
   if (researchOn) return { profile: 'best_quality', web_search: true,  deep_research: true,  research_mode: researchMode }
   return             { profile: QUALITY_PROFILE[quality], web_search: webSearchOn, deep_research: false, research_mode: 'quick' }
@@ -463,6 +463,7 @@ type PlanCapabilityState = {
   recommended: boolean
   reason?: string
   risk_factors?: string[]
+  suggested_mode?: 'deep' | 'expert'
   brief?: Record<string, unknown>
   format_options?: string[]
   format_recommendation?: string | null
@@ -486,6 +487,7 @@ type PlanProposal = {
 type ConfirmedPlanOverrides = {
   web_search?: boolean
   deep_research?: boolean
+  research_mode?: 'deep' | 'expert'
   document?: boolean
   document_format?: string
   document_brief?: Record<string, unknown>
@@ -505,6 +507,7 @@ type MessageOut = {
   attached_files?: { name: string; method: string; pages: number | null }[] | null
   document_preview?: GeneratedDocument | null
   plan_proposal?: PlanProposal | null
+  pipeline_trace?: PipelineStep[] | null
 }
 
 type GeneratedDocument = {
@@ -575,6 +578,10 @@ type ExecPanelData = {
   estimated_cost_usd?: number | null
   prompt_tokens?: number | null; completion_tokens?: number | null
   task_type?: string | null; complexity?: string | null
+  turn_type?: string | null; action?: string | null
+  research?: ResearchMeta | null
+  research_run_id?: number | null
+  pipeline_trace?: PipelineStep[] | null
 } | null
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -839,6 +846,135 @@ function KV({ label, value, mono, dim }: { label: string; value: string | null |
   )
 }
 
+function DevTraceSections({ data }: { data: NonNullable<ExecPanelData> }) {
+  const hasTurnInfo = data.turn_type || data.action || data.research_run_id != null
+  const trace = data.pipeline_trace ?? []
+  const research = data.research
+
+  if (!hasTurnInfo && trace.length === 0 && !research) return null
+
+  const t0 = trace.length > 0 ? trace[0].ts : 0
+
+  return (
+    <>
+      {hasTurnInfo && (
+        <div className="exec-section">
+          <div className="exec-dot" />
+          <div className="exec-tag">Turn</div>
+          <div style={{ display: 'flex', gap: 4, marginBottom: 5, flexWrap: 'wrap' }}>
+            {data.turn_type && <span className="exec-pill turn-pill" data-type={data.turn_type}>{data.turn_type}</span>}
+            {data.action && <span className="exec-pill action-pill" data-action={data.action}>{data.action}</span>}
+            {research?.mode && <span className="exec-pill">research: {research.mode}</span>}
+            {research?.confidence && <span className="exec-pill">confidence: {research.confidence}</span>}
+          </div>
+          <div className="exec-details">
+            {data.research_run_id != null && <KV label="Research run id" value={String(data.research_run_id)} mono />}
+          </div>
+        </div>
+      )}
+
+      {trace.length > 0 && (
+        <div className="exec-section">
+          <div className="exec-dot" />
+          <div className="exec-tag">Pipeline Trace ({trace.length} steps)</div>
+          <div className="exec-details">
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              {trace.map((step, i) => (
+                <div key={i} style={{ display: 'flex', gap: 6, alignItems: 'flex-start', fontSize: 11 }}>
+                  <span className="exec-kv-v dim mono" style={{ minWidth: 50, textAlign: 'right' }}>
+                    +{((step.ts - t0) / 1000).toFixed(1)}s
+                  </span>
+                  <span className="exec-pill" style={{ flexShrink: 0 }}>{step.stage}</span>
+                  <span className="exec-kv-v" style={{ flex: 1 }}>
+                    {step.message}
+                    {step.model && <span className="dim"> · {step.model}</span>}
+                    {step.latency_ms != null && <span className="dim"> · {step.latency_ms} ms</span>}
+                    {step.cost_usd != null && <span className="dim"> · ${step.cost_usd.toFixed(5)}</span>}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {research && (
+        <div className="exec-section">
+          <div className="exec-dot" />
+          <div className="exec-tag">Research Diagnostics</div>
+          <div className="exec-details">
+            <KV label="Run id" value={String(research.run_id)} mono />
+            <KV label="Mode" value={research.mode} />
+            <KV label="Confidence" value={research.confidence ?? null} />
+            <div className="exec-kv">
+              <span className="exec-kv-k">Sources</span>
+              <span className="exec-kv-v">{research.sources.length} accepted, {(research.rejected_sources ?? []).length} rejected</span>
+            </div>
+            {research.claims && (
+              <KV label="Claims" value={String(research.claims.length)} />
+            )}
+            {(research.rejected_sources ?? []).length > 0 && (
+              <div className="exec-kv">
+                <span className="exec-kv-k">Rejected</span>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  {(research.rejected_sources ?? []).map((s, i) => (
+                    <div key={i} style={{ fontSize: 11 }}>
+                      <span className="exec-kv-v mono">{s.title || s.url}</span>
+                      {s.admission_reason && <span className="dim"> — {s.admission_reason}</span>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {research.gaps.length > 0 && (
+              <div className="exec-kv">
+                <span className="exec-kv-k">Gaps</span>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                  {research.gaps.map((g, i) => <span key={i} className="exec-kv-v" style={{ fontSize: 11 }}>• {g}</span>)}
+                </div>
+              </div>
+            )}
+            {research.contradictions.length > 0 && (
+              <div className="exec-kv">
+                <span className="exec-kv-k">Contradictions</span>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                  {research.contradictions.map((c, i) => <span key={i} className="exec-kv-v" style={{ fontSize: 11 }}>• {c}</span>)}
+                </div>
+              </div>
+            )}
+            {research.verifier_notes && (() => {
+              const parsed = parseVerifierNotes(research.verifier_notes)
+              return (
+                <div className="exec-kv">
+                  <span className="exec-kv-k">Verifier</span>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    {parsed ? (
+                      <>
+                        {parsed.notes && <span className="exec-kv-v" style={{ fontSize: 11 }}>{parsed.notes}</span>}
+                        {parsed.unsupported_claims.length > 0 && (
+                          <span className="exec-kv-v dim" style={{ fontSize: 11 }}>Unsupported: {parsed.unsupported_claims.join('; ')}</span>
+                        )}
+                        {parsed.citation_issues.length > 0 && (
+                          <span className="exec-kv-v dim" style={{ fontSize: 11 }}>Citation issues: {parsed.citation_issues.join('; ')}</span>
+                        )}
+                        {parsed.stale_or_overconfident_claims.length > 0 && (
+                          <span className="exec-kv-v dim" style={{ fontSize: 11 }}>Stale/overconfident: {parsed.stale_or_overconfident_claims.join('; ')}</span>
+                        )}
+                      </>
+                    ) : (
+                      <span className="exec-kv-v mono" style={{ fontSize: 11 }}>{research.verifier_notes}</span>
+                    )}
+                  </div>
+                </div>
+              )
+            })()}
+          </div>
+        </div>
+      )}
+    </>
+  )
+}
+
 function ExecLogView({ data }: { data: NonNullable<ExecPanelData> }) {
   if (!data.execLog) {
     const p = data.model_used ? getProvider(data.model_used) : null
@@ -876,6 +1012,7 @@ function ExecLogView({ data }: { data: NonNullable<ExecPanelData> }) {
           <div className="stat-box"><div className="stat-box-label">Output</div><div className="stat-box-value">{data.completion_tokens ?? '—'}<span className="stat-box-unit">tok</span></div></div>
         </div>
         {data.route && <p className="routing-reason">{data.route.reason}</p>}
+        <DevTraceSections data={data} />
       </>
     )
   }
@@ -1019,6 +1156,8 @@ function ExecLogView({ data }: { data: NonNullable<ExecPanelData> }) {
           <span className="exec-total-cost">${data.execLog.total_cost_usd.toFixed(5)}</span>
         </div>
       </div>
+
+      <DevTraceSections data={data} />
     </div>
   )
 }
@@ -2448,6 +2587,7 @@ function PlanModal({
   const caps = proposal.capabilities
   const [webSearch, setWebSearch] = useState(!!caps.web_search?.enabled)
   const [deepResearch, setDeepResearch] = useState(!!caps.deep_research?.enabled)
+  const [researchMode, setResearchMode] = useState<'deep' | 'expert'>(caps.deep_research?.suggested_mode ?? 'deep')
   const [wantsDoc, setWantsDoc] = useState(!!caps.document?.enabled)
   const formatOptions = caps.document?.format_options?.length ? caps.document.format_options : ['markdown', 'docx']
   const supportedFormats = caps.document?.supported_formats ?? ['markdown', 'docx']
@@ -2530,6 +2670,29 @@ function PlanModal({
               </button>
             )}
 
+            {caps.deep_research && deepResearch && (
+              <div className="doc-brief-field">
+                <span>Research depth</span>
+                <div className="doc-format-row" role="group" aria-label="Research mode">
+                  {(['deep', 'expert'] as const).map(m => (
+                    <button
+                      key={m}
+                      type="button"
+                      className={`doc-format-pill${researchMode === m ? ' active' : ''}`}
+                      onClick={() => setResearchMode(m)}
+                      aria-pressed={researchMode === m}
+                      title={m === 'expert'
+                        ? 'More sources, mandatory verification pass, stricter filtering — slower'
+                        : 'Faster, broad coverage'}
+                    >
+                      {m === 'expert' ? 'Expert' : 'Deep'}
+                      {caps.deep_research?.suggested_mode === m && ' (suggested)'}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {caps.document && (
               <>
                 <button
@@ -2584,6 +2747,7 @@ function PlanModal({
             onClick={() => onConfirm({
               web_search: webSearch,
               deep_research: deepResearch,
+              research_mode: deepResearch ? researchMode : undefined,
               document: wantsDoc,
               document_format: wantsDoc ? format : undefined,
             })}
@@ -3869,7 +4033,7 @@ export default function Home() {
   const [message, setMessage]             = useState('')
   const [quality, setQuality]             = useState<Quality>('smart')
   const [researchOn, setResearchOn]       = useState(false)
-  const [researchMode, setResearchMode]   = useState<'deep' | 'expert'>('expert')
+  const [researchMode, setResearchMode]   = useState<'deep' | 'expert'>('deep')
   const [webSearchOn, setWebSearchOn]     = useState(false)
   const [documentOn, setDocumentOn]       = useState(false)
   const [previewDoc, setPreviewDoc]       = useState<GeneratedDocument | null>(null)
@@ -3900,6 +4064,7 @@ export default function Home() {
   const [error, setError]         = useState('')
   const [copied, setCopied]       = useState<number | null>(null)
   const [liveSteps, setLiveSteps] = useState<PipelineStep[]>([])
+  const traceStepsRef = useRef<PipelineStep[]>([])
   const [subCompletions, setSubCompletions] = useState<Map<number, PipelineStep>>(new Map())
   const [pipelineTs, setPipelineTs] = useState<number>(0)
   const [liveAssistantId, setLiveAssistantId] = useState<number | null>(null)
@@ -3995,6 +4160,8 @@ export default function Home() {
       if (sa) { try { setVisibleArtifacts(JSON.parse(sa)) } catch {} }
       const sw = localStorage.getItem('md-show-web-search')
       if (sw) setShowWebSearch(sw === '1')
+      const sd = localStorage.getItem('md-dev-mode')
+      if (sd) setDevMode(sd === '1')
       const st = localStorage.getItem('md-theme') as 'dark' | 'light' | null
       if (st === 'dark' || st === 'light') setThemeState(st)
       const sac = localStorage.getItem('md-accent') as AccentTheme | null
@@ -4160,6 +4327,12 @@ export default function Home() {
 
   useEffect(() => {
     if (!devMode) setRightPanelOpen(false)
+  }, [devMode])
+
+  // ── Persist dev mode across sessions ──────────────────────────────────────
+
+  useEffect(() => {
+    try { localStorage.setItem('md-dev-mode', devMode ? '1' : '0') } catch {}
   }, [devMode])
 
   // ── Fetch memories when panel opens ──────────────────────────────────────
@@ -4543,6 +4716,11 @@ export default function Home() {
       completion_tokens:  m.completion_tokens,
       task_type:          m.task_type,
       complexity:         m.complexity,
+      turn_type:          m.turn_type,
+      action:             m.action,
+      research:           m.research ?? null,
+      research_run_id:    m.research_run_id ?? null,
+      pipeline_trace:     m.pipeline_trace ?? null,
     })
     setRightPanelOpen(true)
   }
@@ -4805,6 +4983,7 @@ export default function Home() {
           const data = JSON.parse(dataStr)
 
           if (eventType === 'start') {
+            traceStepsRef.current = []
             startConvId = data.conversation_id as string
             setActiveConvId(startConvId)
             setConvUrlParam(startConvId)
@@ -4833,6 +5012,7 @@ export default function Home() {
               latency_ms: data.latency_ms as number | undefined,
               cost_usd: data.cost_usd as number | null | undefined,
             }
+            traceStepsRef.current = [...traceStepsRef.current, step]
             if (data.stage === 'sub_complete' && data.idx != null) {
               setSubCompletions(prev => new Map(prev).set(data.idx as number, step))
             } else {
@@ -4863,7 +5043,7 @@ export default function Home() {
             setLiveAssistantId(null)
             setMessages(prev => prev.map(m =>
               m.id === tempAsstId
-                ? { ...m, research_recommendation: rec }
+                ? { ...m, research_recommendation: rec, pipeline_trace: traceStepsRef.current }
                 : m
             ))
 
@@ -4883,7 +5063,7 @@ export default function Home() {
             setLiveAssistantId(null)
             setMessages(prev => prev.map(m =>
               m.id === tempAsstId
-                ? { ...m, plan_proposal: proposal }
+                ? { ...m, plan_proposal: proposal, pipeline_trace: traceStepsRef.current }
                 : m
             ))
             // Open the confirmation popup immediately — no inline click required.
@@ -4940,6 +5120,7 @@ export default function Home() {
               research_run_id:    (data.research_run_id as number | undefined) ?? researchMeta?.run_id ?? null,
               research:           researchMeta,
               plan_proposal:      null,
+              pipeline_trace:     traceStepsRef.current,
               document_preview:   data.document_preview
                 ? {
                     title:      (data.document_preview as any).title,
@@ -5777,17 +5958,30 @@ export default function Home() {
               </button>
 
               {researchOn && (
-                <button
-                  className="composer-mode-chip"
-                  type="button"
-                  onClick={() => setResearchOn(false)}
-                  title="Cancel research mode"
-                  aria-label="Cancel research mode"
-                >
+                <div className="composer-mode-chip composer-mode-chip-research">
                   <i className="ti ti-microscope" aria-hidden="true" />
                   <span>Research</span>
-                  <i className="ti ti-x" aria-hidden="true" />
-                </button>
+                  <button
+                    type="button"
+                    className="composer-mode-subtoggle"
+                    onClick={() => setResearchMode(m => m === 'expert' ? 'deep' : 'expert')}
+                    title={researchMode === 'expert'
+                      ? 'Expert: more sources, mandatory verification — click for Deep'
+                      : 'Deep: faster, broad coverage — click for Expert'}
+                    aria-label="Toggle research depth"
+                  >
+                    {researchMode === 'expert' ? 'Expert' : 'Deep'}
+                  </button>
+                  <button
+                    type="button"
+                    className="composer-mode-chip-close"
+                    onClick={() => setResearchOn(false)}
+                    title="Cancel research mode"
+                    aria-label="Cancel research mode"
+                  >
+                    <i className="ti ti-x" aria-hidden="true" />
+                  </button>
+                </div>
               )}
 
               {documentOn && (
@@ -5899,26 +6093,6 @@ export default function Home() {
                 <span>Research</span>
                 <span className="left-menu-status">{researchOn ? 'On' : 'Off'}</span>
               </button>
-              {researchOn && (
-                <div className="left-menu-submenu">
-                  <button
-                    className={`left-menu-subitem${researchMode === 'expert' ? ' active' : ''}`}
-                    type="button"
-                    onClick={() => setResearchMode('expert')}
-                    title="Expert: faster, fewer sources, good for most questions"
-                  >
-                    Expert
-                  </button>
-                  <button
-                    className={`left-menu-subitem${researchMode === 'deep' ? ' active' : ''}`}
-                    type="button"
-                    onClick={() => setResearchMode('deep')}
-                    title="Deep: more sources and verification passes, slower"
-                  >
-                    Deep
-                  </button>
-                </div>
-              )}
               <button
                 className={`left-menu-item${documentOn ? ' on' : ''}`}
                 type="button"

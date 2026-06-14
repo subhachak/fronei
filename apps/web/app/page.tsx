@@ -489,6 +489,24 @@ type PlanProposal = {
   capabilities: PlanCapabilities
 }
 
+type DocumentTemplateOption = {
+  id: string
+  name: string
+  description?: string
+  recommended?: boolean
+}
+
+type DocumentFinalizationProposal = {
+  conv_id: string
+  message_id: number
+  brief: Record<string, unknown>
+  format_options: string[]
+  format_recommendation?: string | null
+  supported_formats: string[]
+  templates: DocumentTemplateOption[]
+  template_recommendation?: string | null
+}
+
 type ConfirmedPlanOverrides = {
   web_search?: boolean
   deep_research?: boolean
@@ -513,6 +531,7 @@ type MessageOut = {
   attached_files?: { name: string; method: string; pages: number | null }[] | null
   document_preview?: GeneratedDocument | null
   plan_proposal?: PlanProposal | null
+  document_finalization?: DocumentFinalizationProposal | null
   pipeline_trace?: PipelineStep[] | null
 }
 
@@ -568,6 +587,8 @@ type GeneratedDocument = {
   xlsxBase64?: string
   pptxBase64?: string
   format?: DocumentOutputFormat
+  requestedFormat?: string
+  generationError?: string
   outputFormats?: DocumentOutputFormat[]
 }
 
@@ -2677,6 +2698,16 @@ const PLAN_FORMAT_LABELS: Record<string, string> = {
 
 const PLAN_FORMAT_ORDER = ['markdown', 'docx', 'pptx', 'pdf', 'xlsx'] as const
 
+function firstSupportedDocumentFormat(
+  recommendation: string | null | undefined,
+  options: string[],
+  supported: string[],
+): DocumentOutputFormat {
+  const candidates = [recommendation, ...options, 'markdown'].filter(Boolean) as string[]
+  const match = candidates.find(f => supported.includes(f)) || 'markdown'
+  return (['docx', 'markdown', 'xlsx', 'pptx'].includes(match) ? match : 'markdown') as DocumentOutputFormat
+}
+
 function PlanModal({
   proposal,
   onClose,
@@ -2691,16 +2722,7 @@ function PlanModal({
   const [deepResearch, setDeepResearch] = useState(!!caps.deep_research?.enabled)
   const [researchMode, setResearchMode] = useState<'deep' | 'expert'>(caps.deep_research?.suggested_mode ?? 'deep')
   const [wantsDoc, setWantsDoc] = useState(!!caps.document?.enabled)
-  const formatOptions = caps.document?.format_options?.length ? caps.document.format_options : ['markdown', 'docx']
-  const supportedFormats = caps.document?.supported_formats ?? ['markdown', 'docx']
-  const [format, setFormat] = useState(
-    caps.document?.format_recommendation || formatOptions[0] || 'markdown'
-  )
   const [clarifications, setClarifications] = useState('')
-
-  const formatsToShow = PLAN_FORMAT_ORDER.filter(
-    f => formatOptions.includes(f) || supportedFormats.includes(f)
-  )
 
   return (
     <div className="doc-preview-backdrop" onClick={onClose}>
@@ -2823,31 +2845,6 @@ function PlanModal({
                     <span className="doc-plan-option-reason">{caps.document.reason}</span>
                   )}
                 </button>
-
-                {wantsDoc && formatsToShow.length > 0 && (
-                  <div className="doc-brief-field">
-                    <span>Output format</span>
-                    <div className="doc-format-row" role="group" aria-label="Output formats">
-                      {formatsToShow.map(f => {
-                        const isSupported = supportedFormats.includes(f)
-                        return (
-                          <button
-                            key={f}
-                            type="button"
-                            className={`doc-format-pill${format === f ? ' active' : ''}`}
-                            disabled={!isSupported}
-                            onClick={() => isSupported && setFormat(f)}
-                            aria-pressed={format === f}
-                            title={isSupported ? undefined : 'Coming soon'}
-                          >
-                            {PLAN_FORMAT_LABELS[f] ?? f}
-                            {!isSupported && ' (coming soon)'}
-                          </button>
-                        )
-                      })}
-                    </div>
-                  </div>
-                )}
               </>
             )}
           </div>
@@ -2862,12 +2859,177 @@ function PlanModal({
               deep_research: deepResearch,
               research_mode: deepResearch ? researchMode : undefined,
               document: wantsDoc,
-              document_format: wantsDoc ? format : undefined,
               clarifications: clarifications.trim() || undefined,
             })}
           >
             <i className="ti ti-player-play" aria-hidden="true" />
             Continue
+          </button>
+        </footer>
+      </div>
+    </div>
+  )
+}
+
+function DocumentFinalizationModal({
+  proposal,
+  onClose,
+  onConfirm,
+}: {
+  proposal: DocumentFinalizationProposal
+  onClose: () => void
+  onConfirm: (confirmed: ConfirmedPlanOverrides) => void
+}) {
+  const brief = proposal.brief || {}
+  const [docType, setDocType] = useState(String(brief.doc_type || 'executive_report'))
+  const [title, setTitle] = useState(String(brief.title || ''))
+  const [audience, setAudience] = useState(String(brief.audience || ''))
+  const [tone, setTone] = useState(String(brief.tone || ''))
+  const [length, setLength] = useState(String(brief.length || ''))
+  const [format, setFormat] = useState<DocumentOutputFormat>(
+    firstSupportedDocumentFormat(proposal.format_recommendation, proposal.format_options, proposal.supported_formats)
+  )
+  const templates = proposal.templates?.length ? proposal.templates : [{
+    id: 'fronei-default',
+    name: 'Fronei default',
+    description: 'Clean default styling',
+    recommended: true,
+  }]
+  const [templateId, setTemplateId] = useState(
+    proposal.template_recommendation || templates.find(t => t.recommended)?.id || templates[0]?.id || 'fronei-default'
+  )
+  const formatsToShow = PLAN_FORMAT_ORDER.filter(
+    f => proposal.format_options.includes(f) || proposal.supported_formats.includes(f)
+  )
+
+  return (
+    <div className="doc-preview-backdrop" onClick={onClose}>
+      <div
+        className="doc-brief-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="document-finalization-title"
+        onClick={e => e.stopPropagation()}
+      >
+        <header className="doc-brief-header">
+          <div>
+            <span className="doc-preview-type">Create deliverable</span>
+            <h2 id="document-finalization-title">Confirm the document details</h2>
+          </div>
+          <button className="action-btn" type="button" onClick={onClose} aria-label="Close document setup">
+            <i className="ti ti-x" aria-hidden="true" />
+          </button>
+        </header>
+        <div className="doc-brief-body">
+          <div className="doc-brief-field">
+            <span>Document type</span>
+            <select className="c-select" value={docType} onChange={e => setDocType(e.target.value)}>
+              {Object.entries(DOC_TYPE_LABELS).map(([value, label]) => (
+                <option key={value} value={value}>{label}</option>
+              ))}
+            </select>
+          </div>
+          <div className="doc-brief-field">
+            <span>Title</span>
+            <input
+              className="conv-search-input"
+              value={title}
+              placeholder="Let Fronei choose"
+              onChange={e => setTitle(e.target.value)}
+            />
+          </div>
+          <div className="doc-brief-field">
+            <span>Audience</span>
+            <input
+              className="conv-search-input"
+              value={audience}
+              placeholder="e.g. executive steering committee, client sponsors"
+              onChange={e => setAudience(e.target.value)}
+            />
+          </div>
+          <div className="doc-brief-field">
+            <span>Output format</span>
+            <div className="doc-format-row" role="group" aria-label="Output format">
+              {formatsToShow.map(f => {
+                const isSupported = proposal.supported_formats.includes(f)
+                return (
+                  <button
+                    key={f}
+                    type="button"
+                    className={`doc-format-pill${format === f ? ' active' : ''}`}
+                    disabled={!isSupported}
+                    onClick={() => isSupported && setFormat(f as DocumentOutputFormat)}
+                    aria-pressed={format === f}
+                    title={isSupported ? undefined : 'Coming soon'}
+                  >
+                    {PLAN_FORMAT_LABELS[f] ?? f}
+                    {!isSupported && ' (coming soon)'}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+          <div className="doc-brief-field">
+            <span>Template</span>
+            <div className="doc-plan-section">
+              {templates.map(t => (
+                <button
+                  key={t.id}
+                  type="button"
+                  className={`doc-plan-option${templateId === t.id ? ' active' : ''}${t.recommended ? ' recommended' : ''}`}
+                  onClick={() => setTemplateId(t.id)}
+                >
+                  <span className="doc-plan-option-main">
+                    <i className="ti ti-template" aria-hidden="true" />
+                    <span>{t.name}</span>
+                    {t.recommended && <em>Recommended</em>}
+                  </span>
+                  {t.description && <span className="doc-plan-option-reason">{t.description}</span>}
+                </button>
+              ))}
+            </div>
+            <span className="settings-muted">Saved brand templates and upload-to-profile come next; this step is ready for them.</span>
+          </div>
+          <div className="doc-brief-field">
+            <span>Tone and depth</span>
+            <div className="doc-finalization-grid">
+              <input
+                className="conv-search-input"
+                value={tone}
+                placeholder="Tone, e.g. crisp, strategic"
+                onChange={e => setTone(e.target.value)}
+              />
+              <input
+                className="conv-search-input"
+                value={length}
+                placeholder="Depth, e.g. board-ready, concise"
+                onChange={e => setLength(e.target.value)}
+              />
+            </div>
+          </div>
+        </div>
+        <footer className="doc-brief-footer">
+          <button type="button" className="doc-brief-cancel" onClick={onClose}>Cancel</button>
+          <button
+            type="button"
+            className="send-btn"
+            onClick={() => onConfirm({
+              web_search: false,
+              deep_research: false,
+              document: true,
+              document_format: format,
+              document_brief: {
+                doc_type: docType,
+                title: title.trim() || undefined,
+                audience: audience.trim() || undefined,
+                tone: tone.trim() || undefined,
+                length: length.trim() || undefined,
+                template_id: templateId,
+              },
+            })}
+          >
+            <i className="ti ti-file-export" aria-hidden="true" />
+            Generate
           </button>
         </footer>
       </div>
@@ -2881,6 +3043,7 @@ function DocumentPreviewModal({ doc, onClose }: { doc: GeneratedDocument; onClos
   const isXlsx = doc.format === 'xlsx'
   const isPptx = doc.format === 'pptx'
   const isMarkdownOnly = !isXlsx && !isPptx && !doc.docxBase64
+  const previewLabel = isPptx ? 'Slide plan' : DOC_TYPE_LABELS[doc.docType] ?? 'Document'
 
   useEffect(() => {
     let cancelled = false
@@ -2921,8 +3084,11 @@ function DocumentPreviewModal({ doc, onClose }: { doc: GeneratedDocument; onClos
       >
         <header className="doc-preview-header">
           <div>
-            <span className="doc-preview-type">{DOC_TYPE_LABELS[doc.docType] ?? 'Document'}</span>
+            <span className="doc-preview-type">{previewLabel}</span>
             <h2 id="doc-preview-title">{doc.title}</h2>
+            {doc.generationError && (
+              <div className="warn-text" style={{ marginTop: 6, fontSize: 12 }}>{doc.generationError}</div>
+            )}
           </div>
           <div className="doc-preview-actions">
             <button
@@ -4285,6 +4451,7 @@ export default function Home() {
   const [webSearchOn, setWebSearchOn]     = useState(false)
   const [documentOn, setDocumentOn]       = useState(false)
   const [previewDoc, setPreviewDoc]       = useState<GeneratedDocument | null>(null)
+  const [activeDocumentFinalizationMsgId, setActiveDocumentFinalizationMsgId] = useState<number | null>(null)
   const [activePlanProposalMsgId, setActivePlanProposalMsgId] = useState<number | null>(null)
   const [forceModel, setForceModel]       = useState('')
   const [showWebSearch, setShowWebSearch] = useState(false)
@@ -5471,6 +5638,32 @@ export default function Home() {
             // Open the confirmation popup immediately — no inline click required.
             setActivePlanProposalMsgId(tempAsstId)
 
+          } else if (eventType === 'document_brief_proposed') {
+            const proposal: DocumentFinalizationProposal = {
+              conv_id: (startConvId ?? data.conversation_id) as string,
+              message_id: data.message_id as number,
+              brief: (data.brief as Record<string, unknown>) ?? {},
+              format_options: (data.format_options as string[]) ?? ['markdown', 'docx'],
+              format_recommendation: (data.format_recommendation as string | null) ?? null,
+              supported_formats: (data.supported_formats as string[]) ?? ['markdown', 'docx'],
+              templates: (data.templates as DocumentTemplateOption[]) ?? [],
+              template_recommendation: (data.template_recommendation as string | null) ?? null,
+            }
+            setLoading(false)
+            setStreaming(false)
+            setRefining(false)
+            setLiveSteps([])
+            setSubCompletions(new Map())
+            setLiveAssistantId(null)
+            setActiveTurnId(null)
+            setActiveTurnNotice(null)
+            setMessages(prev => prev.map(m =>
+              m.id === tempAsstId
+                ? { ...m, document_finalization: proposal, pipeline_trace: traceStepsRef.current }
+                : m
+            ))
+            setActiveDocumentFinalizationMsgId(tempAsstId)
+
           } else if (eventType === 'token') {
             setLiveSteps([])
             setSubCompletions(new Map())
@@ -5524,6 +5717,7 @@ export default function Home() {
               research_run_id:    (data.research_run_id as number | undefined) ?? researchMeta?.run_id ?? null,
               research:           researchMeta,
               plan_proposal:      null,
+              document_finalization: null,
               pipeline_trace:     traceStepsRef.current,
               document_preview:   data.document_preview
                 ? {
@@ -5535,6 +5729,8 @@ export default function Home() {
                     xlsxBase64: (data.document_preview as any).xlsx_base64,
                     pptxBase64: (data.document_preview as any).pptx_base64,
                     format:     (data.document_preview as any).format,
+                    requestedFormat: (data.document_preview as any).requested_format,
+                    generationError: (data.document_preview as any).generation_error,
                   } as GeneratedDocument
                 : null,
             } : m))
@@ -5666,6 +5862,54 @@ export default function Home() {
         startConvId: proposal.conv_id,
         sent: lastSentRef.current,
         isArtifactRequest: false,
+        bubblePreCreated: true,
+      })
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Unknown error')
+      setLoading(false)
+      setLiveAssistantId(null)
+    }
+  }
+
+  async function actOnDocumentFinalization(proposal: DocumentFinalizationProposal, confirmed: ConfirmedPlanOverrides) {
+    setActiveDocumentFinalizationMsgId(null)
+    setMessages(prev => prev.map(m =>
+      m.document_finalization?.message_id === proposal.message_id
+        ? { ...m, document_finalization: null, content: '' }
+        : m
+    ))
+
+    const target = messages.find(m => m.document_finalization?.message_id === proposal.message_id)
+    const tempAsstId = target?.id ?? -Date.now()
+
+    setLoading(true)
+    setStreaming(false)
+    setRefining(false)
+    setLiveSteps([])
+    setSubCompletions(new Map())
+    setPipelineTs(Date.now())
+    setLiveAssistantId(tempAsstId)
+    setError('')
+    const clientRequestId = newClientRequestId()
+
+    try {
+      const res = await apiFetch(`/conversations/${proposal.conv_id}/messages/${proposal.message_id}/execute-plan`, {
+        method: 'POST',
+        body: JSON.stringify({ confirmed_plan: confirmed, client_request_id: clientRequestId }),
+      })
+
+      if (!res.ok || !res.body) {
+        const err = await res.json().catch(() => ({ detail: 'Request failed' }))
+        throw new Error((err as { detail: string }).detail || 'Request failed')
+      }
+
+      await runStream(res, {
+        tempAsstId,
+        tempUserId: -1,
+        wasNew: false,
+        startConvId: proposal.conv_id,
+        sent: lastSentRef.current,
+        isArtifactRequest: true,
         bubblePreCreated: true,
       })
     } catch (e) {
@@ -6028,6 +6272,29 @@ export default function Home() {
                               </div>
                             </div>
                           )
+                          : m.document_finalization
+                          ? (
+                            <div className="research-rec-card">
+                              <div className="research-rec-icon">
+                                <i className="ti ti-file-export" aria-hidden="true" />
+                              </div>
+                              <div className="research-rec-body">
+                                <div className="research-rec-title">Ready to create the deliverable</div>
+                                <p>Confirm the document type, output format, and template before Fronei generates the final file.</p>
+                                {activeDocumentFinalizationMsgId !== m.id && (
+                                  <div className="research-rec-actions">
+                                    <button
+                                      className="send-btn"
+                                      type="button"
+                                      onClick={() => setActiveDocumentFinalizationMsgId(m.id)}
+                                    >
+                                      Review document details
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          )
                           : m.research_recommendation
                           ? (
                             <div className="research-rec-card">
@@ -6095,8 +6362,8 @@ export default function Home() {
                           className="doc-generated-icon-btn"
                           type="button"
                           onClick={() => setPreviewDoc(m.document_preview!)}
-                          title={m.document_preview.format === 'xlsx' ? 'Preview spreadsheet' : m.document_preview.format === 'pptx' ? 'Preview presentation' : 'Preview document'}
-                          aria-label={m.document_preview.format === 'xlsx' ? 'Preview spreadsheet' : m.document_preview.format === 'pptx' ? 'Preview presentation' : 'Preview document'}
+                          title={m.document_preview.format === 'xlsx' ? 'Preview spreadsheet' : m.document_preview.format === 'pptx' ? 'View slide plan' : 'Preview document'}
+                          aria-label={m.document_preview.format === 'xlsx' ? 'Preview spreadsheet' : m.document_preview.format === 'pptx' ? 'View slide plan' : 'Preview document'}
                         >
                           <i className="ti ti-eye" aria-hidden="true" />
                         </button>
@@ -6713,6 +6980,18 @@ export default function Home() {
             proposal={proposal}
             onClose={() => setActivePlanProposalMsgId(null)}
             onConfirm={confirmed => actOnPlanProposal(proposal, confirmed)}
+          />
+        )
+      })()}
+      {activeDocumentFinalizationMsgId !== null && (() => {
+        const m = messages.find(mm => mm.id === activeDocumentFinalizationMsgId)
+        if (!m?.document_finalization) return null
+        const proposal = m.document_finalization
+        return (
+          <DocumentFinalizationModal
+            proposal={proposal}
+            onClose={() => setActiveDocumentFinalizationMsgId(null)}
+            onConfirm={confirmed => actOnDocumentFinalization(proposal, confirmed)}
           />
         )
       })()}

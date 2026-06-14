@@ -26,6 +26,7 @@ from app.services.planner import Plan, apply_confirmed_plan, run_planner
 from app.services.prompts import ARTIFACT_PROMPTS
 from app.services.router import choose_route
 from app.services.web_context import WebContextResult, gather_web_context
+from app.services.document_generator import parse_deck_plan
 
 
 def _build_doc_context(docs: list) -> str:
@@ -411,6 +412,29 @@ the input format. Output nothing else — no commentary about what you changed.
 """
 
 
+PRESENTATION_REVISION_SYSTEM_PROMPT = """You are Fronei's presentation editor. You are given a draft DeckPlan JSON \
+body and its chat-facing summary.
+
+Your job is to tighten the deck plan without changing it into Markdown or prose. Improve:
+- Assertion-style slide titles: each title should make a concrete point, not label a topic.
+- Slide density: keep bullets short, specific, and scannable; split overloaded slides only if the existing \
+content supports it.
+- Executive narrative: context -> analysis/options -> recommendation -> next steps.
+- Speaker notes: move nuance, caveats, transitions, and presenter talk track into speaker_notes instead of \
+overloading slide bullets.
+- Generic filler: remove stock phrases and replace them with specific language already present in the draft.
+
+Do NOT:
+- Add new facts, figures, names, dates, or claims not present in the draft.
+- Convert the body to Markdown.
+- Add commentary about the edits.
+
+OUTPUT FORMAT — IMPORTANT:
+Return a valid DeckPlan JSON object first, followed by a line containing exactly ---SUMMARY--- and then a \
+short bullet-point outline (3-8 bullets). The JSON object must include title, optional subtitle, and slides.
+"""
+
+
 def _personalization_block(user_memory: str, brief: dict) -> str | None:
     """Fold user profile/memory + audience framing into a single guidance block
     for the document writer, so personalization reaches the prompt directly
@@ -499,16 +523,19 @@ def generate_document_output(
     # generation reliably produces. Failures here fall back to the draft.
     revision_input = f"{draft_body}\n\n---SUMMARY---\n{draft_summary}"
     try:
+        revision_prompt = PRESENTATION_REVISION_SYSTEM_PROMPT if doc_type == "presentation" else REVISION_SYSTEM_PROMPT
         revision_result = invoke_llm(
             revision_input, route,
             deep_research=False,
-            artifact_context=REVISION_SYSTEM_PROMPT,
+            artifact_context=revision_prompt,
         )
         body, _, summary = revision_result.answer.partition("---SUMMARY---")
         body = body.strip()
         summary = summary.strip()
         if not body:
             raise ValueError("empty revision body")
+        if doc_type == "presentation" and parse_deck_plan(body) is None:
+            raise ValueError("invalid revised DeckPlan JSON")
         result = LLMResult(
             answer=revision_result.answer,
             model_used=draft_result.model_used,

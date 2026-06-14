@@ -28,7 +28,7 @@ from app.schemas import RouteDecision
 from app.services.chat_pipeline import PipelineSetup
 from app.services.llm_gateway import LLMResult
 from app.services.research_orchestrator import ResearchPipelineResult, ResearchFollowupResult
-from app.services.planner import passthrough, plan_to_dict
+from app.services.planner import apply_confirmed_plan, passthrough, plan_to_dict
 from app.services.web_context import WebContextResult
 
 
@@ -680,6 +680,11 @@ def test_execute_plan_with_research_and_document_confirmed_generates_document(cl
                 "web_search": True,
                 "deep_research": True,
                 "document": True,
+                "document_format": "docx",
+                "document_brief": {
+                    "doc_type": "solution_comparison",
+                    "title": "Bedrock vs Snowflake Cortex",
+                },
             }
         },
     )
@@ -822,6 +827,179 @@ def test_execute_plan_research_followup_with_document_confirmed_generates_docume
     assert captured_doc_call["wants_document_output"] is True
     assert "Updated CFO-ready findings from prior evidence" in captured_doc_call["doc_context"]
     assert "Existing evidence" in captured_doc_call["doc_context"]
+
+
+def test_document_generation_pauses_for_late_finalization(client, monkeypatch):
+    c, Session = client
+
+    plan = passthrough("Create a client presentation about the migration strategy.")
+    plan.intent = "Create a client presentation about the migration strategy"
+    plan.wants_document_output = True
+    plan.document_brief = {
+        "doc_type": "presentation",
+        "title": "Migration Strategy",
+        "audience": "Client steering committee",
+    }
+    plan.document_format_options = ["pptx", "docx", "markdown"]
+    plan.document_format_recommendation = "pptx"
+    plan.plan_confidence = "high"
+
+    route = RouteDecision(
+        task_type="writing",
+        complexity="high",
+        profile="balanced",
+        primary_model="gpt-4.1",
+        fallbacks=[],
+        reason="document finalization test",
+    )
+    wc = WebContextResult(context=None, status="Web context not requested.", provider="", sources_count=0, search_query=None)
+
+    def fake_build_pipeline_setup(req, conv_arg, history, settings, **kwargs):
+        return PipelineSetup(
+            plan=plan,
+            route=route,
+            wc=wc,
+            enable_native=False,
+            planner_ctx=None,
+            running_summary="",
+            profile="balanced",
+            doc_context="",
+            artifact_context="",
+        )
+
+    monkeypatch.setattr(conversations, "build_pipeline_setup", fake_build_pipeline_setup)
+
+    def fail_generate(*args, **kwargs):
+        raise AssertionError("document generation should wait for finalization")
+
+    monkeypatch.setattr(conversations, "generate_document_output", fail_generate)
+
+    response = c.post(
+        "/conversations/chat/stream",
+        json={"message": "Create a client presentation about the migration strategy.", "document_requested": True},
+    )
+
+    assert response.status_code == 200
+    events = _events(response.text)
+    assert events[-1][0] == "document_brief_proposed"
+    proposal = events[-1][1]
+    assert proposal["brief"]["doc_type"] == "presentation"
+    assert proposal["format_recommendation"] == "pptx"
+    assert proposal["templates"][0]["id"] == "fronei-default"
+
+    with Session() as db:
+        user_msg = db.get(ConversationMessage, proposal["message_id"])
+        assert user_msg is not None
+        assert user_msg.plan_json
+        turn = db.query(ConversationTurn).order_by(ConversationTurn.id.desc()).first()
+        assert turn.status == "awaiting_confirmation"
+
+
+def test_execute_plan_after_document_finalization_generates_artifact(client, monkeypatch):
+    c, Session = client
+
+    plan = passthrough("Create a client presentation about the migration strategy.")
+    plan.intent = "Create a client presentation about the migration strategy"
+    plan.wants_document_output = True
+    plan.document_brief = {
+        "doc_type": "presentation",
+        "title": "Migration Strategy",
+        "_source_context": "Research findings:\nUse phased migration to reduce delivery risk.",
+    }
+    plan.document_format_options = ["pptx", "markdown"]
+    plan.document_format_recommendation = "pptx"
+    plan.plan_confidence = "high"
+
+    with Session() as db:
+        conv = Conversation(user_id="u1", title="Deck", profile="balanced", message_count=0)
+        db.add(conv)
+        db.flush()
+        user_msg = ConversationMessage(
+            conversation_id=conv.id,
+            role="user",
+            content="Create a client presentation about the migration strategy.",
+            plan_json=json.dumps(plan_to_dict(plan)),
+        )
+        db.add(user_msg)
+        db.commit()
+        conv_id = conv.public_id
+        message_id = user_msg.id
+
+    route = RouteDecision(
+        task_type="writing",
+        complexity="high",
+        profile="balanced",
+        primary_model="gpt-4.1",
+        fallbacks=[],
+        reason="document finalization execute test",
+    )
+    wc = WebContextResult(context=None, status="Web context not requested.", provider="", sources_count=0, search_query=None)
+
+    def fake_build_pipeline_setup(req, conv_arg, history, settings, **kwargs):
+        setup_plan = kwargs["plan"]
+        if kwargs.get("confirmed_plan"):
+            apply_confirmed_plan(setup_plan, kwargs["confirmed_plan"])
+        return PipelineSetup(
+            plan=setup_plan,
+            route=route,
+            wc=wc,
+            enable_native=False,
+            planner_ctx=None,
+            running_summary="",
+            profile="balanced",
+            doc_context="",
+            artifact_context="",
+        )
+
+    monkeypatch.setattr(conversations, "build_pipeline_setup", fake_build_pipeline_setup)
+
+    captured: dict = {}
+
+    def fake_generate_document_output(plan_arg, route_arg, history, wc, planner_ctx, doc_context, deep_research, enable_native, artifact_context="", user_memory=""):
+        captured["brief"] = plan_arg.document_brief
+        captured["doc_context"] = doc_context
+        return (
+            LLMResult(
+                answer="# Migration Strategy\n\nBody.\n\n---SUMMARY---\n- Deck summary",
+                model_used="gpt-4.1",
+                latency_ms=100,
+                prompt_tokens=50,
+                completion_tokens=50,
+                estimated_cost_usd=0.01,
+            ),
+            "# Migration Strategy\n\nBody.",
+            "- Deck summary",
+            "presentation",
+        )
+
+    monkeypatch.setattr(conversations, "generate_document_output", fake_generate_document_output)
+
+    response = c.post(
+        f"/conversations/{conv_id}/messages/{message_id}/execute-plan",
+        json={
+            "confirmed_plan": {
+                "document": True,
+                "document_format": "markdown",
+                "document_brief": {
+                    "doc_type": "presentation",
+                    "title": "Client Migration Strategy",
+                    "audience": "Client steering committee",
+                    "template_id": "fronei-default",
+                },
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    events = _events(response.text)
+    assert events[-1][0] == "done"
+    done = events[-1][1]
+    assert done["document_preview"] is not None
+    assert done["document_preview"]["format"] == "markdown"
+    assert done["answer"] == "- Deck summary"
+    assert captured["brief"]["title"] == "Client Migration Strategy"
+    assert captured["brief"]["template_id"] == "fronei-default"
+    assert "Use phased migration" in captured["doc_context"]
 
 
 def test_execute_plan_confirmed_expert_mode_bypasses_followup_fast_path(client, monkeypatch):

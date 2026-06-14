@@ -800,7 +800,7 @@ def _record_turn_event(db, turn: ConversationTurn | None, payload: str) -> None:
     now = datetime.now(timezone.utc)
     turn.updated_at = now
     _append_turn_progress(turn, event_type, data)
-    terminal = event_type in ("done", "error", "plan_proposed")
+    terminal = event_type in ("done", "error", "plan_proposed", "document_brief_proposed")
     if event_type == "done":
         turn.status = "completed"
         turn.completed_at = now
@@ -818,6 +818,10 @@ def _record_turn_event(db, turn: ConversationTurn | None, payload: str) -> None:
         turn.status = "awaiting_confirmation"
         turn.completed_at = now
         _append_turn_lifecycle(turn, "awaiting_confirmation", {"message_id": data.get("message_id")})
+    elif event_type == "document_brief_proposed":
+        turn.status = "awaiting_confirmation"
+        turn.completed_at = now
+        _append_turn_lifecycle(turn, "awaiting_document_brief", {"message_id": data.get("message_id")})
     elif turn.status == "pending":
         turn.status = "running"
         _append_turn_lifecycle(turn, "running")
@@ -951,6 +955,73 @@ def _planner_selected_log(plan) -> str:
         latency_ms=plan.planner_latency_ms,
         cost_usd=plan.planner_cost_usd,
     )
+
+
+def _document_finalization_confirmed(req: ConvChatRequest) -> bool:
+    if req.confirmed_plan is None:
+        return False
+    return bool(req.confirmed_plan.document_brief or req.confirmed_plan.document_format)
+
+
+def _document_finalization_payload(conv: Conversation, user_msg: ConversationMessage, plan, gate) -> dict:
+    doc_cap = gate.capabilities["document"]
+    extra = doc_cap.extra or {}
+    brief = dict(extra.get("brief") or plan.document_brief or {})
+    brief = {k: v for k, v in brief.items() if not str(k).startswith("_")}
+    format_options = list(extra.get("format_options") or plan.document_format_options or ["markdown"])
+    supported_formats = list(extra.get("supported_formats") or ["docx", "markdown"])
+    format_recommendation = (
+        extra.get("format_recommendation")
+        or plan.document_format_recommendation
+        or (format_options[0] if format_options else "markdown")
+    )
+    return {
+        "conversation_id": conv.public_id,
+        "message_id": user_msg.id,
+        "brief": brief,
+        "format_options": format_options,
+        "format_recommendation": format_recommendation,
+        "supported_formats": supported_formats,
+        "templates": [
+            {
+                "id": "fronei-default",
+                "name": "Fronei default",
+                "description": "Clean default styling until saved brand templates are configured.",
+                "recommended": True,
+            }
+        ],
+        "template_recommendation": "fronei-default",
+    }
+
+
+def _maybe_propose_document_finalization(db, conv: Conversation, user_msg: ConversationMessage, req: ConvChatRequest, plan, gate) -> str | None:
+    if not (plan.wants_document_output and gate.capabilities["document"].enabled):
+        return None
+    if _document_finalization_confirmed(req):
+        return None
+    user_msg.plan_json = json.dumps(plan_to_dict(plan))
+    conv.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    return _sse("document_brief_proposed", _document_finalization_payload(conv, user_msg, plan, gate))
+
+
+def _remember_document_source_context(plan, context: str, research_run_id: int | None = None) -> None:
+    if not context:
+        return
+    brief = dict(plan.document_brief or {})
+    # Keep this under the request payload size limit while retaining enough
+    # source-grounded material for the final artifact pass after confirmation.
+    brief["_source_context"] = context[:28000]
+    if research_run_id is not None:
+        brief["_source_research_run_id"] = research_run_id
+    plan.document_brief = brief
+
+
+def _document_context_for_generation(base_context: str, plan) -> str:
+    source_context = (plan.document_brief or {}).get("_source_context")
+    if isinstance(source_context, str) and source_context.strip():
+        return "\n\n".join(part for part in [base_context, source_context] if part)
+    return base_context
 
 
 # ── Streaming endpoint ────────────────────────────────────────────────────────
@@ -1227,6 +1298,11 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                         empty_wc = WebContextResult(context=None, status="", provider="", sources_count=0, search_query=None)
                         artifact_context = ARTIFACT_PROMPTS.get(req.artifact_type or "", "")
                         followup_cost = result.estimated_cost_usd or 0.0
+                        _remember_document_source_context(plan, doc_context, existing_run_id)
+                        finalization_event = _maybe_propose_document_finalization(db, conv, user_msg, req, plan, gate)
+                        if finalization_event:
+                            yield finalization_event
+                            return
 
                         result, doc_body, chat_summary, doc_type = generate_document_output(
                             plan, route, history, empty_wc, planner_ctx,
@@ -1405,6 +1481,11 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                     planner_ctx = _build_worker_context(plan, running_summary)
                     empty_wc = WebContextResult(context=None, status="", provider="", sources_count=0, search_query=None)
                     artifact_context = ARTIFACT_PROMPTS.get(req.artifact_type or "", "")
+                    _remember_document_source_context(plan, doc_context, research.run.id)
+                    finalization_event = _maybe_propose_document_finalization(db, conv, user_msg, req, plan, gate)
+                    if finalization_event:
+                        yield finalization_event
+                        return
 
                     result, doc_body, chat_summary, doc_type = generate_document_output(
                         plan, route, history, empty_wc, planner_ctx,
@@ -1560,12 +1641,17 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
             # just the outcome of this turn — not a separate flow. Generate the
             # document body + a short chat-facing bullet outline in one call.
             if plan.wants_document_output and gate.capabilities["document"].enabled:
+                finalization_event = _maybe_propose_document_finalization(db, conv, user_msg, req, plan, gate)
+                if finalization_event:
+                    yield finalization_event
+                    return
+
                 yield _pipeline_log("working", "Drafting your document…")
                 doc_cap = gate.capabilities["document"]
                 fmt = doc_cap.extra.get("format_recommendation", "markdown")
                 result, doc_body, chat_summary, doc_type = generate_document_output(
                     plan, route, history, wc, planner_ctx,
-                    setup.doc_context, req.deep_research, enable_native,
+                    _document_context_for_generation(setup.doc_context, plan), req.deep_research, enable_native,
                     artifact_context=setup.artifact_context or "",
                     user_memory=user_memory,
                 )

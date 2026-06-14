@@ -4216,6 +4216,12 @@ pre:hover .code-copy-btn { opacity: 1; }
   gap: 14px;
 }
 
+.doc-finalization-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
 .doc-brief-field {
   display: flex;
   flex-direction: column;
@@ -4433,6 +4439,10 @@ pre:hover .code-copy-btn { opacity: 1; }
   }
 
   .doc-brief-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .doc-finalization-grid {
     grid-template-columns: 1fr;
   }
 

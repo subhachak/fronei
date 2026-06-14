@@ -34,9 +34,7 @@ from pptx.util import Inches as PptxInches, Pt as PptxPt
 from app.config import get_settings
 from app.services.document_templates import resolve_pptx_template_path
 from app.services.presentation_design_system import (
-    ARCHETYPE_TO_TEMPLATE,
     LAYOUT_ALIASES as DESIGN_LAYOUT_ALIASES,
-    SLIDE_TEMPLATES,
     canonical_layout,
     component_tree_for_slide,
     design_system_payload,

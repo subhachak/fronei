@@ -131,6 +131,10 @@ def test_build_document_artifact_exposes_parallel_composition_for_deck_plan_json
 
     preview = documents.build_document_artifact("", deck_plan, "presentation", "markdown")
 
+    assert preview["format"] == "pptx"
+    assert preview["requested_format"] == "pptx"
+    assert preview["filename"] == "board-briefing.pptx"
+    assert preview["pptx_base64"]
     assert preview["composition"]["parallel"] is True
     assert preview["composition"]["slide_count"] == 3
     assert preview["composition"]["workers"] >= 2
@@ -138,3 +142,17 @@ def test_build_document_artifact_exposes_parallel_composition_for_deck_plan_json
     assert preview["composition"]["archetypes"] == ["section_divider", "investment_case", "roadmap"]
     assert "**$4.2M**" in preview["markdown"]
     assert "Q1: Foundation" in preview["markdown"]
+
+
+def test_build_document_preview_detected_presentation_generates_pptx():
+    preview = documents.build_document_preview(
+        "Create a PowerPoint presentation for the steering committee.",
+        "# Steering Committee Update\n\n## Recommendation\n- Approve phase 1\n",
+    )
+
+    assert preview is not None
+    assert preview["doc_type"] == "presentation"
+    assert preview["format"] == "pptx"
+    assert preview["requested_format"] == "pptx"
+    assert preview["filename"].endswith(".pptx")
+    assert preview["pptx_base64"]

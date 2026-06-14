@@ -37,4 +37,4 @@ plan_confidence:
 
 # Formats the document generator can actually produce today. Anything else
 # the planner proposes is shown disabled ("coming soon") in the format picker.
-supported_document_formats: [markdown, docx, xlsx]
+supported_document_formats: [markdown, docx, xlsx, pptx]

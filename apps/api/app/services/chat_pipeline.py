@@ -380,6 +380,59 @@ should NOT repeat the document body.
 """
 
 
+REVISION_SYSTEM_PROMPT = """You are Fronei's document revision editor. You are given a draft document (and its \
+chat-facing summary) that was just generated for a mid-level professional to send to senior stakeholders.
+
+Your job is to produce a tightened final version — not a rewrite from scratch. Go through the draft and fix:
+- Generic filler phrases ("various stakeholders," "robust solution," "leverage synergies," "in today's \
+fast-paced environment," "holistic approach," "moving forward," "best-in-class," "seamless," "cutting-edge," and \
+similar) — replace with concrete, specific language drawn from the draft's own content, or remove.
+- Sections or sentences that just restate the prompt, repeat another section, or add no new information — \
+cut or merge them.
+- Analytical points that state an observation without its implication — add the "so what" (impact, risk, or \
+recommendation) where it's missing.
+- Comparisons or trade-offs presented as one-sided lists — restructure as genuine comparisons (table or explicit \
+criteria) where the underlying content supports it.
+- Tone/vocabulary mismatches with the stated audience.
+- Formatting issues that would break when pasted into Word/Excel (broken tables, inconsistent heading levels, \
+stray markdown).
+
+Do NOT:
+- Add new facts, figures, names, or claims not present in the draft.
+- Change the document's overall structure or doc type unless it's clearly broken.
+- Make the document significantly longer — tightening should usually shorten or hold length steady.
+
+If the draft is already strong and has no meaningful issues, return it essentially unchanged — do not introduce \
+churn for its own sake.
+
+OUTPUT FORMAT — IMPORTANT: Return the full revised document body in Markdown, followed by a line containing \
+exactly ---SUMMARY--- and then a short bullet-point outline (3-8 bullets, one per major section), exactly as in \
+the input format. Output nothing else — no commentary about what you changed.
+"""
+
+
+def _personalization_block(user_memory: str, brief: dict) -> str | None:
+    """Fold user profile/memory + audience framing into a single guidance block
+    for the document writer, so personalization reaches the prompt directly
+    rather than only through the planner's context_summary."""
+    parts: list[str] = []
+    if user_memory:
+        parts.append(
+            "Background on the author (use to calibrate examples, priorities, and "
+            "what can be assumed as known — do not restate this back to them):\n" + user_memory
+        )
+    audience = brief.get("audience")
+    if audience:
+        parts.append(
+            f"The stated audience for this document is: {audience}. Calibrate vocabulary, technical depth, "
+            "and framing (outcomes/risk vs. implementation detail) specifically for that audience — write as "
+            "if addressing them directly, not a generic reader."
+        )
+    if not parts:
+        return None
+    return "PERSONALIZATION:\n" + "\n\n".join(parts)
+
+
 def generate_document_output(
     plan: Plan,
     route: RouteDecision,
@@ -390,8 +443,11 @@ def generate_document_output(
     deep_research: bool,
     enable_native_search: bool,
     artifact_context: str = "",
+    user_memory: str = "",
 ) -> tuple[LLMResult, str, str, str]:
-    """Single LLM call producing a document body + chat-facing bullet outline.
+    """Two-pass document generation: draft, then a revision pass that tightens
+    against an anti-"AI slop" checklist (generic phrasing, redundancy, missing
+    so-what framing, audience mismatch).
 
     Returns (llm_result, document_body_markdown, chat_summary, doc_type).
     """
@@ -413,12 +469,16 @@ def generate_document_output(
     if preferences:
         parts.append("User-selected document brief:\n" + "\n".join(preferences))
 
+    personalization = _personalization_block(user_memory, brief)
+    if personalization:
+        parts.append(personalization)
+
     if artifact_context:
         parts.append(artifact_context)
     parts.append(DOCUMENT_OUTPUT_INSTRUCTIONS)
     sys_prompt = "\n\n".join(parts)
 
-    result = invoke_llm(
+    draft_result = invoke_llm(
         plan.enriched_prompt, route,
         history=history,
         deep_research=deep_research,
@@ -429,10 +489,38 @@ def generate_document_output(
         artifact_context=sys_prompt,
     )
 
-    body, _, summary = result.answer.partition("---SUMMARY---")
-    body = body.strip() or result.answer.strip()
-    summary = summary.strip() or "Here's your document — see the attached preview."
-    return result, body, summary, doc_type
+    draft_body, _, draft_summary = draft_result.answer.partition("---SUMMARY---")
+    draft_body = draft_body.strip() or draft_result.answer.strip()
+    draft_summary = draft_summary.strip() or "Here's your document — see the attached preview."
+
+    # ── Revision pass ────────────────────────────────────────────────────
+    # A second pass against a dedicated anti-slop checklist catches generic
+    # phrasing, redundancy, and missing "so what" framing that single-pass
+    # generation reliably produces. Failures here fall back to the draft.
+    revision_input = f"{draft_body}\n\n---SUMMARY---\n{draft_summary}"
+    try:
+        revision_result = invoke_llm(
+            revision_input, route,
+            deep_research=False,
+            artifact_context=REVISION_SYSTEM_PROMPT,
+        )
+        body, _, summary = revision_result.answer.partition("---SUMMARY---")
+        body = body.strip()
+        summary = summary.strip()
+        if not body:
+            raise ValueError("empty revision body")
+        result = LLMResult(
+            answer=revision_result.answer,
+            model_used=draft_result.model_used,
+            latency_ms=draft_result.latency_ms + revision_result.latency_ms,
+            prompt_tokens=(draft_result.prompt_tokens or 0) + (revision_result.prompt_tokens or 0),
+            completion_tokens=(draft_result.completion_tokens or 0) + (revision_result.completion_tokens or 0),
+            estimated_cost_usd=(draft_result.estimated_cost_usd or 0.0) + (revision_result.estimated_cost_usd or 0.0),
+            fallback_errors=draft_result.fallback_errors + revision_result.fallback_errors,
+        )
+        return result, body, summary or draft_summary, doc_type
+    except Exception:
+        return draft_result, draft_body, draft_summary, doc_type
 
 
 def run_pipeline(

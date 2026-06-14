@@ -65,7 +65,7 @@ Output ONLY valid JSON — no markdown fences, no explanation, no extra text. Us
   "research_confidence": "low|medium|high",
   "wants_document_output": false,
   "document_brief": {
-    "doc_type": "executive_report|proposal|memo|technical_spec|meeting_notes|one_pager|letter|resume|null",
+    "doc_type": "executive_report|proposal|memo|technical_spec|meeting_notes|one_pager|letter|resume|presentation|null",
     "title": null,
     "audience": null,
     "tone": null,
@@ -140,7 +140,8 @@ document_brief — only meaningful when wants_document_output is true. Infer eac
   request and conversation context; set a field to null when it genuinely cannot be inferred \
   (this drives a one-time clarifying question, so don't guess wildly):
   doc_type  — one of executive_report, proposal, memo, technical_spec, meeting_notes, one_pager, \
-    letter, resume; null if unclear.
+    letter, resume, presentation; null if unclear. Use "presentation" for slide decks / board decks / \
+    pitch decks — anything meant to be presented rather than read.
   title     — a short working title, or null.
   audience  — who will read this (e.g. "Client", "Executive", "Internal team"), or null.
   tone      — e.g. "Formal", "Concise", "Persuasive", "Technical", or null.
@@ -150,7 +151,8 @@ document_format_options — only when wants_document_output is true: every outpu
   this content, from ["markdown", "docx", "pptx", "pdf", "xlsx"]. Most documents are just \
   ["markdown"] or ["markdown", "docx"]. Add "pptx" for board/exec-style decks, "xlsx" for tabular/financial \
   content, "pdf" for formal external deliverables. Empty array (defaults to markdown) when only \
-  markdown makes sense.
+  markdown makes sense. If doc_type is "presentation", document_format_options MUST include "pptx" \
+  (and document_format_recommendation should be "pptx" unless the user explicitly asked for something else).
 
 document_format_recommendation — when document_format_options has more than one entry, which one you'd \
   recommend; null otherwise.

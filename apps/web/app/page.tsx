@@ -5360,13 +5360,10 @@ export default function Home() {
             startConvId = data.conversation_id as string
             currentTurnId = (data.turn_id as string | undefined) ?? currentTurnId
             if (currentTurnId) setActiveTurnId(currentTurnId)
-            setActiveTurnNotice(currentTurnId ? {
-              convId: startConvId,
-              turnId: currentTurnId,
-              status: 'running',
-              message: 'Fronei is working on this turn.',
-              userMessage: sent,
-            } : null)
+            // Note: deliberately NOT setting activeTurnNotice here. For a live
+            // stream, the pipeline trace / live steps UI already shows progress;
+            // the "Fronei is working on this turn" banner is only meant for the
+            // reconnect/reload case (see loadConversation + pollActiveTurn).
             setActiveConvId(startConvId)
             setConvUrlParam(startConvId)
             if (!bubblePreCreated) {
@@ -5424,6 +5421,7 @@ export default function Home() {
             setSubCompletions(new Map())
             setLiveAssistantId(null)
             setActiveTurnId(null)
+            setActiveTurnNotice(null)
             setMessages(prev => prev.map(m =>
               m.id === tempAsstId
                 ? { ...m, research_recommendation: rec, pipeline_trace: traceStepsRef.current }
@@ -5445,6 +5443,7 @@ export default function Home() {
             setSubCompletions(new Map())
             setLiveAssistantId(null)
             setActiveTurnId(null)
+            setActiveTurnNotice(null)
             setMessages(prev => prev.map(m =>
               m.id === tempAsstId
                 ? { ...m, plan_proposal: proposal, pipeline_trace: traceStepsRef.current }

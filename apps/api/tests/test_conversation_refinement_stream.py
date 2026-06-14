@@ -1061,6 +1061,127 @@ def test_execute_plan_after_document_finalization_generates_artifact(client, mon
     assert "Fronei premium freehand" in captured["artifact_context"]
 
 
+def test_execute_plan_with_pptx_format_coerces_generation_to_presentation(client, monkeypatch):
+    c, Session = client
+
+    plan = passthrough("Create an executive report that I can present as slides.")
+    plan.intent = "Create an executive report that can be presented as slides"
+    plan.wants_document_output = True
+    plan.document_brief = {
+        "doc_type": "executive_report",
+        "title": "Platform Consolidation Recommendation",
+    }
+    plan.document_format_options = ["markdown", "docx", "pptx"]
+    plan.document_format_recommendation = "markdown"
+    plan.plan_confidence = "high"
+
+    with Session() as db:
+        conv = Conversation(user_id="u1", title="Deck", profile="balanced", message_count=0)
+        db.add(conv)
+        db.flush()
+        user_msg = ConversationMessage(
+            conversation_id=conv.id,
+            role="user",
+            content="Create an executive report that I can present as slides.",
+            plan_json=json.dumps(plan_to_dict(plan)),
+        )
+        db.add(user_msg)
+        db.commit()
+        conv_id = conv.public_id
+        message_id = user_msg.id
+
+    route = RouteDecision(
+        task_type="writing",
+        complexity="high",
+        profile="balanced",
+        primary_model="gpt-4.1",
+        fallbacks=[],
+        reason="pptx format coercion test",
+    )
+    wc = WebContextResult(context=None, status="Web context not requested.", provider="", sources_count=0, search_query=None)
+
+    def fake_build_pipeline_setup(req, conv_arg, history, settings, **kwargs):
+        setup_plan = kwargs["plan"]
+        if kwargs.get("confirmed_plan"):
+            apply_confirmed_plan(setup_plan, kwargs["confirmed_plan"])
+        return PipelineSetup(
+            plan=setup_plan,
+            route=route,
+            wc=wc,
+            enable_native=False,
+            planner_ctx=None,
+            running_summary="",
+            profile="balanced",
+            doc_context="",
+            artifact_context="",
+        )
+
+    monkeypatch.setattr(conversations, "build_pipeline_setup", fake_build_pipeline_setup)
+
+    captured: dict = {}
+
+    def fake_generate_document_output(plan_arg, route_arg, history, wc, planner_ctx, doc_context, deep_research, enable_native, artifact_context="", user_memory=""):
+        captured["brief"] = plan_arg.document_brief
+        captured["artifact_context"] = artifact_context
+        return (
+            LLMResult(
+                answer=json.dumps({
+                    "title": "Platform Consolidation Recommendation",
+                    "slides": [
+                        {
+                            "layout": "executive_summary",
+                            "title": "Consolidation reduces cost and delivery risk",
+                            "bullets": ["Approve phased migration", "Retire duplicate tooling"],
+                        }
+                    ],
+                }) + "\n\n---SUMMARY---\n- Deck summary",
+                model_used="gpt-4.1",
+                latency_ms=100,
+                prompt_tokens=50,
+                completion_tokens=50,
+                estimated_cost_usd=0.01,
+            ),
+            json.dumps({
+                "title": "Platform Consolidation Recommendation",
+                "slides": [
+                    {
+                        "layout": "executive_summary",
+                        "title": "Consolidation reduces cost and delivery risk",
+                        "bullets": ["Approve phased migration", "Retire duplicate tooling"],
+                    }
+                ],
+            }),
+            "- Deck summary",
+            "presentation",
+        )
+
+    monkeypatch.setattr(conversations, "generate_document_output", fake_generate_document_output)
+
+    response = c.post(
+        f"/conversations/{conv_id}/messages/{message_id}/execute-plan",
+        json={
+            "confirmed_plan": {
+                "document": True,
+                "document_format": "pptx",
+                "document_brief": {
+                    "doc_type": "executive_report",
+                    "title": "Platform Consolidation Recommendation",
+                    "audience": "Steering committee",
+                },
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    events = _events(response.text)
+    done = events[-1][1]
+    assert done["document_preview"]["format"] == "pptx"
+    assert done["document_preview"]["pptx_base64"]
+    assert captured["brief"]["doc_type"] == "presentation"
+    assert captured["brief"]["source_doc_type"] == "executive_report"
+    assert "TEMPLATE-FIRST PRESENTATION DESIGN BRIEF" in captured["artifact_context"]
+
+
 def test_execute_plan_confirmed_expert_mode_bypasses_followup_fast_path(client, monkeypatch):
     """A user-confirmed "expert" research mode on a follow-up turn must run
     fresh research, not the cheap existing-evidence synthesis fast path —

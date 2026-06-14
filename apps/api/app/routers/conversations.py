@@ -1053,6 +1053,36 @@ def _document_context_for_generation(base_context: str, plan) -> str:
     return base_context
 
 
+_SUPPORTED_DOCUMENT_OUTPUT_FORMATS = {"markdown", "docx", "xlsx", "pptx"}
+
+
+def _document_output_format(plan, gate) -> str:
+    brief = dict(plan.document_brief or {})
+    doc_cap = gate.capabilities["document"]
+    extra = doc_cap.extra or {}
+    supported = set(extra.get("supported_formats") or _SUPPORTED_DOCUMENT_OUTPUT_FORMATS)
+    supported = supported.intersection(_SUPPORTED_DOCUMENT_OUTPUT_FORMATS) or {"markdown"}
+    if brief.get("doc_type") == "presentation" and "pptx" in supported:
+        return "pptx"
+    recommendation = plan.document_format_recommendation or extra.get("format_recommendation")
+    if recommendation in supported:
+        return str(recommendation)
+    for option in list(plan.document_format_options or extra.get("format_options") or []):
+        if option in supported:
+            return str(option)
+    return "markdown"
+
+
+def _coerce_presentation_brief_for_pptx(plan, fmt: str) -> None:
+    if fmt != "pptx":
+        return
+    brief = dict(plan.document_brief or {})
+    if brief.get("doc_type") != "presentation":
+        brief["source_doc_type"] = brief.get("doc_type") or "document"
+        brief["doc_type"] = "presentation"
+        plan.document_brief = brief
+
+
 def _presentation_artifact_context(base_context: str, db, user_id: str, plan) -> str:
     brief = dict(plan.document_brief or {})
     if brief.get("doc_type") != "presentation":
@@ -1326,10 +1356,8 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                     document_preview = None
                     if plan.wants_document_output and gate.capabilities["document"].enabled:
                         yield _pipeline_log("working", "Drafting your document from research findings…")
-                        doc_cap = gate.capabilities["document"]
-                        fmt = doc_cap.extra.get("format_recommendation", "markdown")
-                        if (plan.document_brief or {}).get("doc_type") == "presentation":
-                            fmt = "pptx"
+                        fmt = _document_output_format(plan, gate)
+                        _coerce_presentation_brief_for_pptx(plan, fmt)
 
                         followup_context_parts = [f"Research follow-up findings:\n{result.answer}"]
                         if followup.source_logs:
@@ -1521,10 +1549,8 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                 document_preview = None
                 if plan.wants_document_output and gate.capabilities["document"].enabled:
                     yield _pipeline_log("working", "Drafting your document from research findings…")
-                    doc_cap = gate.capabilities["document"]
-                    fmt = doc_cap.extra.get("format_recommendation", "markdown")
-                    if (plan.document_brief or {}).get("doc_type") == "presentation":
-                        fmt = "pptx"
+                    fmt = _document_output_format(plan, gate)
+                    _coerce_presentation_brief_for_pptx(plan, fmt)
 
                     research_context_parts = [f"Research findings:\n{result.answer}"]
                     if research.source_logs:
@@ -1714,10 +1740,8 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                     return
 
                 yield _pipeline_log("working", "Drafting your document…")
-                doc_cap = gate.capabilities["document"]
-                fmt = doc_cap.extra.get("format_recommendation", "markdown")
-                if (plan.document_brief or {}).get("doc_type") == "presentation":
-                    fmt = "pptx"
+                fmt = _document_output_format(plan, gate)
+                _coerce_presentation_brief_for_pptx(plan, fmt)
                 result, doc_body, chat_summary, doc_type = generate_document_output(
                     plan, route, history, wc, planner_ctx,
                     _document_context_for_generation(setup.doc_context, plan), req.deep_research, enable_native,

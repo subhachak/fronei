@@ -887,8 +887,8 @@ def test_document_generation_pauses_for_late_finalization(client, monkeypatch):
     assert proposal["format_recommendation"] == "pptx"
     template_ids = [t["id"] for t in proposal["templates"]]
     assert "fronei-default" in template_ids
-    assert "boardroom-navy" in template_ids
-    assert proposal["template_recommendation"] == "boardroom-navy"
+    assert "executive-navy" in template_ids
+    assert proposal["template_recommendation"] == "executive-navy"
     assert proposal["template_design"]["mode"] in {"template_following", "fronei_premium_freehand"}
     assert proposal["template_design"]["available_slide_types"]
 

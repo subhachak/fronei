@@ -13,6 +13,8 @@ from docx.text.paragraph import Paragraph
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
+from pptx import Presentation
+from pptx.util import Inches as PptxInches, Pt as PptxPt
 
 
 TABLE_SEPARATOR_RE = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$")
@@ -34,7 +36,10 @@ KNOWN_DOC_TYPES = {
     "one_pager",
     "letter",
     "resume",
+    "presentation",
 }
+SPEAKER_NOTES_RE = re.compile(r"^speaker notes?\s*:\s*(.*)$", re.IGNORECASE)
+MAX_BULLETS_PER_SLIDE = 6
 COVER_DOC_TYPES = {"executive_report", "proposal", "technical_spec"}
 COMPACT_HEADER_DOC_TYPES = {"memo", "one_pager", "resume"}
 TOC_DOC_TYPES = {"executive_report", "proposal"}
@@ -619,4 +624,313 @@ def generate_xlsx_bytes(title: str, content: str, subtitle: str | None = None, d
 
     output = BytesIO()
     wb.save(output)
+    return output.getvalue()
+
+
+# --- PPTX generation -------------------------------------------------------
+#
+# Convention expected from the document writer for doc_type="presentation":
+#   - The first H1 ("# ...") is the deck title; an immediately-following
+#     italic line (e.g. "*Subtitle*") becomes the subtitle on the title slide.
+#   - Subsequent H1s are section-divider slides (title only).
+#   - H2s are slide titles; the bullets/paragraphs/table beneath an H2 become
+#     that slide's body. H3s render as bold sub-headers within the slide body.
+#   - A line of the form "Speaker notes: ..." (optionally wrapped in
+#     italics/blockquote) becomes that slide's speaker notes and is not
+#     rendered on the slide itself.
+#   - Markdown tables become their own "Title Only" slide with a real table.
+# Slides with more than MAX_BULLETS_PER_SLIDE bullet lines are split into
+# "(cont.)" continuation slides to keep density reasonable.
+
+def _pptx_layout(prs: Presentation, idx: int, fallback: int = 6):
+    layouts = prs.slide_layouts
+    try:
+        return layouts[idx]
+    except IndexError:
+        return layouts[fallback if fallback < len(layouts) else 0]
+
+
+def _pptx_add_runs(text_frame_or_paragraph, text: str) -> None:
+    """Add Markdown-ish inline text (bold/italic/code/links) as runs to a
+    pptx paragraph. `text_frame_or_paragraph` must already be a paragraph."""
+    paragraph = text_frame_or_paragraph
+    pos = 0
+    cleaned = text.strip()
+    matched = False
+    for match in INLINE_RE.finditer(cleaned):
+        matched = True
+        before = cleaned[pos:match.start()]
+        if before:
+            paragraph.add_run().text = before
+        if match.group(1) is not None:
+            paragraph.add_run().text = match.group(1)
+        elif match.group(3) is not None:
+            run = paragraph.add_run()
+            run.text = match.group(3)
+            run.font.underline = True
+        elif match.group(5) is not None:
+            run = paragraph.add_run()
+            run.text = match.group(5)
+            run.font.name = "Courier New"
+        elif match.group(6) is not None or match.group(7) is not None:
+            run = paragraph.add_run()
+            run.text = match.group(6) or match.group(7)
+            run.font.bold = True
+        elif match.group(8) is not None or match.group(9) is not None:
+            run = paragraph.add_run()
+            run.text = match.group(8) or match.group(9)
+            run.font.italic = True
+        pos = match.end()
+    remainder = cleaned[pos:]
+    if remainder or not matched:
+        paragraph.add_run().text = remainder if matched else cleaned
+
+
+def _pptx_bullet_indent(level: int) -> int:
+    return max(0, min(level, 4))
+
+
+def _parse_pptx_slides(content: str) -> tuple[dict | None, list[dict]]:
+    """Parse markdown-ish content into (title_slide, [section/content/table slides]).
+
+    title_slide is {"title": str, "subtitle": str | None} or None if the
+    content doesn't open with an H1.
+    """
+    lines = content.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    idx = 0
+    n = len(lines)
+
+    def _is_blank(i: int) -> bool:
+        return i < n and not lines[i].strip()
+
+    while idx < n and not lines[idx].strip():
+        idx += 1
+
+    title_slide: dict | None = None
+    if idx < n:
+        m = re.match(r"^#\s+(.+)$", lines[idx].strip())
+        if m:
+            title_slide = {"title": _clean_inline(m.group(1)), "subtitle": None}
+            idx += 1
+            j = idx
+            while j < n and not lines[j].strip():
+                j += 1
+            if j < n:
+                candidate = lines[j].strip()
+                italic_m = re.match(r"^(\*|_)(.+)\1$", candidate)
+                if italic_m and not re.match(r"^#{1,6}\s", candidate):
+                    title_slide["subtitle"] = _clean_inline(italic_m.group(2))
+                    idx = j + 1
+
+    slides: list[dict] = []
+    current: dict | None = None
+
+    def _start_content(title: str) -> dict:
+        slide = {"kind": "content", "title": _clean_inline(title), "bullets": [], "notes": None}
+        slides.append(slide)
+        return slide
+
+    while idx < n:
+        raw = lines[idx]
+        line = raw.rstrip()
+        stripped = line.strip()
+
+        if not stripped:
+            idx += 1
+            continue
+
+        h1 = re.match(r"^#\s+(.+)$", stripped)
+        if h1:
+            current = {"kind": "section", "title": _clean_inline(h1.group(1)), "notes": None}
+            slides.append(current)
+            idx += 1
+            continue
+
+        h2 = re.match(r"^##\s+(.+)$", stripped)
+        if h2:
+            current = _start_content(h2.group(1))
+            idx += 1
+            continue
+
+        h3 = re.match(r"^###\s+(.+)$", stripped)
+        if h3:
+            if current is None or current.get("kind") != "content":
+                current = _start_content(h3.group(1))
+            else:
+                current["bullets"].append((0, f"**{_clean_inline(h3.group(1))}**"))
+            idx += 1
+            continue
+
+        # Speaker notes — may be wrapped in italics or a blockquote.
+        notes_candidate = stripped
+        bq = re.match(r"^>\s*(.+)$", notes_candidate)
+        if bq:
+            notes_candidate = bq.group(1).strip()
+        italic_wrap = re.match(r"^(\*|_)(.+)\1$", notes_candidate)
+        if italic_wrap:
+            notes_candidate = italic_wrap.group(2).strip()
+        notes_m = SPEAKER_NOTES_RE.match(notes_candidate)
+        if notes_m and current is not None:
+            current["notes"] = ((current.get("notes") or "") + " " + notes_m.group(1)).strip()
+            idx += 1
+            continue
+
+        if _is_table_start(lines, idx):
+            rows = [_split_table_row(lines[idx])]
+            idx += 2
+            while idx < len(lines) and lines[idx].strip().startswith("|"):
+                rows.append(_split_table_row(lines[idx]))
+                idx += 1
+            table_title = current["title"] if current else "Table"
+            slides.append({"kind": "table", "title": table_title, "rows": rows, "notes": None})
+            continue
+
+        if stripped in {"---", "***", "___"}:
+            idx += 1
+            continue
+
+        if current is None or current.get("kind") != "content":
+            current = _start_content("")
+
+        bullet_m = re.match(r"^(\s*)[-*+]\s+(.+)$", line)
+        number_m = re.match(r"^(\s*)\d+[.)]\s+(.+)$", line)
+        m = bullet_m or number_m
+        if m:
+            level = min(len(m.group(1)) // 2, 4)
+            current["bullets"].append((level, _clean_inline(m.group(2))))
+            idx += 1
+            continue
+
+        # Plain paragraph text becomes a top-level bullet.
+        current["bullets"].append((0, _clean_inline(stripped)))
+        idx += 1
+
+    return title_slide, slides
+
+
+def _split_dense_slides(slides: list[dict]) -> list[dict]:
+    """Split content slides with too many bullets into "(cont.)" slides so a
+    rendered deck doesn't end up with dense, unreadable text walls."""
+    result: list[dict] = []
+    for slide in slides:
+        if slide.get("kind") != "content" or len(slide.get("bullets", [])) <= MAX_BULLETS_PER_SLIDE:
+            result.append(slide)
+            continue
+        bullets = slide["bullets"]
+        for i in range(0, len(bullets), MAX_BULLETS_PER_SLIDE):
+            chunk = bullets[i:i + MAX_BULLETS_PER_SLIDE]
+            title = slide["title"] if i == 0 else f"{slide['title']} (cont.)"
+            result.append({
+                "kind": "content",
+                "title": title,
+                "bullets": chunk,
+                "notes": slide.get("notes") if i == 0 else None,
+            })
+    return result
+
+
+def _pptx_set_title(slide, text: str) -> None:
+    if slide.shapes.title is not None:
+        slide.shapes.title.text = ""
+        p = slide.shapes.title.text_frame.paragraphs[0]
+        _pptx_add_runs(p, text or "Untitled")
+
+
+def _pptx_render_table(slide, rows: list[list[str]]) -> None:
+    if not rows:
+        return
+    n_rows = len(rows)
+    n_cols = max(len(r) for r in rows)
+    left, top = PptxInches(0.5), PptxInches(1.7)
+    width, height = PptxInches(9.0), PptxInches(0.5 + 0.4 * n_rows)
+    table_shape = slide.shapes.add_table(n_rows, n_cols, left, top, width, height)
+    table = table_shape.table
+    for r_idx, row in enumerate(rows):
+        for c_idx in range(n_cols):
+            cell = table.cell(r_idx, c_idx)
+            cell.text = _clean_inline(row[c_idx]) if c_idx < len(row) else ""
+            for p in cell.text_frame.paragraphs:
+                for run in p.runs:
+                    run.font.size = PptxPt(12)
+                    if r_idx == 0:
+                        run.font.bold = True
+
+
+def generate_pptx_bytes(title: str, content: str, subtitle: str | None = None) -> bytes:
+    """Render markdown-ish slide-plan content (see module docstring above the
+    PPTX section) into a PPTX deck using python-pptx's default template."""
+    prs = Presentation()
+    prs.slide_width = PptxInches(13.333)
+    prs.slide_height = PptxInches(7.5)
+
+    title_slide_spec, slides = _parse_pptx_slides(content)
+    # Drop empty content slides (e.g. an H2 whose only content was a table,
+    # which becomes its own slide) — they'd otherwise render as a blank slide.
+    slides = [
+        s for s in slides
+        if not (s.get("kind") == "content" and not s.get("bullets") and not s.get("notes"))
+    ]
+    slides = _split_dense_slides(slides)
+
+    # Title slide
+    deck_title = (title_slide_spec or {}).get("title") or _clean_inline(title) or "Fronei deck"
+    deck_subtitle = (title_slide_spec or {}).get("subtitle") or subtitle
+    title_layout = _pptx_layout(prs, 0)
+    slide = prs.slides.add_slide(title_layout)
+    _pptx_set_title(slide, deck_title)
+    if deck_subtitle:
+        for shape in slide.placeholders:
+            if shape.placeholder_format.idx == 1:
+                shape.text_frame.text = ""
+                _pptx_add_runs(shape.text_frame.paragraphs[0], deck_subtitle)
+                break
+
+    if not slides:
+        # No structured body — fall back to a single content slide listing
+        # the raw content as bullets so nothing is silently dropped.
+        body_layout = _pptx_layout(prs, 1)
+        slide = prs.slides.add_slide(body_layout)
+        _pptx_set_title(slide, "Overview")
+        body = slide.placeholders[1] if len(slide.placeholders) > 1 else None
+        if body is not None:
+            tf = body.text_frame
+            tf.clear()
+            for i, line in enumerate(_clean_inline(content).split("\n")[:MAX_BULLETS_PER_SLIDE] or [""]):
+                p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+                p.level = 0
+                _pptx_add_runs(p, line)
+
+    for spec in slides:
+        kind = spec.get("kind")
+        if kind == "section":
+            layout = _pptx_layout(prs, 2, fallback=5)
+            slide = prs.slides.add_slide(layout)
+            _pptx_set_title(slide, spec["title"])
+        elif kind == "table":
+            layout = _pptx_layout(prs, 5, fallback=1)
+            slide = prs.slides.add_slide(layout)
+            _pptx_set_title(slide, spec["title"])
+            _pptx_render_table(slide, spec["rows"])
+        else:  # content
+            layout = _pptx_layout(prs, 1)
+            slide = prs.slides.add_slide(layout)
+            _pptx_set_title(slide, spec["title"] or "Untitled")
+            bullets = spec.get("bullets") or []
+            body = slide.placeholders[1] if len(slide.placeholders) > 1 else None
+            if body is not None:
+                tf = body.text_frame
+                tf.clear()
+                if not bullets:
+                    bullets = [(0, "")]
+                for i, (level, text) in enumerate(bullets):
+                    p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+                    p.level = _pptx_bullet_indent(level)
+                    _pptx_add_runs(p, text)
+
+        notes = spec.get("notes")
+        if notes:
+            slide.notes_slide.notes_text_frame.text = notes
+
+    output = BytesIO()
+    prs.save(output)
     return output.getvalue()

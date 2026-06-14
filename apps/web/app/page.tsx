@@ -566,11 +566,12 @@ type GeneratedDocument = {
   filename: string
   docxBase64?: string
   xlsxBase64?: string
+  pptxBase64?: string
   format?: DocumentOutputFormat
   outputFormats?: DocumentOutputFormat[]
 }
 
-type DocumentOutputFormat = 'docx' | 'markdown' | 'xlsx'
+type DocumentOutputFormat = 'docx' | 'markdown' | 'xlsx' | 'pptx'
 
 type ConversationDetail = ConversationSummary & { messages: MessageOut[]; active_turn?: ConversationTurn | null }
 
@@ -868,6 +869,7 @@ function downloadBlob(blob: Blob, filename: string) {
 
 const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+const PPTX_MIME = 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
 
 function fmtTime(iso: string): string {
   const d = new Date(iso)
@@ -2662,6 +2664,7 @@ const DOC_TYPE_LABELS: Record<string, string> = {
   one_pager:        'One-pager',
   letter:           'Letter',
   resume:           'Resume',
+  presentation:     'Presentation',
 }
 
 const PLAN_FORMAT_LABELS: Record<string, string> = {
@@ -2876,14 +2879,15 @@ function DocumentPreviewModal({ doc, onClose }: { doc: GeneratedDocument; onClos
   const [html, setHtml] = useState<string | null>(null)
   const [error, setError] = useState(false)
   const isXlsx = doc.format === 'xlsx'
-  const isMarkdownOnly = !isXlsx && !doc.docxBase64
+  const isPptx = doc.format === 'pptx'
+  const isMarkdownOnly = !isXlsx && !isPptx && !doc.docxBase64
 
   useEffect(() => {
     let cancelled = false
     setHtml(null)
     setError(false)
     const docxBase64 = doc.docxBase64
-    if (isXlsx || !docxBase64) {
+    if (isXlsx || isPptx || !docxBase64) {
       setError(true)
       return () => { cancelled = true }
     }
@@ -2896,7 +2900,7 @@ function DocumentPreviewModal({ doc, onClose }: { doc: GeneratedDocument; onClos
         if (!cancelled) setError(true)
       })
     return () => { cancelled = true }
-  }, [doc.docxBase64, isXlsx])
+  }, [doc.docxBase64, isXlsx, isPptx])
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
@@ -2927,6 +2931,8 @@ function DocumentPreviewModal({ doc, onClose }: { doc: GeneratedDocument; onClos
               onClick={() => {
                 if (isXlsx && doc.xlsxBase64) {
                   downloadBlob(base64ToBlob(doc.xlsxBase64, XLSX_MIME), doc.filename)
+                } else if (isPptx && doc.pptxBase64) {
+                  downloadBlob(base64ToBlob(doc.pptxBase64, PPTX_MIME), doc.filename)
                 } else if (doc.docxBase64) {
                   downloadBlob(base64ToBlob(doc.docxBase64, DOCX_MIME), doc.filename)
                 } else {
@@ -2935,7 +2941,7 @@ function DocumentPreviewModal({ doc, onClose }: { doc: GeneratedDocument; onClos
               }}
             >
               <i className="ti ti-file-download" aria-hidden="true" />
-              {isXlsx ? 'Download .xlsx' : isMarkdownOnly ? 'Download .md' : 'Download .docx'}
+              {isXlsx ? 'Download .xlsx' : isPptx ? 'Download .pptx' : isMarkdownOnly ? 'Download .md' : 'Download .docx'}
             </button>
             {doc.outputFormats?.includes('markdown') && (
               <button
@@ -5527,6 +5533,7 @@ export default function Home() {
                     filename:   (data.document_preview as any).filename,
                     docxBase64: (data.document_preview as any).docx_base64,
                     xlsxBase64: (data.document_preview as any).xlsx_base64,
+                    pptxBase64: (data.document_preview as any).pptx_base64,
                     format:     (data.document_preview as any).format,
                   } as GeneratedDocument
                 : null,
@@ -6088,8 +6095,8 @@ export default function Home() {
                           className="doc-generated-icon-btn"
                           type="button"
                           onClick={() => setPreviewDoc(m.document_preview!)}
-                          title={m.document_preview.format === 'xlsx' ? 'Preview spreadsheet' : 'Preview document'}
-                          aria-label={m.document_preview.format === 'xlsx' ? 'Preview spreadsheet' : 'Preview document'}
+                          title={m.document_preview.format === 'xlsx' ? 'Preview spreadsheet' : m.document_preview.format === 'pptx' ? 'Preview presentation' : 'Preview document'}
+                          aria-label={m.document_preview.format === 'xlsx' ? 'Preview spreadsheet' : m.document_preview.format === 'pptx' ? 'Preview presentation' : 'Preview document'}
                         >
                           <i className="ti ti-eye" aria-hidden="true" />
                         </button>
@@ -6100,6 +6107,16 @@ export default function Home() {
                             onClick={() => downloadBlob(base64ToBlob(m.document_preview!.xlsxBase64!, XLSX_MIME), m.document_preview!.filename)}
                             title="Download .xlsx"
                             aria-label="Download spreadsheet"
+                          >
+                            <i className="ti ti-file-download" aria-hidden="true" />
+                          </button>
+                        ) : m.document_preview.format === 'pptx' ? (
+                          <button
+                            className="doc-generated-icon-btn doc-generated-download"
+                            type="button"
+                            onClick={() => downloadBlob(base64ToBlob(m.document_preview!.pptxBase64!, PPTX_MIME), m.document_preview!.filename)}
+                            title="Download .pptx"
+                            aria-label="Download presentation"
                           >
                             <i className="ti ti-file-download" aria-hidden="true" />
                           </button>

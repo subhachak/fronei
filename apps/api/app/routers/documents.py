@@ -29,7 +29,7 @@ from app.services.document_extractor import (
     ExtractionError,
     extract_text,
 )
-from app.services.document_generator import generate_docx_bytes, generate_xlsx_bytes
+from app.services.document_generator import generate_docx_bytes, generate_pptx_bytes, generate_xlsx_bytes
 from app.services.llm_gateway import invoke_llm
 from app.services.personal_context import build_context
 from app.services.planner import run_planner
@@ -49,85 +49,137 @@ DOC_TYPES = {
     "one_pager",
     "letter",
     "resume",
+    "presentation",
 }
-DOCUMENT_SYSTEM_PROMPT = """You are Fronei's document generation engine.
+DOCUMENT_SYSTEM_PROMPT = """You are Fronei's document generation engine, writing for mid-level cross-functional \
+professionals (strategy, architecture, design, engineering) who must deliver polished artifacts to senior \
+internal and external stakeholders. The bar is "I could paste this into a deliverable to my VP or client today \
+with minimal edits" — not "this reads like an AI wrote it in 30 seconds."
 
-Write a polished, client-presentable document from the user's request.
-
-Rules:
+Output rules:
 - Output only the document body in clean Markdown. Do not include commentary about generating the document.
 - Start with a strong H1 title unless the user explicitly asks for a different format.
-- Use professional, client-ready language.
-- Include useful sections, headings, bullets, tables, and next steps when appropriate.
 - Use Markdown headings, tables for comparative or numeric data, and bold for key terms.
-- Make assumptions explicit when the prompt is underspecified.
 - Keep the document coherent enough to paste directly into a Word document.
 - Do not invent precise facts, metrics, dates, legal claims, or citations not supplied by the user.
 - If source-grounded research or web context is provided, use it as source material and preserve useful citations.
+
+Substance rules — this is what separates this from generic AI output:
+- Every section must earn its place. If a section would just restate the prompt or fill space, cut it or merge \
+it into something with actual content.
+- Lead with the "so what." Each major section should open with the conclusion or implication, then support it —
+  not build up to a vague point at the end.
+- Be specific, not generic. Replace placeholders like "various stakeholders," "robust solution," "in today's \
+fast-paced environment," "leverage synergies," "best-in-class," "holistic approach," "moving forward," and similar \
+filler with concrete nouns, numbers, names, or mechanisms drawn from the user's input. If specifics aren't \
+available, say what's missing rather than papering over it with vague language.
+- Avoid repetition across sections — do not restate the same point in the summary, body, and conclusion in \
+slightly different words. Each section should add new information.
+- Where the request involves a decision, trade-off, or comparison, structure it as a true comparison (table or \
+explicit criteria), not a list of pros that all sound positive.
+- Make assumptions explicit in a short, visually distinct "Assumptions" note near the top — don't bury them or \
+silently invent context.
+- Match vocabulary and depth to the stated audience: technical depth and precise terminology for engineering/\
+architecture audiences; outcomes, cost, and risk framing for executive or external audiences; avoid jargon the \
+audience wouldn't use themselves.
 """
 DOC_TYPE_PROMPTS = {
     "executive_report": """Document type: executive_report
 Expected structure:
 - H1 title
-- Executive summary
+- Executive summary (3-5 sentences: the situation, the recommendation, and the expected impact — readable on \
+its own with no other context)
 - Situation / background
-- Analysis, using tables where the information is data-heavy or comparative
-- Recommendations
-- Risks and mitigations
-- Next steps
-Use concise, decision-oriented language suitable for clients or senior stakeholders.""",
+- Analysis, using tables where the information is data-heavy or comparative; each analytical point should state \
+its implication, not just the observation
+- Recommendations, each tied to a concrete rationale and expected outcome
+- Risks and mitigations — name specific risks relevant to this situation, not generic categories
+- Next steps, with owners/timing if the user supplied or implied them
+Use concise, decision-oriented language suitable for clients or senior stakeholders. A senior reader should be \
+able to act on this from the executive summary alone.""",
     "proposal": """Document type: proposal
 Expected structure:
 - H1 title
-- Problem statement
-- Proposed approach
+- Problem statement — framed in terms of cost, risk, or missed opportunity to the reader, not just a description
+- Proposed approach — the actual mechanism of how this solves the problem, not just "we will do X"
 - Scope and timeline
-- Cost / ROI, using tables where helpful
+- Cost / ROI, using tables where helpful; tie cost to the value/outcome described above
 - Terms, assumptions, or dependencies
 - Next steps
-Keep the tone confident, practical, and commercially credible.""",
+Keep the tone confident, practical, and commercially credible — avoid sales-brochure language ("game-changing," \
+"revolutionary," "unparalleled").""",
     "memo": """Document type: memo
 Expected structure:
 - H1 title
 - Header block with To, From, Date, and Re
-- Purpose
-- Body
-- Action items
-Keep it concise, direct, and easy to skim.""",
+- Purpose — one or two sentences, stated directly
+- Body — get to the point in the first paragraph; supporting detail follows
+- Action items, each with a clear owner/action, not just topics
+Keep it concise, direct, and easy to skim. A memo that takes more than 60 seconds to find the point has failed.""",
     "technical_spec": """Document type: technical_spec
 Expected structure:
 - H1 title
-- Overview
-- Architecture
-- Requirements
-- Implementation notes
-- Risks / constraints
-- Open questions
-Use precise technical language and tables for requirements, interfaces, or trade-offs.""",
+- Overview — what is being built/changed and why, in one paragraph
+- Architecture — concrete components, data flow, and interfaces; use a diagram description or table if it \
+clarifies structure
+- Requirements — functional and non-functional, stated as testable statements
+- Implementation notes — specific decisions and the reasoning behind them, including alternatives considered \
+where relevant
+- Risks / constraints — name the actual technical risks (e.g., specific failure modes, scaling limits, \
+dependencies), not generic "there are risks"
+- Open questions — genuinely unresolved items, not rhetorical
+Use precise technical language and tables for requirements, interfaces, or trade-offs. Write for an engineering \
+audience that will use this to make implementation decisions.""",
     "meeting_notes": """Document type: meeting_notes
 Expected structure:
 - H1 title
 - Attendees
 - Agenda
-- Discussion summary
-- Decisions
+- Discussion summary — capture the actual reasoning and disagreements, not just topic labels
+- Decisions — stated as decisions, with the rationale if discussed
 - Action items with owners and due dates when available
 Do not invent attendees, owners, or dates that were not provided.""",
     "one_pager": """Document type: one_pager
 Expected structure:
-- H1 headline
-- 3-5 key points
+- H1 headline that states the point, not just the topic
+- 3-5 key points, each substantive enough to stand alone
 - Supporting facts or rationale
 - Single call-to-action
-Keep it tight enough to fit on one page.""",
+Keep it tight enough to fit on one page. Every sentence should be load-bearing.""",
     "letter": """Document type: letter
 Expected structure:
 - Date
 - Recipient / salutation when provided
-- Opening purpose
+- Opening purpose — state why you're writing in the first sentence
 - Body
 - Closing and signature placeholder
-Use polished, professional letter language.""",
+Use polished, professional letter language without stock phrases ("I hope this finds you well," "please don't \
+hesitate to reach out") unless the user's tone preference calls for them.""",
+    "presentation": """Document type: presentation
+Write the body as a Markdown SLIDE PLAN, not a prose document — it will be converted directly into PowerPoint \
+slides. Follow this structure exactly:
+
+- The FIRST line must be `# <Deck title>`. The line immediately after it may be an italic subtitle, e.g. \
+`*For: <audience> — <date or context>*`.
+- Use `## <Slide title>` for every content slide. Everything under a `##` until the next heading becomes that \
+slide's body.
+- Use a bare `# <Section name>` (after the first line) to insert a section-divider slide between groups of \
+related slides — use these sparingly, only for genuinely distinct sections of the deck.
+- Use `### <Sub-header>` sparingly within a slide to introduce a sub-group of bullets.
+- Slide bodies are bullet points: one idea per bullet, each bullet a short phrase or single sentence (aim for \
+under ~12 words). Do NOT write paragraphs of prose on a slide.
+- Limit each slide to 3-6 bullets. If a topic needs more than 6 bullets, split it into multiple `##` slides \
+(e.g. "Risks (1/2)" / "Risks (2/2)") rather than overloading one slide.
+- A Markdown table under a `##` heading becomes a dedicated table slide — use tables for genuine comparisons \
+(options, costs, timelines), not for arbitrary lists.
+- After the bullets for a slide, optionally add one line starting with `Speaker notes:` containing the talk \
+track for that slide — context, data points, or transitions the presenter would say aloud but that shouldn't be \
+on the slide itself. Use this to carry nuance and "so what" reasoning that would clutter the slide.
+
+Aim for a deck that reads like an executive narrative arc: context → analysis/options → recommendation → next \
+steps, typically 6-12 slides depending on the requested length. Each slide title should make a point on its \
+own (e.g. "Strangler-fig migration cuts risk vs. a rewrite" rather than "Options"); the bullets support that \
+point.""",
     "resume": """Document type: resume
 Expected structure:
 - H1 with the person's name
@@ -137,7 +189,7 @@ Expected structure:
 - Skills, grouped by category
 - Certifications (if provided)
 - Education
-Use concise, achievement-oriented bullets (action verb + result, quantify where possible). Do not invent \
+Use concise, achievement-oriented bullets (action verb + quantified result). Do not invent \
 employers, dates, titles, or credentials not supplied by the user.""",
 }
 
@@ -473,6 +525,14 @@ def build_document_artifact(title: str, body_markdown: str, doc_type: str, fmt: 
             preview["format"] = "xlsx"
             preview["filename"] = f"{_safe_filename(title)}.xlsx"
             preview["xlsx_base64"] = base64.b64encode(content).decode("ascii")
+        except Exception:
+            pass
+    elif fmt == "pptx":
+        try:
+            content = generate_pptx_bytes(title, body_markdown, "Generated by Fronei")
+            preview["format"] = "pptx"
+            preview["filename"] = f"{_safe_filename(title)}.pptx"
+            preview["pptx_base64"] = base64.b64encode(content).decode("ascii")
         except Exception:
             pass
     return preview

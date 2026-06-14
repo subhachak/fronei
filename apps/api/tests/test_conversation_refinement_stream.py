@@ -655,7 +655,7 @@ def test_execute_plan_with_research_and_document_confirmed_generates_document(cl
 
     captured_doc_call: dict = {}
 
-    def fake_generate_document_output(plan_arg, route_arg, history, wc, planner_ctx, doc_context, deep_research, enable_native, artifact_context=""):
+    def fake_generate_document_output(plan_arg, route_arg, history, wc, planner_ctx, doc_context, deep_research, enable_native, artifact_context="", user_memory=""):
         captured_doc_call["doc_context"] = doc_context
         captured_doc_call["wants_document_output"] = plan_arg.wants_document_output
         doc_result = LLMResult(
@@ -780,7 +780,7 @@ def test_execute_plan_research_followup_with_document_confirmed_generates_docume
 
     captured_doc_call: dict = {}
 
-    def fake_generate_document_output(plan_arg, route_arg, history, wc, planner_ctx, doc_context, deep_research, enable_native, artifact_context=""):
+    def fake_generate_document_output(plan_arg, route_arg, history, wc, planner_ctx, doc_context, deep_research, enable_native, artifact_context="", user_memory=""):
         captured_doc_call["doc_context"] = doc_context
         captured_doc_call["wants_document_output"] = plan_arg.wants_document_output
         return (

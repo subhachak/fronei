@@ -119,7 +119,7 @@ _VALID_CRITICALITIES = {"trivial", "material"}
 _VALID_CONFIDENCE = {"low", "medium", "high"}
 _VALID_DOC_TYPES = {
     "executive_report", "proposal", "memo", "technical_spec",
-    "meeting_notes", "one_pager", "letter", "resume", None,
+    "meeting_notes", "one_pager", "letter", "resume", "presentation", None,
 }
 _VALID_DOCUMENT_FORMATS = {"markdown", "docx", "pptx", "pdf", "xlsx"}
 

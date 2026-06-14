@@ -1232,6 +1232,7 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                             plan, route, history, empty_wc, planner_ctx,
                             doc_context, False, False,
                             artifact_context=artifact_context,
+                            user_memory=user_memory,
                         )
                         for chunk in [chat_summary[i:i + 80] for i in range(0, len(chat_summary), 80)]:
                             yield _sse("token", {"text": chunk})
@@ -1409,6 +1410,7 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                         plan, route, history, empty_wc, planner_ctx,
                         doc_context, False, False,
                         artifact_context=artifact_context,
+                        user_memory=user_memory,
                     )
                     for chunk in [chat_summary[i:i + 80] for i in range(0, len(chat_summary), 80)]:
                         yield _sse("token", {"text": chunk})
@@ -1565,6 +1567,7 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                     plan, route, history, wc, planner_ctx,
                     setup.doc_context, req.deep_research, enable_native,
                     artifact_context=setup.artifact_context or "",
+                    user_memory=user_memory,
                 )
                 for chunk in [chat_summary[i:i + 80] for i in range(0, len(chat_summary), 80)]:
                     yield _sse("token", {"text": chunk})

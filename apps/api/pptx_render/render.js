@@ -7,11 +7,13 @@
  *
  * Payload shape (produced by document_generator._build_js_deck_payload):
  * {
+ *   "version": 2,
+ *   "design_system": {"name": "fronei_board_briefing", "mode": "..."},
  *   "title": "...",
  *   "subtitle": "..." | null,
  *   "slides": [
- *     { "role": "section", "title": "...", "notes": "..."|null },
- *     { "role": "content", "title": "...", "bullets": [{"level":0,"text":"..."}], "notes": ... },
+ *     { "role": "section", "title": "...", "blueprint": {"archetype","density","proof_object","emphasis"}, "notes": "..."|null },
+ *     { "role": "content", "title": "...", "bullets": [{"level":0,"text":"..."}], "blueprint": {...}, "notes": ... },
  *     { "role": "two_content", "title": "...", "columns": [{"heading":"...","bullets":["..."]}], "notes": ... },
  *     { "role": "chart", "title": "...", "chart": {"type":"bar|line|pie","categories":[...],"series":[{"name","values"}]}, "notes": ... },
  *     { "role": "table", "title": "...", "rows": [["..."]], "notes": ... },
@@ -31,19 +33,29 @@
 
 const pptxgen = require("pptxgenjs");
 
-const NAVY = "383838";
-const NAVY_LIGHT = "E04F00";
+const NAVY = "132341";
+const TEAL = "137C7A";
+const GOLD = "F0B23A";
+const NAVY_LIGHT = "1F365E";
 const SLATE = "73665F";
 const TEXT_DARK = "282421";
-const TEXT_MUTED = "6F655F";
+const TEXT_MUTED = "667085";
 const WHITE = "FFFFFF";
 const BG = "F7F1EE";
 const CARD_BG = "FFFDFC";
 const SOFT_BG = "EFE7E2";
-const ACCENT = "E04F00";
+const ACCENT = GOLD;
 const ACCENT_LINE = "D8CDC6";
 const HEADING_FACE = "Georgia";
 const BODY_FACE = "Segoe UI";
+const EMPHASIS_COLORS = {
+  decision: GOLD,
+  financial: GOLD,
+  risk: "D9544D",
+  technical: TEAL,
+  execution: "6C8FB5",
+  operational: TEAL,
+};
 
 const SLIDE_W = 13.333;
 const SLIDE_H = 7.5;
@@ -54,6 +66,76 @@ const MAX_APPENDIX_BULLETS = 10;
 
 function slideBg(slide) {
   slide.background = { color: BG };
+}
+
+function addBoardChrome(slide, sectionLabel) {
+  slideBg(slide);
+  slide.addShape("rect", {
+    x: 0,
+    y: 0,
+    w: 0.24,
+    h: SLIDE_H,
+    fill: { color: TEAL },
+    line: { color: TEAL },
+  });
+  slide.addShape("rect", {
+    x: 0.24,
+    y: 0,
+    w: 0.035,
+    h: SLIDE_H,
+    fill: { color: GOLD },
+    line: { color: GOLD },
+  });
+  if (sectionLabel) {
+    slide.addText(String(sectionLabel).toUpperCase(), {
+      x: 0.42,
+      y: 6.86,
+      w: 4.2,
+      h: 0.24,
+      fontSize: 7.5,
+      bold: true,
+      color: TEXT_MUTED,
+      fontFace: BODY_FACE,
+      charSpacing: 1.2,
+    });
+  }
+}
+
+function blueprintFor(spec) {
+  return spec && spec.blueprint && typeof spec.blueprint === "object" ? spec.blueprint : {};
+}
+
+function emphasisColor(spec) {
+  const bp = blueprintFor(spec);
+  return EMPHASIS_COLORS[bp.emphasis] || TEAL;
+}
+
+function emphasisInk(spec) {
+  const color = emphasisColor(spec);
+  return color === GOLD ? NAVY : WHITE;
+}
+
+function blueprintLabel(spec) {
+  const bp = blueprintFor(spec);
+  const label = bp.proof_object || bp.archetype || bp.layout || spec.role || "insight";
+  return String(label).replace(/_/g, " ").toUpperCase();
+}
+
+function addBlueprintKicker(slide, spec, x = 10.0, y = 0.58, w = 2.35) {
+  const label = blueprintLabel(spec);
+  slide.addText(label, {
+    x,
+    y,
+    w,
+    h: 0.2,
+    fontSize: 7,
+    bold: true,
+    color: TEXT_MUTED,
+    fontFace: BODY_FACE,
+    align: "right",
+    charSpacing: 1.1,
+    fit: "shrink",
+  });
 }
 
 function titleFontSize(text) {
@@ -85,9 +167,9 @@ const TITLE_RULE_Y = 1.32;
 const CONTENT_TOP_Y = 1.65;
 
 function addTitle(slide, text) {
-  slideBg(slide);
+  addBoardChrome(slide);
   slide.addText(bulletText(text || "Untitled", 78), {
-    x: MARGIN_X,
+    x: 0.72,
     y: 0.42,
     w: 9.4,
     h: TITLE_BOX_H,
@@ -100,12 +182,75 @@ function addTitle(slide, text) {
     fit: "shrink",
   });
   slide.addShape("rect", {
-    x: MARGIN_X,
+    x: 0.72,
     y: TITLE_RULE_Y,
     w: 1.0,
     h: 0.04,
     fill: { color: ACCENT },
     line: { color: ACCENT },
+  });
+}
+
+function addSlideTitle(slide, spec) {
+  addTitle(slide, spec.title);
+  addBlueprintKicker(slide, spec);
+}
+
+function iconFor(text) {
+  const low = String(text || "").toLowerCase();
+  if (/(risk|security|compliance|privacy|legal|gate|control)/.test(low)) return "!";
+  if (/(cost|revenue|roi|budget|spend|margin|payback|savings|m\\$|\\$)/.test(low)) return "$";
+  if (/(data|identity|profile|cdp|store|model|api|platform|architecture|system)/.test(low)) return "◎";
+  if (/(time|phase|roadmap|q[1-4]|date|deadline|aug|oct|black friday)/.test(low)) return "→";
+  if (/(owner|fte|team|ops|cio|cfo|vp|procurement|decision)/.test(low)) return "✓";
+  return "•";
+}
+
+function addIconBadge(slide, x, y, label, opts = {}) {
+  const fill = opts.fill || TEAL;
+  const color = opts.color || WHITE;
+  slide.addShape("roundRect", {
+    x,
+    y,
+    w: opts.w || 0.46,
+    h: opts.h || 0.46,
+    fill: { color: fill },
+    line: { color: fill },
+    rectRadius: 0.08,
+  });
+  slide.addText(label, {
+    x,
+    y: y + 0.005,
+    w: opts.w || 0.46,
+    h: opts.h || 0.46,
+    fontSize: opts.fontSize || 15,
+    bold: true,
+    color,
+    fontFace: BODY_FACE,
+    align: "center",
+    valign: "middle",
+    fit: "shrink",
+  });
+}
+
+function addFooter(slide) {
+  slide.addShape("rect", {
+    x: 0.72,
+    y: 6.88,
+    w: 11.8,
+    h: 0.01,
+    fill: { color: ACCENT_LINE },
+    line: { color: ACCENT_LINE, transparency: 30 },
+  });
+  slide.addText("Fronei board briefing", {
+    x: 10.0,
+    y: 6.98,
+    w: 2.5,
+    h: 0.18,
+    fontSize: 7,
+    color: TEXT_MUTED,
+    fontFace: BODY_FACE,
+    align: "right",
   });
 }
 
@@ -146,23 +291,63 @@ function bulletsToTextProps(bullets, opts) {
 
 function renderTitleSlide(pptx, title, subtitle) {
   const slide = pptx.addSlide();
-  slideBg(slide);
+  slide.background = { color: NAVY };
   slide.addShape("rect", {
     x: 0,
     y: 0,
-    w: 0.18,
+    w: 4.25,
     h: SLIDE_H,
-    fill: { color: ACCENT },
-    line: { color: ACCENT },
+    fill: { color: TEAL },
+    line: { color: TEAL },
+  });
+  slide.addShape("rect", {
+    x: 4.25,
+    y: 0,
+    w: 0.05,
+    h: SLIDE_H,
+    fill: { color: GOLD },
+    line: { color: GOLD },
+  });
+  addIconBadge(slide, 1.65, 1.05, "AI", { w: 0.86, h: 0.86, fill: WHITE, color: TEAL, fontSize: 18 });
+  slide.addText("BOARD BRIEFING", {
+    x: 1.15,
+    y: 2.35,
+    w: 2.4,
+    h: 0.28,
+    fontSize: 10,
+    bold: true,
+    color: "D5ECEA",
+    fontFace: BODY_FACE,
+    align: "center",
+    charSpacing: 2.5,
+  });
+  slide.addShape("rect", {
+    x: 1.1,
+    y: 3.1,
+    w: 2.2,
+    h: 0.035,
+    fill: { color: GOLD },
+    line: { color: GOLD },
+  });
+  slide.addText("CONFIDENTIAL", {
+    x: 1.1,
+    y: 6.18,
+    w: 2.2,
+    h: 0.25,
+    fontSize: 9,
+    bold: true,
+    color: "D5ECEA",
+    fontFace: BODY_FACE,
+    align: "center",
   });
   slide.addText(bulletText(title || "Fronei deck", 88), {
-    x: MARGIN_X,
-    y: 1.7,
-    w: 9.5,
-    h: 1.7,
-    fontSize: 34,
+    x: 4.72,
+    y: 1.18,
+    w: 7.3,
+    h: 2.2,
+    fontSize: 39,
     bold: true,
-    color: NAVY,
+    color: WHITE,
     fontFace: HEADING_FACE,
     align: "left",
     valign: "middle",
@@ -170,25 +355,33 @@ function renderTitleSlide(pptx, title, subtitle) {
   });
   if (subtitle) {
     slide.addText(subtitle, {
-      x: MARGIN_X,
-      y: 3.55,
-      w: 8.7,
+      x: 4.78,
+      y: 4.22,
+      w: 7.4,
       h: 0.8,
-      fontSize: 18,
-      color: TEXT_MUTED,
+      fontSize: 15,
+      color: "B9D8D6",
       fontFace: BODY_FACE,
       align: "left",
       valign: "top",
       fit: "shrink",
     });
   }
+  slide.addShape("rect", {
+    x: 4.78,
+    y: 3.8,
+    w: 7.5,
+    h: 0.035,
+    fill: { color: GOLD },
+    line: { color: GOLD },
+  });
   slide.addText("Prepared with Fronei", {
-    x: MARGIN_X,
-    y: 6.75,
-    w: 3.0,
+    x: 4.78,
+    y: 6.7,
+    w: 4.0,
     h: 0.25,
     fontSize: 9,
-    color: TEXT_MUTED,
+    color: "8EA9B8",
     fontFace: BODY_FACE,
   });
 }
@@ -245,29 +438,107 @@ function renderSectionSlide(pptx, spec) {
 
 function renderContentSlide(pptx, spec) {
   const slide = pptx.addSlide();
-  addTitle(slide, spec.title);
+  addSlideTitle(slide, spec);
+  const accent = emphasisColor(spec);
+  const accentInk = emphasisInk(spec);
   const cap = spec.appendix ? MAX_APPENDIX_BULLETS : MAX_BULLETS_PER_SLIDE;
   const visibleCap = spec.appendix ? cap : Math.min(cap, 4);
   const bullets = (spec.bullets || []).slice(0, visibleCap).map((b) => ({
     level: b.level || 0,
     text: bulletText(b.text || b, 96),
   }));
-  slide.addText(bulletsToTextProps(bullets), {
-    x: MARGIN_X,
-    y: 1.65,
-    w: 8.4,
-    h: 4.9,
-    valign: "top",
-    fontFace: BODY_FACE,
-    lineSpacingMultiple: 1.08,
+  if (spec.appendix) {
+    slide.addText(bulletsToTextProps(bullets, { fontSize: 12 }), {
+      x: 0.72,
+      y: 1.65,
+      w: 10.9,
+      h: 4.9,
+      valign: "top",
+      fontFace: BODY_FACE,
+      lineSpacingMultiple: 1.08,
+    });
+    addFooter(slide);
+    addNotes(slide, spec.notes);
+    return slide;
+  }
+
+  const lead = bullets[0]?.text || "";
+  if (lead) {
+    slide.addShape("roundRect", {
+      x: 0.72,
+      y: 1.58,
+      w: 4.05,
+      h: 4.75,
+      fill: { color: NAVY },
+      line: { color: NAVY },
+      rectRadius: 0.08,
+    });
+    addIconBadge(slide, 1.02, 1.92, iconFor(lead), { fill: accent, color: accentInk, w: 0.58, h: 0.58, fontSize: 18 });
+    slide.addText(lead, {
+      x: 1.02,
+      y: 2.72,
+      w: 3.35,
+      h: 2.6,
+      fontSize: 22,
+      bold: true,
+      color: WHITE,
+      fontFace: HEADING_FACE,
+      valign: "mid",
+      fit: "shrink",
+      wrap: true,
+    });
+  }
+
+  const supporting = bullets.slice(1, 4);
+  const cardX = 5.05;
+  const cardW = 7.35;
+  const cardH = 1.28;
+  supporting.forEach((b, idx) => {
+    const y = 1.62 + idx * (cardH + 0.28);
+    slide.addShape("roundRect", {
+      x: cardX,
+      y,
+      w: cardW,
+      h: cardH,
+      fill: { color: CARD_BG },
+      line: { color: ACCENT_LINE, transparency: 10 },
+      rectRadius: 0.05,
+    });
+    addIconBadge(slide, cardX + 0.18, y + 0.34, iconFor(b.text), { fill: accent, color: accentInk, w: 0.45, h: 0.45, fontSize: 14 });
+    slide.addText(b.text, {
+      x: cardX + 0.78,
+      y: y + 0.22,
+      w: cardW - 1.0,
+      h: cardH - 0.32,
+      fontSize: 13,
+      color: TEXT_DARK,
+      fontFace: BODY_FACE,
+      valign: "middle",
+      fit: "shrink",
+      wrap: true,
+    });
   });
+  if (!supporting.length && !lead) {
+    slide.addText("No slide content provided.", {
+      x: 0.72,
+      y: 1.65,
+      w: 8.4,
+      h: 1.0,
+      fontSize: 14,
+      color: TEXT_MUTED,
+      fontFace: BODY_FACE,
+    });
+  }
+  addFooter(slide);
   addNotes(slide, spec.notes);
   return slide;
 }
 
 function renderTwoContentSlide(pptx, spec) {
   const slide = pptx.addSlide();
-  addTitle(slide, spec.title);
+  addSlideTitle(slide, spec);
+  const accent = emphasisColor(spec);
+  const accentInk = emphasisInk(spec);
   // Up to 3 cards (comparison / three_card_system / governance_grid /
   // principles_grid all route here with 2-3 columns).
   const cols = (spec.columns || []).slice(0, 3);
@@ -282,6 +553,7 @@ function renderTwoContentSlide(pptx, spec) {
   const bulletCap = n >= 3 ? 4 : 3;
   cols.forEach((col, idx) => {
     const left = MARGIN_X + idx * (colW + gap);
+    const icon = iconFor(`${col.heading || ""} ${(col.bullets || []).join(" ")}`);
     slide.addShape("roundRect", {
       x: left,
       y: top,
@@ -291,21 +563,31 @@ function renderTwoContentSlide(pptx, spec) {
       line: { color: ACCENT_LINE, transparency: 20 },
       rectRadius: 0.04,
     });
+    slide.addShape("rect", {
+      x: left,
+      y: top,
+      w: colW,
+      h: 0.08,
+      fill: { color: idx % 2 === 0 ? accent : GOLD },
+      line: { color: idx % 2 === 0 ? accent : GOLD },
+    });
+    addIconBadge(slide, left + 0.2, top + 0.28, icon, { fill: idx % 2 === 0 ? accent : GOLD, color: idx % 2 === 0 ? accentInk : NAVY, w: 0.46, h: 0.46, fontSize: 14 });
     const parts = [];
     if (col.heading) {
       parts.push({ text: bulletText(col.heading, 42), options: { fontSize: headingFontSize, bold: true, color: NAVY, fontFace: HEADING_FACE, breakLine: true } });
     }
     const bullets = bulletsToTextProps((col.bullets || []).slice(0, bulletCap).map((b) => ({ level: 0, text: bulletText(b, 78) })), { fontSize: bulletFontSize });
     slide.addText(parts.concat(bullets), {
-      x: left + 0.18,
-      y: top + 0.18,
-      w: colW - 0.36,
-      h: height - 0.36,
+      x: left + 0.2,
+      y: top + 0.92,
+      w: colW - 0.4,
+      h: height - 1.05,
       valign: "top",
       fontFace: BODY_FACE,
       lineSpacingMultiple: 1.1,
     });
   });
+  addFooter(slide);
   addNotes(slide, spec.notes);
   return slide;
 }
@@ -318,7 +600,7 @@ const CHART_TYPE_MAP = {
 
 function renderChartSlide(pptx, spec) {
   const slide = pptx.addSlide();
-  addTitle(slide, spec.title);
+  addSlideTitle(slide, spec);
   const chart = spec.chart || {};
   const categories = chart.categories || [];
   let series = chart.series || [];
@@ -356,7 +638,7 @@ function renderChartSlide(pptx, spec) {
 
 function renderTableSlide(pptx, spec) {
   const slide = pptx.addSlide();
-  addTitle(slide, spec.title);
+  addSlideTitle(slide, spec);
   const rows = spec.rows || [];
   if (!rows.length) {
     addNotes(slide, spec.notes);
@@ -396,60 +678,94 @@ function renderTableSlide(pptx, spec) {
 
 function renderExecutiveSummarySlide(pptx, spec) {
   const slide = pptx.addSlide();
-  addTitle(slide, spec.title);
+  addSlideTitle(slide, spec);
+  const accent = emphasisColor(spec);
+  const accentInk = emphasisInk(spec);
   const bullets = spec.bullets || [];
   const headline = bullets[0] || "";
   const support = bullets.slice(1, MAX_BULLETS_PER_SLIDE);
   if (headline) {
+    slide.addShape("roundRect", {
+      x: 0.72,
+      y: 1.56,
+      w: 11.7,
+      h: 1.78,
+      fill: { color: NAVY },
+      line: { color: NAVY },
+      rectRadius: 0.08,
+    });
+    addIconBadge(slide, 1.03, 2.05, iconFor(`${spec.title} ${headline}`), { fill: accent, color: accentInk, w: 0.56, h: 0.56, fontSize: 18 });
     slide.addText(headline, {
-      x: MARGIN_X,
-      y: 1.5,
-      w: 9.6,
-      h: 1.7,
-      fontSize: 24,
+      x: 1.82,
+      y: 1.76,
+      w: 9.85,
+      h: 1.32,
+      fontSize: 22,
       bold: true,
-      color: TEXT_DARK,
+      color: WHITE,
       fontFace: HEADING_FACE,
-      valign: "top",
+      valign: "middle",
       wrap: true,
+      fit: "shrink",
     });
   }
   if (support.length) {
-    slide.addText(bulletsToTextProps(support.slice(0, 3).map((b) => ({ level: 0, text: bulletText(b, 90) })), { fontSize: 14 }), {
-      x: MARGIN_X,
-      y: 3.3,
-      w: SLIDE_W - MARGIN_X * 2,
-      h: 3.2,
-      valign: "top",
-      fontFace: BODY_FACE,
-      lineSpacingMultiple: 1.15,
+    const cards = support.slice(0, 3);
+    const gap = 0.28;
+    const w = (11.7 - gap * (cards.length - 1)) / cards.length;
+    cards.forEach((b, idx) => {
+      const x = 0.72 + idx * (w + gap);
+      slide.addShape("roundRect", {
+        x,
+        y: 3.72,
+        w,
+        h: 1.9,
+        fill: { color: CARD_BG },
+        line: { color: ACCENT_LINE },
+        rectRadius: 0.06,
+      });
+      addIconBadge(slide, x + 0.22, 4.05, iconFor(b), { fill: idx === 1 ? GOLD : accent, color: idx === 1 ? NAVY : accentInk, w: 0.46, h: 0.46, fontSize: 13 });
+      slide.addText(bulletText(b, 90), {
+        x: x + 0.22,
+        y: 4.65,
+        w: w - 0.44,
+        h: 0.72,
+        fontSize: 12,
+        bold: true,
+        color: TEXT_DARK,
+        fontFace: BODY_FACE,
+        fit: "shrink",
+        wrap: true,
+      });
     });
   }
+  addFooter(slide);
   addNotes(slide, spec.notes);
   return slide;
 }
 
 function renderRecommendationSlide(pptx, spec) {
   const slide = pptx.addSlide();
-  addTitle(slide, spec.title);
+  addSlideTitle(slide, spec);
   const bullets = spec.bullets || [];
   const primary = bullets[0] || "";
   const rationale = bullets.slice(1, 1 + MAX_BULLETS_PER_SLIDE);
   if (primary) {
     slide.addShape("roundRect", {
-      x: MARGIN_X,
+      x: 0.72,
       y: 1.5,
-      w: SLIDE_W - MARGIN_X * 2,
-      h: 1.3,
-      fill: { color: TEXT_DARK },
-      line: { color: TEXT_DARK },
+      w: 11.7,
+      h: 1.55,
+      fill: { color: NAVY },
+      line: { color: NAVY },
       rectRadius: 0.08,
     });
+    addIconBadge(slide, 1.02, 1.98, "✓", { fill: GOLD, color: NAVY, w: 0.52, h: 0.52, fontSize: 16 });
     slide.addText(`Recommendation: ${primary}`, {
-      x: MARGIN_X + 0.2,
-      y: 1.5,
-      w: SLIDE_W - MARGIN_X * 2 - 0.4,
-      h: 1.3,
+      x: 1.72,
+      y: 1.66,
+      w: 10.2,
+      h: 1.18,
       fontSize: 18,
       bold: true,
       color: WHITE,
@@ -460,27 +776,41 @@ function renderRecommendationSlide(pptx, spec) {
     });
   }
   if (rationale.length) {
-    const parts = [{ text: "Rationale", options: { fontSize: 15, bold: true, color: NAVY, fontFace: HEADING_FACE, breakLine: true } }];
-    slide.addText(
-      parts.concat(bulletsToTextProps(rationale.slice(0, 3).map((b) => ({ level: 0, text: bulletText(b, 90) })), { fontSize: 13 })),
-      {
-        x: MARGIN_X,
-        y: 3.1,
-        w: SLIDE_W - MARGIN_X * 2,
-        h: 3.4,
-        valign: "top",
+    const cards = rationale.slice(0, 3);
+    cards.forEach((b, idx) => {
+      const x = 0.72 + idx * 3.95;
+      slide.addShape("roundRect", {
+        x,
+        y: 3.48,
+        w: 3.65,
+        h: 1.65,
+        fill: { color: CARD_BG },
+        line: { color: ACCENT_LINE },
+        rectRadius: 0.06,
+      });
+      addIconBadge(slide, x + 0.18, 3.78, iconFor(b), { fill: TEAL, color: WHITE, w: 0.42, h: 0.42, fontSize: 12 });
+      slide.addText(bulletText(b, 88), {
+        x: x + 0.74,
+        y: 3.68,
+        w: 2.65,
+        h: 1.1,
+        fontSize: 11.5,
+        color: TEXT_DARK,
         fontFace: BODY_FACE,
-        lineSpacingMultiple: 1.1,
-      }
-    );
+        valign: "middle",
+        fit: "shrink",
+        wrap: true,
+      });
+    });
   }
+  addFooter(slide);
   addNotes(slide, spec.notes);
   return slide;
 }
 
 function renderTimelineSlide(pptx, spec) {
   const slide = pptx.addSlide();
-  addTitle(slide, spec.title);
+  addSlideTitle(slide, spec);
   const phases = (spec.phases || [])
     .filter((p) => p && (p.title || p.label || p.description))
     .slice(0, 6);
@@ -488,18 +818,18 @@ function renderTimelineSlide(pptx, spec) {
     addNotes(slide, spec.notes);
     return slide;
   }
-  const totalW = 12.0;
+  const totalW = 11.7;
   const gap = 0.25;
   const n = phases.length;
   const boxW = (totalW - gap * (n - 1)) / n;
-  const top = 2.0;
+  const top = 1.82;
 
   phases.forEach((ph, idx) => {
-    const left = MARGIN_X + idx * (boxW + gap);
+    const left = 0.72 + idx * (boxW + gap);
     if (idx > 0) {
       slide.addShape("rect", {
         x: left - gap,
-        y: top + 0.4,
+        y: top + 0.35,
         w: gap,
         h: 0.04,
         fill: { color: ACCENT_LINE },
@@ -508,32 +838,48 @@ function renderTimelineSlide(pptx, spec) {
     }
     slide.addShape("ellipse", {
       x: left + boxW / 2 - 0.15,
-      y: top + 0.25,
+      y: top + 0.2,
       w: 0.3,
       h: 0.3,
       fill: { color: ACCENT },
       line: { color: ACCENT },
     });
+    slide.addShape("roundRect", {
+      x: left,
+      y: top + 0.72,
+      w: boxW,
+      h: 3.52,
+      fill: { color: idx === 1 ? NAVY : CARD_BG },
+      line: { color: idx === 1 ? NAVY : ACCENT_LINE },
+      rectRadius: 0.06,
+    });
     const lines = [];
     if (ph.label) lines.push(ph.label);
     if (ph.title) lines.push(ph.title);
     if (ph.description) lines.push(bulletText(ph.description, 82));
-    slide.addText(bulletsToTextProps(lines.map((l) => ({ level: 0, text: l })), { fontSize: 11 }), {
-      x: left,
-      y: top + 0.7,
-      w: boxW,
-      h: 3.8,
+    slide.addText(lines.join("\n"), {
+      x: left + 0.16,
+      y: top + 0.95,
+      w: boxW - 0.32,
+      h: 2.95,
       valign: "top",
       fontFace: BODY_FACE,
+      fontSize: 10.4,
+      bold: false,
+      color: idx === 1 ? WHITE : TEXT_DARK,
+      fit: "shrink",
+      wrap: true,
     });
   });
+  addFooter(slide);
   addNotes(slide, spec.notes);
   return slide;
 }
 
 function renderStatCardsSlide(pptx, spec) {
   const slide = pptx.addSlide();
-  addTitle(slide, spec.title);
+  addSlideTitle(slide, spec);
+  const accent = emphasisColor(spec);
   const stats = (spec.stats || []).filter((s) => s && (s.value || s.label)).slice(0, 4);
   if (!stats.length) {
     addNotes(slide, spec.notes);
@@ -558,7 +904,7 @@ function renderStatCardsSlide(pptx, spec) {
       line: { color: ACCENT_LINE, width: 1 },
       rectRadius: 0.06,
     });
-    const parts = [{ text: stat.value || "", options: { fontSize: 28, bold: true, color: ACCENT, fontFace: HEADING_FACE, breakLine: true, align: "center" } }];
+    const parts = [{ text: stat.value || "", options: { fontSize: 28, bold: true, color: accent, fontFace: HEADING_FACE, breakLine: true, align: "center" } }];
     if (stat.label) {
       parts.push({ text: stat.label, options: { fontSize: 13, color: TEXT_DARK, fontFace: BODY_FACE, breakLine: true, align: "center" } });
     }
@@ -612,35 +958,108 @@ function renderStatCardsSlide(pptx, spec) {
 
 function renderArchitectureSlide(pptx, spec) {
   const slide = pptx.addSlide();
-  addTitle(slide, spec.title);
-  slide.addText(
-    [
-      { text: "Architecture diagram", options: { fontSize: 15, bold: true, breakLine: true, color: NAVY, fontFace: HEADING_FACE } },
-      {
-        text: "(diagram placeholder — describe components and data flow)",
-        options: { fontSize: 13, color: TEXT_MUTED },
-      },
-    ],
-    {
-      x: MARGIN_X,
-      y: 1.55,
-      w: 5.6,
-      h: 4.9,
-      valign: "top",
-      fontFace: BODY_FACE,
-      line: { color: ACCENT_LINE, width: 1, dashType: "dash" },
-    }
-  );
+  addSlideTitle(slide, spec);
   const bullets = spec.bullets && spec.bullets.length ? spec.bullets : [""];
-  slide.addText(bulletsToTextProps(bullets.slice(0, 4).map((b) => ({ level: 0, text: bulletText(b, 90) })), { fontSize: 13 }), {
-    x: 6.5,
-    y: 1.55,
-    w: 5.8,
-    h: 4.9,
+  const nodes = bullets.slice(0, 5).map((b) => bulletText(typeof b === "object" ? b.text : b, 48)).filter(Boolean);
+  const diagramX = 0.72;
+  const diagramY = 1.62;
+  const diagramW = 7.0;
+  const diagramH = 4.85;
+  slide.addShape("roundRect", {
+    x: diagramX,
+    y: diagramY,
+    w: diagramW,
+    h: diagramH,
+    fill: { color: CARD_BG },
+    line: { color: ACCENT_LINE },
+    rectRadius: 0.06,
+  });
+  slide.addText("Target flow", {
+    x: diagramX + 0.25,
+    y: diagramY + 0.18,
+    w: 2.0,
+    h: 0.25,
+    fontSize: 11,
+    bold: true,
+    color: TEXT_MUTED,
+    fontFace: BODY_FACE,
+    charSpacing: 1,
+  });
+  const coordinates = [
+    [diagramX + 0.42, diagramY + 1.0],
+    [diagramX + 3.0, diagramY + 1.0],
+    [diagramX + 5.5, diagramY + 1.0],
+    [diagramX + 1.6, diagramY + 3.05],
+    [diagramX + 4.25, diagramY + 3.05],
+  ];
+  nodes.forEach((node, idx) => {
+    const [x, y] = coordinates[idx] || coordinates[coordinates.length - 1];
+    const fill = idx === 1 || idx === 3 ? NAVY : idx === 2 ? TEAL : SOFT_BG;
+    const dark = fill === NAVY || fill === TEAL;
+    slide.addShape("roundRect", {
+      x,
+      y,
+      w: 1.45,
+      h: 0.82,
+      fill: { color: fill },
+      line: { color: dark ? fill : ACCENT_LINE },
+      rectRadius: 0.05,
+    });
+    slide.addText(node, {
+      x: x + 0.08,
+      y: y + 0.12,
+      w: 1.29,
+      h: 0.52,
+      fontSize: 8.6,
+      bold: true,
+      color: dark ? WHITE : TEXT_DARK,
+      fontFace: BODY_FACE,
+      align: "center",
+      valign: "middle",
+      fit: "shrink",
+      wrap: true,
+    });
+    if (idx < nodes.length - 1) {
+      const [nx, ny] = coordinates[idx + 1] || coordinates[idx];
+      slide.addShape("line", {
+        x: x + 1.45,
+        y: y + 0.41,
+        w: nx - (x + 1.45),
+        h: ny + 0.41 - (y + 0.41),
+        line: { color: GOLD, width: 1.5, beginArrowType: "none", endArrowType: "triangle" },
+      });
+    }
+  });
+  const panelX = 8.0;
+  slide.addShape("roundRect", {
+    x: panelX,
+    y: 1.62,
+    w: 4.45,
+    h: 4.85,
+    fill: { color: NAVY },
+    line: { color: NAVY },
+    rectRadius: 0.06,
+  });
+  slide.addText("Design implication", {
+    x: panelX + 0.25,
+    y: 1.95,
+    w: 3.8,
+    h: 0.35,
+    fontSize: 13,
+    bold: true,
+    color: GOLD,
+    fontFace: HEADING_FACE,
+  });
+  slide.addText(bulletsToTextProps(bullets.slice(0, 4).map((b) => ({ level: 0, text: bulletText(typeof b === "object" ? b.text : b, 80) })), { fontSize: 11.2, color: WHITE }), {
+    x: panelX + 0.28,
+    y: 2.62,
+    w: 3.85,
+    h: 2.95,
     valign: "top",
     fontFace: BODY_FACE,
-    lineSpacingMultiple: 1.1,
+    lineSpacingMultiple: 1.08,
   });
+  addFooter(slide);
   addNotes(slide, spec.notes);
   return slide;
 }

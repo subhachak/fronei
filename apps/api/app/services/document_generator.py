@@ -2280,39 +2280,107 @@ def _js_slide_from_deck_spec(spec: dict) -> dict:
     notes = spec.get("speaker_notes") or None
     bullets = spec.get("bullets") or []
 
+    def with_blueprint(payload: dict) -> dict:
+        payload["blueprint"] = _js_slide_blueprint_from_spec(spec, payload.get("role") or "content")
+        return payload
+
     if layout in {"section", "section_divider"}:
-        return {"role": "section", "title": title, "notes": notes}
+        return with_blueprint({"role": "section", "title": title, "notes": notes})
     if spec.get("chart"):
-        return {"role": "chart", "title": title, "chart": spec["chart"], "notes": notes}
+        return with_blueprint({"role": "chart", "title": title, "chart": spec["chart"], "notes": notes})
     if spec.get("table"):
-        return {"role": "table", "title": title, "rows": spec["table"], "notes": notes}
+        return with_blueprint({"role": "table", "title": title, "rows": spec["table"], "notes": notes})
     if layout in {"two_column", "comparison", "architecture"} and spec.get("columns"):
-        return {"role": "two_content", "title": title, "columns": spec["columns"][:3], "notes": notes}
+        return with_blueprint({"role": "two_content", "title": title, "columns": spec["columns"][:3], "notes": notes})
     if layout == "executive_summary":
-        return {"role": "executive_summary", "title": title, "bullets": bullets, "notes": notes}
+        return with_blueprint({"role": "executive_summary", "title": title, "bullets": bullets, "notes": notes})
     if layout == "recommendation":
-        return {"role": "recommendation", "title": title, "bullets": bullets, "notes": notes}
+        return with_blueprint({"role": "recommendation", "title": title, "bullets": bullets, "notes": notes})
     if layout == "stat_cards":
-        return {
+        return with_blueprint({
             "role": "stat_cards",
             "title": title,
             "stats": spec.get("stats") or [],
             "callout": spec.get("callout"),
             "notes": notes,
-        }
+        })
     if layout == "timeline":
         phases = spec.get("phases") or [{"label": "", "title": b, "description": ""} for b in bullets]
-        return {"role": "timeline", "title": title, "phases": phases, "notes": notes}
+        return with_blueprint({"role": "timeline", "title": title, "phases": phases, "notes": notes})
     if layout == "architecture":
-        return {"role": "architecture", "title": title, "bullets": bullets[:MAX_BULLETS_PER_SLIDE], "notes": notes}
+        return with_blueprint({"role": "architecture", "title": title, "bullets": bullets[:MAX_BULLETS_PER_SLIDE], "notes": notes})
 
     cap = MAX_APPENDIX_BULLETS if layout == "appendix" else MAX_BULLETS_PER_SLIDE
-    return {
+    return with_blueprint({
         "role": "content",
         "title": title,
         "appendix": layout == "appendix",
         "bullets": [{"level": 0, "text": b} for b in (bullets[:cap] or [""])],
         "notes": notes,
+    })
+
+
+def _infer_slide_emphasis(spec: dict, role: str) -> str:
+    stats_text: list[str] = []
+    for stat in spec.get("stats") or []:
+        if isinstance(stat, dict):
+            stats_text.extend(str(stat.get(key) or "") for key in ("value", "label", "source"))
+    callout = spec.get("callout") if isinstance(spec.get("callout"), dict) else {}
+    text_parts = [
+        str(spec.get("layout") or ""),
+        str(spec.get("archetype") or ""),
+        str(spec.get("title") or ""),
+        " ".join(str(b) for b in (spec.get("bullets") or [])),
+        " ".join(str(c.get("heading") or "") for c in (spec.get("columns") or []) if isinstance(c, dict)),
+        " ".join(stats_text),
+        str(callout.get("label") or ""),
+        str(callout.get("text") or ""),
+    ]
+    text = " ".join(text_parts).lower()
+    if role == "recommendation" or any(token in text for token in ("recommend", "approve", "decision", "authorize")):
+        return "decision"
+    if any(token in text for token in ("risk", "security", "compliance", "privacy", "legal", "control", "governance")):
+        return "risk"
+    if any(token in text for token in ("cost", "revenue", "roi", "budget", "margin", "savings", "tco", "$")):
+        return "financial"
+    if any(token in text for token in ("architecture", "api", "platform", "system", "data", "model", "integration", "cloud")):
+        return "technical"
+    if any(token in text for token in ("timeline", "phase", "roadmap", "migration", "launch", "delivery")):
+        return "execution"
+    return "operational"
+
+
+def _proof_object_for_spec(spec: dict, role: str) -> str:
+    visual_object = str(spec.get("visual_object") or "").strip()
+    if visual_object and visual_object != "bullets":
+        return visual_object
+    if role in {"chart", "table", "timeline", "architecture", "stat_cards"}:
+        return role
+    if spec.get("columns"):
+        return "comparison"
+    return "insight_cards"
+
+
+def _js_slide_blueprint_from_spec(spec: dict, role: str) -> dict:
+    """Designer-facing intent passed to the JS compositor.
+
+    The role remains the backwards-compatible renderer route. The blueprint is
+    the richer semantic layer: what kind of slide this is, how dense it is, what
+    proof object should carry the argument, and which emphasis color family the
+    compositor should use.
+    """
+    layout = str(spec.get("layout") or role or "content").strip()
+    archetype = str(spec.get("archetype") or layout or role or "content").strip()
+    density = str(spec.get("density") or "medium").strip().lower()
+    if density not in {"low", "medium", "high"}:
+        density = "medium"
+    return {
+        "archetype": archetype,
+        "layout": layout,
+        "density": density,
+        "visual_object": str(spec.get("visual_object") or "bullets"),
+        "proof_object": _proof_object_for_spec(spec, role),
+        "emphasis": _infer_slide_emphasis(spec, role),
     }
 
 
@@ -2353,6 +2421,11 @@ def _build_js_deck_payload(title: str, content: str, subtitle: str | None) -> di
     deck_plan = parse_deck_plan(content)
     if deck_plan:
         return {
+            "version": 2,
+            "design_system": {
+                "name": "fronei_board_briefing",
+                "mode": "freehand_compositor",
+            },
             "title": deck_plan.get("title") or title or "Fronei deck",
             "subtitle": deck_plan.get("subtitle") or subtitle,
             "slides": _number_section_slides(
@@ -2382,7 +2455,16 @@ def _build_js_deck_payload(title: str, content: str, subtitle: str | None) -> di
     for spec in slides:
         js_slides.append(_js_slide_from_markdown_spec(spec))
 
-    return {"title": deck_title, "subtitle": deck_subtitle, "slides": _number_section_slides(js_slides)}
+    return {
+        "version": 2,
+        "design_system": {
+            "name": "fronei_board_briefing",
+            "mode": "markdown_compositor",
+        },
+        "title": deck_title,
+        "subtitle": deck_subtitle,
+        "slides": _number_section_slides(js_slides),
+    }
 
 
 def _render_pptx_via_pptxgenjs(payload: dict) -> bytes:

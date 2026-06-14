@@ -180,8 +180,8 @@ DeckPlan schema:
   "subtitle": "Audience, client, or context",
   "slides": [
     {
-      "layout": "section | bullets | executive_summary | two_column | comparison | architecture | table | \
-recommendation | timeline | risk_matrix | financial_model | appendix",
+      "layout": "section | cover | bullets | executive_summary | comparison | architecture | table | \
+recommendation | timeline | risk_matrix | financial_model | appendix | takeaways",
       "title": "Assertion-style slide title",
       "bullets": ["short support point"],
       "columns": [
@@ -206,14 +206,22 @@ recommendation | timeline | risk_matrix | financial_model | appendix",
 }
 
 Layout guide (use the most specific layout that fits — generic `bullets` is the fallback, not the default):
+- Before writing slides, choose the deck's story spine and assign each slide a visual job. A good strategy deck \
+is not a sequence of text boxes; it is a sequence of decisions, proof objects, comparisons, diagrams, timelines, \
+and takeaways.
+- `cover`: optional opening slide for the deck's title/positioning statement when it needs more presence than \
+the default title slide (renders like `section`).
 - `executive_summary`: first content slide for executive_report/proposal decks. `bullets[0]` is the single \
 "so what" headline (one sentence, the bottom line); remaining bullets are supporting points.
 - `recommendation`: use for the decision/ask slide. `bullets[0]` is the recommendation itself (rendered in an \
 accent callout); remaining bullets are the rationale.
-- `timeline`: phased plans and roadmaps. Provide `phases` (3-6 entries, each with `label` e.g. "Phase 1" or a \
-date/quarter, `title`, and a short `description`). Falls back to `bullets` as phase titles if `phases` is omitted.
+- `timeline`: phased plans, migration paths, operating models, and roadmaps. Provide `phases` (3-6 entries, each \
+with `label` e.g. "Phase 1" or a date/quarter, `title`, and a short `description`). Falls back to `bullets` as \
+phase titles if `phases` is omitted.
 - `architecture`: technical/system-design slides. Either provide `columns` (diagram side vs. explanation side) \
 or `bullets` describing components/data flow — a diagram placeholder is rendered alongside.
+- `comparison`: use `columns` with 2-3 concise cards for trade-offs, operating-model, ownership, governance, \
+capability, or design-principle slides.
 - `risk_matrix`: provide a `table` with headers `["Risk", "Likelihood", "Impact", "Owner"]` (or similar risk \
 register columns).
 - `financial_model`: provide a `chart` (preferred — renders as a native chart) and/or a `table` of figures \
@@ -221,11 +229,12 @@ register columns).
 (e.g. years/quarters) and each `series` entry is a numeric line/bar with a name. Use `type: "line"` for trends \
 over time, `"bar"` for comparisons across categories, `"pie"` for composition/share. All `series.values` must be \
 plain numbers (no currency symbols, commas, or percent signs).
+- `takeaways`: use for the closing synthesis. It should not repeat the executive summary; it should tell the \
+stakeholder what to remember and what happens next.
 - Any slide may include a `chart` alongside or instead of a `table` when the underlying data is genuinely \
 numeric and a chart communicates the point better than a table.
 - `appendix`: reference/backup material placed at the end of the deck after the main narrative. Denser bullet \
 lists (up to ~10) are acceptable here.
-- `two_column` / `comparison`: trade-offs, requires `columns`.
 - `table`: genuine structured comparisons or numeric data not covered by risk_matrix/financial_model.
 - `section`: sparingly, to separate major parts of the story.
 
@@ -233,13 +242,15 @@ Deck quality rules:
 - Build a narrative arc: context -> analysis/options -> recommendation -> next steps. For executive_report and \
 proposal decks, open the content with an `executive_summary` slide and close with a `recommendation` slide.
 - Use 6-12 slides unless the user asks for a shorter or longer deck.
-- Slide titles must make a point on their own, not label a topic. Use "Strangler migration cuts delivery risk" \
-instead of "Migration options."
-- Bullets must be short, specific, and scannable. Prefer 3-5 bullets per slide.
+- Slide titles must make a point on their own, not label a topic. Keep titles under 12 words and short enough \
+to fit on one line when possible. Use "Strangler migration cuts delivery risk" instead of "Migration options."
+- Bullets must be short, specific, and scannable. Prefer 2-3 bullets per slide; never use paragraph-length bullets.
 - Use speaker_notes to carry nuance, assumptions, data caveats, and the talk track that should not clutter slides.
 - Do not invent precise facts, figures, names, dates, or citations not supplied by the user or source context.
 - Avoid generic consulting filler. Every slide should answer: "what should the stakeholder understand, decide, \
 or do?"
+- If a template/design brief is provided, treat it as binding: choose layouts and text density that fit that \
+template instead of forcing the template to absorb an article.
 
 After the DeckPlan JSON body, append the required `---SUMMARY---` section as instructed separately. The summary \
 may be Markdown bullets, but the body before `---SUMMARY---` must remain valid JSON.""",

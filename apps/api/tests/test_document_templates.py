@@ -92,3 +92,29 @@ def test_user_template_upload_rejects_non_pptx(monkeypatch, tmp_path):
             assert "Only .pptx" in response.json()["detail"]
     finally:
         app.dependency_overrides.clear()
+
+
+def test_template_grammar_for_builtin_template():
+    grammar = document_templates.template_grammar_for_selection(
+        None,
+        "u1",
+        "strategy-canvas",
+        {"doc_type": "presentation", "audience": "Executive committee"},
+    )
+
+    assert grammar["mode"] == "template_following"
+    assert grammar["template_id"] == "strategy-canvas"
+    assert grammar["available_slide_types"]
+    assert "TEMPLATE-FIRST PRESENTATION DESIGN BRIEF" in document_templates.template_design_context(grammar)
+
+
+def test_template_grammar_for_default_freehand_theme():
+    grammar = document_templates.template_grammar_for_selection(
+        None,
+        "u1",
+        "fronei-default",
+        {"doc_type": "presentation", "audience": "Client steering committee"},
+    )
+
+    assert grammar["mode"] == "fronei_premium_freehand"
+    assert "Fronei premium freehand" in document_templates.template_design_context(grammar)

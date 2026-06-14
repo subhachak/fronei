@@ -154,7 +154,16 @@ def run_pptx_render_qa(pptx_bytes: bytes, *, timeout: int = CONVERT_TIMEOUT_SECO
 
 
 def _ink_ratio(image_path: Path) -> float | None:
-    """Fraction of non-near-white pixels in `image_path`, or None on failure."""
+    """Fraction of pixels that differ materially from the slide's dominant
+    (background) color in `image_path`, or None on failure.
+
+    Slides can use any background color/theme (e.g. a warm cream
+    `F7F1EE` ~242 luma), not just pure white. A fixed "< 250 = ink" cutoff
+    would count an entire colored background as "ink", making every slide
+    in a themed deck register as ~100% crowded. Instead, find the most
+    common grayscale value (the background) and count pixels that deviate
+    from it by more than a small tolerance as "ink" (text, images, shapes).
+    """
     try:
         from PIL import Image
     except ImportError:
@@ -162,12 +171,18 @@ def _ink_ratio(image_path: Path) -> float | None:
     try:
         with Image.open(image_path) as img:
             gray = img.convert("L")
-            pixels = gray.tobytes()
-            total = len(pixels)
+            histogram = gray.histogram()
+            total = sum(histogram)
             if not total:
                 return None
-            non_white = sum(1 for p in pixels if p < 250)
-            return non_white / total
+            bg_value = max(range(256), key=lambda v: histogram[v])
+            tolerance = 12
+            non_bg = sum(
+                count
+                for value, count in enumerate(histogram)
+                if abs(value - bg_value) > tolerance
+            )
+            return non_bg / total
     except Exception:
         logger.warning("Failed to compute ink ratio for %s", image_path, exc_info=True)
         return None

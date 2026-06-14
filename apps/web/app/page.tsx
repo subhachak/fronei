@@ -494,6 +494,8 @@ type DocumentTemplateOption = {
   name: string
   description?: string
   recommended?: boolean
+  user_template?: boolean
+  design_mode?: string
 }
 
 type DocumentFinalizationProposal = {
@@ -1638,7 +1640,7 @@ function AssistantContent({ message }: { message: MessageOut }) {
   )
 }
 
-type SettingsTab = 'general' | 'dashboard' | 'guide' | 'voice' | 'memory' | 'workspace' | 'models' | 'account' | 'admin'
+type SettingsTab = 'general' | 'dashboard' | 'guide' | 'voice' | 'memory' | 'templates' | 'workspace' | 'models' | 'account' | 'admin'
 type UserGuidePageId = 'start' | 'chat' | 'modes' | 'workbench' | 'research' | 'documents' | 'memory' | 'dashboard' | 'adminOps' | 'difference' | 'shortcuts' | 'settings' | 'api' | 'tips'
 
 const USER_GUIDE_PAGES: {
@@ -2327,6 +2329,10 @@ function SettingsView({
   const [guidePage, setGuidePage] = useState<UserGuidePageId>('start')
   const [memoryCategoryFilter, setMemoryCategoryFilter] = useState('all')
   const [showInactiveMemories, setShowInactiveMemories] = useState(false)
+  const [templates, setTemplates] = useState<DocumentTemplateOption[]>([])
+  const [templatesLoaded, setTemplatesLoaded] = useState(false)
+  const [templatesError, setTemplatesError] = useState('')
+  const [templateActionStatus, setTemplateActionStatus] = useState('')
   const activeGuidePage = USER_GUIDE_PAGES.find(page => page.id === guidePage) ?? USER_GUIDE_PAGES[0]
   const profile = personalProfile?.profile ?? {}
   const profileOverrides = isRecord(profile.overrides) ? profile.overrides : {}
@@ -2361,12 +2367,54 @@ function SettingsView({
     await onUpdateMemory(memory.id, { content: next.trim() })
   }
 
+  async function loadTemplates() {
+    setTemplatesError('')
+    try {
+      const res = await apiFetch('/documents/templates?doc_type=presentation')
+      if (!res.ok) throw new Error('Failed to load templates')
+      const data = await res.json()
+      setTemplates((data.templates as DocumentTemplateOption[]) ?? [])
+      setTemplatesLoaded(true)
+    } catch (e) {
+      setTemplatesError(e instanceof Error ? e.message : 'Failed to load templates')
+      setTemplatesLoaded(true)
+    }
+  }
+
+  useEffect(() => {
+    if (tab !== 'templates') return
+    void loadTemplates()
+  // apiFetch is intentionally omitted: it is recreated by Home on render.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab])
+
+  async function deleteTemplate(template: DocumentTemplateOption) {
+    if (!template.user_template) return
+    const ok = window.confirm(`Delete "${template.name}" from your saved templates?`)
+    if (!ok) return
+    setTemplateActionStatus('Deleting template...')
+    setTemplatesError('')
+    try {
+      const res = await apiFetch(`/documents/templates/${encodeURIComponent(template.id)}`, { method: 'DELETE' })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: 'Delete failed' }))
+        throw new Error((err as { detail?: string }).detail || 'Delete failed')
+      }
+      setTemplates(prev => prev.filter(t => t.id !== template.id))
+      setTemplateActionStatus('Template deleted.')
+    } catch (e) {
+      setTemplatesError(e instanceof Error ? e.message : 'Template delete failed')
+      setTemplateActionStatus('')
+    }
+  }
+
   const nav: { id: SettingsTab; label: string; icon: string }[] = [
     { id: 'general',   label: 'General',   icon: 'ti-settings' },
     { id: 'dashboard', label: 'Dashboard', icon: 'ti-chart-bar' },
     { id: 'guide',     label: 'Guide',     icon: 'ti-book' },
     { id: 'voice',     label: 'My voice',  icon: 'ti-sparkles' },
     { id: 'memory',    label: 'Memory',    icon: 'ti-brain' },
+    { id: 'templates', label: 'Templates', icon: 'ti-template' },
     { id: 'workspace', label: 'Workspace', icon: 'ti-layout-grid' },
     { id: 'models',    label: 'Models',    icon: 'ti-route' },
     { id: 'account',   label: 'Account',   icon: 'ti-user-circle' },
@@ -2612,6 +2660,66 @@ function SettingsView({
                 ) : (
                   <span className="settings-muted">Add writing samples or keep chatting to build this profile.</span>
                 )}
+              </div>
+            </div>
+          )}
+
+          {tab === 'templates' && (
+            <div className="settings-card-list">
+              <div className="settings-card">
+                <div className="settings-card-head">
+                  <div>
+                    <strong>Presentation templates</strong>
+                    <span>Manage uploaded PowerPoint templates used when Fronei generates client-ready decks.</span>
+                  </div>
+                  <button className="toggle-chip" onClick={() => loadTemplates()} type="button">
+                    <i className="ti ti-refresh" aria-hidden="true" />
+                    Refresh
+                  </button>
+                </div>
+                {templatesError && <div className="error-bar" role="alert">{templatesError}</div>}
+                {!templatesLoaded && <span className="settings-muted">Loading...</span>}
+                {templatesLoaded && templates.length === 0 && (
+                  <span className="settings-muted">No templates found. Upload one from the document generation setup step.</span>
+                )}
+                <div className="template-settings-list">
+                  {templates.map(template => (
+                    <div key={template.id} className="template-settings-item">
+                      <div className="template-settings-icon">
+                        <i className="ti ti-template" aria-hidden="true" />
+                      </div>
+                      <div className="template-settings-main">
+                        <div className="template-settings-title">
+                          <strong>{template.name}</strong>
+                          {template.recommended && <span className="exec-pill">Recommended</span>}
+                          {template.user_template ? <span className="exec-pill">Uploaded</span> : <span className="exec-pill">Built-in</span>}
+                        </div>
+                        {template.description && <p>{template.description}</p>}
+                        <span className="memory-footnote">
+                          {template.design_mode === 'fronei_premium_freehand'
+                            ? 'Fronei premium freehand theme'
+                            : 'Template-following mode'}
+                        </span>
+                      </div>
+                      <div className="memory-actions">
+                        {template.user_template ? (
+                          <button
+                            className="conv-action-btn danger"
+                            onClick={() => deleteTemplate(template)}
+                            type="button"
+                            aria-label={`Delete ${template.name}`}
+                            title="Delete template"
+                          >
+                            <i className="ti ti-trash" />
+                          </button>
+                        ) : (
+                          <span className="settings-muted">Managed by Fronei</span>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                {templateActionStatus && <span className="settings-muted">{templateActionStatus}</span>}
               </div>
             </div>
           )}

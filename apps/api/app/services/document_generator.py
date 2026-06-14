@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from datetime import date
 from io import BytesIO
@@ -40,6 +41,8 @@ KNOWN_DOC_TYPES = {
 }
 SPEAKER_NOTES_RE = re.compile(r"^speaker notes?\s*:\s*(.*)$", re.IGNORECASE)
 MAX_BULLETS_PER_SLIDE = 6
+MAX_SLIDE_TITLE_CHARS = 92
+MAX_BULLET_CHARS = 120
 COVER_DOC_TYPES = {"executive_report", "proposal", "technical_spec"}
 COMPACT_HEADER_DOC_TYPES = {"memo", "one_pager", "resume"}
 TOC_DOC_TYPES = {"executive_report", "proposal"}
@@ -690,6 +693,130 @@ def _pptx_bullet_indent(level: int) -> int:
     return max(0, min(level, 4))
 
 
+def _shorten(text: str, limit: int) -> str:
+    cleaned = re.sub(r"\s+", " ", _clean_inline(str(text or ""))).strip()
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[: max(0, limit - 3)].rstrip() + "..."
+
+
+def _extract_json_candidate(content: str) -> str | None:
+    stripped = content.strip()
+    if not stripped:
+        return None
+    fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", stripped, flags=re.DOTALL | re.IGNORECASE)
+    if fence:
+        return fence.group(1)
+    if stripped.startswith("{") and stripped.endswith("}"):
+        return stripped
+    return None
+
+
+def parse_deck_plan(content: str) -> dict | None:
+    """Return a tolerant DeckPlan dict from JSON content, or None.
+
+    The LLM-facing schema is intentionally small and product-oriented:
+    title/subtitle plus slides with layout, assertion title, bullets, table,
+    columns, and speaker notes. The renderer accepts minor variants so model
+    output is useful without brittle exact-key dependence.
+    """
+    candidate = _extract_json_candidate(content)
+    if not candidate:
+        return None
+    try:
+        data = json.loads(candidate)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    slides = data.get("slides")
+    if not isinstance(slides, list):
+        return None
+    normalized: dict = {
+        "title": _shorten(data.get("title") or data.get("deck_title") or "Fronei deck", 120),
+        "subtitle": _shorten(data.get("subtitle") or data.get("audience") or "", 160),
+        "slides": [],
+    }
+    for raw in slides:
+        if not isinstance(raw, dict):
+            continue
+        layout = str(raw.get("layout") or raw.get("type") or "bullets").lower().strip()
+        title = _shorten(raw.get("title") or raw.get("headline") or raw.get("key_message") or "Untitled", MAX_SLIDE_TITLE_CHARS)
+        bullets = raw.get("bullets") or raw.get("points") or []
+        if isinstance(bullets, str):
+            bullets = [bullets]
+        bullets = [_shorten(b, MAX_BULLET_CHARS) for b in bullets if str(b or "").strip()]
+        notes = raw.get("speaker_notes") or raw.get("notes") or ""
+        table = raw.get("table")
+        if isinstance(table, dict):
+            headers = table.get("headers") or table.get("columns") or []
+            rows = table.get("rows") or []
+            table = [headers] + rows if headers else rows
+        if not isinstance(table, list):
+            table = []
+        table_rows = []
+        for row in table:
+            if isinstance(row, dict):
+                table_rows.append([_shorten(v, 80) for v in row.values()])
+            elif isinstance(row, list):
+                table_rows.append([_shorten(v, 80) for v in row])
+        columns = raw.get("columns") or []
+        normalized_columns = []
+        if isinstance(columns, list):
+            for col in columns[:3]:
+                if not isinstance(col, dict):
+                    continue
+                col_bullets = col.get("bullets") or col.get("points") or []
+                if isinstance(col_bullets, str):
+                    col_bullets = [col_bullets]
+                normalized_columns.append({
+                    "heading": _shorten(col.get("heading") or col.get("title") or "", 50),
+                    "bullets": [_shorten(b, 90) for b in col_bullets if str(b or "").strip()][:5],
+                })
+        normalized["slides"].append({
+            "layout": layout,
+            "title": title,
+            "bullets": bullets,
+            "table": table_rows,
+            "columns": normalized_columns,
+            "speaker_notes": _clean_inline(str(notes or "")).strip(),
+        })
+    return normalized if normalized["slides"] else None
+
+
+def deck_plan_to_markdown(content: str) -> str | None:
+    plan = parse_deck_plan(content)
+    if not plan:
+        return None
+    lines = [f"# {plan['title']}"]
+    if plan.get("subtitle"):
+        lines.append(f"*{plan['subtitle']}*")
+    for slide in plan["slides"]:
+        layout = slide.get("layout")
+        if layout in {"section", "section_divider"}:
+            lines.extend(["", f"# {slide['title']}"])
+            continue
+        lines.extend(["", f"## {slide['title']}"])
+        for bullet in slide.get("bullets") or []:
+            lines.append(f"- {bullet}")
+        for col in slide.get("columns") or []:
+            if col.get("heading"):
+                lines.append(f"### {col['heading']}")
+            for bullet in col.get("bullets") or []:
+                lines.append(f"- {bullet}")
+        table = slide.get("table") or []
+        if table:
+            width = max(len(r) for r in table)
+            rows = [r + [""] * (width - len(r)) for r in table]
+            lines.append("| " + " | ".join(rows[0]) + " |")
+            lines.append("| " + " | ".join(["---"] * width) + " |")
+            for row in rows[1:]:
+                lines.append("| " + " | ".join(row) + " |")
+        if slide.get("speaker_notes"):
+            lines.append(f"Speaker notes: {slide['speaker_notes']}")
+    return "\n".join(lines).strip()
+
+
 def _parse_pptx_slides(content: str) -> tuple[dict | None, list[dict]]:
     """Parse markdown-ish content into (title_slide, [section/content/table slides]).
 
@@ -856,12 +983,88 @@ def _pptx_render_table(slide, rows: list[list[str]]) -> None:
                         run.font.bold = True
 
 
+def _pptx_add_text_box(slide, left, top, width, height, heading: str, bullets: list[str]) -> None:
+    box = slide.shapes.add_textbox(left, top, width, height)
+    tf = box.text_frame
+    tf.clear()
+    if heading:
+        p = tf.paragraphs[0]
+        _pptx_add_runs(p, heading)
+        for run in p.runs:
+            run.font.bold = True
+            run.font.size = PptxPt(15)
+    for idx, bullet in enumerate(bullets):
+        p = tf.paragraphs[0] if idx == 0 and not heading else tf.add_paragraph()
+        p.level = 0
+        _pptx_add_runs(p, bullet)
+        for run in p.runs:
+            run.font.size = PptxPt(13)
+
+
+def _pptx_render_deck_plan(prs: Presentation, plan: dict, fallback_title: str, subtitle: str | None) -> None:
+    title_layout = _pptx_layout(prs, 0)
+    title_slide = prs.slides.add_slide(title_layout)
+    _pptx_set_title(title_slide, plan.get("title") or fallback_title or "Fronei deck")
+    deck_subtitle = plan.get("subtitle") or subtitle
+    if deck_subtitle:
+        for shape in title_slide.placeholders:
+            if shape.placeholder_format.idx == 1:
+                shape.text_frame.text = ""
+                _pptx_add_runs(shape.text_frame.paragraphs[0], deck_subtitle)
+                break
+
+    for spec in plan.get("slides", []):
+        layout = spec.get("layout") or "bullets"
+        title = spec.get("title") or "Untitled"
+        notes = spec.get("speaker_notes")
+        if layout in {"section", "section_divider"}:
+            slide = prs.slides.add_slide(_pptx_layout(prs, 2, fallback=5))
+            _pptx_set_title(slide, title)
+        elif spec.get("table"):
+            slide = prs.slides.add_slide(_pptx_layout(prs, 5, fallback=1))
+            _pptx_set_title(slide, title)
+            _pptx_render_table(slide, spec["table"])
+        elif layout in {"two_column", "comparison"} and spec.get("columns"):
+            slide = prs.slides.add_slide(_pptx_layout(prs, 5, fallback=1))
+            _pptx_set_title(slide, title)
+            cols = spec["columns"][:2]
+            col_w = PptxInches(5.8)
+            top = PptxInches(1.55)
+            height = PptxInches(4.9)
+            for idx, col in enumerate(cols):
+                left = PptxInches(0.65 + idx * 6.05)
+                _pptx_add_text_box(slide, left, top, col_w, height, col.get("heading") or "", col.get("bullets") or [])
+        else:
+            slide = prs.slides.add_slide(_pptx_layout(prs, 1))
+            _pptx_set_title(slide, title)
+            bullets = spec.get("bullets") or []
+            if layout in {"recommendation", "decision"} and bullets:
+                bullets = [f"Recommendation: {bullets[0]}", *bullets[1:]]
+            body = slide.placeholders[1] if len(slide.placeholders) > 1 else None
+            if body is not None:
+                tf = body.text_frame
+                tf.clear()
+                for i, bullet in enumerate(bullets[:MAX_BULLETS_PER_SLIDE] or [""]):
+                    p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+                    p.level = 0
+                    _pptx_add_runs(p, bullet)
+        if notes:
+            slide.notes_slide.notes_text_frame.text = notes
+
+
 def generate_pptx_bytes(title: str, content: str, subtitle: str | None = None) -> bytes:
     """Render markdown-ish slide-plan content (see module docstring above the
-    PPTX section) into a PPTX deck using python-pptx's default template."""
+    PPTX section), or a structured DeckPlan JSON object, into a PPTX deck."""
     prs = Presentation()
     prs.slide_width = PptxInches(13.333)
     prs.slide_height = PptxInches(7.5)
+
+    deck_plan = parse_deck_plan(content)
+    if deck_plan:
+        _pptx_render_deck_plan(prs, deck_plan, title, subtitle)
+        output = BytesIO()
+        prs.save(output)
+        return output.getvalue()
 
     title_slide_spec, slides = _parse_pptx_slides(content)
     # Drop empty content slides (e.g. an H2 whose only content was a table,

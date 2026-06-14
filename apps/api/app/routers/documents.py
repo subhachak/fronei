@@ -1,4 +1,5 @@
 import base64
+import logging
 from pathlib import Path
 from urllib.parse import quote
 
@@ -29,7 +30,13 @@ from app.services.document_extractor import (
     ExtractionError,
     extract_text,
 )
-from app.services.document_generator import generate_docx_bytes, generate_pptx_bytes, generate_xlsx_bytes
+from app.services.document_generator import (
+    deck_plan_to_markdown,
+    generate_docx_bytes,
+    generate_pptx_bytes,
+    generate_xlsx_bytes,
+    parse_deck_plan,
+)
 from app.services.llm_gateway import invoke_llm
 from app.services.personal_context import build_context
 from app.services.planner import run_planner
@@ -39,7 +46,9 @@ from app.services.router import choose_route
 from app.services.web_context import gather_web_context
 
 router = APIRouter(prefix="/documents", tags=["documents"])
+logger = logging.getLogger(__name__)
 MAX_UPLOAD_BYTES = 30 * 1024 * 1024   # 30 MB
+SUPPORTED_RENDER_FORMATS = {"markdown", "docx", "xlsx", "pptx"}
 DOC_TYPES = {
     "executive_report",
     "proposal",
@@ -57,10 +66,11 @@ internal and external stakeholders. The bar is "I could paste this into a delive
 with minimal edits" — not "this reads like an AI wrote it in 30 seconds."
 
 Output rules:
-- Output only the document body in clean Markdown. Do not include commentary about generating the document.
-- Start with a strong H1 title unless the user explicitly asks for a different format.
-- Use Markdown headings, tables for comparative or numeric data, and bold for key terms.
-- Keep the document coherent enough to paste directly into a Word document.
+- Output only the document body in the format required by the selected document type. Do not include commentary \
+about generating the document.
+- For Markdown-based document types, start with a strong H1 title unless the user explicitly asks for a different format.
+- For Markdown-based document types, use Markdown headings, tables for comparative or numeric data, and bold for key terms.
+- For Markdown-based document types, keep the document coherent enough to paste directly into a Word document.
 - Do not invent precise facts, metrics, dates, legal claims, or citations not supplied by the user.
 - If source-grounded research or web context is provided, use it as source material and preserve useful citations.
 
@@ -156,30 +166,46 @@ Expected structure:
 Use polished, professional letter language without stock phrases ("I hope this finds you well," "please don't \
 hesitate to reach out") unless the user's tone preference calls for them.""",
     "presentation": """Document type: presentation
-Write the body as a Markdown SLIDE PLAN, not a prose document — it will be converted directly into PowerPoint \
-slides. Follow this structure exactly:
+Write the document body as valid DeckPlan JSON only. Do not output Markdown for the body.
 
-- The FIRST line must be `# <Deck title>`. The line immediately after it may be an italic subtitle, e.g. \
-`*For: <audience> — <date or context>*`.
-- Use `## <Slide title>` for every content slide. Everything under a `##` until the next heading becomes that \
-slide's body.
-- Use a bare `# <Section name>` (after the first line) to insert a section-divider slide between groups of \
-related slides — use these sparingly, only for genuinely distinct sections of the deck.
-- Use `### <Sub-header>` sparingly within a slide to introduce a sub-group of bullets.
-- Slide bodies are bullet points: one idea per bullet, each bullet a short phrase or single sentence (aim for \
-under ~12 words). Do NOT write paragraphs of prose on a slide.
-- Limit each slide to 3-6 bullets. If a topic needs more than 6 bullets, split it into multiple `##` slides \
-(e.g. "Risks (1/2)" / "Risks (2/2)") rather than overloading one slide.
-- A Markdown table under a `##` heading becomes a dedicated table slide — use tables for genuine comparisons \
-(options, costs, timelines), not for arbitrary lists.
-- After the bullets for a slide, optionally add one line starting with `Speaker notes:` containing the talk \
-track for that slide — context, data points, or transitions the presenter would say aloud but that shouldn't be \
-on the slide itself. Use this to carry nuance and "so what" reasoning that would clutter the slide.
+DeckPlan schema:
+{
+  "title": "Deck title",
+  "subtitle": "Audience, client, or context",
+  "slides": [
+    {
+      "layout": "section | bullets | two_column | comparison | table | recommendation",
+      "title": "Assertion-style slide title",
+      "bullets": ["short support point"],
+      "columns": [
+        {"heading": "Option A", "bullets": ["short point"]},
+        {"heading": "Option B", "bullets": ["short point"]}
+      ],
+      "table": {
+        "headers": ["Criterion", "Option A", "Option B"],
+        "rows": [["Cost", "Low", "Medium"]]
+      },
+      "speaker_notes": "Presenter talk track, nuance, caveats, and transitions."
+    }
+  ]
+}
 
-Aim for a deck that reads like an executive narrative arc: context → analysis/options → recommendation → next \
-steps, typically 6-12 slides depending on the requested length. Each slide title should make a point on its \
-own (e.g. "Strangler-fig migration cuts risk vs. a rewrite" rather than "Options"); the bullets support that \
-point.""",
+Deck quality rules:
+- Build a narrative arc: context -> analysis/options -> recommendation -> next steps.
+- Use 6-12 slides unless the user asks for a shorter or longer deck.
+- Slide titles must make a point on their own, not label a topic. Use "Strangler migration cuts delivery risk" \
+instead of "Migration options."
+- Bullets must be short, specific, and scannable. Prefer 3-5 bullets per slide.
+- Use speaker_notes to carry nuance, assumptions, data caveats, and the talk track that should not clutter slides.
+- Use `comparison` or `two_column` layouts for trade-offs; use `table` only for genuine structured comparisons \
+or numeric data.
+- Use `section` slides sparingly to separate major parts of the story.
+- Do not invent precise facts, figures, names, dates, or citations not supplied by the user or source context.
+- Avoid generic consulting filler. Every slide should answer: "what should the stakeholder understand, decide, \
+or do?"
+
+After the DeckPlan JSON body, append the required `---SUMMARY---` section as instructed separately. The summary \
+may be Markdown bullets, but the body before `---SUMMARY---` must remain valid JSON.""",
     "resume": """Document type: resume
 Expected structure:
 - H1 with the person's name
@@ -474,11 +500,15 @@ DOC_INTENT_KEYWORDS: dict[str, list[str]] = {
     "technical_spec": ["technical spec", "technical specification", "architecture spec", "design doc", "requirements document"],
     "one_pager": ["one pager", "one-pager", "1-pager", "1 pager"],
     "executive_report": ["executive report", "board report", "status report", "client report"],
+    "presentation": ["presentation", "slide deck", "slides", "ppt", "pptx", "powerpoint", "board deck", "pitch deck"],
 }
 
 # Action verbs + generic document nouns also signal intent (e.g. "write a report on X").
 DOC_ACTION_VERBS = ["write", "draft", "create", "generate", "prepare", "produce", "build", "put together"]
-DOC_GENERIC_TERMS = ["document", " doc ", "report", "write-up", "writeup", "word file", "word doc", ".docx", "downloadable"]
+DOC_GENERIC_TERMS = [
+    "document", " doc ", "report", "write-up", "writeup", "word file", "word doc", ".docx", "downloadable",
+    "presentation", "slide deck", "slides", "ppt", "pptx", "powerpoint",
+]
 
 
 def detect_document_intent(prompt: str) -> str | None:
@@ -500,41 +530,53 @@ def detect_document_intent(prompt: str) -> str | None:
 def build_document_artifact(title: str, body_markdown: str, doc_type: str, fmt: str = "markdown") -> dict:
     """Build a document_preview payload for a planner-driven document output.
 
-    Supports the phase-1 formats (markdown, docx). Any other requested format
-    falls back to markdown (the picker keeps unsupported formats disabled).
+    Unsupported or failed binary renders fall back to Markdown, but the payload
+    carries an explicit generation_error so the UI can be honest with users.
     """
-    title = title or _title_from_markdown(body_markdown) or "Fronei document"
+    deck_plan = parse_deck_plan(body_markdown) if doc_type == "presentation" else None
+    title = (deck_plan or {}).get("title") or title or _title_from_markdown(body_markdown) or "Fronei document"
+    requested_format = fmt if fmt in SUPPORTED_RENDER_FORMATS else "markdown"
+    display_markdown = deck_plan_to_markdown(body_markdown) if deck_plan else None
     preview: dict = {
         "title": title,
         "doc_type": doc_type,
         "format": "markdown",
-        "markdown": body_markdown,
+        "requested_format": fmt,
+        "markdown": display_markdown or body_markdown,
         "filename": f"{_safe_filename(title)}.md",
     }
-    if fmt == "docx":
+    if fmt not in SUPPORTED_RENDER_FORMATS:
+        preview["generation_error"] = f"{fmt} output is not supported yet; showing Markdown instead."
+        return preview
+    if requested_format == "markdown":
+        return preview
+    if requested_format == "docx":
         try:
             content = generate_docx_bytes(title, body_markdown, "Generated by Fronei", doc_type=doc_type)
             preview["format"] = "docx"
             preview["filename"] = f"{_safe_filename(title)}.docx"
             preview["docx_base64"] = base64.b64encode(content).decode("ascii")
-        except Exception:
-            pass
-    elif fmt == "xlsx":
+        except Exception as exc:
+            logger.exception("Failed to render DOCX artifact")
+            preview["generation_error"] = f"Word rendering failed: {exc}"
+    elif requested_format == "xlsx":
         try:
             content = generate_xlsx_bytes(title, body_markdown, "Generated by Fronei", doc_type=doc_type)
             preview["format"] = "xlsx"
             preview["filename"] = f"{_safe_filename(title)}.xlsx"
             preview["xlsx_base64"] = base64.b64encode(content).decode("ascii")
-        except Exception:
-            pass
-    elif fmt == "pptx":
+        except Exception as exc:
+            logger.exception("Failed to render XLSX artifact")
+            preview["generation_error"] = f"Excel rendering failed: {exc}"
+    elif requested_format == "pptx":
         try:
             content = generate_pptx_bytes(title, body_markdown, "Generated by Fronei")
             preview["format"] = "pptx"
             preview["filename"] = f"{_safe_filename(title)}.pptx"
             preview["pptx_base64"] = base64.b64encode(content).decode("ascii")
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.exception("Failed to render PPTX artifact")
+            preview["generation_error"] = f"PowerPoint rendering failed: {exc}"
     return preview
 
 

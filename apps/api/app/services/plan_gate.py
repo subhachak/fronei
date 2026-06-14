@@ -100,9 +100,11 @@ def evaluate(plan: Plan) -> PlanGateResult:
         format_options = ["markdown"]
     max_silent_formats = doc_cfg.get("max_silent_format_options", 1)
 
-    doc_gates = bool(plan.wants_document_output) and (
-        bool(missing_fields) or len(format_options) > max_silent_formats
-    )
+    # Document-specific choices now happen at the late artifact-finalization
+    # gate, just before generation. The initial plan popup should stay focused
+    # on whether to use capabilities like web/deep research, not on type,
+    # format, or template details that are better chosen after context gathering.
+    doc_gates = False
     if doc_gates:
         gate_reasons.append("document")
         # Note: we deliberately do NOT add synthetic open_questions for

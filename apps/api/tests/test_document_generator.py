@@ -1,10 +1,12 @@
+import json
 from io import BytesIO
 from zipfile import ZipFile
 
 import pytest
 from docx import Document
+from pptx import Presentation
 
-from app.services.document_generator import generate_docx_bytes
+from app.services.document_generator import deck_plan_to_markdown, generate_docx_bytes, generate_pptx_bytes
 
 
 def _read_docx(content: bytes) -> Document:
@@ -165,3 +167,107 @@ def test_generate_docx_does_not_duplicate_title_with_compact_header():
     assert heading_1s == ["Status Memo"]
     body_paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
     assert body_paragraphs.count("Status Memo") == 1
+
+
+def test_generate_pptx_renders_slide_plan_and_speaker_notes():
+    content = """# Client AI Strategy
+*For: Executive steering committee*
+
+## The decision is timing-sensitive
+- Demand is already showing up in operations
+- Platform choice affects cost and governance
+Speaker notes: Emphasize that this is a sequencing decision, not just tooling.
+
+## Options
+| Option | Best fit |
+| --- | --- |
+| Build | Differentiated workflow |
+| Buy | Speed to value |
+"""
+    deck = Presentation(BytesIO(generate_pptx_bytes("Client AI Strategy", content)))
+
+    slide_titles = [slide.shapes.title.text for slide in deck.slides if slide.shapes.title]
+    assert slide_titles[0] == "Client AI Strategy"
+    assert "The decision is timing-sensitive" in slide_titles
+    assert "Options" in slide_titles
+    assert any("Demand is already showing up" in shape.text for slide in deck.slides for shape in slide.shapes if hasattr(shape, "text"))
+    table_text = []
+    for slide in deck.slides:
+        for shape in slide.shapes:
+            if getattr(shape, "has_table", False):
+                table = shape.table
+                for row in table.rows:
+                    table_text.extend(cell.text for cell in row.cells)
+    assert "Build" in table_text
+    notes_text = "\n".join(slide.notes_slide.notes_text_frame.text for slide in deck.slides)
+    assert "sequencing decision" in notes_text
+
+
+def test_generate_pptx_renders_structured_deck_plan_json():
+    content = json.dumps({
+        "title": "Client AI Strategy",
+        "subtitle": "For the executive steering committee",
+        "slides": [
+            {"layout": "section", "title": "Decision context"},
+            {
+                "layout": "bullets",
+                "title": "The decision is timing-sensitive",
+                "bullets": [
+                    "Operational demand is already visible",
+                    "Platform choice affects governance",
+                ],
+                "speaker_notes": "Frame this as a sequencing choice, not a tool preference.",
+            },
+            {
+                "layout": "comparison",
+                "title": "Buy is faster; build is more defensible",
+                "columns": [
+                    {"heading": "Buy", "bullets": ["Fastest launch", "Less workflow control"]},
+                    {"heading": "Build", "bullets": ["Differentiated workflow", "Higher delivery risk"]},
+                ],
+            },
+            {
+                "layout": "table",
+                "title": "Options differ most on speed and control",
+                "table": {
+                    "headers": ["Option", "Best fit"],
+                    "rows": [["Buy", "Speed"], ["Build", "Differentiation"]],
+                },
+            },
+        ],
+    })
+
+    deck = Presentation(BytesIO(generate_pptx_bytes("Fallback title", content)))
+    slide_titles = [slide.shapes.title.text for slide in deck.slides if slide.shapes.title]
+
+    assert slide_titles[0] == "Client AI Strategy"
+    assert "Decision context" in slide_titles
+    assert "The decision is timing-sensitive" in slide_titles
+    assert "Buy is faster; build is more defensible" in slide_titles
+    assert any("Fastest launch" in shape.text for slide in deck.slides for shape in slide.shapes if hasattr(shape, "text"))
+    table_text = []
+    for slide in deck.slides:
+        for shape in slide.shapes:
+            if getattr(shape, "has_table", False):
+                table = shape.table
+                for row in table.rows:
+                    table_text.extend(cell.text for cell in row.cells)
+    assert "Differentiation" in table_text
+    notes_text = "\n".join(slide.notes_slide.notes_text_frame.text for slide in deck.slides)
+    assert "sequencing choice" in notes_text
+
+
+def test_deck_plan_to_markdown_returns_readable_slide_plan():
+    content = json.dumps({
+        "title": "Client AI Strategy",
+        "slides": [
+            {"layout": "bullets", "title": "The decision is timing-sensitive", "bullets": ["Move in phases"]},
+        ],
+    })
+
+    markdown = deck_plan_to_markdown(content)
+
+    assert markdown is not None
+    assert markdown.startswith("# Client AI Strategy")
+    assert "## The decision is timing-sensitive" in markdown
+    assert "- Move in phases" in markdown

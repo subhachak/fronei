@@ -2875,10 +2875,12 @@ function DocumentFinalizationModal({
   proposal,
   onClose,
   onConfirm,
+  apiFetch,
 }: {
   proposal: DocumentFinalizationProposal
   onClose: () => void
   onConfirm: (confirmed: ConfirmedPlanOverrides) => void
+  apiFetch: (path: string, options?: RequestInit) => Promise<Response>
 }) {
   const brief = proposal.brief || {}
   const [docType, setDocType] = useState(String(brief.doc_type || 'executive_report'))
@@ -2889,18 +2891,48 @@ function DocumentFinalizationModal({
   const [format, setFormat] = useState<DocumentOutputFormat>(
     firstSupportedDocumentFormat(proposal.format_recommendation, proposal.format_options, proposal.supported_formats)
   )
-  const templates = proposal.templates?.length ? proposal.templates : [{
+  const initialTemplates = proposal.templates?.length ? proposal.templates : [{
     id: 'fronei-default',
     name: 'Fronei default',
     description: 'Clean default styling',
     recommended: true,
   }]
+  const [templates, setTemplates] = useState<DocumentTemplateOption[]>(initialTemplates)
   const [templateId, setTemplateId] = useState(
-    proposal.template_recommendation || templates.find(t => t.recommended)?.id || templates[0]?.id || 'fronei-default'
+    proposal.template_recommendation || initialTemplates.find(t => t.recommended)?.id || initialTemplates[0]?.id || 'fronei-default'
   )
+  const [templateUploadStatus, setTemplateUploadStatus] = useState('')
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
   const formatsToShow = PLAN_FORMAT_ORDER.filter(
     f => proposal.format_options.includes(f) || proposal.supported_formats.includes(f)
   )
+
+  async function uploadTemplate(file: File | null) {
+    if (!file) return
+    if (!file.name.toLowerCase().endsWith('.pptx')) {
+      setTemplateUploadStatus('Upload a PowerPoint .pptx file.')
+      return
+    }
+    const form = new FormData()
+    form.append('file', file)
+    form.append('name', file.name.replace(/\.pptx$/i, ''))
+    setTemplateUploadStatus('Uploading template...')
+    try {
+      const res = await apiFetch('/documents/templates', { method: 'POST', body: form })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: 'Upload failed' }))
+        throw new Error((err as { detail?: string }).detail || 'Upload failed')
+      }
+      const uploaded = await res.json() as DocumentTemplateOption
+      setTemplates(prev => [uploaded, ...prev.map(t => ({ ...t, recommended: false }))])
+      setTemplateId(uploaded.id)
+      setTemplateUploadStatus('Template uploaded.')
+    } catch (e) {
+      setTemplateUploadStatus(e instanceof Error ? e.message : 'Template upload failed.')
+    } finally {
+      if (fileInputRef.current) fileInputRef.current.value = ''
+    }
+  }
 
   return (
     <div className="doc-preview-backdrop" onClick={onClose}>
@@ -2988,7 +3020,24 @@ function DocumentFinalizationModal({
                 </button>
               ))}
             </div>
-            <span className="settings-muted">Saved brand templates and upload-to-profile come next; this step is ready for them.</span>
+            <div className="doc-template-upload-row">
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".pptx,application/vnd.openxmlformats-officedocument.presentationml.presentation"
+                hidden
+                onChange={e => uploadTemplate(e.target.files?.[0] ?? null)}
+              />
+              <button
+                type="button"
+                className="toggle-chip"
+                onClick={() => fileInputRef.current?.click()}
+              >
+                <i className="ti ti-upload" aria-hidden="true" />
+                Upload template
+              </button>
+              {templateUploadStatus && <span className="settings-muted">{templateUploadStatus}</span>}
+            </div>
           </div>
           <div className="doc-brief-field">
             <span>Tone and depth</span>
@@ -3541,10 +3590,11 @@ function DashboardView({
             {RANGES.map(r => (
               <button key={r.value} className={`range-btn${range === r.value ? ' active' : ''}`} onClick={() => setRange(r.value)} type="button">
                 {r.label}
-              </button>
-            ))}
+                </button>
+              ))}
+            </div>
+            <span className="settings-muted">Saved brand templates and upload-to-profile come next; this step is ready for them.</span>
           </div>
-        </div>
 
         {error && <div className="error-bar" role="alert">{error}</div>}
         {loading && !data && <div className="dash-loading">Loading...</div>}
@@ -4178,8 +4228,9 @@ function AdminView({
                 <strong>Privacy actions</strong>
                 <button className="toggle-chip" onClick={() => privacyDelete(selectedUser.user_id, { memories: true })} type="button">Delete memories</button>
                 <button className="toggle-chip" onClick={() => privacyDelete(selectedUser.user_id, { writing_samples: true, twin_profile: true })} type="button">Delete voice profile</button>
+                <button className="toggle-chip" onClick={() => privacyDelete(selectedUser.user_id, { document_templates: true })} type="button">Delete templates</button>
                 <button className="toggle-chip" onClick={() => privacyDelete(selectedUser.user_id, { research_runs: true })} type="button">Delete research</button>
-                <button className="toggle-chip danger" onClick={() => privacyDelete(selectedUser.user_id, { conversations: true, memories: true, user_profile: true, writing_samples: true, twin_profile: true, research_runs: true })} type="button">Delete all user data</button>
+                <button className="toggle-chip danger" onClick={() => privacyDelete(selectedUser.user_id, { conversations: true, memories: true, user_profile: true, document_templates: true, writing_samples: true, twin_profile: true, research_runs: true })} type="button">Delete all user data</button>
               </div>
               </>
               )}
@@ -4413,13 +4464,15 @@ export default function Home() {
 
   async function apiFetch(path: string, options: RequestInit = {}): Promise<Response> {
     const token = await getToken()
+    const isFormData = options.body instanceof FormData
+    const headers = {
+      ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(options.headers as object ?? {}),
+    }
     return fetch(`${API_BASE}${path}`, {
       ...options,
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        ...(options.headers as object ?? {}),
-      },
+      headers,
     })
   }
 
@@ -6992,6 +7045,7 @@ export default function Home() {
             proposal={proposal}
             onClose={() => setActiveDocumentFinalizationMsgId(null)}
             onConfirm={confirmed => actOnDocumentFinalization(proposal, confirmed)}
+            apiFetch={apiFetch}
           />
         )
       })()}

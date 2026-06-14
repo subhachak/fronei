@@ -885,7 +885,10 @@ def test_document_generation_pauses_for_late_finalization(client, monkeypatch):
     proposal = events[-1][1]
     assert proposal["brief"]["doc_type"] == "presentation"
     assert proposal["format_recommendation"] == "pptx"
-    assert proposal["templates"][0]["id"] == "fronei-default"
+    template_ids = [t["id"] for t in proposal["templates"]]
+    assert "fronei-default" in template_ids
+    assert "boardroom-navy" in template_ids
+    assert proposal["template_recommendation"] == "boardroom-navy"
 
     with Session() as db:
         user_msg = db.get(ConversationMessage, proposal["message_id"])

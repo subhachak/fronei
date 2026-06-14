@@ -23,6 +23,7 @@ from app.db.models import (
     Conversation,
     ConversationMessage,
     ConversationTurn,
+    DocumentTemplate,
     RequestLog,
     ResearchClaim,
     ResearchFinding,
@@ -43,6 +44,7 @@ from app.db.models import (
     set_global_budget_config,
     set_turn_runtime_config,
 )
+from app.services.document_templates import template_path_for_row
 from app.services.llm_gateway import (
     PROVIDER_TEST_MODELS,
     get_circuit_status,
@@ -90,6 +92,7 @@ class PrivacyDeleteRequest(BaseModel):
     writing_samples: bool = False
     twin_profile: bool = False
     user_profile: bool = False
+    document_templates: bool = False
     research_runs: bool = False
     confirm_user_id: str | None = None
 
@@ -182,6 +185,7 @@ def _privacy_counts(db, user_id: str) -> dict[str, int]:
         ),
         "memories": db.query(UserMemory).filter(UserMemory.user_id == user_id).count(),
         "user_profiles": db.query(UserProfile).filter(UserProfile.user_id == user_id).count(),
+        "document_templates": db.query(DocumentTemplate).filter(DocumentTemplate.user_id == user_id).count(),
         "writing_samples": db.query(WritingSample).filter(WritingSample.user_id == user_id).count(),
         "twin_profiles": db.query(TwinProfile).filter(TwinProfile.user_id == user_id).count(),
         "research_runs": len(run_ids),
@@ -959,6 +963,17 @@ def privacy_delete(
             deleted["memories"] = db.query(UserMemory).filter(UserMemory.user_id == user_id).delete()
         if body.user_profile:
             deleted["user_profiles"] = db.query(UserProfile).filter(UserProfile.user_id == user_id).delete()
+        if body.document_templates:
+            rows = db.query(DocumentTemplate).filter(DocumentTemplate.user_id == user_id).all()
+            deleted["document_templates"] = len(rows)
+            for row in rows:
+                try:
+                    path = template_path_for_row(row)
+                    if path.exists():
+                        path.unlink()
+                except Exception:
+                    logger.warning("Failed to delete template file for %s", row.public_id, exc_info=True)
+                db.delete(row)
         if body.writing_samples:
             deleted["writing_samples"] = db.query(WritingSample).filter(WritingSample.user_id == user_id).delete()
         if body.twin_profile:

@@ -257,6 +257,29 @@ def test_generate_pptx_renders_structured_deck_plan_json():
     assert "sequencing choice" in notes_text
 
 
+def test_generate_pptx_uses_builtin_template_without_sample_slides():
+    content = json.dumps({
+        "title": "Platform Modernization",
+        "slides": [
+            {
+                "layout": "bullets",
+                "title": "Phased migration lowers execution risk",
+                "bullets": ["Start with low-coupling domains", "Retire legacy components deliberately"],
+            },
+        ],
+    })
+
+    deck = Presentation(BytesIO(generate_pptx_bytes(
+        "Fallback title",
+        content,
+        template_id="architecture-slate",
+    )))
+    slide_titles = [slide.shapes.title.text for slide in deck.slides if slide.shapes.title]
+
+    assert len(deck.slides) == 2
+    assert slide_titles == ["Platform Modernization", "Phased migration lowers execution risk"]
+
+
 def test_deck_plan_to_markdown_returns_readable_slide_plan():
     content = json.dumps({
         "title": "Client AI Strategy",

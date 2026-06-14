@@ -12,6 +12,8 @@ from app.services.document_generator import (
     generate_docx_bytes,
     generate_pptx_bytes,
     generate_xlsx_bytes,
+    parse_deck_plan,
+    repair_deck_plan_for_qa,
 )
 
 
@@ -583,3 +585,181 @@ def test_pptx_layout_for_role_falls_back_to_index_when_unresolvable():
     # Unknown role falls back to index 0 (title slide) gracefully.
     fallback = _pptx_layout_for_role(prs, "nonexistent_role")
     assert fallback is prs.slide_layouts[0]
+
+
+def _deck_plan_with_crowded_slide() -> dict:
+    content = json.dumps({
+        "title": "Repair Loop Test",
+        "subtitle": "QA repair",
+        "slides": [
+            {
+                "layout": "bullets",
+                "title": "Crowded slide",
+                "bullets": [f"Bullet number {i} with some supporting detail" for i in range(1, 7)],
+            },
+            {
+                "layout": "timeline",
+                "title": "Phased rollout",
+                "phases": [
+                    {"label": f"Phase {i}", "title": f"Step {i}", "description": f"Detail {i}"}
+                    for i in range(1, 5)
+                ],
+            },
+        ],
+    })
+    return parse_deck_plan(content)
+
+
+def test_repair_deck_plan_for_qa_drops_last_bullet_on_dense_slide():
+    plan = _deck_plan_with_crowded_slide()
+    original_bullets = len(plan["slides"][0]["bullets"])
+
+    # Rendered slide 1 is the title slide; slide 2 corresponds to plan["slides"][0].
+    issues = [{"slide": 2, "type": "dense_text", "detail": "too much text"}]
+    repaired, changed = repair_deck_plan_for_qa(plan, issues)
+
+    assert changed is True
+    assert len(repaired["slides"][0]["bullets"]) == original_bullets - 1
+    # Unrelated slides are untouched.
+    assert repaired["slides"][1] == plan["slides"][1]
+
+
+def test_repair_deck_plan_for_qa_trims_timeline_phases():
+    plan = _deck_plan_with_crowded_slide()
+    original_phases = len(plan["slides"][1]["phases"])
+
+    # Rendered slide 3 corresponds to plan["slides"][1].
+    issues = [{"slide": 3, "type": "dense_ink", "detail": "visually crowded"}]
+    repaired, changed = repair_deck_plan_for_qa(plan, issues)
+
+    assert changed is True
+    assert len(repaired["slides"][1]["phases"]) == original_phases - 1
+
+
+def test_repair_deck_plan_for_qa_no_op_when_nothing_left_to_trim():
+    plan = parse_deck_plan(json.dumps({
+        "title": "Minimal",
+        "slides": [{"layout": "bullets", "title": "Single bullet", "bullets": ["short"]}],
+    }))
+
+    issues = [{"slide": 2, "type": "dense_ink", "detail": "visually crowded"}]
+    repaired, changed = repair_deck_plan_for_qa(plan, issues)
+
+    assert changed is False
+    assert repaired == plan
+
+
+def test_repair_deck_plan_for_qa_ignores_non_density_issues():
+    plan = _deck_plan_with_crowded_slide()
+    issues = [{"slide": 1, "type": "blank", "detail": "title slide appears blank"}]
+    repaired, changed = repair_deck_plan_for_qa(plan, issues)
+
+    assert changed is False
+    assert repaired == plan
+
+
+def test_parse_deck_plan_assigns_slide_blueprint_fields():
+    plan = parse_deck_plan(json.dumps({
+        "title": "Roadmap",
+        "slides": [
+            {"layout": "bullets", "title": "Short slide", "bullets": ["One point"]},
+            {
+                "layout": "timeline",
+                "title": "Phased rollout",
+                "phases": [
+                    {"label": "Phase 1", "title": "Foundation", "description": "Set up"},
+                    {"label": "Phase 2", "title": "Migration", "description": "Move"},
+                    {"label": "Phase 3", "title": "Optimization", "description": "Tune"},
+                ],
+            },
+            {
+                "layout": "financial_model",
+                "title": "Cost outlook",
+                "chart": {
+                    "type": "bar",
+                    "categories": ["2025", "2026"],
+                    "series": [{"name": "Cost", "values": [1, 2]}],
+                },
+            },
+        ],
+    }))
+
+    assert plan is not None
+    low_slide, timeline_slide, chart_slide = plan["slides"]
+
+    # Low-content bullets slide: low density, no visual object.
+    assert low_slide["archetype"] == "bullets"
+    assert low_slide["density"] == "low"
+    assert low_slide["visual_object"] is None
+
+    # Timeline with 3 phases: visual_object is "timeline".
+    assert timeline_slide["archetype"] == "timeline"
+    assert timeline_slide["visual_object"] == "timeline"
+
+    # Chart-bearing slide: visual_object is "chart".
+    assert chart_slide["archetype"] == "financial_model"
+    assert chart_slide["visual_object"] == "chart"
+
+
+def test_parse_deck_plan_explicit_density_and_archetype_are_respected():
+    plan = parse_deck_plan(json.dumps({
+        "title": "Roadmap",
+        "slides": [
+            {
+                "layout": "bullets",
+                "archetype": "proof_point",
+                "density": "high",
+                "title": "One big idea",
+                "bullets": ["Single bullet"],
+            },
+        ],
+    }))
+
+    assert plan is not None
+    slide = plan["slides"][0]
+    assert slide["archetype"] == "proof_point"
+    assert slide["density"] == "high"
+
+
+def test_parse_deck_plan_routes_overflow_bullets_and_long_text_to_speaker_notes():
+    long_bullet = "This bullet is intentionally far too long to fit on a single slide line " * 2
+    plan = parse_deck_plan(json.dumps({
+        "title": "Roadmap",
+        "slides": [
+            {
+                "layout": "bullets",
+                "title": "Crowded slide",
+                "bullets": [
+                    long_bullet,
+                    "Bullet two", "Bullet three", "Bullet four",
+                    "Bullet five", "Bullet six", "Bullet seven",
+                ],
+                "speaker_notes": "Existing talk track.",
+            },
+        ],
+    }))
+
+    assert plan is not None
+    slide = plan["slides"][0]
+
+    # Only the first MAX_BULLETS_PER_SLIDE (6) bullets are kept visible.
+    assert len(slide["bullets"]) == 6
+    assert all(len(b) <= 90 for b in slide["bullets"])
+
+    # The dropped 7th bullet and the truncated long bullet's full text both
+    # land in speaker_notes alongside the original notes.
+    assert "Existing talk track." in slide["speaker_notes"]
+    assert "Bullet seven" in slide["speaker_notes"]
+    assert "intentionally far too long" in slide["speaker_notes"]
+
+
+def test_repair_deck_plan_for_qa_preserves_dropped_bullet_in_speaker_notes():
+    plan = _deck_plan_with_crowded_slide()
+    issues = [{"slide": 2, "type": "dense_text", "detail": "too much text"}]
+    repaired, changed = repair_deck_plan_for_qa(plan, issues)
+
+    assert changed is True
+    slide = repaired["slides"][0]
+    assert len(slide["bullets"]) == 5
+    assert any("Trimmed for slide density" in n for n in slide["speaker_notes"].splitlines())
+    assert slide["density"] in {"low", "medium", "high"}

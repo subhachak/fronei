@@ -4280,6 +4280,17 @@ pre:hover .code-copy-btn { opacity: 1; }
   line-height: 1.4;
 }
 
+.doc-brief-textarea {
+  min-height: 72px;
+  border-radius: 10px;
+  border: 1px solid var(--bd);
+  background: var(--bg-input);
+  color: var(--t1);
+  padding: 10px 12px;
+  font: inherit;
+  resize: vertical;
+}
+
 .doc-rec-factors {
   display: flex;
   gap: 8px;

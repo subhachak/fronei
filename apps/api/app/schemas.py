@@ -123,6 +123,7 @@ class ConfirmedPlan(BaseModel):
     document: bool | None = None
     document_format: str | None = None
     document_brief: dict | None = None
+    clarifications: str | None = Field(default=None, max_length=4000)
 
 
 class ConvChatRequest(BaseModel):

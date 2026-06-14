@@ -12,6 +12,7 @@ from app.services.document_generator import (
     _js_slide_from_deck_spec,
     _pptx_layout_for_role,
     _shorten_title_to_notes,
+    compose_deck_plan_parallel,
     deck_plan_to_markdown,
     generate_docx_bytes,
     generate_pptx_bytes,
@@ -725,6 +726,193 @@ def test_parse_deck_plan_explicit_density_and_archetype_are_respected():
     assert slide["density"] == "high"
 
 
+def test_compose_deck_plan_parallel_routes_slide_jobs_and_preserves_order():
+    plan = parse_deck_plan(json.dumps({
+        "title": "Deck",
+        "slides": [
+            {"layout": "section", "title": "Context"},
+            {
+                "layout": "bullets",
+                "title": "Metric proof",
+                "stats": [{"value": "$4.2M", "label": "Savings"}],
+            },
+            {
+                "layout": "bullets",
+                "title": "Execution path",
+                "phases": [
+                    {"label": "Q1", "title": "Foundation"},
+                    {"label": "Q2", "title": "Scale"},
+                ],
+            },
+        ],
+    }))
+
+    composed, report = compose_deck_plan_parallel(plan, max_workers=3)
+
+    assert report["parallel"] is True
+    assert report["workers"] == 3
+    assert report["slide_count"] == 3
+    assert [slide["title"] for slide in composed["slides"]] == ["Context", "Metric proof", "Execution path"]
+    assert composed["slides"][1]["layout"] == "stat_cards"
+    assert composed["slides"][1]["archetype"] == "investment_case"
+    assert composed["slides"][1]["render_hints"]["visual_weight"] == "business_case"
+    assert composed["slides"][2]["layout"] == "timeline"
+    assert composed["slides"][2]["archetype"] == "roadmap"
+    assert report["changed_slides"] == [1, 2, 3]
+    assert report["archetypes"] == ["section_divider", "investment_case", "roadmap"]
+
+
+def test_compose_deck_plan_parallel_selects_risk_and_operating_archetypes():
+    plan = parse_deck_plan(json.dumps({
+        "title": "Deck",
+        "slides": [
+            {
+                "layout": "bullets",
+                "title": "Compliance risk requires tighter controls",
+                "bullets": ["Audit evidence is inconsistent", "Mitigation owners are unclear"],
+            },
+            {
+                "layout": "bullets",
+                "title": "Operating model clarifies accountable owners",
+                "columns": [
+                    {"heading": "Business owner", "bullets": ["Owns policy adoption"]},
+                    {"heading": "Platform owner", "bullets": ["Runs intake process"]},
+                ],
+            },
+        ],
+    }))
+
+    composed, report = compose_deck_plan_parallel(plan, max_workers=2)
+
+    assert composed["slides"][0]["archetype"] == "risk_register"
+    assert composed["slides"][0]["render_hints"]["accent"] == "risk"
+    assert composed["slides"][1]["archetype"] == "operating_model"
+    assert composed["slides"][1]["render_hints"]["visual_weight"] == "role_lanes"
+    assert report["archetypes"] == ["risk_register", "operating_model"]
+
+
+def test_compose_deck_plan_parallel_reports_low_archetype_diversity():
+    plan = parse_deck_plan(json.dumps({
+        "title": "Deck",
+        "slides": [
+            {"layout": "bullets", "title": f"Decision {i}", "bullets": ["Approve the recommendation"]}
+            for i in range(5)
+        ],
+    }))
+
+    _, report = compose_deck_plan_parallel(plan, max_workers=4)
+
+    assert "low_archetype_diversity:board_decision" in report["deck_warnings"]
+
+
+def test_compose_deck_plan_parallel_adds_missing_recommendation_for_multi_slide_deck():
+    plan = parse_deck_plan(json.dumps({
+        "title": "Deck",
+        "slides": [
+            {"layout": "bullets", "title": "Context", "bullets": ["Demand is rising"]},
+            {
+                "layout": "bullets",
+                "title": "Savings proof",
+                "stats": [{"value": "$4.2M", "label": "Savings"}],
+            },
+            {
+                "layout": "bullets",
+                "title": "Execution path",
+                "phases": [
+                    {"label": "Q1", "title": "Foundation"},
+                    {"label": "Q2", "title": "Scale"},
+                ],
+            },
+        ],
+    }))
+
+    composed, report = compose_deck_plan_parallel(plan, max_workers=3)
+
+    assert len(composed["slides"]) == 4
+    assert composed["slides"][-1]["layout"] == "recommendation"
+    assert composed["slides"][-1]["archetype"] == "board_decision"
+    assert report["polish"]["added_slides"] == ["board_decision"]
+    assert "added_missing_recommendation" in report["deck_warnings"]
+    assert report["changed_slides"][-1] == 4
+
+
+def test_compose_deck_plan_parallel_warns_when_quantified_proof_missing():
+    plan = parse_deck_plan(json.dumps({
+        "title": "Deck",
+        "slides": [
+            {"layout": "bullets", "title": "Context", "bullets": ["Demand is rising"]},
+            {"layout": "bullets", "title": "Approach", "bullets": ["Move in phases"]},
+        ],
+    }))
+
+    composed, report = compose_deck_plan_parallel(plan, max_workers=2)
+
+    assert len(composed["slides"]) == 2
+    assert "missing_quantified_proof" in report["deck_warnings"]
+    assert report["polish"]["added_slides"] == []
+
+
+def test_compose_deck_plan_parallel_infers_native_chart_from_period_stats():
+    plan = parse_deck_plan(json.dumps({
+        "title": "Deck",
+        "slides": [
+            {
+                "layout": "stat_cards",
+                "title": "Revenue trend improves through migration",
+                "stats": [
+                    {"period": "2024", "value": "$1.2M", "label": "Revenue"},
+                    {"period": "2025", "value": "$1.8M", "label": "Revenue"},
+                    {"period": "2026", "value": "$2.6M", "label": "Revenue"},
+                ],
+            },
+        ],
+    }))
+
+    composed, report = compose_deck_plan_parallel(plan, max_workers=1)
+    slide = composed["slides"][0]
+
+    assert slide["layout"] == "chart"
+    assert slide["chart"]["type"] == "line"
+    assert slide["chart"]["categories"] == ["2024", "2025", "2026"]
+    assert slide["chart"]["series"][0]["values"] == [1200000.0, 1800000.0, 2600000.0]
+    assert "chart_inferred_from_stats" in report["jobs"][0]["warnings"]
+
+
+def test_compose_deck_plan_parallel_infers_risk_heatmap_from_risk_columns():
+    plan = parse_deck_plan(json.dumps({
+        "title": "Deck",
+        "slides": [
+            {
+                "layout": "comparison",
+                "title": "Key risks require staged mitigation",
+                "columns": [
+                    {
+                        "heading": "Data migration",
+                        "likelihood": "High",
+                        "impact": "High",
+                        "mitigation": "Run dual-write validation before cutover",
+                    },
+                    {
+                        "heading": "Training adoption",
+                        "likelihood": "Medium",
+                        "impact": "Low",
+                        "mitigation": "Launch manager enablement",
+                    },
+                ],
+            },
+        ],
+    }))
+
+    composed, report = compose_deck_plan_parallel(plan, max_workers=1)
+    slide = composed["slides"][0]
+
+    assert slide["archetype"] == "risk_register"
+    assert slide["heatmap"][0]["label"] == "Data migration"
+    assert slide["heatmap"][0]["likelihood"] == "high"
+    assert slide["heatmap"][0]["impact"] == "high"
+    assert "risk_heatmap_inferred" in report["jobs"][0]["warnings"]
+
+
 def test_parse_deck_plan_routes_overflow_bullets_and_long_text_to_speaker_notes():
     long_bullet = "This bullet is intentionally far too long to fit on a single slide line " * 2
     plan = parse_deck_plan(json.dumps({
@@ -994,10 +1182,12 @@ def test_js_slide_from_deck_spec_maps_stat_cards():
     assert js_slide["blueprint"] == {
         "archetype": "financial_scorecard",
         "layout": "stat_cards",
+        "template": "stat_cards",
         "density": "low",
         "visual_object": "bullets",
         "proof_object": "stat_cards",
         "emphasis": "financial",
+        "render_hints": {},
     }
 
 
@@ -1016,8 +1206,10 @@ def test_build_js_deck_payload_numbers_section_slides():
     section_slides = [s for s in payload["slides"] if s["role"] == "section"]
 
     assert payload["version"] == 2
-    assert payload["design_system"]["name"] == "fronei_board_briefing"
+    assert payload["design_system"]["name"] == "fronei_pptx_design_system"
+    assert payload["design_system"]["tokens"]["theme"]["chart_palette"]
     assert all("blueprint" in s for s in payload["slides"])
+    assert all("component_tree" in s for s in payload["slides"])
     assert [s["section_number"] for s in section_slides] == [1, 2]
     # Non-section slides are untouched.
     assert all("section_number" not in s for s in payload["slides"] if s["role"] != "section")
@@ -1102,3 +1294,136 @@ def test_default_pptx_renderer_uses_board_briefing_visual_system():
     assert "Target flow" in all_text
     assert "Design implication" in all_text
     assert shape_count >= 50
+
+
+def test_default_pptx_renderer_branches_on_slide_archetypes():
+    content = json.dumps({
+        "title": "Board Operating Plan",
+        "slides": [
+            {
+                "layout": "bullets",
+                "title": "Compliance risk requires tighter controls",
+                "bullets": ["Audit evidence is inconsistent", "Mitigation owners are unclear"],
+            },
+            {
+                "layout": "bullets",
+                "title": "Operating model clarifies accountable owners",
+                "columns": [
+                    {"heading": "Business owner", "bullets": ["Owns adoption", "Maintains evidence"]},
+                    {"heading": "Platform owner", "bullets": ["Runs intake", "Reports exceptions"]},
+                ],
+            },
+            {
+                "layout": "bullets",
+                "title": "Savings proof",
+                "stats": [
+                    {"value": "$4.2M", "label": "Annual savings"},
+                    {"value": "18 mo", "label": "Payback period"},
+                    {"value": "37%", "label": "Cycle-time reduction"},
+                ],
+            },
+            {
+                "layout": "comparison",
+                "title": "Hybrid model beats either extreme",
+                "columns": [
+                    {"heading": "Centralized only", "bullets": ["Consistent policy", "Slow intake"]},
+                    {"heading": "Federated only", "bullets": ["Fast local decisions", "Weak auditability"]},
+                    {"heading": "Recommended hybrid", "bullets": ["Reusable controls", "Clear accountability"]},
+                ],
+            },
+        ],
+    })
+
+    deck = Presentation(BytesIO(generate_pptx_bytes("Fallback title", content)))
+    all_text = "\n".join(
+        shape.text
+        for slide in deck.slides
+        for shape in slide.shapes
+        if hasattr(shape, "text")
+    )
+
+    assert "Risk posture" in all_text
+    assert "Operating lanes" in all_text
+    assert "Investment case" in all_text
+    assert "RECOMMENDED" in all_text
+
+
+def test_default_pptx_renderer_renders_inferred_chart_and_risk_heatmap():
+    content = json.dumps({
+        "title": "Evidence Deck",
+        "slides": [
+            {
+                "layout": "stat_cards",
+                "title": "Revenue trend improves through migration",
+                "stats": [
+                    {"period": "2024", "value": "$1.2M", "label": "Revenue"},
+                    {"period": "2025", "value": "$1.8M", "label": "Revenue"},
+                    {"period": "2026", "value": "$2.6M", "label": "Revenue"},
+                ],
+            },
+            {
+                "layout": "comparison",
+                "title": "Key risks require staged mitigation",
+                "columns": [
+                    {
+                        "heading": "Data migration",
+                        "likelihood": "High",
+                        "impact": "High",
+                        "mitigation": "Run dual-write validation before cutover",
+                    },
+                    {
+                        "heading": "Training adoption",
+                        "likelihood": "Medium",
+                        "impact": "Low",
+                        "mitigation": "Launch manager enablement",
+                    },
+                ],
+            },
+        ],
+    })
+
+    deck = Presentation(BytesIO(generate_pptx_bytes("Fallback title", content)))
+    chart_shapes = [shape for slide in deck.slides for shape in slide.shapes if shape.has_chart]
+    all_text = "\n".join(
+        shape.text
+        for slide in deck.slides
+        for shape in slide.shapes
+        if hasattr(shape, "text")
+    )
+
+    assert len(chart_shapes) == 1
+    assert "Risk register" in all_text
+    assert "Data migration" in all_text
+    assert "high/high" in all_text
+
+
+def test_default_pptx_renderer_renders_agenda_and_callout_templates():
+    content = json.dumps({
+        "title": "Template Deck",
+        "slides": [
+            {
+                "layout": "toc",
+                "title": "Today",
+                "bullets": ["Context", "Options", "Recommendation"],
+            },
+            {
+                "layout": "quote",
+                "title": "Stakeholder signal",
+                "callout": {"label": "Voice of customer", "text": "Speed matters, but control must be defensible."},
+                "bullets": ["Translate this into a staged delivery plan"],
+            },
+        ],
+    })
+
+    deck = Presentation(BytesIO(generate_pptx_bytes("Fallback title", content)))
+    all_text = "\n".join(
+        shape.text
+        for slide in deck.slides
+        for shape in slide.shapes
+        if hasattr(shape, "text")
+    )
+
+    assert "01" in all_text
+    assert "Context" in all_text
+    assert "Voice of customer" in all_text
+    assert "Speed matters, but control must be defensible." in all_text

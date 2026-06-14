@@ -65,6 +65,7 @@ class Settings(BaseSettings):
     max_claim_extract_workers: int = 6
     max_document_workers: int = 5
     max_decompose_workers: int = 4
+    max_pptx_render_qa_workers: int = 4
 
     # Persistent user-uploaded document templates. In production this should
     # point at a mounted volume, e.g. /data/fronei/document_templates.

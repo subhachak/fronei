@@ -113,3 +113,28 @@ def test_build_document_artifact_uses_readable_preview_for_deck_plan_json():
     assert preview["markdown"].startswith("# Client AI Strategy")
     assert "## The decision is timing-sensitive" in preview["markdown"]
     assert not preview["markdown"].lstrip().startswith("{")
+
+
+def test_build_document_artifact_exposes_parallel_composition_for_deck_plan_json():
+    deck_plan = json.dumps({
+        "title": "Board Briefing",
+        "slides": [
+            {"layout": "section", "title": "Context"},
+            {"layout": "bullets", "title": "Savings proof", "stats": [{"value": "$4.2M", "label": "Savings"}]},
+            {
+                "layout": "bullets",
+                "title": "Phased rollout",
+                "phases": [{"label": "Q1", "title": "Foundation"}, {"label": "Q2", "title": "Scale"}],
+            },
+        ],
+    })
+
+    preview = documents.build_document_artifact("", deck_plan, "presentation", "markdown")
+
+    assert preview["composition"]["parallel"] is True
+    assert preview["composition"]["slide_count"] == 3
+    assert preview["composition"]["workers"] >= 2
+    assert preview["composition"]["changed_slides"] == [1, 2, 3]
+    assert preview["composition"]["archetypes"] == ["section_divider", "investment_case", "roadmap"]
+    assert "**$4.2M**" in preview["markdown"]
+    assert "Q1: Foundation" in preview["markdown"]

@@ -3144,7 +3144,7 @@ function DocumentFinalizationModal({
                 <button
                   key={t.id}
                   type="button"
-                  className={`doc-plan-option${templateId === t.id ? ' active' : ''}${t.recommended ? ' recommended' : ''}`}
+                  className={`doc-plan-option${templateId === t.id ? ' active' : ''}`}
                   onClick={() => setTemplateId(t.id)}
                 >
                   <span className="doc-plan-option-main">

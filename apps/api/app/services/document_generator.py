@@ -34,6 +34,7 @@ from pptx.util import Inches as PptxInches, Pt as PptxPt
 from app.config import get_settings
 from app.services.document_templates import resolve_pptx_template_path
 from app.services.presentation_design_system import (
+    FIT_CONTRACTS,
     LAYOUT_ALIASES as DESIGN_LAYOUT_ALIASES,
     canonical_layout,
     component_tree_for_slide,
@@ -1171,30 +1172,18 @@ def _pptx_bullet_indent(level: int) -> int:
     return max(0, min(level, 4))
 
 
-def _shorten(text: str, limit: int) -> str:
-    cleaned = re.sub(r"\s+", " ", _clean_inline(str(text or ""))).strip()
-    if len(cleaned) <= limit:
-        return cleaned
-    return cleaned[: max(0, limit - 3)].rstrip() + "..."
-
-
 _TITLE_CLAUSE_BREAK_RE = re.compile(r"[.!?:;—–-]\s")
 
 
-def _shorten_title_to_notes(text: str, limit: int) -> tuple[str, str | None]:
-    """Shorten a slide title without ever cutting mid-word or appending a
-    literal "...". Slide titles wrap (word_wrap + TOP anchor), so a long
-    title rendered in full just takes an extra line — but assertion-style
-    titles read far better when cut at a natural clause boundary than when
-    hard-truncated mid-sentence with "...".
+def _fit_limit(component: str, key: str, fallback: int) -> int:
+    try:
+        value = FIT_CONTRACTS.get(component, {}).get(key)
+        return int(value) if value else fallback
+    except (TypeError, ValueError):
+        return fallback
 
-    Strategy: if the cleaned title fits within `limit`, return it as-is. If
-    not, prefer cutting at the last sentence/clause-ending punctuation
-    (. ! ? : ; — - ) within the limit (as long as that keeps at least ~40%
-    of the budget, so we don't end up with a one-word title). Otherwise cut
-    at the last word boundary before `limit`. The full original title is
-    returned as the second element so callers can preserve it in
-    speaker_notes."""
+
+def _shorten_at_boundary(text: str, limit: int) -> tuple[str, str | None]:
     cleaned = re.sub(r"\s+", " ", _clean_inline(str(text or ""))).strip()
     if len(cleaned) <= limit:
         return cleaned, None
@@ -1213,14 +1202,33 @@ def _shorten_title_to_notes(text: str, limit: int) -> tuple[str, str | None]:
     return window.rstrip(), cleaned
 
 
+def _shorten(text: str, limit: int) -> str:
+    shortened, _overflow = _shorten_at_boundary(text, limit)
+    return shortened
+
+
+def _shorten_title_to_notes(text: str, limit: int) -> tuple[str, str | None]:
+    """Shorten a slide title without ever cutting mid-word or appending a
+    literal "...". Slide titles wrap (word_wrap + TOP anchor), so a long
+    title rendered in full just takes an extra line — but assertion-style
+    titles read far better when cut at a natural clause boundary than when
+    hard-truncated mid-sentence with "...".
+
+    Strategy: if the cleaned title fits within `limit`, return it as-is. If
+    not, prefer cutting at the last sentence/clause-ending punctuation
+    (. ! ? : ; — - ) within the limit (as long as that keeps at least ~40%
+    of the budget, so we don't end up with a one-word title). Otherwise cut
+    at the last word boundary before `limit`. The full original title is
+    returned as the second element so callers can preserve it in
+    speaker_notes."""
+    return _shorten_at_boundary(text, limit)
+
+
 def _shorten_to_notes(text: str, limit: int) -> tuple[str, str | None]:
     """Like `_shorten`, but also returns the full original text when it had
     to be truncated, so callers can route the overflow into speaker notes
     instead of silently dropping it (copy/notes separation)."""
-    cleaned = re.sub(r"\s+", " ", _clean_inline(str(text or ""))).strip()
-    if len(cleaned) <= limit:
-        return cleaned, None
-    return cleaned[: max(0, limit - 3)].rstrip() + "...", cleaned
+    return _shorten_at_boundary(text, limit)
 
 
 def _slide_visual_object(
@@ -1297,18 +1305,41 @@ def parse_deck_plan(content: str) -> dict | None:
     slides = data.get("slides")
     if not isinstance(slides, list):
         return None
+    title_limit = _fit_limit("TitleBlock", "chars", MAX_SLIDE_TITLE_CHARS)
+    bullet_limit = _fit_limit("BodyBulletList", "chars_per_item", MAX_BULLET_CHARS)
+    appendix_bullet_limit = _fit_limit("AppendixBulletList", "chars_per_item", MAX_BULLET_CHARS)
+    table_cell_limit = _fit_limit("Table", "cell_chars", 80)
+    comparison_heading_limit = _fit_limit("ComparisonCard", "heading_chars", 50)
+    comparison_bullet_limit = _fit_limit("ComparisonCard", "bullet_chars", 90)
+    comparison_item_cap = _fit_limit("ComparisonCard", "max_items", 5)
+    stat_value_limit = _fit_limit("StatCard", "value_chars", 16)
+    stat_label_limit = _fit_limit("StatCard", "label_chars", 60)
+    stat_source_limit = _fit_limit("StatCard", "source_chars", 60)
+    callout_limit = _fit_limit("CalloutBox", "chars", 200)
+    timeline_title_limit = _fit_limit("Timeline", "phase_title_chars", 80)
+    timeline_detail_limit = _fit_limit("Timeline", "phase_detail_chars", 160)
+    timeline_phase_cap = _fit_limit("Timeline", "max_phases", 6)
+    chart_category_limit = _fit_limit("Chart", "legend_chars", 30)
+    chart_series_limit = _fit_limit("Chart", "legend_chars", 40)
+    subtitle_limit = 110
+
     normalized: dict = {
         "title": _shorten(data.get("title") or data.get("deck_title") or "Fronei deck", 120),
         "subtitle": _shorten(data.get("subtitle") or data.get("audience") or "", 160),
         "slides": [],
     }
+    raw_theme = str(data.get("theme") or data.get("design_theme") or "").strip()
+    if raw_theme:
+        normalized["theme"] = raw_theme
     for raw in slides:
         if not isinstance(raw, dict):
             continue
         layout = str(raw.get("layout") or raw.get("type") or "bullets").lower().strip()
         layout, layout_warning = canonical_layout(layout)
         raw_title = raw.get("title") or raw.get("headline") or raw.get("key_message") or "Untitled"
-        title, title_overflow = _shorten_title_to_notes(raw_title, MAX_SLIDE_TITLE_CHARS)
+        title, title_overflow = _shorten_title_to_notes(raw_title, title_limit)
+        raw_subtitle = raw.get("subtitle") or raw.get("dek") or raw.get("supporting_thesis") or ""
+        subtitle, subtitle_overflow = _shorten_to_notes(raw_subtitle, subtitle_limit)
         bullets_raw = raw.get("bullets") or raw.get("points") or []
         if isinstance(bullets_raw, str):
             bullets_raw = [bullets_raw]
@@ -1322,12 +1353,14 @@ def parse_deck_plan(content: str) -> dict | None:
             overflow_notes.append(f"DeckPlan warning: {layout_warning}; rendered as {layout}.")
         if title_overflow:
             overflow_notes.append(f"Full title: {title_overflow}")
+        if subtitle_overflow:
+            overflow_notes.append(f"Full subtitle: {subtitle_overflow}")
         if layout in {"executive_summary", "recommendation"} and bullets_raw:
             # The first bullet is the headline/primary assertion rendered in a
             # large font (e.g. _pptx_render_executive_summary's 28pt headline)
             # — give it the same generous budget as slide titles instead of
             # truncating it mid-sentence at the standard bullet length.
-            headline, headline_overflow = _shorten_to_notes(bullets_raw[0], MAX_SLIDE_TITLE_CHARS)
+            headline, headline_overflow = _shorten_to_notes(bullets_raw[0], title_limit)
             if headline_overflow:
                 overflow_notes.append(f"Full headline: {headline_overflow}")
             bullets = [headline]
@@ -1336,7 +1369,8 @@ def parse_deck_plan(content: str) -> dict | None:
             bullets = []
             rest = bullets_raw
         for b in rest:
-            shortened, overflow = _shorten_to_notes(b, MAX_BULLET_CHARS)
+            text_limit = appendix_bullet_limit if layout == "appendix" else bullet_limit
+            shortened, overflow = _shorten_to_notes(b, text_limit)
             bullets.append(shortened)
             if overflow:
                 overflow_notes.append(f"Full point: {overflow}")
@@ -1357,9 +1391,9 @@ def parse_deck_plan(content: str) -> dict | None:
         table_rows = []
         for row in table:
             if isinstance(row, dict):
-                table_rows.append([_shorten(v, 80) for v in row.values()])
+                table_rows.append([_shorten(v, table_cell_limit) for v in row.values()])
             elif isinstance(row, list):
-                table_rows.append([_shorten(v, 80) for v in row])
+                table_rows.append([_shorten(v, table_cell_limit) for v in row])
         columns = raw.get("columns") or []
         normalized_columns = []
         if isinstance(columns, list):
@@ -1370,11 +1404,14 @@ def parse_deck_plan(content: str) -> dict | None:
                 if isinstance(col_bullets, str):
                     col_bullets = [col_bullets]
                 normalized_columns.append({
-                    "heading": _shorten(col.get("heading") or col.get("title") or "", 50),
-                    "bullets": [_shorten(b, 90) for b in col_bullets if str(b or "").strip()][:5],
+                    "heading": _shorten(col.get("heading") or col.get("title") or "", comparison_heading_limit),
+                    "bullets": [
+                        _shorten(b, comparison_bullet_limit)
+                        for b in col_bullets if str(b or "").strip()
+                    ][:comparison_item_cap],
                     "likelihood": _shorten(col.get("likelihood") or col.get("probability") or "", 20),
                     "impact": _shorten(col.get("impact") or col.get("severity") or "", 20),
-                    "mitigation": _shorten(col.get("mitigation") or col.get("response") or "", 90),
+                    "mitigation": _shorten(col.get("mitigation") or col.get("response") or "", comparison_bullet_limit),
                 })
         stats_raw = raw.get("stats") or raw.get("metrics") or raw.get("kpis") or []
         normalized_stats = []
@@ -1382,14 +1419,14 @@ def parse_deck_plan(content: str) -> dict | None:
             for stat in stats_raw[:4]:
                 if not isinstance(stat, dict):
                     continue
-                value = _shorten(stat.get("value") or stat.get("number") or stat.get("metric") or "", 16)
-                label = _shorten(stat.get("label") or stat.get("title") or stat.get("description") or "", 60)
+                value = _shorten(stat.get("value") or stat.get("number") or stat.get("metric") or "", stat_value_limit)
+                label = _shorten(stat.get("label") or stat.get("title") or stat.get("description") or "", stat_label_limit)
                 if not value and not label:
                     continue
                 normalized_stat = {
                     "value": value,
                     "label": label,
-                    "source": _shorten(stat.get("source") or stat.get("citation") or "", 60),
+                    "source": _shorten(stat.get("source") or stat.get("citation") or "", stat_source_limit),
                 }
                 period = _shorten(stat.get("period") or stat.get("date") or stat.get("category") or "", 30)
                 if period:
@@ -1400,7 +1437,7 @@ def parse_deck_plan(content: str) -> dict | None:
         normalized_callout = None
         if isinstance(callout_raw, dict):
             callout_text, callout_overflow = _shorten_to_notes(
-                callout_raw.get("text") or callout_raw.get("body") or callout_raw.get("description") or "", 200
+                callout_raw.get("text") or callout_raw.get("body") or callout_raw.get("description") or "", callout_limit
             )
             if callout_text:
                 normalized_callout = {
@@ -1410,7 +1447,7 @@ def parse_deck_plan(content: str) -> dict | None:
                 if callout_overflow:
                     overflow_notes.append(f"Full insight: {callout_overflow}")
         elif isinstance(callout_raw, str) and callout_raw.strip():
-            callout_text, callout_overflow = _shorten_to_notes(callout_raw, 200)
+            callout_text, callout_overflow = _shorten_to_notes(callout_raw, callout_limit)
             normalized_callout = {"label": "Key Insight", "text": callout_text}
             if callout_overflow:
                 overflow_notes.append(f"Full insight: {callout_overflow}")
@@ -1418,15 +1455,15 @@ def parse_deck_plan(content: str) -> dict | None:
         phases = raw.get("phases") or []
         normalized_phases = []
         if isinstance(phases, list):
-            for ph in phases[:6]:
+            for ph in phases[:timeline_phase_cap]:
                 if isinstance(ph, dict):
                     normalized_phases.append({
                         "label": _shorten(ph.get("label") or ph.get("name") or ph.get("date") or "", 40),
-                        "title": _shorten(ph.get("title") or ph.get("headline") or "", 80),
-                        "description": _shorten(ph.get("description") or ph.get("detail") or ph.get("summary") or "", 160),
+                        "title": _shorten(ph.get("title") or ph.get("headline") or "", timeline_title_limit),
+                        "description": _shorten(ph.get("description") or ph.get("detail") or ph.get("summary") or "", timeline_detail_limit),
                     })
                 elif str(ph or "").strip():
-                    normalized_phases.append({"label": "", "title": _shorten(ph, 80), "description": ""})
+                    normalized_phases.append({"label": "", "title": _shorten(ph, timeline_title_limit), "description": ""})
 
         chart = raw.get("chart")
         normalized_chart = None
@@ -1449,7 +1486,7 @@ def parse_deck_plan(content: str) -> dict | None:
                                 break
                     if numeric_values:
                         series.append({
-                            "name": _shorten(s.get("name") or "Series", 40),
+                            "name": _shorten(s.get("name") or "Series", chart_series_limit),
                             "values": numeric_values,
                         })
             if categories and series:
@@ -1458,7 +1495,7 @@ def parse_deck_plan(content: str) -> dict | None:
                     chart_type = "bar"
                 normalized_chart = {
                     "type": chart_type,
-                    "categories": [_shorten(c, 30) for c in categories][:12],
+                    "categories": [_shorten(c, chart_category_limit) for c in categories][:12],
                     "series": series,
                 }
 
@@ -1491,6 +1528,7 @@ def parse_deck_plan(content: str) -> dict | None:
             "density": density,
             "visual_object": visual_object,
             "title": title,
+            "subtitle": subtitle,
             "bullets": bullets,
             "table": table_rows,
             "columns": normalized_columns,
@@ -2109,6 +2147,8 @@ def deck_plan_to_markdown(content: str) -> str | None:
             lines.extend(["", f"# Appendix: {slide['title']}"])
         else:
             lines.extend(["", f"## {slide['title']}"])
+        if slide.get("subtitle"):
+            lines.append(f"*{slide['subtitle']}*")
         bullets = slide.get("bullets") or []
         if layout == "executive_summary" and bullets:
             lines.append(f"**{bullets[0]}**")
@@ -2836,10 +2876,13 @@ def _js_slide_from_deck_spec(spec: dict) -> dict:
     role-based shape consumed by pptx_render/render.js."""
     layout = spec.get("layout") or "bullets"
     title = spec.get("title") or "Untitled"
+    subtitle = spec.get("subtitle") or None
     notes = spec.get("speaker_notes") or None
     bullets = spec.get("bullets") or []
 
     def with_blueprint(payload: dict) -> dict:
+        if subtitle:
+            payload["subtitle"] = subtitle
         payload["blueprint"] = _js_slide_blueprint_from_spec(spec, payload.get("role") or "content")
         payload["component_tree"] = spec.get("component_tree") or component_tree_for_slide(spec)
         return payload
@@ -2992,6 +3035,13 @@ def _number_section_slides(js_slides: list[dict]) -> list[dict]:
     return js_slides
 
 
+def _design_system_for_deck_plan(deck_plan: dict | None, mode: str) -> dict:
+    raw_theme = ""
+    if isinstance(deck_plan, dict):
+        raw_theme = str(deck_plan.get("theme") or deck_plan.get("design_theme") or "").strip()
+    return design_system_payload(raw_theme or "warm-editorial") | {"mode": mode}
+
+
 def _build_js_deck_payload(title: str, content: str, subtitle: str | None) -> dict:
     """Normalize either a structured DeckPlan or markdown-ish slide-plan
     content into the JSON payload consumed by pptx_render/render.js."""
@@ -3000,7 +3050,7 @@ def _build_js_deck_payload(title: str, content: str, subtitle: str | None) -> di
         deck_plan, composition = compose_deck_plan_parallel(deck_plan)
         return {
             "version": 2,
-            "design_system": design_system_payload("warm-editorial") | {"mode": "freehand_compositor"},
+            "design_system": _design_system_for_deck_plan(deck_plan, "freehand_compositor"),
             "composition": {k: v for k, v in composition.items() if k != "jobs"},
             "title": deck_plan.get("title") or title or "Fronei deck",
             "subtitle": deck_plan.get("subtitle") or subtitle,
@@ -3033,7 +3083,7 @@ def _build_js_deck_payload(title: str, content: str, subtitle: str | None) -> di
 
     return {
         "version": 2,
-        "design_system": design_system_payload("warm-editorial") | {"mode": "markdown_compositor"},
+        "design_system": _design_system_for_deck_plan(None, "markdown_compositor"),
         "title": deck_title,
         "subtitle": deck_subtitle,
         "slides": _number_section_slides(js_slides),

@@ -188,6 +188,7 @@ recommendation | timeline | risk_matrix | financial_model | stat_cards | appendi
       "density": "low | medium | high (optional — your estimate of how much content this slide carries; \
 the renderer also computes this and will trim automatically if you under-call it)",
       "title": "Short assertion-style slide title (target 40-60 chars, hard cap ~80)",
+      "subtitle": "One-sentence dek that clarifies the slide's thesis or implication (target 70-110 chars)",
       "bullets": ["short support point"],
       "columns": [
         {"heading": "Option A", "bullets": ["short point"]},
@@ -264,6 +265,8 @@ sentence. Target 40-60 characters and never exceed ~80; titles must fit on one l
 cuts delivery risk" instead of "Migration options" or "An analysis of how a strangler-pattern migration \
 approach can help reduce overall delivery risk for the platform." If a title runs long, cut it down to its core \
 claim rather than relying on the renderer to truncate it.
+- Every non-section slide should include a one-sentence `subtitle` / dek under the title. Use it to state the \
+slide's implication, nuance, or audience-specific framing — not to repeat the title. Keep it to ~70-110 chars.
 - Bullets must be short, specific, and scannable. Prefer 2-3 bullets per slide, and no more than 6 — extra \
 bullets are automatically dropped from the slide (and moved to speaker_notes) rather than rendered, so don't \
 pad a slide expecting all of it to be visible.

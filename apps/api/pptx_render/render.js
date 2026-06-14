@@ -31,13 +31,19 @@
 
 const pptxgen = require("pptxgenjs");
 
-const NAVY = "1F3B5C";
-const NAVY_LIGHT = "33567D";
-const SLATE = "44546A";
-const TEXT_DARK = "1A1A1A";
-const TEXT_MUTED = "5A6472";
+const NAVY = "383838";
+const NAVY_LIGHT = "E04F00";
+const SLATE = "73665F";
+const TEXT_DARK = "282421";
+const TEXT_MUTED = "6F655F";
 const WHITE = "FFFFFF";
-const ACCENT_LINE = "C0C0C0";
+const BG = "F7F1EE";
+const CARD_BG = "FFFDFC";
+const SOFT_BG = "EFE7E2";
+const ACCENT = "E04F00";
+const ACCENT_LINE = "D8CDC6";
+const HEADING_FACE = "Georgia";
+const BODY_FACE = "Segoe UI";
 
 const SLIDE_W = 13.333;
 const SLIDE_H = 7.5;
@@ -45,6 +51,21 @@ const MARGIN_X = 0.65;
 
 const MAX_BULLETS_PER_SLIDE = 6;
 const MAX_APPENDIX_BULLETS = 10;
+
+function slideBg(slide) {
+  slide.background = { color: BG };
+}
+
+function titleFontSize(text) {
+  const len = (text || "").length;
+  if (len <= 42) return 28;
+  if (len <= 64) return 24;
+  return 20;
+}
+
+function bulletText(text, limit) {
+  return String(text || "").replace(/\s+/g, " ").trim();
+}
 
 function readStdin() {
   return new Promise((resolve, reject) => {
@@ -55,26 +76,36 @@ function readStdin() {
   });
 }
 
+// Title box/accent-rule geometry. Titles can wrap to two lines at the
+// smaller font sizes (e.g. ~60-72 char titles at 24pt within a 9.4in box),
+// so the title box is tall enough for two lines and the accent rule sits
+// below it — avoiding the accent rule overlapping a wrapped second line.
+const TITLE_BOX_H = 1.0;
+const TITLE_RULE_Y = 1.32;
+const CONTENT_TOP_Y = 1.65;
+
 function addTitle(slide, text) {
-  slide.addText(text || "Untitled", {
+  slideBg(slide);
+  slide.addText(bulletText(text || "Untitled", 78), {
     x: MARGIN_X,
-    y: 0.4,
-    w: SLIDE_W - MARGIN_X * 2,
-    h: 0.9,
-    fontSize: 28,
+    y: 0.42,
+    w: 9.4,
+    h: TITLE_BOX_H,
+    fontSize: titleFontSize(text),
     bold: true,
     color: NAVY,
-    fontFace: "Calibri",
+    fontFace: HEADING_FACE,
     align: "left",
     valign: "top",
+    fit: "shrink",
   });
   slide.addShape("rect", {
     x: MARGIN_X,
-    y: 1.32,
-    w: SLIDE_W - MARGIN_X * 2,
-    h: 0.02,
-    fill: { color: ACCENT_LINE },
-    line: { color: ACCENT_LINE },
+    y: TITLE_RULE_Y,
+    w: 1.0,
+    h: 0.04,
+    fill: { color: ACCENT },
+    line: { color: ACCENT },
   });
 }
 
@@ -96,6 +127,7 @@ function bulletsToTextProps(bullets, opts) {
           indentLevel: Math.max(0, Math.min(level, 4)),
           fontSize: opts.fontSize || 16,
           color: opts.color || TEXT_DARK,
+          fontFace: BODY_FACE,
           breakLine: true,
         },
         opts.extra || {}
@@ -106,48 +138,68 @@ function bulletsToTextProps(bullets, opts) {
 
 function renderTitleSlide(pptx, title, subtitle) {
   const slide = pptx.addSlide();
-  slide.background = { color: NAVY };
-  slide.addText(title || "Fronei deck", {
+  slideBg(slide);
+  slide.addShape("rect", {
+    x: 0,
+    y: 0,
+    w: 0.18,
+    h: SLIDE_H,
+    fill: { color: ACCENT },
+    line: { color: ACCENT },
+  });
+  slide.addText(bulletText(title || "Fronei deck", 88), {
     x: MARGIN_X,
-    y: SLIDE_H / 2 - 1.1,
-    w: SLIDE_W - MARGIN_X * 2,
-    h: 1.6,
-    fontSize: 40,
+    y: 1.7,
+    w: 9.5,
+    h: 1.7,
+    fontSize: 34,
     bold: true,
-    color: WHITE,
-    fontFace: "Calibri",
+    color: NAVY,
+    fontFace: HEADING_FACE,
     align: "left",
     valign: "middle",
+    fit: "shrink",
   });
   if (subtitle) {
     slide.addText(subtitle, {
       x: MARGIN_X,
-      y: SLIDE_H / 2 + 0.6,
-      w: SLIDE_W - MARGIN_X * 2,
+      y: 3.55,
+      w: 8.7,
       h: 0.8,
       fontSize: 18,
-      color: "D6DEE8",
-      fontFace: "Calibri",
+      color: TEXT_MUTED,
+      fontFace: BODY_FACE,
       align: "left",
       valign: "top",
+      fit: "shrink",
     });
   }
+  slide.addText("Prepared with Fronei", {
+    x: MARGIN_X,
+    y: 6.75,
+    w: 3.0,
+    h: 0.25,
+    fontSize: 9,
+    color: TEXT_MUTED,
+    fontFace: BODY_FACE,
+  });
 }
 
 function renderSectionSlide(pptx, spec) {
   const slide = pptx.addSlide();
-  slide.background = { color: NAVY };
-  slide.addText(spec.title || "Untitled", {
+  slide.background = { color: TEXT_DARK };
+  slide.addText(bulletText(spec.title || "Untitled", 70), {
     x: MARGIN_X,
     y: SLIDE_H / 2 - 0.8,
-    w: SLIDE_W - MARGIN_X * 2,
+    w: 9.5,
     h: 1.6,
-    fontSize: 34,
+    fontSize: 32,
     bold: true,
     color: WHITE,
-    fontFace: "Calibri",
+    fontFace: HEADING_FACE,
     align: "left",
     valign: "middle",
+    fit: "shrink",
   });
   addNotes(slide, spec.notes);
   return slide;
@@ -157,15 +209,19 @@ function renderContentSlide(pptx, spec) {
   const slide = pptx.addSlide();
   addTitle(slide, spec.title);
   const cap = spec.appendix ? MAX_APPENDIX_BULLETS : MAX_BULLETS_PER_SLIDE;
-  const bullets = (spec.bullets || []).slice(0, cap);
+  const visibleCap = spec.appendix ? cap : Math.min(cap, 4);
+  const bullets = (spec.bullets || []).slice(0, visibleCap).map((b) => ({
+    level: b.level || 0,
+    text: bulletText(b.text || b, 96),
+  }));
   slide.addText(bulletsToTextProps(bullets), {
     x: MARGIN_X,
-    y: 1.55,
-    w: SLIDE_W - MARGIN_X * 2,
-    h: SLIDE_H - 1.55 - 0.4,
+    y: 1.65,
+    w: 8.4,
+    h: 4.9,
     valign: "top",
-    fontFace: "Calibri",
-    lineSpacingMultiple: 1.15,
+    fontFace: BODY_FACE,
+    lineSpacingMultiple: 1.08,
   });
   addNotes(slide, spec.notes);
   return slide;
@@ -174,24 +230,41 @@ function renderContentSlide(pptx, spec) {
 function renderTwoContentSlide(pptx, spec) {
   const slide = pptx.addSlide();
   addTitle(slide, spec.title);
-  const cols = (spec.columns || []).slice(0, 2);
-  const colW = 5.8;
-  const top = 1.55;
+  // Up to 3 cards (comparison / three_card_system / governance_grid /
+  // principles_grid all route here with 2-3 columns).
+  const cols = (spec.columns || []).slice(0, 3);
+  const n = Math.max(cols.length, 1);
+  const totalW = SLIDE_W - MARGIN_X * 2;
+  const gap = 0.35;
+  const colW = (totalW - gap * (n - 1)) / n;
+  const top = CONTENT_TOP_Y;
   const height = SLIDE_H - top - 0.35;
+  const headingFontSize = n >= 3 ? 14 : 15;
+  const bulletFontSize = n >= 3 ? 11 : 12;
+  const bulletCap = n >= 3 ? 4 : 3;
   cols.forEach((col, idx) => {
-    const left = MARGIN_X + idx * (colW + 0.4);
-    const parts = [];
-    if (col.heading) {
-      parts.push({ text: col.heading, options: { fontSize: 16, bold: true, color: NAVY, breakLine: true } });
-    }
-    const bullets = bulletsToTextProps((col.bullets || []).map((b) => ({ level: 0, text: b })), { fontSize: 13 });
-    slide.addText(parts.concat(bullets), {
+    const left = MARGIN_X + idx * (colW + gap);
+    slide.addShape("roundRect", {
       x: left,
       y: top,
       w: colW,
       h: height,
+      fill: { color: CARD_BG },
+      line: { color: ACCENT_LINE, transparency: 20 },
+      rectRadius: 0.04,
+    });
+    const parts = [];
+    if (col.heading) {
+      parts.push({ text: bulletText(col.heading, 42), options: { fontSize: headingFontSize, bold: true, color: NAVY, fontFace: HEADING_FACE, breakLine: true } });
+    }
+    const bullets = bulletsToTextProps((col.bullets || []).slice(0, bulletCap).map((b) => ({ level: 0, text: bulletText(b, 78) })), { fontSize: bulletFontSize });
+    slide.addText(parts.concat(bullets), {
+      x: left + 0.18,
+      y: top + 0.18,
+      w: colW - 0.36,
+      h: height - 0.36,
       valign: "top",
-      fontFace: "Calibri",
+      fontFace: BODY_FACE,
       lineSpacingMultiple: 1.1,
     });
   });
@@ -228,7 +301,7 @@ function renderChartSlide(pptx, spec) {
     showLegend: series.length > 1 || chartType === "pie",
     legendPos: "b",
     showTitle: false,
-    chartColors: [NAVY, "5B9BD5", "ED7D31", "70AD47"],
+    chartColors: [ACCENT, NAVY, "8C6F5D", "C9A14A"],
     catAxisLabelFontSize: 11,
     valAxisLabelFontSize: 11,
     dataLabelFontSize: 10,
@@ -262,7 +335,7 @@ function renderTableSlide(pptx, spec) {
           fontSize: 12,
           bold: rIdx === 0,
           color: rIdx === 0 ? WHITE : TEXT_DARK,
-          fill: rIdx === 0 ? { color: NAVY } : { color: rIdx % 2 === 0 ? "F4F6F9" : WHITE },
+          fill: rIdx === 0 ? { color: NAVY } : { color: rIdx % 2 === 0 ? SOFT_BG : WHITE },
           valign: "middle",
         },
       });
@@ -275,7 +348,7 @@ function renderTableSlide(pptx, spec) {
     y: 1.6,
     w: SLIDE_W - 1.0,
     h: Math.min(0.5 + 0.4 * rows.length, SLIDE_H - 1.8),
-    fontFace: "Calibri",
+    fontFace: BODY_FACE,
     border: { type: "solid", color: "E2E6EB", pt: 0.5 },
     autoPage: false,
   });
@@ -293,24 +366,24 @@ function renderExecutiveSummarySlide(pptx, spec) {
     slide.addText(headline, {
       x: MARGIN_X,
       y: 1.5,
-      w: SLIDE_W - MARGIN_X * 2,
+      w: 9.6,
       h: 1.7,
-      fontSize: 28,
+      fontSize: 24,
       bold: true,
       color: TEXT_DARK,
-      fontFace: "Calibri",
+      fontFace: HEADING_FACE,
       valign: "top",
       wrap: true,
     });
   }
   if (support.length) {
-    slide.addText(bulletsToTextProps(support.map((b) => ({ level: 0, text: b })), { fontSize: 16 }), {
+    slide.addText(bulletsToTextProps(support.slice(0, 3).map((b) => ({ level: 0, text: bulletText(b, 90) })), { fontSize: 14 }), {
       x: MARGIN_X,
       y: 3.3,
       w: SLIDE_W - MARGIN_X * 2,
       h: 3.2,
       valign: "top",
-      fontFace: "Calibri",
+      fontFace: BODY_FACE,
       lineSpacingMultiple: 1.15,
     });
   }
@@ -330,8 +403,8 @@ function renderRecommendationSlide(pptx, spec) {
       y: 1.5,
       w: SLIDE_W - MARGIN_X * 2,
       h: 1.3,
-      fill: { color: NAVY },
-      line: { color: NAVY },
+      fill: { color: TEXT_DARK },
+      line: { color: TEXT_DARK },
       rectRadius: 0.08,
     });
     slide.addText(`Recommendation: ${primary}`, {
@@ -342,23 +415,23 @@ function renderRecommendationSlide(pptx, spec) {
       fontSize: 18,
       bold: true,
       color: WHITE,
-      fontFace: "Calibri",
+      fontFace: HEADING_FACE,
       valign: "middle",
       align: "left",
       wrap: true,
     });
   }
   if (rationale.length) {
-    const parts = [{ text: "Rationale", options: { fontSize: 15, bold: true, color: NAVY, breakLine: true } }];
+    const parts = [{ text: "Rationale", options: { fontSize: 15, bold: true, color: NAVY, fontFace: HEADING_FACE, breakLine: true } }];
     slide.addText(
-      parts.concat(bulletsToTextProps(rationale.map((b) => ({ level: 0, text: b })), { fontSize: 14 })),
+      parts.concat(bulletsToTextProps(rationale.slice(0, 3).map((b) => ({ level: 0, text: bulletText(b, 90) })), { fontSize: 13 })),
       {
         x: MARGIN_X,
         y: 3.1,
         w: SLIDE_W - MARGIN_X * 2,
         h: 3.4,
         valign: "top",
-        fontFace: "Calibri",
+        fontFace: BODY_FACE,
         lineSpacingMultiple: 1.1,
       }
     );
@@ -400,20 +473,20 @@ function renderTimelineSlide(pptx, spec) {
       y: top + 0.25,
       w: 0.3,
       h: 0.3,
-      fill: { color: NAVY },
-      line: { color: NAVY },
+      fill: { color: ACCENT },
+      line: { color: ACCENT },
     });
     const lines = [];
     if (ph.label) lines.push(ph.label);
     if (ph.title) lines.push(ph.title);
-    if (ph.description) lines.push(ph.description);
-    slide.addText(bulletsToTextProps(lines.map((l) => ({ level: 0, text: l })), { fontSize: 13 }), {
+    if (ph.description) lines.push(bulletText(ph.description, 82));
+    slide.addText(bulletsToTextProps(lines.map((l) => ({ level: 0, text: l })), { fontSize: 11 }), {
       x: left,
       y: top + 0.7,
       w: boxW,
       h: 3.8,
       valign: "top",
-      fontFace: "Calibri",
+      fontFace: BODY_FACE,
     });
   });
   addNotes(slide, spec.notes);
@@ -425,7 +498,7 @@ function renderArchitectureSlide(pptx, spec) {
   addTitle(slide, spec.title);
   slide.addText(
     [
-      { text: "Architecture diagram", options: { fontSize: 15, bold: true, breakLine: true, color: NAVY } },
+      { text: "Architecture diagram", options: { fontSize: 15, bold: true, breakLine: true, color: NAVY, fontFace: HEADING_FACE } },
       {
         text: "(diagram placeholder — describe components and data flow)",
         options: { fontSize: 13, color: TEXT_MUTED },
@@ -437,18 +510,18 @@ function renderArchitectureSlide(pptx, spec) {
       w: 5.6,
       h: 4.9,
       valign: "top",
-      fontFace: "Calibri",
+      fontFace: BODY_FACE,
       line: { color: ACCENT_LINE, width: 1, dashType: "dash" },
     }
   );
   const bullets = spec.bullets && spec.bullets.length ? spec.bullets : [""];
-  slide.addText(bulletsToTextProps(bullets.map((b) => ({ level: 0, text: b })), { fontSize: 13 }), {
+  slide.addText(bulletsToTextProps(bullets.slice(0, 4).map((b) => ({ level: 0, text: bulletText(b, 90) })), { fontSize: 13 }), {
     x: 6.5,
     y: 1.55,
     w: 5.8,
     h: 4.9,
     valign: "top",
-    fontFace: "Calibri",
+    fontFace: BODY_FACE,
     lineSpacingMultiple: 1.1,
   });
   addNotes(slide, spec.notes);

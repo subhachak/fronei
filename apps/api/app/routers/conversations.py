@@ -38,7 +38,13 @@ from app.services.chat_pipeline import (
 )
 from app.routers.documents import build_document_artifact
 from app.services import plan_gate
-from app.services.document_templates import list_document_templates, recommend_template_id, resolve_template_path
+from app.services.document_templates import (
+    list_document_templates,
+    recommend_template_id,
+    resolve_template_path,
+    template_design_context,
+    template_grammar_for_selection,
+)
 from app.services.planner import apply_confirmed_plan, passthrough, plan_from_dict, plan_to_dict, run_planner
 from app.services.prompts import ARTIFACT_PROMPTS
 from app.services.web_context import WebContextResult
@@ -991,6 +997,19 @@ def _document_finalization_payload(db, user_id: str, conv: Conversation, user_ms
         recommended_template_id = str(recommended.get("id"))
     elif not any(t.get("id") == recommended_template_id for t in templates):
         recommended_template_id = str(templates[0].get("id")) if templates else "fronei-default"
+    template_design = None
+    if brief.get("doc_type") == "presentation":
+        try:
+            grammar = template_grammar_for_selection(db, user_id, recommended_template_id, brief)
+            template_design = {
+                "mode": grammar.get("mode"),
+                "template_id": grammar.get("template_id"),
+                "available_slide_types": grammar.get("available_slide_types"),
+                "fonts": grammar.get("fonts"),
+                "colors": grammar.get("colors"),
+            }
+        except Exception:
+            logger.exception("Failed to inspect presentation template grammar")
     return {
         "conversation_id": conv.public_id,
         "message_id": user_msg.id,
@@ -1000,6 +1019,7 @@ def _document_finalization_payload(db, user_id: str, conv: Conversation, user_ms
         "supported_formats": supported_formats,
         "templates": templates,
         "template_recommendation": recommended_template_id,
+        "template_design": template_design,
     }
 
 
@@ -1031,6 +1051,22 @@ def _document_context_for_generation(base_context: str, plan) -> str:
     if isinstance(source_context, str) and source_context.strip():
         return "\n\n".join(part for part in [base_context, source_context] if part)
     return base_context
+
+
+def _presentation_artifact_context(base_context: str, db, user_id: str, plan) -> str:
+    brief = dict(plan.document_brief or {})
+    if brief.get("doc_type") != "presentation":
+        return base_context or ""
+    template_id = brief.get("template_id")
+    if not isinstance(template_id, str) or not template_id:
+        template_id = recommend_template_id(brief)
+    try:
+        grammar = template_grammar_for_selection(db, user_id, template_id, brief)
+        design_context = template_design_context(grammar)
+    except Exception:
+        logger.exception("Failed to build presentation design context")
+        design_context = ""
+    return "\n\n".join(part for part in [base_context or "", design_context] if part)
 
 
 # ── Streaming endpoint ────────────────────────────────────────────────────────
@@ -1307,7 +1343,10 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
 
                         planner_ctx = _build_worker_context(plan, running_summary)
                         empty_wc = WebContextResult(context=None, status="", provider="", sources_count=0, search_query=None)
-                        artifact_context = ARTIFACT_PROMPTS.get(req.artifact_type or "", "")
+                        artifact_context = _presentation_artifact_context(
+                            ARTIFACT_PROMPTS.get(req.artifact_type or "", ""),
+                            db, user_id, plan,
+                        )
                         followup_cost = result.estimated_cost_usd or 0.0
                         _remember_document_source_context(plan, doc_context, existing_run_id)
                         finalization_event = _maybe_propose_document_finalization(db, user_id, conv, user_msg, req, plan, gate)
@@ -1499,7 +1538,10 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
 
                     planner_ctx = _build_worker_context(plan, running_summary)
                     empty_wc = WebContextResult(context=None, status="", provider="", sources_count=0, search_query=None)
-                    artifact_context = ARTIFACT_PROMPTS.get(req.artifact_type or "", "")
+                    artifact_context = _presentation_artifact_context(
+                        ARTIFACT_PROMPTS.get(req.artifact_type or "", ""),
+                        db, user_id, plan,
+                    )
                     _remember_document_source_context(plan, doc_context, research.run.id)
                     finalization_event = _maybe_propose_document_finalization(db, user_id, conv, user_msg, req, plan, gate)
                     if finalization_event:
@@ -1679,7 +1721,7 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                 result, doc_body, chat_summary, doc_type = generate_document_output(
                     plan, route, history, wc, planner_ctx,
                     _document_context_for_generation(setup.doc_context, plan), req.deep_research, enable_native,
-                    artifact_context=setup.artifact_context or "",
+                    artifact_context=_presentation_artifact_context(setup.artifact_context or "", db, user_id, plan),
                     user_memory=user_memory,
                 )
                 for chunk in [chat_summary[i:i + 80] for i in range(0, len(chat_summary), 80)]:

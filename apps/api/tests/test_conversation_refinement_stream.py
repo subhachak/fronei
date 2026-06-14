@@ -889,6 +889,8 @@ def test_document_generation_pauses_for_late_finalization(client, monkeypatch):
     assert "fronei-default" in template_ids
     assert "boardroom-navy" in template_ids
     assert proposal["template_recommendation"] == "boardroom-navy"
+    assert proposal["template_design"]["mode"] in {"template_following", "fronei_premium_freehand"}
+    assert proposal["template_design"]["available_slide_types"]
 
     with Session() as db:
         user_msg = db.get(ConversationMessage, proposal["message_id"])
@@ -1011,6 +1013,7 @@ def test_execute_plan_after_document_finalization_generates_artifact(client, mon
     def fake_generate_document_output(plan_arg, route_arg, history, wc, planner_ctx, doc_context, deep_research, enable_native, artifact_context="", user_memory=""):
         captured["brief"] = plan_arg.document_brief
         captured["doc_context"] = doc_context
+        captured["artifact_context"] = artifact_context
         return (
             LLMResult(
                 answer="# Migration Strategy\n\nBody.\n\n---SUMMARY---\n- Deck summary",
@@ -1054,6 +1057,8 @@ def test_execute_plan_after_document_finalization_generates_artifact(client, mon
     assert captured["brief"]["title"] == "Client Migration Strategy"
     assert captured["brief"]["template_id"] == "fronei-default"
     assert "Use phased migration" in captured["doc_context"]
+    assert "TEMPLATE-FIRST PRESENTATION DESIGN BRIEF" in captured["artifact_context"]
+    assert "Fronei premium freehand" in captured["artifact_context"]
 
 
 def test_execute_plan_confirmed_expert_mode_bypasses_followup_fast_path(client, monkeypatch):

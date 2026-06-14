@@ -25,7 +25,7 @@ from pptx.chart.data import CategoryChartData
 from pptx.dml.color import RGBColor
 from pptx.enum.chart import XL_CHART_TYPE
 from pptx.enum.shapes import MSO_SHAPE
-from pptx.enum.text import PP_ALIGN
+from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
 from pptx.util import Inches as PptxInches, Pt as PptxPt
 
 from app.services.document_templates import resolve_pptx_template_path
@@ -56,8 +56,8 @@ KNOWN_DOC_TYPES = {
 }
 SPEAKER_NOTES_RE = re.compile(r"^speaker notes?\s*:\s*(.*)$", re.IGNORECASE)
 MAX_BULLETS_PER_SLIDE = 6
-MAX_SLIDE_TITLE_CHARS = 92
-MAX_BULLET_CHARS = 120
+MAX_SLIDE_TITLE_CHARS = 72
+MAX_BULLET_CHARS = 90
 
 # Appendix slides are reference material — denser content is acceptable, so
 # they get a higher per-slide bullet cap than the standard body slides.
@@ -66,9 +66,22 @@ MAX_APPENDIX_BULLETS = 10
 # Layout name aliases normalized by parse_deck_plan. Both sides of an alias
 # pair are treated identically by the PPTX renderer.
 DECK_LAYOUT_ALIASES = {
+    "cover": "section",
+    "hero_cover": "section",
     "decision": "recommendation",
     "decision_slide": "recommendation",
+    "decision_recommendation": "recommendation",
     "roadmap": "timeline",
+    "process": "timeline",
+    "process_steps": "timeline",
+    "architecture_map": "architecture",
+    "system_map": "architecture",
+    "financial_exhibit": "financial_model",
+    "data_exhibit": "financial_model",
+    "three_card_system": "comparison",
+    "governance_grid": "comparison",
+    "principles_grid": "comparison",
+    "takeaways": "executive_summary",
 }
 COVER_DOC_TYPES = {"executive_report", "proposal", "technical_spec"}
 COMPACT_HEADER_DOC_TYPES = {"memo", "one_pager", "resume"}
@@ -1256,11 +1269,34 @@ def _split_dense_slides(slides: list[dict]) -> list[dict]:
     return result
 
 
+def _pptx_title_font_size(text: str) -> int:
+    """Scale the title font down for longer titles so it wraps to at most
+    ~2 lines within the title placeholder, instead of overflowing into the
+    slide body (the cause of title/body overlap on long, LLM-generated
+    titles)."""
+    length = len(text or "")
+    if length <= 45:
+        return 32
+    if length <= 70:
+        return 26
+    return 20
+
+
 def _pptx_set_title(slide, text: str) -> None:
-    if slide.shapes.title is not None:
-        slide.shapes.title.text = ""
-        p = slide.shapes.title.text_frame.paragraphs[0]
+    title_shape = slide.shapes.title
+    if title_shape is not None:
+        title_shape.text = ""
+        tf = title_shape.text_frame
+        tf.word_wrap = True
+        try:
+            tf.vertical_anchor = MSO_ANCHOR.TOP
+        except Exception:
+            pass
+        p = tf.paragraphs[0]
         _pptx_add_runs(p, text or "Untitled")
+        font_size = _pptx_title_font_size(text or "Untitled")
+        for run in p.runs:
+            run.font.size = PptxPt(font_size)
 
 
 def _pptx_render_table(slide, rows: list[list[str]]) -> None:
@@ -1437,12 +1473,16 @@ def _pptx_render_deck_plan(prs: Presentation, plan: dict, fallback_title: str, s
         elif layout in {"two_column", "comparison", "architecture"} and spec.get("columns"):
             slide = prs.slides.add_slide(_pptx_layout_for_role(prs, "two_content"))
             _pptx_set_title(slide, title)
-            cols = spec["columns"][:2]
-            col_w = PptxInches(5.8)
+            cols = spec["columns"][:3]
+            n = max(len(cols), 1)
+            total_w = 12.0
+            gap = 0.35
+            col_w_in = (total_w - gap * (n - 1)) / n
+            col_w = PptxInches(col_w_in)
             top = PptxInches(1.55)
             height = PptxInches(4.9)
             for idx, col in enumerate(cols):
-                left = PptxInches(0.65 + idx * 6.05)
+                left = PptxInches(0.65 + idx * (col_w_in + gap))
                 _pptx_add_text_box(slide, left, top, col_w, height, col.get("heading") or "", col.get("bullets") or [])
         elif layout == "executive_summary":
             slide = prs.slides.add_slide(_pptx_layout_for_role(prs, "title_only"))
@@ -1511,7 +1551,7 @@ def _js_slide_from_deck_spec(spec: dict) -> dict:
     if spec.get("table"):
         return {"role": "table", "title": title, "rows": spec["table"], "notes": notes}
     if layout in {"two_column", "comparison", "architecture"} and spec.get("columns"):
-        return {"role": "two_content", "title": title, "columns": spec["columns"][:2], "notes": notes}
+        return {"role": "two_content", "title": title, "columns": spec["columns"][:3], "notes": notes}
     if layout == "executive_summary":
         return {"role": "executive_summary", "title": title, "bullets": bullets, "notes": notes}
     if layout == "recommendation":

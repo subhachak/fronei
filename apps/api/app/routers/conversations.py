@@ -618,6 +618,14 @@ def _turn_kind_for_request(req: ConvChatRequest) -> str:
 # Checked on every streamed event (including tokens) without touching the DB;
 # avoids a db.refresh() round-trip per token. Cancel endpoints populate this,
 # and entries are cleared once the worker loop observes them.
+#
+# Per-process only — fine for the current single-instance deployment (see
+# render.yaml / railway.toml, no `--workers` flag). If the API is ever scaled
+# to multiple processes/instances, a cancel request can land on a different
+# instance than the one streaming the turn and would silently no-op. Replace
+# with a shared store (e.g. Redis pub/sub or a polled DB flag) behind the same
+# _mark_turn_cancel_requested / _consume_turn_cancel_requested interface
+# before scaling horizontally. (Same caveat as app/services/rate_limit.py.)
 _CANCELLED_TURN_IDS: set[str] = set()
 _CANCELLED_TURN_LOCK = _threading.Lock()
 
@@ -698,6 +706,14 @@ def _append_turn_lifecycle(turn: ConversationTurn, event: str, data: dict | None
 # thread flush it periodically. Terminal events (done/error/cancelled/
 # awaiting_confirmation) are still committed synchronously and immediately,
 # since those matter for recovery and are low-frequency (once per turn).
+#
+# Per-process only, same caveat as _CANCELLED_TURN_IDS above: on a
+# single-instance deployment this is safe, but on multiple instances each
+# would maintain its own pending-flush queue. This is lower-risk than the
+# cancellation registry — terminal commits are still synchronous and
+# per-instance flushers all write the same rows — but a turn's "live"
+# progress would only be visible from the instance handling its stream until
+# the next terminal commit. Move to Redis (or a shared queue) if scaled out.
 _TURN_PENDING: dict[str, dict] = {}
 _TURN_PENDING_LOCK = _threading.Lock()
 _TURN_FLUSH_INTERVAL_SECONDS = 1.5
@@ -1864,10 +1880,16 @@ def execute_plan(
             message_text = user_msg.content
             clarifications = (body.confirmed_plan.clarifications or "").strip()
             if clarifications:
-                message_text = (
-                    f"{user_msg.content}\n\n"
-                    f"Additional context from user (answers to clarifying questions):\n{clarifications}"
+                suffix = (
+                    f"\n\nAdditional context from user (answers to clarifying questions):\n{clarifications}"
                 )
+                # ConvChatRequest.message is capped at 32000 chars. Truncate the
+                # original message (not the clarifications, which are the user's
+                # most recent and most relevant input) if the combination would
+                # exceed that limit.
+                max_base_len = 32000 - len(suffix)
+                base = user_msg.content if max_base_len <= 0 else user_msg.content[:max_base_len]
+                message_text = f"{base}{suffix}"[:32000]
                 plan.enriched_prompt = (
                     f"{plan.enriched_prompt}\n\nUser clarifications:\n{clarifications}"
                     if plan.enriched_prompt else message_text

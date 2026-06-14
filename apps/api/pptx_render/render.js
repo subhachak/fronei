@@ -1635,6 +1635,189 @@ function renderInvestmentCaseSlide(pptx, spec) {
   return slide;
 }
 
+function renderCoverMetricStripSlide(pptx, spec) {
+  const slide = pptx.addSlide();
+  const bg = token("bg", "0B1220");
+  const card = token("card", "172033");
+  const accent = token("accent", "38BDF8");
+  const accent2 = token("accent2", "34D399");
+  slide.background = { color: bg };
+  addAccentStrip(slide, 0, 0, SLIDE_W, accent, { thickness: 0.13 });
+  slide.addShape("rect", { x: 8.8, y: 0.13, w: 4.53, h: 7.37, fill: { color: "10233D" }, line: { color: "10233D" } });
+  slide.addText("STEERING COMMITTEE", { x: 0.62, y: 0.35, w: 4.8, h: 0.24, fontSize: 9.5, bold: true, color: accent, fontFace: bodyFace(), charSpacing: 1.6 });
+  slide.addText(bulletText(spec.title || "Decision pack", 82), { x: 0.62, y: 1.05, w: 7.4, h: 0.75, fontSize: 34, bold: true, color: WHITE, fontFace: headingFace(), fit: "shrink" });
+  if (spec.subtitle) {
+    slide.addText(spec.subtitle, { x: 0.62, y: 1.92, w: 7.0, h: 0.38, fontSize: 16, color: token("muted", "CBD5E1"), fontFace: bodyFace(), fit: "shrink" });
+  }
+  const decision = (spec.bullets || [])[0] || (spec.callout && spec.callout.text) || "";
+  if (decision) {
+    slide.addText(bulletText(decision, 120), { x: 0.62, y: 2.78, w: 6.9, h: 0.78, fontSize: 18, color: WHITE, fontFace: bodyFace(), fit: "shrink", wrap: true });
+  }
+  const stats = (spec.stats || []).slice(0, 3);
+  stats.forEach((stat, idx) => {
+    const colors = [accent, token("accent", "FBBF24"), accent2];
+    const x = 0.62 + idx * 2.58;
+    slide.addShape("roundRect", { x, y: 4.22, w: 2.35, h: 1.35, fill: { color: card }, line: { color: card }, rectRadius: 0.04 });
+    addAccentStrip(slide, x, 4.22, 2.35, colors[idx], { orientation: "left", h: 1.35, thickness: 0.06 });
+    slide.addText(stat.value || "", { x: x + 0.22, y: 4.45, w: 2.0, h: 0.34, fontSize: 25, bold: true, color: WHITE, fontFace: headingFace(), fit: "shrink" });
+    slide.addText(stat.label || "", { x: x + 0.22, y: 4.9, w: 1.98, h: 0.42, fontSize: 8.8, color: token("muted", "CBD5E1"), fontFace: bodyFace(), fit: "shrink", wrap: true });
+  });
+  slide.addText("Prepared with Fronei", { x: 0.62, y: 6.35, w: 3.4, h: 0.2, fontSize: 8.5, color: token("muted", "CBD5E1"), fontFace: bodyFace() });
+  addNotes(slide, spec.notes);
+  return slide;
+}
+
+function renderCurrentStateEstateMapSlide(pptx, spec) {
+  const slide = pptx.addSlide();
+  addSlideTitle(slide, spec);
+  const units = (spec.units || []).slice(0, 4);
+  const top = 2.0;
+  const cardW = 2.55;
+  const gap = 0.45;
+  units.forEach((unit, idx) => {
+    const x = 0.62 + idx * (cardW + gap);
+    slide.addShape("roundRect", { x, y: top, w: cardW, h: 3.75, fill: { color: token("card", CARD_BG) }, line: { color: token("card_line", ACCENT_LINE) }, rectRadius: 0.05 });
+    addAccentStrip(slide, x, top, cardW, accentPalette(idx));
+    slide.addText(unit.name || `BU ${idx + 1}`, { x: x + 0.18, y: top + 0.18, w: 2.1, h: 0.24, fontSize: 13, bold: true, color: token("fg", NAVY), fontFace: headingFace(), fit: "shrink" });
+    (unit.tools || []).slice(0, 3).forEach((tool, tIdx) => {
+      const y = top + 0.78 + tIdx * 0.62;
+      slide.addShape("roundRect", { x: x + 0.25, y, w: 2.05, h: 0.43, fill: { color: "1E2A3F" }, line: { color: "1E2A3F" }, rectRadius: 0.03 });
+      slide.addText(tool, { x: x + 0.42, y: y + 0.12, w: 1.7, h: 0.16, fontSize: 8.8, color: WHITE, fontFace: bodyFace(), fit: "shrink" });
+    });
+    slide.addText(unit.note || "local security | review", { x: x + 0.35, y: top + 3.04, w: 1.8, h: 0.35, fontSize: 8.5, color: token("muted", TEXT_MUTED), fontFace: bodyFace(), fit: "shrink", align: "center" });
+  });
+  const bullets = slideBullets(spec, 3);
+  if (bullets.length) {
+    slide.addText("What this creates", { x: 0.62, y: 6.05, w: 2.3, h: 0.25, fontSize: 10.5, bold: true, color: token("fg", NAVY), fontFace: headingFace() });
+    bullets.forEach((b, idx) => {
+      const x = 3.25 + idx * 3.05;
+      addAccentStrip(slide, x - 0.18, 6.13, 0.09, accentPalette(idx), { thickness: 0.09 });
+      slide.addText(b, { x, y: 6.05, w: 2.7, h: 0.34, fontSize: 9.2, color: token("fg", TEXT_DARK), fontFace: bodyFace(), fit: "shrink", wrap: true });
+    });
+  }
+  addFooter(slide);
+  addNotes(slide, spec.notes);
+  return slide;
+}
+
+function renderImpactScorecardBarsSlide(pptx, spec) {
+  const slide = pptx.addSlide();
+  addSlideTitle(slide, spec);
+  const stats = (spec.stats || []).slice(0, 4);
+  stats.forEach((stat, idx) => {
+    const x = 0.62 + idx * 2.93;
+    slide.addShape("roundRect", { x, y: 1.95, w: 2.65, h: 1.35, fill: { color: token("card", CARD_BG) }, line: { color: token("card_line", ACCENT_LINE) }, rectRadius: 0.04 });
+    addAccentStrip(slide, x, 1.95, 2.65, accentPalette(idx), { orientation: "left", h: 1.35, thickness: 0.06 });
+    slide.addText(stat.value || "", { x: x + 0.22, y: 2.18, w: 2.2, h: 0.34, fontSize: 25, bold: true, color: token("fg", NAVY), fontFace: headingFace(), fit: "shrink" });
+    slide.addText(stat.label || "", { x: x + 0.22, y: 2.58, w: 2.25, h: 0.38, fontSize: 8.8, color: token("muted", TEXT_MUTED), fontFace: bodyFace(), fit: "shrink", wrap: true });
+  });
+  const bars = (spec.bars || []).length ? spec.bars : stats.slice(0, 3).map((s, idx) => ({ label: s.label, display: s.value, value: idx === 0 ? 100 : idx === 1 ? 68 : 28 }));
+  const maxValue = Math.max(...bars.map(b => Number(b.value || 0)), 1);
+  slide.addText("Cost exposure vs investment", { x: 0.62, y: 4.0, w: 4.2, h: 0.25, fontSize: 11, bold: true, color: token("fg", NAVY), fontFace: headingFace() });
+  bars.slice(0, 4).forEach((bar, idx) => {
+    const y = 4.47 + idx * 0.5;
+    const color = bar.color || accentPalette(idx);
+    slide.addText(bar.display || bar.label || "", { x: 0.62, y: y + 0.02, w: 1.3, h: 0.18, fontSize: 8.2, color: token("muted", TEXT_MUTED), fontFace: bodyFace(), fit: "shrink" });
+    slide.addShape("rect", { x: 2.12, y, w: 8.6 * (Number(bar.value || 0) / maxValue), h: 0.22, fill: { color }, line: { color } });
+  });
+  addFooter(slide);
+  addNotes(slide, spec.notes);
+  return slide;
+}
+
+function renderOptionScoreMatrixSlide(pptx, spec) {
+  const slide = pptx.addSlide();
+  addSlideTitle(slide, spec);
+  const options = (spec.options && spec.options.length ? spec.options : (spec.columns || []).map((c, idx) => ({ name: c.heading || `Option ${idx + 1}`, summary: (c.bullets || []).join(" "), scores: {} }))).slice(0, 3);
+  const top = 1.9;
+  options.forEach((opt, idx) => {
+    const x = 0.62 + idx * 4.03;
+    const recommended = opt.recommended || idx === options.length - 1;
+    slide.addShape("roundRect", { x, y: top, w: 3.35, h: 3.78, fill: { color: token("card", CARD_BG) }, line: { color: token("card_line", ACCENT_LINE) }, rectRadius: 0.05 });
+    addAccentStrip(slide, x, top, 3.35, recommended ? token("success", accentPalette(idx)) : accentPalette(idx), { orientation: "left", h: 3.78, thickness: 0.06 });
+    slide.addText(opt.name || `Option ${idx + 1}`, { x: x + 0.2, y: top + 0.18, w: 2.95, h: 0.3, fontSize: 12.5, bold: true, color: token("fg", NAVY), fontFace: headingFace(), fit: "shrink" });
+    slide.addText(opt.summary || (opt.bullets || []).join(" "), { x: x + 0.2, y: top + 0.72, w: 2.9, h: 1.35, fontSize: 10.2, color: token("fg", TEXT_DARK), fontFace: bodyFace(), fit: "shrink", wrap: true });
+    const scores = opt.scores || {};
+    ["Cost", "Control", "Adoption"].forEach((label, sIdx) => {
+      const score = scores[label.toLowerCase()] || scores[label] || (recommended ? 3 : idx === 1 ? 2 : 1);
+      slide.addText(label, { x: x + 0.25, y: top + 2.62 + sIdx * 0.32, w: 0.75, h: 0.15, fontSize: 7.5, color: token("muted", TEXT_MUTED), fontFace: bodyFace(), fit: "shrink" });
+      for (let d = 0; d < 3; d++) {
+        slide.addShape("ellipse", { x: x + 1.1 + d * 0.22, y: top + 2.62 + sIdx * 0.32, w: 0.11, h: 0.11, fill: { color: d < score ? accentPalette(idx) : "334155" }, line: { color: d < score ? accentPalette(idx) : "334155" } });
+      }
+    });
+  });
+  addFooter(slide);
+  addNotes(slide, spec.notes);
+  return slide;
+}
+
+function renderPlatformHubSlide(pptx, spec) {
+  const slide = pptx.addSlide();
+  addSlideTitle(slide, spec);
+  const platform = spec.platform || {};
+  const domains = platform.domains || ["BU 1", "BU 2", "BU 3", "BU 4"];
+  const caps = platform.capabilities || slideBullets(spec, 3);
+  [["BU 1", 0.62, 1.95], ["BU 2", 0.62, 4.0], ["BU 3", 9.85, 1.95], ["BU 4", 9.85, 4.0]].forEach((fallback, idx) => {
+    const [label, x, y] = fallback;
+    slide.addShape("roundRect", { x, y, w: 2.35, h: 0.82, fill: { color: token("card", CARD_BG) }, line: { color: token("card_line", ACCENT_LINE) }, rectRadius: 0.05 });
+    slide.addText(domains[idx] || label, { x: x + 0.18, y: y + 0.24, w: 1.95, h: 0.2, fontSize: 11.5, bold: true, color: token("fg", NAVY), fontFace: headingFace(), fit: "shrink", align: "center" });
+  });
+  slide.addShape("roundRect", { x: 4.35, y: 2.35, w: 4.45, h: 1.45, fill: { color: token("accent", ACCENT) }, line: { color: token("accent", ACCENT) }, rectRadius: 0.08 });
+  slide.addText(platform.name || "Enterprise AI Platform", { x: 4.65, y: 2.7, w: 3.85, h: 0.3, fontSize: 17, bold: true, color: WHITE, fontFace: headingFace(), fit: "shrink", align: "center" });
+  slide.addText(platform.subtitle || "shared controls | shared infra | reusable patterns", { x: 4.75, y: 3.15, w: 3.65, h: 0.2, fontSize: 8.6, color: WHITE, fontFace: bodyFace(), fit: "shrink", align: "center" });
+  caps.slice(0, 3).forEach((cap, idx) => {
+    const x = 0.62 + idx * 3.45;
+    slide.addShape("roundRect", { x, y: 5.5, w: 3.2, h: 0.8, fill: { color: token("card", CARD_BG) }, line: { color: token("card_line", ACCENT_LINE) }, rectRadius: 0.04 });
+    addAccentStrip(slide, x, 5.5, 3.2, accentPalette(idx), { orientation: "left", h: 0.8, thickness: 0.06 });
+    const text = typeof cap === "string" ? cap : cap.label || cap.name || "";
+    slide.addText(text, { x: x + 0.2, y: 5.72, w: 2.8, h: 0.36, fontSize: 10.2, bold: true, color: token("fg", NAVY), fontFace: bodyFace(), fit: "shrink", wrap: true });
+  });
+  addFooter(slide);
+  addNotes(slide, spec.notes);
+  return slide;
+}
+
+function renderRiskControlRowsSlide(pptx, spec) {
+  const slide = pptx.addSlide();
+  addSlideTitle(slide, spec);
+  const rows = (spec.columns || []).slice(0, 4).map((c, idx) => ({ risk: c.heading || `Risk ${idx + 1}`, mitigation: (c.bullets || [])[0] || c.mitigation || "" }));
+  rows.forEach((row, idx) => {
+    const y = 1.9 + idx * 1.12;
+    slide.addShape("roundRect", { x: 0.62, y, w: 11.95, h: 0.86, fill: { color: token("card", CARD_BG) }, line: { color: token("card_line", ACCENT_LINE) }, rectRadius: 0.04 });
+    addAccentStrip(slide, 0.62, y, 11.95, accentPalette(idx), { orientation: "left", h: 0.86, thickness: 0.06 });
+    slide.addText(row.risk, { x: 0.87, y: y + 0.18, w: 2.8, h: 0.22, fontSize: 11.5, bold: true, color: token("fg", NAVY), fontFace: headingFace(), fit: "shrink" });
+    slide.addText(row.mitigation, { x: 3.87, y: y + 0.17, w: 8.1, h: 0.28, fontSize: 10.5, color: token("fg", TEXT_DARK), fontFace: bodyFace(), fit: "shrink", wrap: true });
+  });
+  addFooter(slide);
+  addNotes(slide, spec.notes);
+  return slide;
+}
+
+function renderDecisionAskPanelSlide(pptx, spec) {
+  const slide = pptx.addSlide();
+  addSlideTitle(slide, spec);
+  const stats = (spec.stats || []).slice(0, 1);
+  const hero = stats[0] || { value: "$1.2M", label: "Phase 1 budget ask" };
+  slide.addShape("roundRect", { x: 0.62, y: 2.0, w: 4.0, h: 3.9, fill: { color: token("accent", ACCENT) }, line: { color: token("accent", ACCENT) }, rectRadius: 0.07 });
+  slide.addText(hero.value || "", { x: 0.87, y: 2.45, w: 3.5, h: 0.55, fontSize: 36, bold: true, color: WHITE, fontFace: headingFace(), fit: "shrink" });
+  slide.addText(hero.label || "", { x: 1.07, y: 3.25, w: 3.1, h: 0.25, fontSize: 12, color: WHITE, fontFace: bodyFace(), fit: "shrink", align: "center" });
+  if (hero.source) slide.addText(hero.source, { x: 1.07, y: 3.78, w: 3.1, h: 0.95, fontSize: 11.5, color: WHITE, fontFace: bodyFace(), fit: "shrink", wrap: true });
+  const decisions = (spec.decisions || []).slice(0, 4);
+  decisions.forEach((d, idx) => {
+    const x = 5.05 + (idx % 2) * 3.9;
+    const y = 2.0 + Math.floor(idx / 2) * 1.42;
+    slide.addShape("roundRect", { x, y, w: idx % 2 === 0 ? 3.45 : 3.4, h: 1.04, fill: { color: token("card", CARD_BG) }, line: { color: token("card_line", ACCENT_LINE) }, rectRadius: 0.04 });
+    addAccentStrip(slide, x, y, 3.4, accentPalette(idx), { orientation: "left", h: 1.04, thickness: 0.06 });
+    slide.addText(d.label || `Decision ${idx + 1}`, { x: x + 0.2, y: y + 0.18, w: 3.0, h: 0.18, fontSize: 8.6, color: token("muted", TEXT_MUTED), fontFace: bodyFace(), fit: "shrink" });
+    slide.addText(d.text || "", { x: x + 0.2, y: y + 0.48, w: 3.0, h: 0.48, fontSize: 11.2, bold: true, color: token("fg", NAVY), fontFace: headingFace(), fit: "shrink", wrap: true });
+  });
+  const rec = (spec.bullets || [])[0] || "Recommended decision: proceed.";
+  slide.addText(rec, { x: 5.05, y: 5.52, w: 5.8, h: 0.4, fontSize: 14, bold: true, color: token("success", accentPalette(1)), fontFace: headingFace(), fit: "shrink" });
+  addFooter(slide);
+  addNotes(slide, spec.notes);
+  return slide;
+}
+
 function renderArchitectureSlide(pptx, spec) {
   const slide = pptx.addSlide();
   addSlideTitle(slide, spec);
@@ -1750,7 +1933,17 @@ function renderArchitectureSlide(pptx, spec) {
 
 function renderSlide(pptx, spec) {
   const at = archetype(spec);
-  if (!["chart", "table"].includes(spec.role)) {
+  const explicitBoardRole = [
+    "cover_metric_strip",
+    "current_state_estate_map",
+    "impact_scorecard_bars",
+    "option_score_matrix",
+    "platform_operating_model_hub",
+    "roadmap_phase_cards",
+    "risk_control_rows",
+    "decision_ask_panel",
+  ].includes(spec.role);
+  if (!explicitBoardRole && !["chart", "table"].includes(spec.role)) {
     if (spec.role === "risk_heatmap") return renderRiskHeatmapSlide(pptx, spec);
     if (at === "risk_register") return renderRiskRegisterSlide(pptx, spec);
     if (at === "operating_model") return renderOperatingModelSlide(pptx, spec);
@@ -1758,6 +1951,22 @@ function renderSlide(pptx, spec) {
     if (at === "comparison_matrix") return renderComparisonMatrixSlide(pptx, spec);
   }
   switch (spec.role) {
+    case "cover_metric_strip":
+      return renderCoverMetricStripSlide(pptx, spec);
+    case "current_state_estate_map":
+      return renderCurrentStateEstateMapSlide(pptx, spec);
+    case "impact_scorecard_bars":
+      return renderImpactScorecardBarsSlide(pptx, spec);
+    case "option_score_matrix":
+      return renderOptionScoreMatrixSlide(pptx, spec);
+    case "platform_operating_model_hub":
+      return renderPlatformHubSlide(pptx, spec);
+    case "roadmap_phase_cards":
+      return renderTimelineSlide(pptx, spec);
+    case "risk_control_rows":
+      return renderRiskControlRowsSlide(pptx, spec);
+    case "decision_ask_panel":
+      return renderDecisionAskPanelSlide(pptx, spec);
     case "section":
       return renderSectionSlide(pptx, spec);
     case "agenda":

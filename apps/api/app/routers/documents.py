@@ -181,10 +181,13 @@ DeckPlan schema:
 {
   "title": "Deck title",
   "subtitle": "Audience, client, or context",
+  "theme": "warm-editorial | modern-tech | executive-navy | data-product-os | clean-light (optional)",
   "slides": [
     {
       "layout": "section | cover | bullets | executive_summary | comparison | architecture | table | \
-recommendation | timeline | risk_matrix | financial_model | stat_cards | appendix | takeaways",
+recommendation | timeline | risk_matrix | financial_model | stat_cards | appendix | takeaways | \
+cover_metric_strip | current_state_estate_map | impact_scorecard_bars | option_score_matrix | \
+platform_operating_model_hub | roadmap_phase_cards | risk_control_rows | decision_ask_panel",
       "density": "low | medium | high (optional — your estimate of how much content this slide carries; \
 the renderer also computes this and will trim automatically if you under-call it)",
       "title": "Short assertion-style slide title (target 40-60 chars, hard cap ~80)",
@@ -209,6 +212,30 @@ the renderer also computes this and will trim automatically if you under-call it
       "stats": [
         {"value": "$4.2M", "label": "Annual run-rate savings", "source": "optional citation"}
       ],
+      "units": [
+        {"name": "Business unit", "tools": ["Tool A", "Tool B"], "note": "local governance issue"}
+      ],
+      "options": [
+        {
+          "name": "Option name",
+          "summary": "One-sentence option summary",
+          "bullets": ["short proof point"],
+          "scores": {"cost": 2, "control": 3, "adoption": 2},
+          "recommended": true
+        }
+      ],
+      "bars": [
+        {"label": "Cost exposure", "value": 100, "display": "$4-6M", "color": "22D3EE"}
+      ],
+      "platform": {
+        "name": "Enterprise AI Platform",
+        "subtitle": "shared controls | shared infrastructure | reusable patterns",
+        "domains": ["Merchandising", "Supply Chain", "Stores", "Digital"],
+        "capabilities": ["ModelOps", "Access controls", "Observability"]
+      },
+      "decisions": [
+        {"label": "Decision 1", "text": "Approve preferred platform"}
+      ],
       "callout": {"label": "Key Insight", "text": "One or two sentences elaborating on the stats above."},
       "speaker_notes": "Presenter talk track, nuance, caveats, and transitions."
     }
@@ -221,6 +248,27 @@ is not a sequence of text boxes; it is a sequence of decisions, proof objects, c
 and takeaways.
 - `cover`: optional opening slide for the deck's title/positioning statement when it needs more presence than \
 the default title slide (renders like `section`).
+- For board, steering committee, investment, executive technology, AI platform, AI governance, consolidation, \
+modernization, or transformation decks, prefer `"theme": "modern-tech"` and use this component-rich story spine \
+when it fits the prompt: `cover_metric_strip` -> `current_state_estate_map` -> `impact_scorecard_bars` -> \
+`option_score_matrix` -> `platform_operating_model_hub` -> `roadmap_phase_cards` -> `risk_control_rows` -> \
+`decision_ask_panel`. These layouts are designed for decision-quality PPTs; do not substitute generic `bullets` \
+slides when one of these proof objects fits.
+- `cover_metric_strip`: executive cover with 2-3 metric cards. Use `stats`, a decisive `subtitle`, and one \
+bottom-line bullet/callout.
+- `current_state_estate_map`: current fragmented estate / business-unit map. Use `units` with `name`, 2-3 \
+`tools`, and a short `note`; optional bullets summarize what the fragmentation creates.
+- `impact_scorecard_bars`: business impact / cost exposure slide. Use `stats` plus `bars` with numeric `value` \
+and human-readable `display`.
+- `option_score_matrix`: build/buy/hybrid or vendor-option decision slide. Use `options` with `scores` \
+(`cost`, `control`, `adoption` as 1-3) and mark the recommendation.
+- `platform_operating_model_hub`: target-state platform or operating-model diagram. Use `platform.name`, \
+`domains`, and `capabilities`.
+- `roadmap_phase_cards`: phase-by-phase migration path. Use `phases` exactly like `timeline`.
+- `risk_control_rows`: board-ready risk/control strip. Use `columns` where each heading is the risk and first \
+bullet or `mitigation` is the control response.
+- `decision_ask_panel`: final approval slide. Use `stats` for the primary ask and `decisions` for explicit \
+approvals needed.
 - `executive_summary`: first content slide for executive_report/proposal decks. `bullets[0]` is the single \
 "so what" headline (one sentence, the bottom line); remaining bullets are supporting points.
 - `recommendation`: use for the decision/ask slide. `bullets[0]` is the recommendation itself (rendered in an \
@@ -278,6 +326,8 @@ or a tightly written `bullets` insight panel. Do not emit a slide whose only job
 - Prefer object-rich decks over sparse outlines: a board-quality 10-slide deck should usually include at least \
 one stat-card slide, one structured comparison/cards slide, one roadmap/timeline, one recommendation/decision \
 slide, and one technical or operating-model diagram when the topic supports it.
+- For decision decks, make the output feel designed by assigning each slide one visual proof object: metric strip, \
+estate map, score matrix, hub diagram, phase cards, risk rows, or decision panel. Avoid prose-only slides.
 - Use speaker_notes to carry nuance, assumptions, data caveats, and the talk track that should not clutter slides. \
 Treat slide copy and speaker_notes as separate channels: slide copy is the headline, speaker_notes is everything \
 else.

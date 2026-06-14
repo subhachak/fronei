@@ -197,6 +197,18 @@ LAYOUT_ALIASES: dict[str, str] = {
     "outline": "agenda",
     "quote": "callout",
     "testimonial": "callout",
+    "decision_pack_cover": "cover_metric_strip",
+    "metric_cover": "cover_metric_strip",
+    "estate_map": "current_state_estate_map",
+    "current_state_map": "current_state_estate_map",
+    "impact_bars": "impact_scorecard_bars",
+    "score_matrix": "option_score_matrix",
+    "option_matrix": "option_score_matrix",
+    "platform_hub": "platform_operating_model_hub",
+    "target_operating_model": "platform_operating_model_hub",
+    "phase_cards": "roadmap_phase_cards",
+    "risk_rows": "risk_control_rows",
+    "decision_panel": "decision_ask_panel",
 }
 
 SLIDE_TEMPLATES: dict[str, dict[str, Any]] = {
@@ -221,6 +233,14 @@ SLIDE_TEMPLATES: dict[str, dict[str, Any]] = {
     "operating_model": {"components": ["TitleBlock", "OperatingModelGrid", "Footer"], "required": ["columns"]},
     "investment_case": {"components": ["TitleBlock", "InvestmentCaseBlock", "StatCard", "Footer"], "required": ["stats"]},
     "appendix": {"components": ["KickerLabel", "TitleBlock", "AppendixBulletList", "Footer"], "required": ["title"]},
+    "cover_metric_strip": {"components": ["TitleBlock", "StatCard", "CalloutBox", "Footer"], "required": ["title", "stats"]},
+    "current_state_estate_map": {"components": ["TitleBlock", "ComparisonCard", "CalloutBox", "Footer"], "required": ["units"]},
+    "impact_scorecard_bars": {"components": ["TitleBlock", "StatCard", "Chart", "Footer"], "required": ["stats"]},
+    "option_score_matrix": {"components": ["TitleBlock", "ComparisonCard", "Footer"], "required": ["options"]},
+    "platform_operating_model_hub": {"components": ["TitleBlock", "ArchitectureDiagram", "ComparisonCard", "Footer"], "required": ["platform"]},
+    "roadmap_phase_cards": {"components": ["TitleBlock", "Timeline", "Footer"], "required": ["phases"]},
+    "risk_control_rows": {"components": ["TitleBlock", "RiskRegisterTable", "Footer"], "required": ["columns"]},
+    "decision_ask_panel": {"components": ["TitleBlock", "StatCard", "ComparisonCard", "Footer"], "required": ["decisions"]},
 }
 
 ARCHETYPE_TO_TEMPLATE: dict[str, str] = {
@@ -235,6 +255,14 @@ ARCHETYPE_TO_TEMPLATE: dict[str, str] = {
     "roadmap": "timeline",
     "comparison_matrix": "comparison",
     "executive_summary": "executive_summary",
+    "decision_pack_cover": "cover_metric_strip",
+    "current_state_estate_map": "current_state_estate_map",
+    "impact_scorecard_bars": "impact_scorecard_bars",
+    "option_score_matrix": "option_score_matrix",
+    "platform_operating_model_hub": "platform_operating_model_hub",
+    "roadmap_phase_cards": "roadmap_phase_cards",
+    "risk_control_rows": "risk_control_rows",
+    "decision_ask_panel": "decision_ask_panel",
 }
 
 
@@ -302,7 +330,7 @@ def _component_has_content(component_name: str, slide: dict[str, Any]) -> bool:
     if component_name == "CalloutBox":
         return bool(slide.get("callout") or slide.get("bullets"))
     if component_name == "ComparisonCard":
-        return bool(slide.get("columns"))
+        return bool(slide.get("columns") or slide.get("options") or slide.get("decisions"))
     if component_name == "Chart":
         return bool(slide.get("chart"))
     if component_name == "Table":
@@ -314,11 +342,11 @@ def _component_has_content(component_name: str, slide: dict[str, Any]) -> bool:
     if component_name == "RiskRegisterTable":
         return bool(slide.get("heatmap") or slide.get("columns") or slide.get("table"))
     if component_name == "ArchitectureDiagram":
-        return bool(slide.get("bullets") or slide.get("columns"))
+        return bool(slide.get("bullets") or slide.get("columns") or slide.get("platform") or slide.get("units"))
     if component_name == "OperatingModelGrid":
         return bool(slide.get("columns") or slide.get("bullets"))
     if component_name == "InvestmentCaseBlock":
-        return bool(slide.get("stats"))
+        return bool(slide.get("stats") or slide.get("bars"))
     if component_name == "SourceCitation":
         return bool(_sources_for_slide(slide))
     return True
@@ -338,7 +366,7 @@ def _component_payload(component_name: str, slide: dict[str, Any]) -> dict[str, 
         payload["callout"] = slide.get("callout")
         payload["headline"] = (slide.get("bullets") or [None])[0]
     elif component_name == "ComparisonCard":
-        payload["columns"] = slide.get("columns") or []
+        payload["columns"] = slide.get("columns") or slide.get("options") or slide.get("decisions") or []
     elif component_name == "Chart":
         payload["chart"] = slide.get("chart")
     elif component_name == "Table":
@@ -350,12 +378,13 @@ def _component_payload(component_name: str, slide: dict[str, Any]) -> dict[str, 
     elif component_name == "RiskRegisterTable":
         payload["items"] = slide.get("heatmap") or slide.get("columns") or slide.get("table") or []
     elif component_name == "ArchitectureDiagram":
-        payload["nodes"] = slide.get("bullets") or []
+        payload["nodes"] = slide.get("bullets") or slide.get("platform") or slide.get("units") or []
         payload["columns"] = slide.get("columns") or []
     elif component_name == "OperatingModelGrid":
         payload["lanes"] = slide.get("columns") or slide.get("bullets") or []
     elif component_name == "InvestmentCaseBlock":
         payload["stats"] = slide.get("stats") or []
+        payload["bars"] = slide.get("bars") or []
         payload["callout"] = slide.get("callout")
     elif component_name == "SourceCitation":
         payload["sources"] = _sources_for_slide(slide)

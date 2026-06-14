@@ -56,8 +56,31 @@ KNOWN_DOC_TYPES = {
 }
 SPEAKER_NOTES_RE = re.compile(r"^speaker notes?\s*:\s*(.*)$", re.IGNORECASE)
 MAX_BULLETS_PER_SLIDE = 6
-MAX_SLIDE_TITLE_CHARS = 72
+# Slide titles are assertion-style and can legitimately run 70-110 chars.
+# Titles now wrap (word_wrap + TOP anchor) instead of overflowing, so this
+# limit exists mainly as a sanity ceiling rather than a wrap target — a
+# lower value here produced visibly truncated titles ending in "...".
+MAX_SLIDE_TITLE_CHARS = 120
 MAX_BULLET_CHARS = 90
+
+# Default theme used by the python-pptx fallback renderer when the uploaded
+# template's layouts provide no usable placeholders (common for "design
+# scaffold" templates where every slide is hand-laid-out free shapes).
+# Mirrors the warm-editorial palette used by pptx_render/render.js.
+PPTX_FALLBACK_HEADING_FONT = "Georgia"
+PPTX_FALLBACK_BODY_FONT = "Calibri"
+PPTX_FALLBACK_TEXT_RGB = RGBColor(0x28, 0x24, 0x21)
+PPTX_FALLBACK_ACCENT_RGB = RGBColor(0xE0, 0x4F, 0x00)
+PPTX_FALLBACK_NAVY_RGB = RGBColor(0x1F, 0x3B, 0x5C)
+PPTX_FALLBACK_CARD_BG_RGB = RGBColor(0xFF, 0xFD, 0xFC)
+PPTX_FALLBACK_CARD_LINE_RGB = RGBColor(0xD8, 0xCD, 0xC6)
+
+# Title box/accent-rule geometry for the fallback title textbox — mirrors
+# TITLE_BOX_H / TITLE_RULE_Y / CONTENT_TOP_Y in render.js so placeholder-less
+# templates get the same layout rhythm as the PptxGenJS renderer.
+PPTX_TITLE_BOX_H = 1.0
+PPTX_TITLE_RULE_Y = 1.32
+PPTX_CONTENT_TOP_Y = 1.65
 
 # Appendix slides are reference material — denser content is acceptable, so
 # they get a higher per-slide bullet cap than the standard body slides.
@@ -989,7 +1012,17 @@ def parse_deck_plan(content: str) -> dict | None:
         bullets = raw.get("bullets") or raw.get("points") or []
         if isinstance(bullets, str):
             bullets = [bullets]
-        bullets = [_shorten(b, MAX_BULLET_CHARS) for b in bullets if str(b or "").strip()]
+        bullets = [str(b) for b in bullets if str(b or "").strip()]
+        if layout in {"executive_summary", "recommendation"} and bullets:
+            # The first bullet is the headline/primary assertion rendered in a
+            # large font (e.g. _pptx_render_executive_summary's 28pt headline)
+            # — give it the same generous budget as slide titles instead of
+            # truncating it mid-sentence at the standard bullet length.
+            bullets = [_shorten(bullets[0], MAX_SLIDE_TITLE_CHARS)] + [
+                _shorten(b, MAX_BULLET_CHARS) for b in bullets[1:]
+            ]
+        else:
+            bullets = [_shorten(b, MAX_BULLET_CHARS) for b in bullets]
         notes = raw.get("speaker_notes") or raw.get("notes") or ""
         table = raw.get("table")
         if isinstance(table, dict):
@@ -1273,12 +1306,13 @@ def _pptx_title_font_size(text: str) -> int:
     """Scale the title font down for longer titles so it wraps to at most
     ~2 lines within the title placeholder, instead of overflowing into the
     slide body (the cause of title/body overlap on long, LLM-generated
-    titles)."""
+    titles). Thresholds mirror render.js's titleFontSize() so titles render
+    consistently across the PptxGenJS and python-pptx renderers."""
     length = len(text or "")
-    if length <= 45:
-        return 32
-    if length <= 70:
-        return 26
+    if length <= 42:
+        return 28
+    if length <= 64:
+        return 24
     return 20
 
 
@@ -1297,6 +1331,41 @@ def _pptx_set_title(slide, text: str) -> None:
         font_size = _pptx_title_font_size(text or "Untitled")
         for run in p.runs:
             run.font.size = PptxPt(font_size)
+        return
+
+    # Some branded templates define slide layouts with no placeholders at
+    # all (every slide in the source deck was hand-laid-out free shapes).
+    # `slide.shapes.title` is then always None and titles were silently
+    # dropped. Fall back to a styled textbox + accent rule so every slide
+    # still gets a title.
+    _pptx_add_title_textbox(slide, text)
+
+
+def _pptx_add_title_textbox(slide, text: str) -> None:
+    box = slide.shapes.add_textbox(
+        PptxInches(0.65), PptxInches(0.42), PptxInches(11.0), PptxInches(PPTX_TITLE_BOX_H)
+    )
+    tf = box.text_frame
+    tf.word_wrap = True
+    try:
+        tf.vertical_anchor = MSO_ANCHOR.TOP
+    except Exception:
+        pass
+    p = tf.paragraphs[0]
+    _pptx_add_runs(p, text or "Untitled")
+    font_size = _pptx_title_font_size(text or "Untitled")
+    for run in p.runs:
+        run.font.size = PptxPt(font_size)
+        run.font.bold = True
+        run.font.name = PPTX_FALLBACK_HEADING_FONT
+        run.font.color.rgb = PPTX_FALLBACK_TEXT_RGB
+
+    rule = slide.shapes.add_shape(
+        MSO_SHAPE.RECTANGLE, PptxInches(0.65), PptxInches(PPTX_TITLE_RULE_Y), PptxInches(1.0), PptxInches(0.04)
+    )
+    rule.fill.solid()
+    rule.fill.fore_color.rgb = PPTX_FALLBACK_ACCENT_RGB
+    rule.line.fill.background()
 
 
 def _pptx_render_table(slide, rows: list[list[str]]) -> None:
@@ -1322,6 +1391,7 @@ def _pptx_render_table(slide, rows: list[list[str]]) -> None:
 def _pptx_add_text_box(slide, left, top, width, height, heading: str, bullets: list[str]) -> None:
     box = slide.shapes.add_textbox(left, top, width, height)
     tf = box.text_frame
+    tf.word_wrap = True
     tf.clear()
     if heading:
         p = tf.paragraphs[0]
@@ -1329,12 +1399,16 @@ def _pptx_add_text_box(slide, left, top, width, height, heading: str, bullets: l
         for run in p.runs:
             run.font.bold = True
             run.font.size = PptxPt(15)
+            run.font.name = PPTX_FALLBACK_HEADING_FONT
+            run.font.color.rgb = PPTX_FALLBACK_TEXT_RGB
     for idx, bullet in enumerate(bullets):
         p = tf.paragraphs[0] if idx == 0 and not heading else tf.add_paragraph()
         p.level = 0
         _pptx_add_runs(p, bullet)
         for run in p.runs:
             run.font.size = PptxPt(13)
+            run.font.name = PPTX_FALLBACK_BODY_FONT
+            run.font.color.rgb = PPTX_FALLBACK_TEXT_RGB
 
 
 def _pptx_render_executive_summary(slide, bullets: list[str]) -> None:
@@ -1448,11 +1522,27 @@ def _pptx_render_deck_plan(prs: Presentation, plan: dict, fallback_title: str, s
     _pptx_set_title(title_slide, plan.get("title") or fallback_title or "Fronei deck")
     deck_subtitle = plan.get("subtitle") or subtitle
     if deck_subtitle:
+        subtitle_placeholder = None
         for shape in title_slide.placeholders:
             if shape.placeholder_format.idx == 1:
-                shape.text_frame.text = ""
-                _pptx_add_runs(shape.text_frame.paragraphs[0], deck_subtitle)
+                subtitle_placeholder = shape
                 break
+        if subtitle_placeholder is not None:
+            subtitle_placeholder.text_frame.text = ""
+            _pptx_add_runs(subtitle_placeholder.text_frame.paragraphs[0], deck_subtitle)
+        else:
+            # No subtitle placeholder on this template's title layout — drop a
+            # styled textbox below the (also-fallback) title textbox.
+            box = title_slide.shapes.add_textbox(
+                PptxInches(0.65), PptxInches(PPTX_CONTENT_TOP_Y), PptxInches(11.0), PptxInches(0.8)
+            )
+            tf = box.text_frame
+            tf.word_wrap = True
+            _pptx_add_runs(tf.paragraphs[0], deck_subtitle)
+            for run in tf.paragraphs[0].runs:
+                run.font.size = PptxPt(16)
+                run.font.name = PPTX_FALLBACK_BODY_FONT
+                run.font.color.rgb = PPTX_FALLBACK_NAVY_RGB
 
     for spec in plan.get("slides", []):
         layout = spec.get("layout") or "bullets"
@@ -1479,11 +1569,20 @@ def _pptx_render_deck_plan(prs: Presentation, plan: dict, fallback_title: str, s
             gap = 0.35
             col_w_in = (total_w - gap * (n - 1)) / n
             col_w = PptxInches(col_w_in)
-            top = PptxInches(1.55)
+            top = PptxInches(PPTX_CONTENT_TOP_Y)
             height = PptxInches(4.9)
             for idx, col in enumerate(cols):
                 left = PptxInches(0.65 + idx * (col_w_in + gap))
-                _pptx_add_text_box(slide, left, top, col_w, height, col.get("heading") or "", col.get("bullets") or [])
+                card = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, left, top, col_w, height)
+                card.fill.solid()
+                card.fill.fore_color.rgb = PPTX_FALLBACK_CARD_BG_RGB
+                card.line.color.rgb = PPTX_FALLBACK_CARD_LINE_RGB
+                card.shadow.inherit = False
+                inset = PptxInches(0.18)
+                _pptx_add_text_box(
+                    slide, left + inset, top + inset, col_w - inset * 2, height - inset * 2,
+                    col.get("heading") or "", col.get("bullets") or [],
+                )
         elif layout == "executive_summary":
             slide = prs.slides.add_slide(_pptx_layout_for_role(prs, "title_only"))
             _pptx_set_title(slide, title)
@@ -1522,6 +1621,13 @@ def _pptx_render_deck_plan(prs: Presentation, plan: dict, fallback_title: str, s
                     p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
                     p.level = 0
                     _pptx_add_runs(p, bullet)
+            else:
+                # Template layout has no body placeholder either — fall back
+                # to a textbox positioned below the (also-fallback) title.
+                _pptx_add_text_box(
+                    slide, PptxInches(0.65), PptxInches(PPTX_CONTENT_TOP_Y), PptxInches(11.0), PptxInches(4.9),
+                    "", bullets[:cap] or [""],
+                )
         if notes:
             slide.notes_slide.notes_text_frame.text = notes
 

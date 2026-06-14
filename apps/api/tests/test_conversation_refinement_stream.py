@@ -925,6 +925,95 @@ def test_execute_plan_confirmed_expert_mode_bypasses_followup_fast_path(client, 
     assert "Expert-verified findings" in done["answer"]
 
 
+def test_execute_plan_with_clarifications_reaches_generation(client, monkeypatch):
+    """Regression test for the plan-confirmation popup showing open_questions
+    with no way for the user to answer them. The PlanModal now lets the user
+    type an answer, sent as confirmed_plan.clarifications; execute-plan must
+    fold that into the enriched prompt actually used for generation."""
+    c, Session = client
+
+    plan = passthrough("What's the best way to structure our Q3 roadmap?")
+    plan.action = "answer_directly"
+    plan.intent = "Help structure the Q3 roadmap"
+    plan.enriched_prompt = "Help structure the Q3 roadmap."
+    plan.plan_confidence = "low"
+    plan.open_questions = ["Which team's roadmap — engineering, product, or both?"]
+
+    with Session() as db:
+        conv = Conversation(user_id="u1", title="Roadmap", profile="balanced", message_count=0)
+        db.add(conv)
+        db.flush()
+        user_msg = ConversationMessage(
+            conversation_id=conv.id,
+            role="user",
+            content="What's the best way to structure our Q3 roadmap?",
+            plan_json=json.dumps(plan_to_dict(plan)),
+        )
+        db.add(user_msg)
+        db.commit()
+        conv_id = conv.public_id
+        message_id = user_msg.id
+
+    route = RouteDecision(
+        task_type="planning",
+        complexity="low",
+        profile="balanced",
+        primary_model="gpt-4.1-mini",
+        fallbacks=[],
+        reason="clarification test",
+    )
+    wc = WebContextResult(context=None, status="Web context not requested.", provider="", sources_count=0, search_query=None)
+
+    captured_setup_plan: dict = {}
+
+    real_build_pipeline_setup = conversations.build_pipeline_setup
+
+    def spy_build_pipeline_setup(req, conv_arg, history, settings, **kwargs):
+        setup = real_build_pipeline_setup(req, conv_arg, history, settings, **kwargs)
+        captured_setup_plan["enriched_prompt"] = setup.plan.enriched_prompt
+        return PipelineSetup(
+            plan=setup.plan, route=route, wc=wc,
+            enable_native=False, planner_ctx=None,
+            running_summary="", profile="balanced",
+        )
+
+    monkeypatch.setattr(conversations, "build_pipeline_setup", spy_build_pipeline_setup)
+
+    captured_prompt: dict = {}
+
+    def fake_stream_llm(prompt, *args, **kwargs):
+        captured_prompt["prompt"] = prompt
+        yield LLMResult(
+            answer="Here's a Q3 roadmap structure for engineering and product.",
+            model_used="gpt-4.1-mini",
+            latency_ms=10,
+            prompt_tokens=5,
+            completion_tokens=10,
+            estimated_cost_usd=0.001,
+        )
+
+    monkeypatch.setattr(conversations, "stream_llm", fake_stream_llm)
+
+    response = c.post(
+        f"/conversations/{conv_id}/messages/{message_id}/execute-plan",
+        json={
+            "confirmed_plan": {
+                "clarifications": "This is for the engineering team's roadmap.",
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    events = _events(response.text)
+    done = events[-1][1]
+
+    assert done["answer"] == "Here's a Q3 roadmap structure for engineering and product."
+    # The user's answer to the open question reached the prompt actually sent
+    # for generation, not just the persisted message.
+    assert "engineering team's roadmap" in captured_prompt["prompt"]
+    assert "engineering team's roadmap" in captured_setup_plan["enriched_prompt"]
+
+
 def test_stream_refinement_skips_raw_mode(client, monkeypatch):
     c, Session = client
     raw_answer = " ".join(["This response has enough words to trigger refinement"] * 8)

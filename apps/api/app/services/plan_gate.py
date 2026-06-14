@@ -105,10 +105,15 @@ def evaluate(plan: Plan) -> PlanGateResult:
     )
     if doc_gates:
         gate_reasons.append("document")
-        for f in missing_fields:
-            open_questions.append(f"Document {f.replace('_', ' ')} isn't specified.")
-        if len(format_options) > max_silent_formats:
-            open_questions.append("Multiple document formats could work for this — which do you want?")
+        # Note: we deliberately do NOT add synthetic open_questions for
+        # missing brief fields or multiple format options here. Both are
+        # already addressed by the Document capability controls in the
+        # plan_proposed popup (the "Generate document"/format-picker toggle
+        # itself answers "do you want a document, and in what format?") —
+        # surfacing them again as open_questions with no other mechanism to
+        # answer them just duplicates the UI. Only genuine clarifying
+        # questions from the planner (plan.open_questions) are surfaced for
+        # the user to answer via free text.
 
     supported_formats = set(policy.get("supported_document_formats", ["markdown", "docx"]))
     document_state = CapabilityState(

@@ -63,6 +63,15 @@ const MARGIN_X = 0.65;
 
 const MAX_BULLETS_PER_SLIDE = 6;
 const MAX_APPENDIX_BULLETS = 10;
+let ACTIVE_DESIGN_SYSTEM = {};
+
+function themeTokens() {
+  return (((ACTIVE_DESIGN_SYSTEM || {}).tokens || {}).theme || {});
+}
+
+function token(name, fallback) {
+  return themeTokens()[name] || fallback;
+}
 
 function slideBg(slide) {
   slide.background = { color: BG };
@@ -105,6 +114,14 @@ function blueprintFor(spec) {
   return spec && spec.blueprint && typeof spec.blueprint === "object" ? spec.blueprint : {};
 }
 
+function componentTreeFor(spec) {
+  return spec && spec.component_tree && typeof spec.component_tree === "object" ? spec.component_tree : {};
+}
+
+function templateFor(spec) {
+  return componentTreeFor(spec).template || blueprintFor(spec).template || spec.role || "content";
+}
+
 function emphasisColor(spec) {
   const bp = blueprintFor(spec);
   return EMPHASIS_COLORS[bp.emphasis] || TEAL;
@@ -117,8 +134,16 @@ function emphasisInk(spec) {
 
 function blueprintLabel(spec) {
   const bp = blueprintFor(spec);
-  const label = bp.proof_object || bp.archetype || bp.layout || spec.role || "insight";
+  const label = templateFor(spec) || bp.proof_object || bp.archetype || bp.layout || spec.role || "insight";
   return String(label).replace(/_/g, " ").toUpperCase();
+}
+
+function archetype(spec) {
+  return blueprintFor(spec).archetype || "";
+}
+
+function slideBullets(spec, cap = MAX_BULLETS_PER_SLIDE) {
+  return (spec.bullets || []).slice(0, cap).map((b) => bulletText(typeof b === "object" ? (b.text || b) : b, 96)).filter(Boolean);
 }
 
 function addBlueprintKicker(slide, spec, x = 10.0, y = 0.58, w = 2.35) {
@@ -534,6 +559,105 @@ function renderContentSlide(pptx, spec) {
   return slide;
 }
 
+function renderAgendaSlide(pptx, spec) {
+  const slide = pptx.addSlide();
+  addSlideTitle(slide, spec);
+  const items = slideBullets(spec, 7);
+  items.forEach((item, idx) => {
+    const y = 1.62 + idx * 0.62;
+    slide.addText(String(idx + 1).padStart(2, "0"), {
+      x: 0.86,
+      y,
+      w: 0.6,
+      h: 0.32,
+      fontSize: 13,
+      bold: true,
+      color: GOLD,
+      fontFace: HEADING_FACE,
+      align: "right",
+    });
+    slide.addShape("rect", {
+      x: 1.72,
+      y: y + 0.16,
+      w: 0.42,
+      h: 0.025,
+      fill: { color: ACCENT_LINE },
+      line: { color: ACCENT_LINE },
+    });
+    slide.addText(item, {
+      x: 2.34,
+      y: y - 0.02,
+      w: 8.8,
+      h: 0.38,
+      fontSize: 15,
+      color: NAVY,
+      fontFace: BODY_FACE,
+      fit: "shrink",
+      wrap: true,
+    });
+  });
+  addFooter(slide);
+  addNotes(slide, spec.notes);
+  return slide;
+}
+
+function renderCalloutSlide(pptx, spec) {
+  const slide = pptx.addSlide();
+  addSlideTitle(slide, spec);
+  const callout = spec.callout || {};
+  const bullets = slideBullets(spec, 4);
+  const headline = callout.text || bullets[0] || "";
+  slide.addShape("roundRect", {
+    x: 0.92,
+    y: 1.78,
+    w: 11.15,
+    h: 2.55,
+    fill: { color: NAVY },
+    line: { color: NAVY },
+    rectRadius: 0.08,
+  });
+  slide.addText(callout.label || "Key insight", {
+    x: 1.28,
+    y: 2.1,
+    w: 2.3,
+    h: 0.24,
+    fontSize: 9,
+    bold: true,
+    color: GOLD,
+    fontFace: BODY_FACE,
+    charSpacing: 1.2,
+  });
+  slide.addText(headline, {
+    x: 1.28,
+    y: 2.55,
+    w: 10.0,
+    h: 1.12,
+    fontSize: 24,
+    bold: true,
+    color: WHITE,
+    fontFace: HEADING_FACE,
+    fit: "shrink",
+    wrap: true,
+  });
+  bullets.slice(callout.text ? 0 : 1, callout.text ? 3 : 4).forEach((b, idx) => {
+    slide.addText(b, {
+      x: 1.08 + idx * 3.9,
+      y: 4.85,
+      w: 3.45,
+      h: 0.72,
+      fontSize: 12,
+      bold: true,
+      color: TEXT_DARK,
+      fontFace: BODY_FACE,
+      fit: "shrink",
+      wrap: true,
+    });
+  });
+  addFooter(slide);
+  addNotes(slide, spec.notes);
+  return slide;
+}
+
 function renderTwoContentSlide(pptx, spec) {
   const slide = pptx.addSlide();
   addSlideTitle(slide, spec);
@@ -592,6 +716,355 @@ function renderTwoContentSlide(pptx, spec) {
   return slide;
 }
 
+function renderRiskRegisterSlide(pptx, spec) {
+  const slide = pptx.addSlide();
+  addSlideTitle(slide, spec);
+  const riskColor = EMPHASIS_COLORS.risk;
+  const rows = (spec.columns && spec.columns.length)
+    ? spec.columns.slice(0, 3).map((col) => ({
+        risk: col.heading || "Risk",
+        signal: (col.bullets || [])[0] || "",
+        mitigation: (col.bullets || [])[1] || (col.bullets || [])[0] || "",
+      }))
+    : slideBullets(spec, 4).slice(0, 3).map((b, idx) => ({
+        risk: idx === 0 ? "Primary risk" : `Risk ${idx + 1}`,
+        signal: b,
+        mitigation: "Define owner, control, and escalation path.",
+      }));
+  const top = 1.62;
+  const rowH = 1.25;
+  const headers = ["Risk", "Signal", "Mitigation"];
+  const xs = [0.72, 3.95, 7.2];
+  const ws = [2.9, 2.9, 5.2];
+  headers.forEach((h, idx) => {
+    slide.addText(h.toUpperCase(), {
+      x: xs[idx],
+      y: 1.28,
+      w: ws[idx],
+      h: 0.22,
+      fontSize: 8,
+      bold: true,
+      color: TEXT_MUTED,
+      fontFace: BODY_FACE,
+      charSpacing: 1.2,
+    });
+  });
+  rows.forEach((row, idx) => {
+    const y = top + idx * (rowH + 0.22);
+    slide.addShape("roundRect", {
+      x: 0.72,
+      y,
+      w: 11.65,
+      h: rowH,
+      fill: { color: idx === 0 ? NAVY : CARD_BG },
+      line: { color: idx === 0 ? NAVY : ACCENT_LINE },
+      rectRadius: 0.05,
+    });
+    addIconBadge(slide, 0.95, y + 0.34, "!", { fill: riskColor, color: WHITE, w: 0.42, h: 0.42, fontSize: 13 });
+    slide.addText(bulletText(row.risk, 48), {
+      x: 1.48,
+      y: y + 0.26,
+      w: 2.05,
+      h: 0.72,
+      fontSize: 12,
+      bold: true,
+      color: idx === 0 ? WHITE : NAVY,
+      fontFace: BODY_FACE,
+      fit: "shrink",
+      wrap: true,
+    });
+    slide.addText(bulletText(row.signal, 90), {
+      x: 3.95,
+      y: y + 0.24,
+      w: 2.9,
+      h: 0.76,
+      fontSize: 11,
+      color: idx === 0 ? WHITE : TEXT_DARK,
+      fontFace: BODY_FACE,
+      fit: "shrink",
+      wrap: true,
+    });
+    slide.addText(bulletText(row.mitigation, 105), {
+      x: 7.2,
+      y: y + 0.24,
+      w: 4.8,
+      h: 0.76,
+      fontSize: 11,
+      color: idx === 0 ? WHITE : TEXT_DARK,
+      fontFace: BODY_FACE,
+      fit: "shrink",
+      wrap: true,
+    });
+  });
+  slide.addText("Risk posture", {
+    x: 0.72,
+    y: 5.92,
+    w: 2.4,
+    h: 0.28,
+    fontSize: 13,
+    bold: true,
+    color: riskColor,
+    fontFace: HEADING_FACE,
+  });
+  addFooter(slide);
+  addNotes(slide, spec.notes);
+  return slide;
+}
+
+function renderRiskHeatmapSlide(pptx, spec) {
+  const slide = pptx.addSlide();
+  addSlideTitle(slide, spec);
+  const items = (spec.heatmap || []).slice(0, 5);
+  const gridX = 0.95;
+  const gridY = 1.72;
+  const cell = 1.18;
+  const colors = {
+    low: "D7EFE7",
+    medium: "F6DF9D",
+    high: "E89186",
+  };
+  const order = ["low", "medium", "high"];
+  slide.addText("Impact", {
+    x: 0.4,
+    y: gridY + 1.05,
+    w: 0.32,
+    h: 0.3,
+    fontSize: 8,
+    bold: true,
+    color: TEXT_MUTED,
+    fontFace: BODY_FACE,
+    rotate: 270,
+  });
+  slide.addText("Likelihood", {
+    x: gridX + 1.05,
+    y: gridY + cell * 3 + 0.18,
+    w: 1.6,
+    h: 0.2,
+    fontSize: 8,
+    bold: true,
+    color: TEXT_MUTED,
+    fontFace: BODY_FACE,
+    align: "center",
+  });
+  for (let yIdx = 0; yIdx < 3; yIdx++) {
+    for (let xIdx = 0; xIdx < 3; xIdx++) {
+      const impact = order[2 - yIdx];
+      const likelihood = order[xIdx];
+      const severity = xIdx + (2 - yIdx);
+      const fill = severity <= 1 ? colors.low : severity <= 3 ? colors.medium : colors.high;
+      slide.addShape("roundRect", {
+        x: gridX + xIdx * cell,
+        y: gridY + yIdx * cell,
+        w: cell - 0.04,
+        h: cell - 0.04,
+        fill: { color: fill },
+        line: { color: WHITE, transparency: 10 },
+        rectRadius: 0.03,
+      });
+      slide.addText(`${impact[0].toUpperCase()} / ${likelihood[0].toUpperCase()}`, {
+        x: gridX + xIdx * cell + 0.08,
+        y: gridY + yIdx * cell + 0.08,
+        w: cell - 0.2,
+        h: 0.18,
+        fontSize: 6.5,
+        bold: true,
+        color: TEXT_MUTED,
+        fontFace: BODY_FACE,
+      });
+    }
+  }
+  items.forEach((item, idx) => {
+    const xIdx = order.indexOf(String(item.likelihood || "").toLowerCase());
+    const yIdx = 2 - order.indexOf(String(item.impact || "").toLowerCase());
+    if (xIdx < 0 || yIdx < 0) return;
+    const x = gridX + xIdx * cell + 0.34 + (idx % 2) * 0.18;
+    const y = gridY + yIdx * cell + 0.42 + (idx % 2) * 0.12;
+    slide.addShape("ellipse", {
+      x,
+      y,
+      w: 0.32,
+      h: 0.32,
+      fill: { color: NAVY },
+      line: { color: GOLD, width: 1 },
+    });
+    slide.addText(String(idx + 1), {
+      x,
+      y: y + 0.02,
+      w: 0.32,
+      h: 0.22,
+      fontSize: 8,
+      bold: true,
+      color: WHITE,
+      fontFace: BODY_FACE,
+      align: "center",
+    });
+  });
+  slide.addShape("roundRect", {
+    x: 5.05,
+    y: 1.65,
+    w: 7.15,
+    h: 4.45,
+    fill: { color: CARD_BG },
+    line: { color: ACCENT_LINE },
+    rectRadius: 0.06,
+  });
+  slide.addText("Risk register", {
+    x: 5.32,
+    y: 1.92,
+    w: 2.4,
+    h: 0.28,
+    fontSize: 13,
+    bold: true,
+    color: EMPHASIS_COLORS.risk,
+    fontFace: HEADING_FACE,
+  });
+  items.forEach((item, idx) => {
+    const y = 2.45 + idx * 0.68;
+    addIconBadge(slide, 5.32, y, String(idx + 1), { fill: EMPHASIS_COLORS.risk, color: WHITE, w: 0.32, h: 0.32, fontSize: 9 });
+    slide.addText(`${bulletText(item.label, 44)} · ${item.likelihood}/${item.impact}`, {
+      x: 5.78,
+      y: y - 0.03,
+      w: 5.85,
+      h: 0.26,
+      fontSize: 10.5,
+      bold: true,
+      color: NAVY,
+      fontFace: BODY_FACE,
+      fit: "shrink",
+    });
+    if (item.mitigation) {
+      slide.addText(bulletText(item.mitigation, 78), {
+        x: 5.78,
+        y: y + 0.25,
+        w: 5.85,
+        h: 0.22,
+        fontSize: 8.5,
+        color: TEXT_MUTED,
+        fontFace: BODY_FACE,
+        fit: "shrink",
+      });
+    }
+  });
+  addFooter(slide);
+  addNotes(slide, spec.notes);
+  return slide;
+}
+
+function renderOperatingModelSlide(pptx, spec) {
+  const slide = pptx.addSlide();
+  addSlideTitle(slide, spec);
+  const cols = (spec.columns || []).slice(0, 4);
+  const lanes = cols.length ? cols : slideBullets(spec, 4).map((b, idx) => ({ heading: `Lane ${idx + 1}`, bullets: [b] }));
+  const top = 1.58;
+  const laneH = 0.98;
+  lanes.slice(0, 4).forEach((lane, idx) => {
+    const y = top + idx * (laneH + 0.22);
+    const dark = idx === 0;
+    slide.addShape("roundRect", {
+      x: 0.72,
+      y,
+      w: 11.65,
+      h: laneH,
+      fill: { color: dark ? NAVY : CARD_BG },
+      line: { color: dark ? NAVY : ACCENT_LINE },
+      rectRadius: 0.05,
+    });
+    addIconBadge(slide, 0.96, y + 0.25, "✓", { fill: dark ? GOLD : TEAL, color: dark ? NAVY : WHITE, w: 0.4, h: 0.4, fontSize: 12 });
+    slide.addText(bulletText(lane.heading || `Owner ${idx + 1}`, 42), {
+      x: 1.55,
+      y: y + 0.2,
+      w: 2.55,
+      h: 0.5,
+      fontSize: 13,
+      bold: true,
+      color: dark ? WHITE : NAVY,
+      fontFace: HEADING_FACE,
+      fit: "shrink",
+    });
+    slide.addText((lane.bullets || []).slice(0, 2).map((b) => bulletText(b, 78)).join("  |  "), {
+      x: 4.28,
+      y: y + 0.22,
+      w: 7.62,
+      h: 0.48,
+      fontSize: 11,
+      color: dark ? WHITE : TEXT_DARK,
+      fontFace: BODY_FACE,
+      fit: "shrink",
+      wrap: true,
+    });
+  });
+  slide.addText("Operating lanes", {
+    x: 0.72,
+    y: 6.05,
+    w: 2.6,
+    h: 0.28,
+    fontSize: 13,
+    bold: true,
+    color: TEAL,
+    fontFace: HEADING_FACE,
+  });
+  addFooter(slide);
+  addNotes(slide, spec.notes);
+  return slide;
+}
+
+function renderComparisonMatrixSlide(pptx, spec) {
+  const slide = pptx.addSlide();
+  addSlideTitle(slide, spec);
+  const cols = (spec.columns || []).slice(0, 3);
+  if (!cols.length) return renderTwoContentSlide(pptx, spec);
+  const top = 1.65;
+  const colW = 3.65;
+  cols.forEach((col, idx) => {
+    const x = 0.72 + idx * 3.92;
+    const recommended = /recommend|preferred|target|selected/i.test(`${col.heading} ${(col.bullets || []).join(" ")}`) || idx === cols.length - 1;
+    slide.addShape("roundRect", {
+      x,
+      y: top,
+      w: colW,
+      h: 4.25,
+      fill: { color: recommended ? NAVY : CARD_BG },
+      line: { color: recommended ? NAVY : ACCENT_LINE },
+      rectRadius: 0.06,
+    });
+    slide.addText(recommended ? "RECOMMENDED" : `OPTION ${idx + 1}`, {
+      x: x + 0.22,
+      y: top + 0.22,
+      w: colW - 0.44,
+      h: 0.22,
+      fontSize: 7.5,
+      bold: true,
+      color: recommended ? GOLD : TEXT_MUTED,
+      fontFace: BODY_FACE,
+      charSpacing: 1.1,
+    });
+    slide.addText(bulletText(col.heading || `Option ${idx + 1}`, 46), {
+      x: x + 0.22,
+      y: top + 0.62,
+      w: colW - 0.44,
+      h: 0.62,
+      fontSize: 15,
+      bold: true,
+      color: recommended ? WHITE : NAVY,
+      fontFace: HEADING_FACE,
+      fit: "shrink",
+      wrap: true,
+    });
+    slide.addText(bulletsToTextProps((col.bullets || []).slice(0, 4).map((b) => ({ level: 0, text: bulletText(b, 76) })), { fontSize: 10.6, color: recommended ? WHITE : TEXT_DARK }), {
+      x: x + 0.24,
+      y: top + 1.55,
+      w: colW - 0.48,
+      h: 2.25,
+      fontFace: BODY_FACE,
+      fit: "shrink",
+      wrap: true,
+    });
+  });
+  addFooter(slide);
+  addNotes(slide, spec.notes);
+  return slide;
+}
+
 const CHART_TYPE_MAP = {
   bar: "bar",
   line: "line",
@@ -621,7 +1094,7 @@ function renderChartSlide(pptx, spec) {
     showLegend: series.length > 1 || chartType === "pie",
     legendPos: "b",
     showTitle: false,
-    chartColors: [ACCENT, NAVY, "8C6F5D", "C9A14A"],
+    chartColors: token("chart_palette", [ACCENT, NAVY, "8C6F5D", "C9A14A"]),
     catAxisLabelFontSize: 11,
     valAxisLabelFontSize: 11,
     dataLabelFontSize: 10,
@@ -654,8 +1127,8 @@ function renderTableSlide(pptx, spec) {
         options: {
           fontSize: 12,
           bold: rIdx === 0,
-          color: rIdx === 0 ? WHITE : TEXT_DARK,
-          fill: rIdx === 0 ? { color: NAVY } : { color: rIdx % 2 === 0 ? SOFT_BG : WHITE },
+          color: rIdx === 0 ? token("table_header_text", WHITE) : TEXT_DARK,
+          fill: rIdx === 0 ? { color: token("table_header_fill", NAVY) } : { color: rIdx % 2 === 0 ? SOFT_BG : WHITE },
           valign: "middle",
         },
       });
@@ -956,6 +1429,110 @@ function renderStatCardsSlide(pptx, spec) {
   return slide;
 }
 
+function renderInvestmentCaseSlide(pptx, spec) {
+  const slide = pptx.addSlide();
+  addSlideTitle(slide, spec);
+  const stats = (spec.stats || []).filter((s) => s && (s.value || s.label)).slice(0, 4);
+  if (!stats.length) return renderStatCardsSlide(pptx, spec);
+  const hero = stats[0];
+  slide.addShape("roundRect", {
+    x: 0.72,
+    y: 1.55,
+    w: 4.15,
+    h: 4.65,
+    fill: { color: NAVY },
+    line: { color: NAVY },
+    rectRadius: 0.08,
+  });
+  slide.addText("Investment case", {
+    x: 1.02,
+    y: 1.92,
+    w: 2.8,
+    h: 0.28,
+    fontSize: 11,
+    bold: true,
+    color: GOLD,
+    fontFace: BODY_FACE,
+    charSpacing: 1.2,
+  });
+  slide.addText(hero.value || "", {
+    x: 1.02,
+    y: 2.55,
+    w: 3.35,
+    h: 0.82,
+    fontSize: 32,
+    bold: true,
+    color: WHITE,
+    fontFace: HEADING_FACE,
+    fit: "shrink",
+  });
+  slide.addText(hero.label || "", {
+    x: 1.04,
+    y: 3.55,
+    w: 3.35,
+    h: 0.75,
+    fontSize: 13,
+    color: "D5ECEA",
+    fontFace: BODY_FACE,
+    fit: "shrink",
+    wrap: true,
+  });
+  const remaining = stats.slice(1, 4);
+  remaining.forEach((stat, idx) => {
+    const y = 1.62 + idx * 1.36;
+    slide.addShape("roundRect", {
+      x: 5.2,
+      y,
+      w: 7.1,
+      h: 1.08,
+      fill: { color: CARD_BG },
+      line: { color: ACCENT_LINE },
+      rectRadius: 0.05,
+    });
+    addIconBadge(slide, 5.44, y + 0.28, "$", { fill: GOLD, color: NAVY, w: 0.42, h: 0.42, fontSize: 12 });
+    slide.addText(stat.value || "", {
+      x: 6.08,
+      y: y + 0.18,
+      w: 1.45,
+      h: 0.48,
+      fontSize: 18,
+      bold: true,
+      color: NAVY,
+      fontFace: HEADING_FACE,
+      fit: "shrink",
+    });
+    slide.addText(stat.label || "", {
+      x: 7.65,
+      y: y + 0.22,
+      w: 4.1,
+      h: 0.42,
+      fontSize: 11.5,
+      color: TEXT_DARK,
+      fontFace: BODY_FACE,
+      fit: "shrink",
+      wrap: true,
+    });
+  });
+  const callout = spec.callout;
+  if (callout && callout.text) {
+    slide.addText(`${callout.label || "Decision signal"}: ${callout.text}`, {
+      x: 5.2,
+      y: 5.7,
+      w: 6.9,
+      h: 0.42,
+      fontSize: 11,
+      bold: true,
+      color: TEXT_DARK,
+      fontFace: BODY_FACE,
+      fit: "shrink",
+      wrap: true,
+    });
+  }
+  addFooter(slide);
+  addNotes(slide, spec.notes);
+  return slide;
+}
+
 function renderArchitectureSlide(pptx, spec) {
   const slide = pptx.addSlide();
   addSlideTitle(slide, spec);
@@ -1065,9 +1642,21 @@ function renderArchitectureSlide(pptx, spec) {
 }
 
 function renderSlide(pptx, spec) {
+  const at = archetype(spec);
+  if (!["chart", "table"].includes(spec.role)) {
+    if (spec.role === "risk_heatmap") return renderRiskHeatmapSlide(pptx, spec);
+    if (at === "risk_register") return renderRiskRegisterSlide(pptx, spec);
+    if (at === "operating_model") return renderOperatingModelSlide(pptx, spec);
+    if (at === "investment_case") return renderInvestmentCaseSlide(pptx, spec);
+    if (at === "comparison_matrix") return renderComparisonMatrixSlide(pptx, spec);
+  }
   switch (spec.role) {
     case "section":
       return renderSectionSlide(pptx, spec);
+    case "agenda":
+      return renderAgendaSlide(pptx, spec);
+    case "callout":
+      return renderCalloutSlide(pptx, spec);
     case "chart":
       return renderChartSlide(pptx, spec);
     case "table":
@@ -1100,6 +1689,7 @@ async function main() {
   }
 
   const pptx = new pptxgen();
+  ACTIVE_DESIGN_SYSTEM = payload.design_system || {};
   pptx.defineLayout({ name: "FRONEI_WIDE", width: SLIDE_W, height: SLIDE_H });
   pptx.layout = "FRONEI_WIDE";
 

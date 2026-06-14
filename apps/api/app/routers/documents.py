@@ -32,6 +32,7 @@ from app.services.document_extractor import (
     extract_text,
 )
 from app.services.document_generator import (
+    compose_deck_plan_parallel,
     deck_plan_to_markdown,
     generate_docx_bytes,
     generate_pptx_bytes,
@@ -679,9 +680,13 @@ def build_document_artifact(
     carries an explicit generation_error so the UI can be honest with users.
     """
     deck_plan = parse_deck_plan(body_markdown) if doc_type == "presentation" else None
+    composition: dict | None = None
+    if deck_plan:
+        deck_plan, composition = compose_deck_plan_parallel(deck_plan)
+        body_markdown = json.dumps(deck_plan)
     title = (deck_plan or {}).get("title") or title or _title_from_markdown(body_markdown) or "Fronei document"
     requested_format = fmt if fmt in SUPPORTED_RENDER_FORMATS else "markdown"
-    display_markdown = deck_plan_to_markdown(body_markdown) if deck_plan else None
+    display_markdown = deck_plan_to_markdown(json.dumps(deck_plan)) if deck_plan else None
     preview: dict = {
         "title": title,
         "doc_type": doc_type,
@@ -690,6 +695,8 @@ def build_document_artifact(
         "markdown": display_markdown or body_markdown,
         "filename": f"{_safe_filename(title)}.md",
     }
+    if composition:
+        preview["composition"] = {k: v for k, v in composition.items() if k != "jobs"}
     if fmt not in SUPPORTED_RENDER_FORMATS:
         preview["generation_error"] = f"{fmt} output is not supported yet; showing Markdown instead."
         return preview
@@ -739,7 +746,7 @@ def build_document_artifact(
                 deck_plan
                 and render_qa
                 and render_qa.get("available")
-                and any(i.get("type") in {"dense_text", "dense_ink"} for i in render_qa.get("issues") or [])
+                and any(i.get("type") in {"dense_text", "dense_ink", "tiny_text_risk"} for i in render_qa.get("issues") or [])
             ):
                 current_plan = deck_plan
                 for _ in range(2):
@@ -763,7 +770,8 @@ def build_document_artifact(
                     content = repaired_content
                     render_qa = repaired_qa
                     if not any(
-                        i.get("type") in {"dense_text", "dense_ink"} for i in (repaired_qa.get("issues") or [])
+                        i.get("type") in {"dense_text", "dense_ink", "tiny_text_risk"}
+                        for i in (repaired_qa.get("issues") or [])
                     ):
                         break
                 if repair_iterations:

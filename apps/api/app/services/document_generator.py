@@ -6,6 +6,7 @@ import logging
 import re
 import shutil
 import subprocess
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
 from io import BytesIO
 from pathlib import Path
@@ -30,7 +31,17 @@ from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
 from pptx.oxml.ns import qn as pptx_qn
 from pptx.util import Inches as PptxInches, Pt as PptxPt
 
+from app.config import get_settings
 from app.services.document_templates import resolve_pptx_template_path
+from app.services.presentation_design_system import (
+    ARCHETYPE_TO_TEMPLATE,
+    LAYOUT_ALIASES as DESIGN_LAYOUT_ALIASES,
+    SLIDE_TEMPLATES,
+    canonical_layout,
+    component_tree_for_slide,
+    design_system_payload,
+    template_for_slide,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -217,6 +228,17 @@ def _pptx_add_slide(prs: Presentation, role: str):
     _pptx_set_slide_background(slide)
     return slide
 
+
+def _pptx_set_notes(slide, notes: str | None) -> None:
+    if not notes:
+        return
+    try:
+        notes_frame = slide.notes_slide.notes_text_frame
+        if notes_frame is not None:
+            notes_frame.text = notes
+    except Exception:
+        logger.debug("Could not write speaker notes to slide", exc_info=True)
+
 # Appendix slides are reference material — denser content is acceptable, so
 # they get a higher per-slide bullet cap than the standard body slides.
 MAX_APPENDIX_BULLETS = 10
@@ -224,6 +246,7 @@ MAX_APPENDIX_BULLETS = 10
 # Layout name aliases normalized by parse_deck_plan. Both sides of an alias
 # pair are treated identically by the PPTX renderer.
 DECK_LAYOUT_ALIASES = {
+    **DESIGN_LAYOUT_ALIASES,
     "cover": "section",
     "hero_cover": "section",
     "decision": "recommendation",
@@ -246,6 +269,56 @@ DECK_LAYOUT_ALIASES = {
     "kpi_grid": "stat_cards",
     "market_context": "stat_cards",
     "by_the_numbers": "stat_cards",
+}
+SLIDE_ARCHETYPE_LIBRARY = {
+    "board_decision": {
+        "layout": "recommendation",
+        "proof_objects": {"insight_cards", "comparison", "stat_cards"},
+        "required_any": {"bullets", "columns", "stats"},
+        "render_hints": {"tone": "decisive", "visual_weight": "hero_decision", "accent": "decision"},
+    },
+    "metric_scorecard": {
+        "layout": "stat_cards",
+        "proof_objects": {"stat_cards"},
+        "required_any": {"stats"},
+        "render_hints": {"tone": "quantified", "visual_weight": "kpi_grid", "accent": "financial"},
+    },
+    "risk_register": {
+        "layout": "comparison",
+        "proof_objects": {"comparison", "table", "insight_cards"},
+        "required_any": {"columns", "table", "bullets"},
+        "render_hints": {"tone": "controlled", "visual_weight": "risk_grid", "accent": "risk"},
+    },
+    "operating_model": {
+        "layout": "comparison",
+        "proof_objects": {"comparison", "table", "insight_cards"},
+        "required_any": {"columns", "table", "bullets"},
+        "render_hints": {"tone": "operational", "visual_weight": "role_lanes", "accent": "operational"},
+    },
+    "architecture_map": {
+        "layout": "architecture",
+        "proof_objects": {"architecture", "comparison", "insight_cards"},
+        "required_any": {"bullets", "columns"},
+        "render_hints": {"tone": "technical", "visual_weight": "node_flow", "accent": "technical"},
+    },
+    "investment_case": {
+        "layout": "stat_cards",
+        "proof_objects": {"stat_cards", "chart", "table", "insight_cards"},
+        "required_any": {"stats", "chart", "table", "bullets"},
+        "render_hints": {"tone": "financial", "visual_weight": "business_case", "accent": "financial"},
+    },
+    "roadmap": {
+        "layout": "timeline",
+        "proof_objects": {"timeline"},
+        "required_any": {"phases"},
+        "render_hints": {"tone": "sequenced", "visual_weight": "phase_path", "accent": "execution"},
+    },
+    "comparison_matrix": {
+        "layout": "comparison",
+        "proof_objects": {"comparison", "table"},
+        "required_any": {"columns", "table"},
+        "render_hints": {"tone": "evaluative", "visual_weight": "option_cards", "accent": "operational"},
+    },
 }
 COVER_DOC_TYPES = {"executive_report", "proposal", "technical_spec"}
 COMPACT_HEADER_DOC_TYPES = {"memo", "one_pager", "resume"}
@@ -1235,7 +1308,7 @@ def parse_deck_plan(content: str) -> dict | None:
         if not isinstance(raw, dict):
             continue
         layout = str(raw.get("layout") or raw.get("type") or "bullets").lower().strip()
-        layout = DECK_LAYOUT_ALIASES.get(layout, layout)
+        layout, layout_warning = canonical_layout(layout)
         raw_title = raw.get("title") or raw.get("headline") or raw.get("key_message") or "Untitled"
         title, title_overflow = _shorten_title_to_notes(raw_title, MAX_SLIDE_TITLE_CHARS)
         bullets_raw = raw.get("bullets") or raw.get("points") or []
@@ -1247,6 +1320,8 @@ def parse_deck_plan(content: str) -> dict | None:
         # slide, and any bullets beyond the per-slide cap, are routed into
         # speaker_notes (full detail preserved) rather than silently lost.
         overflow_notes: list[str] = []
+        if layout_warning:
+            overflow_notes.append(f"DeckPlan warning: {layout_warning}; rendered as {layout}.")
         if title_overflow:
             overflow_notes.append(f"Full title: {title_overflow}")
         if layout in {"executive_summary", "recommendation"} and bullets_raw:
@@ -1299,6 +1374,9 @@ def parse_deck_plan(content: str) -> dict | None:
                 normalized_columns.append({
                     "heading": _shorten(col.get("heading") or col.get("title") or "", 50),
                     "bullets": [_shorten(b, 90) for b in col_bullets if str(b or "").strip()][:5],
+                    "likelihood": _shorten(col.get("likelihood") or col.get("probability") or "", 20),
+                    "impact": _shorten(col.get("impact") or col.get("severity") or "", 20),
+                    "mitigation": _shorten(col.get("mitigation") or col.get("response") or "", 90),
                 })
         stats_raw = raw.get("stats") or raw.get("metrics") or raw.get("kpis") or []
         normalized_stats = []
@@ -1310,11 +1388,15 @@ def parse_deck_plan(content: str) -> dict | None:
                 label = _shorten(stat.get("label") or stat.get("title") or stat.get("description") or "", 60)
                 if not value and not label:
                     continue
-                normalized_stats.append({
+                normalized_stat = {
                     "value": value,
                     "label": label,
                     "source": _shorten(stat.get("source") or stat.get("citation") or "", 60),
-                })
+                }
+                period = _shorten(stat.get("period") or stat.get("date") or stat.get("category") or "", 30)
+                if period:
+                    normalized_stat["period"] = period
+                normalized_stats.append(normalized_stat)
 
         callout_raw = raw.get("callout") or raw.get("key_insight") or raw.get("insight")
         normalized_callout = None
@@ -1423,9 +1505,489 @@ def parse_deck_plan(content: str) -> dict | None:
     return normalized if normalized["slides"] else None
 
 
+def compose_deck_plan_parallel(plan: dict, *, max_workers: int | None = None) -> tuple[dict, dict]:
+    """Compose/validate normalized DeckPlan slides concurrently.
+
+    This is the first explicit "slide jobs" layer: after the storyline/theme is
+    fixed by the planner, each slide can independently commit to a renderer role,
+    archetype, density, and proof object. The function is deterministic and
+    cost-free; it creates the architecture seam where future per-slide creative
+    workers can plug in without changing the renderer contract.
+    """
+    plan = copy.deepcopy(plan)
+    slides = plan.get("slides") or []
+    if not slides:
+        return plan, {"parallel": False, "workers": 0, "slide_count": 0, "changed_slides": []}
+
+    worker_cap = max_workers if max_workers is not None else get_settings().max_document_workers
+    worker_count = min(len(slides), max(1, worker_cap))
+    results: dict[int, tuple[dict, dict]] = {}
+    with ThreadPoolExecutor(max_workers=worker_count) as pool:
+        futures = {
+            pool.submit(_compose_slide_job, idx, slide): idx
+            for idx, slide in enumerate(slides)
+        }
+        for future in as_completed(futures):
+            idx = futures[future]
+            try:
+                results[idx] = future.result()
+            except Exception:  # pragma: no cover - composition must never break rendering
+                logger.warning("Slide composition failed for slide %s", idx + 1, exc_info=True)
+                fallback = copy.deepcopy(slides[idx])
+                _recompute_slide_blueprint(fallback)
+                results[idx] = (fallback, {"index": idx, "changed": False, "warnings": ["composition_failed"]})
+
+    composed_slides: list[dict] = []
+    jobs: list[dict] = []
+    for idx in range(len(slides)):
+        slide, job = results[idx]
+        composed_slides.append(slide)
+        jobs.append(job)
+    plan["slides"] = composed_slides
+    plan, polish_report = polish_deck_plan(plan)
+    if polish_report.get("added_slides"):
+        jobs = _jobs_for_polished_slides(plan.get("slides") or [], jobs)
+    _attach_component_trees(plan)
+    report = {
+        "parallel": worker_count > 1,
+        "workers": worker_count,
+        "slide_count": len(plan.get("slides") or []),
+        "changed_slides": [job["index"] + 1 for job in jobs if job.get("changed")],
+        "archetypes": [job.get("archetype") for job in jobs if job.get("archetype")],
+        "deck_warnings": _deck_polish_warnings(plan, jobs),
+        "polish": polish_report,
+        "jobs": jobs,
+    }
+    plan["_composition"] = {k: v for k, v in report.items() if k != "jobs"}
+    return plan, report
+
+
+def _attach_component_trees(plan: dict) -> None:
+    for slide in plan.get("slides") or []:
+        slide["component_tree"] = component_tree_for_slide(slide)
+
+
+def polish_deck_plan(plan: dict) -> tuple[dict, dict]:
+    """Run deck-level narrative checks and safe deterministic repairs.
+
+    Slide composition is intentionally local/parallel. This pass looks across
+    the full story: whether a decision deck has a recommendation, whether the
+    deck has quantified proof, and whether it ends with a useful close. Repairs
+    stay conservative and content-preserving.
+    """
+    plan = copy.deepcopy(plan)
+    slides = plan.get("slides") or []
+    report: dict = {"added_slides": [], "warnings": []}
+    body_slides = [s for s in slides if s.get("archetype") != "section_divider"]
+    if not body_slides:
+        return plan, report
+
+    has_decision = any(s.get("archetype") == "board_decision" for s in body_slides)
+    has_quantified = any(_slide_proof_object(s) in {"stat_cards", "chart", "table"} for s in body_slides)
+    if not has_quantified:
+        report["warnings"].append("missing_quantified_proof")
+
+    last = body_slides[-1]
+    if not has_decision and len(body_slides) >= 3:
+        recommendation = _build_recommendation_slide(plan)
+        slides.append(recommendation)
+        report["added_slides"].append("board_decision")
+        report["warnings"].append("added_missing_recommendation")
+    elif last.get("archetype") not in {"board_decision", "executive_summary"}:
+        _append_speaker_note(last, "Deck polish: close by restating the decision, owner, and next action.")
+        report["warnings"].append("weak_ending")
+
+    plan["slides"] = slides
+    plan["_polish"] = report
+    return plan, report
+
+
+def _build_recommendation_slide(plan: dict) -> dict:
+    title = "Recommended next decision"
+    deck_title = str(plan.get("title") or "this initiative")
+    first_body = next((s for s in plan.get("slides") or [] if s.get("archetype") != "section_divider"), {})
+    context = first_body.get("title") or deck_title
+    slide = {
+        "layout": "recommendation",
+        "archetype": "board_decision",
+        "density": "medium",
+        "visual_object": "bullets",
+        "title": title,
+        "bullets": [
+            f"Approve the recommended path for {context}",
+            "Assign one accountable owner and confirm the next review date",
+            "Use the preceding evidence as the decision basis; keep detail in appendix",
+        ],
+        "table": [],
+        "columns": [],
+        "phases": [],
+        "chart": None,
+        "stats": [],
+        "callout": None,
+        "speaker_notes": "Deck polish: Fronei added this closing decision slide because the deck had no explicit recommendation.",
+            "render_hints": dict(SLIDE_ARCHETYPE_LIBRARY["board_decision"]["render_hints"]),
+    }
+    _recompute_slide_blueprint(slide)
+    return slide
+
+
+def _jobs_for_polished_slides(slides: list[dict], jobs: list[dict]) -> list[dict]:
+    existing = list(jobs)
+    for idx in range(len(existing), len(slides)):
+        slide = slides[idx]
+        existing.append({
+            "index": idx,
+            "role": slide.get("layout") or "content",
+            "archetype": slide.get("archetype"),
+            "proof_object": _slide_proof_object(slide),
+            "density": slide.get("density") or "medium",
+            "changed": True,
+            "warnings": ["added_by_deck_polish"],
+        })
+    return existing
+
+
+def _compose_slide_job(index: int, slide: dict) -> tuple[dict, dict]:
+    original = copy.deepcopy(slide)
+    slide = copy.deepcopy(slide)
+    warnings: list[str] = []
+
+    layout = str(slide.get("layout") or "bullets").strip().lower()
+    if layout in {"section", "section_divider"}:
+        slide["archetype"] = "section_divider"
+        slide["density"] = "low"
+        slide["visual_object"] = "section"
+        return slide, {
+            "index": index,
+            "role": "section",
+            "archetype": slide.get("archetype"),
+            "proof_object": "section",
+            "density": "low",
+            "changed": slide != original,
+            "warnings": warnings,
+        }
+
+    proof_object = _slide_proof_object(slide)
+    if layout in {"bullets", "content"}:
+        routed = _layout_for_proof_object(proof_object)
+        if routed != layout:
+            slide["layout"] = routed
+            layout = routed
+            warnings.append("layout_routed_from_proof_object")
+    elif proof_object == "insight_cards" and layout not in {"appendix", "takeaways"}:
+        warnings.append("text_only_slide")
+
+    inferred_chart = _infer_chart_from_stats(slide)
+    if inferred_chart:
+        slide["chart"] = inferred_chart
+        if str(slide.get("layout") or "").strip().lower() in {"bullets", "content", "stat_cards"}:
+            slide["layout"] = "chart"
+            layout = "chart"
+        proof_object = "chart"
+        warnings.append("chart_inferred_from_stats")
+
+    heatmap = _risk_heatmap_from_slide(slide)
+    if heatmap:
+        slide["heatmap"] = heatmap
+        warnings.append("risk_heatmap_inferred")
+
+    generic_archetypes = {"", "bullets", "content", str(original.get("layout") or "").strip().lower()}
+    if str(slide.get("archetype") or "").strip().lower() in generic_archetypes:
+        slide["archetype"] = _select_slide_archetype(slide, proof_object)
+    archetype_spec = SLIDE_ARCHETYPE_LIBRARY.get(str(slide.get("archetype") or ""))
+    if archetype_spec:
+        slide["render_hints"] = dict(archetype_spec.get("render_hints") or {})
+        if slide.get("layout") in {"bullets", "content"} and archetype_spec.get("layout"):
+            slide["layout"] = str(archetype_spec["layout"])
+            layout = slide["layout"]
+            warnings.append("layout_routed_from_archetype")
+        missing = _missing_archetype_required_fields(slide, archetype_spec)
+        if missing:
+            warnings.append(f"archetype_missing_payload:{','.join(missing)}")
+    _recompute_slide_blueprint(slide)
+    if proof_object != "bullets":
+        slide["visual_object"] = proof_object
+
+    if _slide_has_no_visible_payload(slide):
+        warnings.append("empty_payload")
+        slide["bullets"] = slide.get("bullets") or ["Key message to be confirmed"]
+        _append_speaker_note(slide, "Composition warning: slide had no visible payload.")
+        _recompute_slide_blueprint(slide)
+
+    if slide.get("density") == "high" and layout not in {"appendix", "table"}:
+        warnings.append("high_density")
+
+    return slide, {
+        "index": index,
+        "role": slide.get("layout") or layout,
+        "archetype": slide.get("archetype"),
+        "proof_object": _slide_proof_object(slide),
+        "density": slide.get("density") or "medium",
+        "changed": slide != original,
+        "warnings": warnings,
+    }
+
+
+def _slide_proof_object(slide: dict) -> str:
+    if slide.get("heatmap"):
+        return "risk_heatmap"
+    if slide.get("chart"):
+        return "chart"
+    if slide.get("stats"):
+        return "stat_cards"
+    if slide.get("table"):
+        return "table"
+    if slide.get("phases"):
+        return "timeline"
+    if slide.get("columns"):
+        return "comparison"
+    if str(slide.get("layout") or "").strip().lower() == "architecture":
+        return "architecture"
+    return "insight_cards"
+
+
+def _layout_for_proof_object(proof_object: str) -> str:
+    return {
+        "chart": "chart",
+        "stat_cards": "stat_cards",
+        "table": "table",
+        "timeline": "timeline",
+        "comparison": "comparison",
+        "architecture": "architecture",
+        "risk_heatmap": "comparison",
+    }.get(proof_object, "bullets")
+
+
+def _infer_chart_from_stats(slide: dict) -> dict | None:
+    if slide.get("chart"):
+        return None
+    stats = slide.get("stats") or []
+    if len(stats) < 3:
+        return None
+    categories: list[str] = []
+    values: list[float] = []
+    for stat in stats:
+        if not isinstance(stat, dict):
+            return None
+        parsed = _numeric_value(stat.get("value"))
+        label = str(stat.get("period") or "").strip()
+        if parsed is None or not label:
+            return None
+        categories.append(_shorten(label, 30))
+        values.append(parsed)
+    title_blob = _slide_text_blob(slide)
+    chart_type = "line" if _looks_like_time_series(categories, title_blob) else "bar"
+    return {
+        "type": chart_type,
+        "categories": categories,
+        "series": [{"name": _shorten(slide.get("title") or "Metric", 40), "values": values}],
+    }
+
+
+def _numeric_value(value: object) -> float | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    multiplier = 1.0
+    compact = text.replace(",", "").strip()
+    if re.search(r"\d\s*(b|bn)\b|\b(billion)\b", compact, flags=re.IGNORECASE):
+        multiplier = 1_000_000_000.0
+    elif re.search(r"\d\s*(m|mm)\b|\b(million)\b", compact, flags=re.IGNORECASE):
+        multiplier = 1_000_000.0
+    elif re.search(r"\d\s*k\b|\b(thousand)\b", compact, flags=re.IGNORECASE):
+        multiplier = 1_000.0
+    match = re.search(r"-?\d+(?:\.\d+)?", compact)
+    if not match:
+        return None
+    try:
+        return float(match.group(0)) * multiplier
+    except ValueError:
+        return None
+
+
+def _looks_like_time_series(categories: list[str], title_blob: str) -> bool:
+    if any(token in title_blob for token in ("trend", "growth", "over time", "run-rate", "trajectory")):
+        return True
+    year_like = sum(1 for cat in categories if re.search(r"\b20\d{2}\b|\bq[1-4]\b", cat, flags=re.IGNORECASE))
+    return year_like >= max(2, len(categories) - 1)
+
+
+def _risk_heatmap_from_slide(slide: dict) -> list[dict] | None:
+    if slide.get("archetype") not in {"risk_register", "risk_heatmap"} and "risk" not in _slide_text_blob(slide):
+        return None
+    items: list[dict] = []
+    for col in slide.get("columns") or []:
+        if not isinstance(col, dict):
+            continue
+        likelihood = _risk_axis_value(col.get("likelihood") or _find_axis_in_text(col.get("bullets") or [], "likelihood"))
+        impact = _risk_axis_value(col.get("impact") or _find_axis_in_text(col.get("bullets") or [], "impact"))
+        if likelihood and impact:
+            items.append({
+                "label": _shorten(col.get("heading") or "Risk", 42),
+                "likelihood": likelihood,
+                "impact": impact,
+                "mitigation": _shorten(col.get("mitigation") or _first_nonempty(col.get("bullets") or []), 90),
+            })
+    table = slide.get("table") or []
+    if table and len(table) > 1:
+        headers = [str(h).lower() for h in table[0]]
+        try:
+            risk_idx = next(i for i, h in enumerate(headers) if "risk" in h or "issue" in h)
+            likelihood_idx = next(i for i, h in enumerate(headers) if "likelihood" in h or "probability" in h)
+            impact_idx = next(i for i, h in enumerate(headers) if "impact" in h or "severity" in h)
+        except StopIteration:
+            risk_idx = likelihood_idx = impact_idx = -1
+        if risk_idx >= 0:
+            for row in table[1:5]:
+                likelihood = _risk_axis_value(row[likelihood_idx] if likelihood_idx < len(row) else "")
+                impact = _risk_axis_value(row[impact_idx] if impact_idx < len(row) else "")
+                if likelihood and impact:
+                    items.append({
+                        "label": _shorten(row[risk_idx] if risk_idx < len(row) else "Risk", 42),
+                        "likelihood": likelihood,
+                        "impact": impact,
+                        "mitigation": "",
+                    })
+    return items[:5] if len(items) >= 2 else None
+
+
+def _risk_axis_value(value: object) -> str:
+    text = str(value or "").lower()
+    if any(token in text for token in ("high", "severe", "critical", "3")):
+        return "high"
+    if any(token in text for token in ("medium", "moderate", "2")):
+        return "medium"
+    if any(token in text for token in ("low", "minor", "1")):
+        return "low"
+    return ""
+
+
+def _find_axis_in_text(items: list[object], axis: str) -> str:
+    for item in items:
+        text = str(item or "")
+        match = re.search(rf"{axis}\s*[:=-]\s*(low|medium|moderate|high|critical|1|2|3)", text, flags=re.IGNORECASE)
+        if match:
+            return match.group(1)
+    return ""
+
+
+def _first_nonempty(items: list[object]) -> str:
+    for item in items:
+        if str(item or "").strip():
+            return str(item)
+    return ""
+
+
+def _select_slide_archetype(slide: dict, proof_object: str) -> str:
+    layout = str(slide.get("layout") or "bullets").lower().strip()
+    text = _slide_text_blob(slide)
+    title_text = str(slide.get("title") or "").lower()
+    if layout == "callout":
+        return "callout"
+    if layout == "agenda":
+        return "agenda"
+    if layout == "recommendation" or any(token in title_text for token in ("recommend", "approve", "decision", "authorize", "funding ask")):
+        return "board_decision"
+    if proof_object == "timeline":
+        return "roadmap"
+    if proof_object == "comparison":
+        if any(token in text for token in ("operating model", "owner", "role", "raci", "process", "governance model", "accountable")):
+            return "operating_model"
+        if any(token in text for token in ("risk register", "key risk", "mitigation plan", "severity")):
+            return "risk_register"
+        return "comparison_matrix"
+    if any(token in text for token in ("risk", "mitigation", "severity", "control", "compliance", "audit", "privacy", "security")):
+        return "risk_register"
+    if any(token in text for token in ("operating model", "owner", "role", "raci", "process", "governance model", "accountable")):
+        return "operating_model"
+    if proof_object == "architecture" or any(token in text for token in ("architecture", "api", "platform", "system map", "data flow", "integration")):
+        return "architecture_map"
+    if proof_object in {"stat_cards", "chart"} and any(token in text for token in ("roi", "cost", "revenue", "budget", "savings", "payback", "tco", "$")):
+        return "investment_case"
+    if proof_object == "stat_cards":
+        return "metric_scorecard"
+    if proof_object == "table":
+        return "comparison_matrix"
+    if layout == "executive_summary":
+        return "executive_summary"
+    return layout
+
+
+def _slide_text_blob(slide: dict) -> str:
+    parts = [
+        str(slide.get("layout") or ""),
+        str(slide.get("archetype") or ""),
+        str(slide.get("title") or ""),
+        " ".join(str(b) for b in (slide.get("bullets") or [])),
+    ]
+    for col in slide.get("columns") or []:
+        if isinstance(col, dict):
+            parts.append(str(col.get("heading") or ""))
+            parts.extend(str(b) for b in (col.get("bullets") or []))
+    for stat in slide.get("stats") or []:
+        if isinstance(stat, dict):
+            parts.extend(str(stat.get(key) or "") for key in ("value", "label", "source"))
+    for phase in slide.get("phases") or []:
+        if isinstance(phase, dict):
+            parts.extend(str(phase.get(key) or "") for key in ("label", "title", "description"))
+    for row in slide.get("table") or []:
+        if isinstance(row, list):
+            parts.extend(str(cell) for cell in row)
+    callout = slide.get("callout")
+    if isinstance(callout, dict):
+        parts.extend([str(callout.get("label") or ""), str(callout.get("text") or "")])
+    return " ".join(parts).lower()
+
+
+def _missing_archetype_required_fields(slide: dict, archetype_spec: dict) -> list[str]:
+    required_any = set(archetype_spec.get("required_any") or set())
+    if not required_any:
+        return []
+    if any(slide.get(field) for field in required_any):
+        return []
+    return sorted(required_any)
+
+
+def _deck_polish_warnings(plan: dict, jobs: list[dict]) -> list[str]:
+    warnings = list(((plan.get("_composition") or {}).get("polish") or {}).get("warnings") or [])
+    warnings.extend(_deck_archetype_warnings(jobs))
+    polish = plan.get("_polish") or {}
+    warnings.extend(polish.get("warnings") or [])
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for warning in warnings:
+        if warning and warning not in seen:
+            seen.add(warning)
+            deduped.append(warning)
+    return deduped
+
+
+def _deck_archetype_warnings(jobs: list[dict]) -> list[str]:
+    archetypes = [
+        str(job.get("archetype") or "")
+        for job in jobs
+        if job.get("archetype") and job.get("archetype") != "section_divider"
+    ]
+    if len(archetypes) < 4:
+        return []
+    counts = {name: archetypes.count(name) for name in set(archetypes)}
+    dominant, dominant_count = max(counts.items(), key=lambda item: item[1])
+    if dominant_count >= max(4, int(len(archetypes) * 0.6)):
+        return [f"low_archetype_diversity:{dominant}"]
+    return []
+
+
+def _slide_has_no_visible_payload(slide: dict) -> bool:
+    return not any(
+        slide.get(key)
+        for key in ("bullets", "table", "columns", "phases", "chart", "stats", "callout")
+    )
+
+
 def repair_deck_plan_for_qa(plan: dict, issues: list[dict]) -> tuple[dict, bool]:
     """Apply small, deterministic edits to `plan` aimed at resolving render-QA
-    issues (currently: `dense_text` / `dense_ink` — visually crowded slides).
+    issues (`dense_text`, `dense_ink`, `tiny_text_risk` — visually crowded or
+    unreadably compressed slides).
 
     Render-QA slide numbers are 1-based across the *rendered* deck, where
     slide 1 is always the title slide (not present in `plan["slides"]`).
@@ -1441,7 +2003,7 @@ def repair_deck_plan_for_qa(plan: dict, issues: list[dict]) -> tuple[dict, bool]
     crowded_slide_nums = {
         issue["slide"]
         for issue in issues
-        if issue.get("type") in {"dense_text", "dense_ink"} and isinstance(issue.get("slide"), int)
+        if issue.get("type") in {"dense_text", "dense_ink", "tiny_text_risk"} and isinstance(issue.get("slide"), int)
     }
 
     for slide_num in crowded_slide_nums:
@@ -2258,8 +2820,7 @@ def _pptx_render_deck_plan(prs: Presentation, plan: dict, fallback_title: str, s
                     slide, PptxInches(0.65), PptxInches(PPTX_CONTENT_TOP_Y), PptxInches(11.0), PptxInches(4.9),
                     "", bullets[:cap] or [""],
                 )
-        if notes:
-            slide.notes_slide.notes_text_frame.text = notes
+        _pptx_set_notes(slide, notes)
 
 
 def _js_pptx_renderer_available() -> bool:
@@ -2282,16 +2843,29 @@ def _js_slide_from_deck_spec(spec: dict) -> dict:
 
     def with_blueprint(payload: dict) -> dict:
         payload["blueprint"] = _js_slide_blueprint_from_spec(spec, payload.get("role") or "content")
+        payload["component_tree"] = spec.get("component_tree") or component_tree_for_slide(spec)
         return payload
 
     if layout in {"section", "section_divider"}:
         return with_blueprint({"role": "section", "title": title, "notes": notes})
+    if layout == "agenda":
+        return with_blueprint({"role": "agenda", "title": title, "bullets": bullets, "notes": notes})
+    if layout == "callout":
+        return with_blueprint({"role": "callout", "title": title, "bullets": bullets, "callout": spec.get("callout"), "notes": notes})
+    if spec.get("heatmap"):
+        return with_blueprint({"role": "risk_heatmap", "title": title, "heatmap": spec["heatmap"], "notes": notes})
     if spec.get("chart"):
         return with_blueprint({"role": "chart", "title": title, "chart": spec["chart"], "notes": notes})
     if spec.get("table"):
         return with_blueprint({"role": "table", "title": title, "rows": spec["table"], "notes": notes})
     if layout in {"two_column", "comparison", "architecture"} and spec.get("columns"):
-        return with_blueprint({"role": "two_content", "title": title, "columns": spec["columns"][:3], "notes": notes})
+        return with_blueprint({
+            "role": "two_content",
+            "title": title,
+            "columns": spec["columns"][:3],
+            "heatmap": spec.get("heatmap"),
+            "notes": notes,
+        })
     if layout == "executive_summary":
         return with_blueprint({"role": "executive_summary", "title": title, "bullets": bullets, "notes": notes})
     if layout == "recommendation":
@@ -2316,6 +2890,7 @@ def _js_slide_from_deck_spec(spec: dict) -> dict:
         "title": title,
         "appendix": layout == "appendix",
         "bullets": [{"level": 0, "text": b} for b in (bullets[:cap] or [""])],
+        "heatmap": spec.get("heatmap"),
         "notes": notes,
     })
 
@@ -2351,6 +2926,8 @@ def _infer_slide_emphasis(spec: dict, role: str) -> str:
 
 
 def _proof_object_for_spec(spec: dict, role: str) -> str:
+    if spec.get("heatmap"):
+        return "risk_heatmap"
     visual_object = str(spec.get("visual_object") or "").strip()
     if visual_object and visual_object != "bullets":
         return visual_object
@@ -2377,10 +2954,12 @@ def _js_slide_blueprint_from_spec(spec: dict, role: str) -> dict:
     return {
         "archetype": archetype,
         "layout": layout,
+        "template": template_for_slide(spec),
         "density": density,
         "visual_object": str(spec.get("visual_object") or "bullets"),
         "proof_object": _proof_object_for_spec(spec, role),
         "emphasis": _infer_slide_emphasis(spec, role),
+        "render_hints": spec.get("render_hints") or {},
     }
 
 
@@ -2420,12 +2999,11 @@ def _build_js_deck_payload(title: str, content: str, subtitle: str | None) -> di
     content into the JSON payload consumed by pptx_render/render.js."""
     deck_plan = parse_deck_plan(content)
     if deck_plan:
+        deck_plan, composition = compose_deck_plan_parallel(deck_plan)
         return {
             "version": 2,
-            "design_system": {
-                "name": "fronei_board_briefing",
-                "mode": "freehand_compositor",
-            },
+            "design_system": design_system_payload("warm-editorial") | {"mode": "freehand_compositor"},
+            "composition": {k: v for k, v in composition.items() if k != "jobs"},
             "title": deck_plan.get("title") or title or "Fronei deck",
             "subtitle": deck_plan.get("subtitle") or subtitle,
             "slides": _number_section_slides(
@@ -2457,10 +3035,7 @@ def _build_js_deck_payload(title: str, content: str, subtitle: str | None) -> di
 
     return {
         "version": 2,
-        "design_system": {
-            "name": "fronei_board_briefing",
-            "mode": "markdown_compositor",
-        },
+        "design_system": design_system_payload("warm-editorial") | {"mode": "markdown_compositor"},
         "title": deck_title,
         "subtitle": deck_subtitle,
         "slides": _number_section_slides(js_slides),
@@ -2527,6 +3102,7 @@ def _generate_pptx_bytes_python_pptx(
 def _render_pptx_body(prs: Presentation, content: str, title: str, subtitle: str | None) -> bytes:
     deck_plan = parse_deck_plan(content)
     if deck_plan:
+        deck_plan, _ = compose_deck_plan_parallel(deck_plan)
         _pptx_render_deck_plan(prs, deck_plan, title, subtitle)
         output = BytesIO()
         prs.save(output)
@@ -2597,8 +3173,7 @@ def _render_pptx_body(prs: Presentation, content: str, title: str, subtitle: str
                     _pptx_add_runs(p, text)
 
         notes = spec.get("notes")
-        if notes:
-            slide.notes_slide.notes_text_frame.text = notes
+        _pptx_set_notes(slide, notes)
 
     output = BytesIO()
     prs.save(output)

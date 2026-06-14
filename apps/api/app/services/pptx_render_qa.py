@@ -14,7 +14,10 @@ import logging
 import shutil
 import subprocess
 import tempfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+
+from app.config import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +33,7 @@ RENDER_DPI = 60
 BLANK_INK_RATIO_THRESHOLD = 0.005   # < 0.5% non-white pixels -> likely blank
 DENSE_INK_RATIO_THRESHOLD = 0.35    # > 35% non-white pixels -> visually crowded
 DENSE_CHAR_THRESHOLD = 900          # extracted text chars per slide -> likely overflow
+TINY_TEXT_CHAR_THRESHOLD = 1400     # extreme extracted chars -> likely tiny/unreadable text
 
 # A high ink ratio alone isn't necessarily "crowded" -- intentional full-bleed
 # color backgrounds (e.g. title/section slides) are low on text but high on
@@ -108,49 +112,110 @@ def run_pptx_render_qa(pptx_bytes: bytes, *, timeout: int = CONVERT_TIMEOUT_SECO
             image_paths = sorted(tmp.glob("page-*.png"))
             slide_count = max(len(pages_text), len(image_paths))
 
+            inspected = _inspect_rendered_slides_parallel(pages_text, image_paths, slide_count)
             issues: list[dict] = []
-            for idx in range(slide_count):
-                slide_num = idx + 1
-                text = pages_text[idx].strip() if idx < len(pages_text) else ""
-                char_count = len(text)
+            metrics: list[dict] = []
+            for result in inspected:
+                issues.extend(result["issues"])
+                metrics.append(result["metrics"])
 
-                ink_ratio = _ink_ratio(image_paths[idx]) if idx < len(image_paths) else None
-
-                if char_count == 0 and (ink_ratio is None or ink_ratio < BLANK_INK_RATIO_THRESHOLD):
-                    issues.append({
-                        "slide": slide_num,
-                        "type": "blank",
-                        "detail": "Slide appears to have no visible text or content.",
-                    })
-
-                if char_count > DENSE_CHAR_THRESHOLD:
-                    issues.append({
-                        "slide": slide_num,
-                        "type": "dense_text",
-                        "detail": (
-                            f"Slide has ~{char_count} characters of extracted text, which is likely "
-                            "too much for one slide and may overflow its placeholder."
-                        ),
-                    })
-
-                if (
-                    ink_ratio is not None
-                    and ink_ratio > DENSE_INK_RATIO_THRESHOLD
-                    and char_count >= DENSE_INK_MIN_CHARS
-                ):
-                    issues.append({
-                        "slide": slide_num,
-                        "type": "dense_ink",
-                        "detail": (
-                            f"Slide is visually crowded (~{ink_ratio:.0%} of the slide is non-blank); "
-                            "consider trimming content or splitting into multiple slides."
-                        ),
-                    })
-
-            return {"available": True, "slide_count": slide_count, "issues": issues}
+            return {
+                "available": True,
+                "slide_count": slide_count,
+                "issues": sorted(issues, key=lambda item: (item.get("slide") or 0, item.get("type") or "")),
+                "metrics": metrics,
+                "parallel": True,
+                "workers": min(slide_count or 1, max(1, get_settings().max_pptx_render_qa_workers)),
+            }
     except Exception as exc:  # pragma: no cover - belt-and-braces, QA must never break generation
         logger.exception("Unexpected error during PPTX render QA")
         return {"available": False, "reason": f"Unexpected error: {exc}", "issues": []}
+
+
+def _inspect_rendered_slides_parallel(pages_text: list[str], image_paths: list[Path], slide_count: int) -> list[dict]:
+    """Inspect rendered slides concurrently after a single deck render.
+
+    LibreOffice/PDF conversion is the expensive serialized step. Once pages are
+    available, each slide can be inspected independently, so this fans out the
+    per-slide image/text heuristics and returns results in slide order.
+    """
+    if slide_count <= 0:
+        return []
+    max_workers = min(slide_count, max(1, get_settings().max_pptx_render_qa_workers))
+    results: dict[int, dict] = {}
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {}
+        for idx in range(slide_count):
+            text = pages_text[idx].strip() if idx < len(pages_text) else ""
+            image_path = image_paths[idx] if idx < len(image_paths) else None
+            futures[pool.submit(_inspect_rendered_slide, idx + 1, text, image_path)] = idx
+        for future in as_completed(futures):
+            idx = futures[future]
+            try:
+                results[idx] = future.result()
+            except Exception:  # pragma: no cover - per-slide QA must not break deck generation
+                logger.warning("Slide render QA failed for slide %s", idx + 1, exc_info=True)
+                results[idx] = {
+                    "metrics": {"slide": idx + 1, "char_count": 0, "ink_ratio": None},
+                    "issues": [],
+                }
+    return [results[idx] for idx in range(slide_count)]
+
+
+def _inspect_rendered_slide(slide_num: int, text: str, image_path: Path | None) -> dict:
+    char_count = len(text or "")
+    ink_ratio = _ink_ratio(image_path) if image_path is not None else None
+
+    issues: list[dict] = []
+    if char_count == 0 and (ink_ratio is None or ink_ratio < BLANK_INK_RATIO_THRESHOLD):
+        issues.append({
+            "slide": slide_num,
+            "type": "blank",
+            "detail": "Slide appears to have no visible text or content.",
+        })
+
+    if char_count > DENSE_CHAR_THRESHOLD:
+        issues.append({
+            "slide": slide_num,
+            "type": "dense_text",
+            "detail": (
+                f"Slide has ~{char_count} characters of extracted text, which is likely "
+                "too much for one slide and may overflow its placeholder."
+            ),
+        })
+
+    if char_count > TINY_TEXT_CHAR_THRESHOLD:
+        issues.append({
+            "slide": slide_num,
+            "type": "tiny_text_risk",
+            "detail": (
+                f"Slide has ~{char_count} extracted characters; if it fit visually, "
+                "the renderer likely had to shrink text below comfortable reading size."
+            ),
+        })
+
+    if (
+        ink_ratio is not None
+        and ink_ratio > DENSE_INK_RATIO_THRESHOLD
+        and char_count >= DENSE_INK_MIN_CHARS
+    ):
+        issues.append({
+            "slide": slide_num,
+            "type": "dense_ink",
+            "detail": (
+                f"Slide is visually crowded (~{ink_ratio:.0%} of the slide is non-blank); "
+                "consider trimming content or splitting into multiple slides."
+            ),
+        })
+
+    return {
+        "metrics": {
+            "slide": slide_num,
+            "char_count": char_count,
+            "ink_ratio": ink_ratio,
+        },
+        "issues": issues,
+    }
 
 
 def _ink_ratio(image_path: Path) -> float | None:

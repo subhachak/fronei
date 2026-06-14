@@ -213,7 +213,7 @@ the renderer also computes this and will trim automatically if you under-call it
   ]
 }
 
-Layout guide (use the most specific layout that fits — generic `bullets` is the fallback, not the default):
+Layout guide (use the most specific layout that fits — generic `bullets` is an exception, not the default):
 - Before writing slides, choose the deck's story spine and assign each slide a visual job. A good strategy deck \
 is not a sequence of text boxes; it is a sequence of decisions, proof objects, comparisons, diagrams, timelines, \
 and takeaways.
@@ -242,6 +242,9 @@ plain numbers (no currency symbols, commas, or percent signs).
 add a `callout` (`label` + `text`) below the cards to interpret what the numbers mean for the stakeholder — this \
 is the highest-impact slide for grounding a deck in concrete numbers, so use it whenever the source material \
 contains 2-4 strong metrics.
+- `bullets`: use only when no stronger visual archetype fits. Even then, write the first bullet as the core \
+insight and the next 2-3 bullets as short proof points; the renderer will turn these into an insight panel plus \
+supporting cards, not a traditional bullet list.
 - `takeaways`: use for the closing synthesis. It should not repeat the executive summary; it should tell the \
 stakeholder what to remember and what happens next.
 - Any slide may include a `chart` alongside or instead of a `table` when the underlying data is genuinely \
@@ -266,6 +269,11 @@ pad a slide expecting all of it to be visible.
 - Each bullet should fit on one line (~90 characters). Longer bullets are truncated on the slide and the full \
 text is moved to speaker_notes — write the slide-visible portion as the complete thought, with elaboration in \
 speaker_notes instead of a longer bullet.
+- Every non-section slide must have a proof object. Choose one: `stats`, `chart`, `table`, `columns`, `phases`, \
+or a tightly written `bullets` insight panel. Do not emit a slide whose only job is "more text about the topic."
+- Prefer object-rich decks over sparse outlines: a board-quality 10-slide deck should usually include at least \
+one stat-card slide, one structured comparison/cards slide, one roadmap/timeline, one recommendation/decision \
+slide, and one technical or operating-model diagram when the topic supports it.
 - Use speaker_notes to carry nuance, assumptions, data caveats, and the talk track that should not clutter slides. \
 Treat slide copy and speaker_notes as separate channels: slide copy is the headline, speaker_notes is everything \
 else.

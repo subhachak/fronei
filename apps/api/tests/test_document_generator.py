@@ -424,8 +424,8 @@ def test_generate_pptx_renders_new_layout_hints():
     assert "Recommendation: Consolidate onto Platform A starting Q3" in joined
     # Timeline phases rendered
     assert "Foundation" in joined and "Migration" in joined and "Optimization" in joined
-    # Architecture placeholder + bullets rendered
-    assert "Architecture diagram" in joined
+    # Architecture flow diagram + bullets rendered
+    assert "Target flow" in joined
     assert "Single API gateway" in joined
     # Appendix dense bullets all rendered (up to MAX_APPENDIX_BULLETS = 10)
     for i in range(8):
@@ -978,6 +978,8 @@ def test_deck_plan_to_markdown_renders_stat_cards():
 def test_js_slide_from_deck_spec_maps_stat_cards():
     spec = {
         "layout": "stat_cards",
+        "archetype": "financial_scorecard",
+        "density": "low",
         "title": "By the numbers",
         "stats": [{"value": "$4.2M", "label": "Annual savings", "source": ""}],
         "callout": {"label": "Key Insight", "text": "Momentum is building."},
@@ -989,6 +991,14 @@ def test_js_slide_from_deck_spec_maps_stat_cards():
     assert js_slide["title"] == "By the numbers"
     assert js_slide["stats"] == spec["stats"]
     assert js_slide["callout"] == spec["callout"]
+    assert js_slide["blueprint"] == {
+        "archetype": "financial_scorecard",
+        "layout": "stat_cards",
+        "density": "low",
+        "visual_object": "bullets",
+        "proof_object": "stat_cards",
+        "emphasis": "financial",
+    }
 
 
 def test_build_js_deck_payload_numbers_section_slides():
@@ -1005,6 +1015,9 @@ def test_build_js_deck_payload_numbers_section_slides():
     payload = _build_js_deck_payload("Deck", json.dumps(plan), None)
     section_slides = [s for s in payload["slides"] if s["role"] == "section"]
 
+    assert payload["version"] == 2
+    assert payload["design_system"]["name"] == "fronei_board_briefing"
+    assert all("blueprint" in s for s in payload["slides"])
     assert [s["section_number"] for s in section_slides] == [1, 2]
     # Non-section slides are untouched.
     assert all("section_number" not in s for s in payload["slides"] if s["role"] != "section")
@@ -1035,3 +1048,57 @@ def test_generate_pptx_bytes_renders_stat_cards_slide():
     assert any("$4.2M" in t for t in texts)
     assert any("Annual savings" in t for t in texts)
     assert any("Momentum is building." in t for t in texts)
+
+
+def test_default_pptx_renderer_uses_board_briefing_visual_system():
+    content = json.dumps({
+        "title": "Q3 Enterprise eCommerce Modernization",
+        "subtitle": "GenAI-driven personalization",
+        "slides": [
+            {
+                "layout": "executive_summary",
+                "title": "Personalization delay is now a revenue decision",
+                "bullets": [
+                    "Approve Phase 1 before the Black Friday delivery window closes",
+                    "Conversion lift funds the program within the payback target",
+                    "Architecture work is isolated from OMS order flow",
+                ],
+            },
+            {
+                "layout": "stat_cards",
+                "title": "The business case turns on four operating gates",
+                "stats": [
+                    {"value": ">1%", "label": "Conversion lift gate"},
+                    {"value": "<200ms", "label": "p99 API latency SLA"},
+                    {"value": "$1.9M", "label": "Phase 1 funding ask"},
+                    {"value": "4 FTE", "label": "Engineering commitment"},
+                ],
+                "callout": {"label": "CFO control point", "text": "Each phase releases only after gates prove readiness."},
+            },
+            {
+                "layout": "architecture",
+                "title": "Personalization layer leaves OMS order flow untouched",
+                "bullets": [
+                    "Unified identity graph",
+                    "Feature store",
+                    "On-prem inference endpoint",
+                    "API gateway injection",
+                ],
+            },
+        ],
+    })
+
+    deck = Presentation(BytesIO(generate_pptx_bytes("Fallback title", content)))
+    all_text = "\n".join(
+        shape.text
+        for slide in deck.slides
+        for shape in slide.shapes
+        if hasattr(shape, "text")
+    )
+    shape_count = sum(len(slide.shapes) for slide in deck.slides)
+
+    assert "BOARD BRIEFING" in all_text
+    assert "CONFIDENTIAL" in all_text
+    assert "Target flow" in all_text
+    assert "Design implication" in all_text
+    assert shape_count >= 50

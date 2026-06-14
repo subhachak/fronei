@@ -1,0 +1,11 @@
+{
+  "name": "fronei-pptx-render",
+  "version": "1.0.0",
+  "private": true,
+  "description": "PptxGenJS-based renderer for Fronei DeckPlan presentations (invoked as a subprocess from apps/api).",
+  "main": "render.js",
+  "type": "commonjs",
+  "dependencies": {
+    "pptxgenjs": "^4.0.1"
+  }
+}

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
+import shutil
+import subprocess
 from datetime import date
 from io import BytesIO
 from pathlib import Path
@@ -12,25 +15,34 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Inches, Pt
 from docx.text.paragraph import Paragraph
+from markdown_it import MarkdownIt
 from openpyxl import Workbook
+from openpyxl.chart import BarChart, Reference
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 from pptx import Presentation
+from pptx.chart.data import CategoryChartData
+from pptx.dml.color import RGBColor
+from pptx.enum.chart import XL_CHART_TYPE
+from pptx.enum.shapes import MSO_SHAPE
+from pptx.enum.text import PP_ALIGN
 from pptx.util import Inches as PptxInches, Pt as PptxPt
 
 from app.services.document_templates import resolve_pptx_template_path
 
+logger = logging.getLogger(__name__)
+
+# PptxGenJS-based renderer for the "no template" (fronei-default) PPTX path —
+# see PPTX_RENDER_DIR / "render.js". Decks built from a built-in or
+# user-uploaded branded .pptx template still go through python-pptx (below),
+# which can read that template's layouts/placeholders directly.
+PPTX_RENDER_DIR = Path(__file__).resolve().parents[2] / "pptx_render"
+PPTX_RENDER_JS = PPTX_RENDER_DIR / "render.js"
+PPTX_RENDER_TIMEOUT_SECONDS = 60
+
 
 TABLE_SEPARATOR_RE = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$")
-INLINE_RE = re.compile(
-    r"!\[([^\]]*)\]\(([^)]+)\)"
-    r"|\[([^\]]+)\]\(([^)]+)\)"
-    r"|`([^`]+)`"
-    r"|\*\*([^*]+)\*\*"
-    r"|__([^_]+)__"
-    r"|\*([^*]+)\*"
-    r"|_([^_]+)_"
-)
+_MARKDOWN_INLINE = MarkdownIt("commonmark")
 KNOWN_DOC_TYPES = {
     "executive_report",
     "proposal",
@@ -46,18 +58,67 @@ SPEAKER_NOTES_RE = re.compile(r"^speaker notes?\s*:\s*(.*)$", re.IGNORECASE)
 MAX_BULLETS_PER_SLIDE = 6
 MAX_SLIDE_TITLE_CHARS = 92
 MAX_BULLET_CHARS = 120
+
+# Appendix slides are reference material — denser content is acceptable, so
+# they get a higher per-slide bullet cap than the standard body slides.
+MAX_APPENDIX_BULLETS = 10
+
+# Layout name aliases normalized by parse_deck_plan. Both sides of an alias
+# pair are treated identically by the PPTX renderer.
+DECK_LAYOUT_ALIASES = {
+    "decision": "recommendation",
+    "decision_slide": "recommendation",
+    "roadmap": "timeline",
+}
 COVER_DOC_TYPES = {"executive_report", "proposal", "technical_spec"}
 COMPACT_HEADER_DOC_TYPES = {"memo", "one_pager", "resume"}
 TOC_DOC_TYPES = {"executive_report", "proposal"}
 
 
+def _inline_tokens(text: str):
+    try:
+        parsed = _MARKDOWN_INLINE.parseInline(str(text or ""))
+    except Exception:
+        return None
+    if not parsed:
+        return []
+    return parsed[0].children or []
+
+
 def _clean_inline(text: str) -> str:
-    text = re.sub(r"!\[([^\]]*)\]\([^)]+\)", r"\1", text)
-    text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1 (\2)", text)
-    text = re.sub(r"`([^`]+)`", r"\1", text)
-    text = re.sub(r"(\*\*|__)(.*?)\1", r"\2", text)
-    text = re.sub(r"(\*|_)(.*?)\1", r"\2", text)
-    return text.strip()
+    tokens = _inline_tokens(text)
+    if tokens is None:
+        text = re.sub(r"!\[([^\]]*)\]\([^)]+\)", r"\1", text)
+        text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1 (\2)", text)
+        text = re.sub(r"`([^`]+)`", r"\1", text)
+        text = re.sub(r"(\*\*|__)(.*?)\1", r"\2", text)
+        text = re.sub(r"(\*|_)(.*?)\1", r"\2", text)
+        return text.strip()
+
+    parts: list[str] = []
+    link_href: str | None = None
+    for token in tokens:
+        if token.type == "link_open":
+            link_href = (token.attrs or {}).get("href")
+            continue
+        if token.type == "link_close":
+            if link_href:
+                parts.append(f" ({link_href})")
+            link_href = None
+            continue
+        if token.type in {"text", "code_inline", "image"}:
+            parts.append(token.content)
+        elif token.type in {"softbreak", "hardbreak"}:
+            parts.append("\n")
+    return "".join(parts).strip()
+
+
+def _inline_token_text(token) -> str:
+    if token.type == "image":
+        return token.content or (token.attrs or {}).get("alt", "")
+    if token.type in {"softbreak", "hardbreak"}:
+        return "\n"
+    return token.content or ""
 
 
 def _split_table_row(line: str) -> list[str]:
@@ -160,33 +221,52 @@ def _add_inline_runs(
     base_bold: bool = False,
     base_italic: bool = False,
 ) -> None:
-    """Add Markdown-ish inline text as formatted DOCX runs.
+    """Add CommonMark inline text as formatted DOCX runs."""
+    tokens = _inline_tokens(text)
+    if tokens is None:
+        _add_run(paragraph, str(text or "").strip(), base_bold=base_bold, base_italic=base_italic)
+        return
 
-    This intentionally handles the common inline shapes Fronei emits rather
-    than trying to be a complete Markdown parser.
-    """
-    pos = 0
-    for match in INLINE_RE.finditer(text.strip()):
-        _add_run(paragraph, text[pos:match.start()], base_bold=base_bold, base_italic=base_italic)
+    bold_depth = 0
+    italic_depth = 0
+    link_href: str | None = None
+    for token in tokens:
+        if token.type == "strong_open":
+            bold_depth += 1
+            continue
+        if token.type == "strong_close":
+            bold_depth = max(0, bold_depth - 1)
+            continue
+        if token.type == "em_open":
+            italic_depth += 1
+            continue
+        if token.type == "em_close":
+            italic_depth = max(0, italic_depth - 1)
+            continue
+        if token.type == "link_open":
+            link_href = (token.attrs or {}).get("href")
+            continue
+        if token.type == "link_close":
+            link_href = None
+            continue
 
-        if match.group(1) is not None:
-            _add_run(paragraph, match.group(1), base_bold=base_bold, base_italic=base_italic)
-        elif match.group(3) is not None:
-            _add_hyperlink(paragraph, match.group(3), match.group(4), base_bold, base_italic)
-        elif match.group(5) is not None:
-            _add_run(paragraph, match.group(5), code=True, base_bold=base_bold, base_italic=base_italic)
-        elif match.group(6) is not None:
-            _add_run(paragraph, match.group(6), bold=True, base_bold=base_bold, base_italic=base_italic)
-        elif match.group(7) is not None:
-            _add_run(paragraph, match.group(7), bold=True, base_bold=base_bold, base_italic=base_italic)
-        elif match.group(8) is not None:
-            _add_run(paragraph, match.group(8), italic=True, base_bold=base_bold, base_italic=base_italic)
-        elif match.group(9) is not None:
-            _add_run(paragraph, match.group(9), italic=True, base_bold=base_bold, base_italic=base_italic)
-
-        pos = match.end()
-
-    _add_run(paragraph, text[pos:].strip() if pos == 0 else text[pos:], base_bold=base_bold, base_italic=base_italic)
+        token_text = _inline_token_text(token)
+        if not token_text:
+            continue
+        is_bold = bold_depth > 0
+        is_italic = italic_depth > 0
+        if link_href and token.type != "code_inline":
+            _add_hyperlink(paragraph, token_text, link_href, base_bold or is_bold, base_italic or is_italic)
+            continue
+        _add_run(
+            paragraph,
+            token_text,
+            bold=is_bold,
+            italic=is_italic,
+            code=(token.type == "code_inline"),
+            base_bold=base_bold,
+            base_italic=base_italic,
+        )
 
 
 def _add_inline_paragraph(
@@ -483,6 +563,57 @@ def _xlsx_autosize_columns(ws, rows: list[list[str]]) -> None:
         )
 
 
+def _xlsx_numeric_value(value) -> float | None:
+    """Coerce a table cell value to a float for charting, stripping common
+    formatting like thousands separators, currency symbols, and percent signs."""
+    if value is None:
+        return None
+    cleaned = str(value).replace(",", "").replace("$", "").strip()
+    is_percent = cleaned.endswith("%")
+    if is_percent:
+        cleaned = cleaned[:-1].strip()
+    if not cleaned:
+        return None
+    try:
+        num = float(cleaned)
+    except ValueError:
+        return None
+    return num / 100 if is_percent else num
+
+
+def _xlsx_add_table_chart(ws, rows: list[list[str]]) -> None:
+    """Add a native bar chart next to a table when at least one non-label
+    column is fully numeric. Numeric cells are rewritten as real numbers so
+    the chart (and any downstream formulas) can reference them directly."""
+    if len(rows) < 2:
+        return
+    width = max(len(row) for row in rows)
+    if width < 2:
+        return
+    numeric_cols: list[int] = []
+    for c in range(1, width):
+        values = [_xlsx_numeric_value(row[c]) if c < len(row) else None for row in rows[1:]]
+        if values and all(v is not None for v in values):
+            numeric_cols.append(c)
+    if not numeric_cols:
+        return
+    for r_idx, row in enumerate(rows[1:], start=2):
+        for c in numeric_cols:
+            if c < len(row):
+                ws.cell(row=r_idx, column=c + 1, value=_xlsx_numeric_value(row[c]))
+    chart = BarChart()
+    chart.type = "col"
+    chart.style = 10
+    data = Reference(ws, min_col=numeric_cols[0] + 1, max_col=numeric_cols[-1] + 1, min_row=1, max_row=len(rows))
+    categories = Reference(ws, min_col=1, min_row=2, max_row=len(rows))
+    chart.add_data(data, titles_from_data=True)
+    chart.set_categories(categories)
+    chart.height = 9
+    chart.width = 16
+    anchor = f"{get_column_letter(width + 2)}2"
+    ws.add_chart(chart, anchor)
+
+
 def _xlsx_write_table(wb: Workbook, sheet_name: str, rows: list[list[str]], used_sheet_names: set[str]):
     title = _xlsx_sheet_title(sheet_name, used_sheet_names)
     ws = wb.create_sheet(title=title)
@@ -501,6 +632,7 @@ def _xlsx_write_table(wb: Workbook, sheet_name: str, rows: list[list[str]], used
             for cell in row:
                 cell.alignment = Alignment(vertical="top", wrap_text=True)
     _xlsx_autosize_columns(ws, rows)
+    _xlsx_add_table_chart(ws, rows)
     return ws
 
 
@@ -648,12 +780,85 @@ def generate_xlsx_bytes(title: str, content: str, subtitle: str | None = None, d
 # Slides with more than MAX_BULLETS_PER_SLIDE bullet lines are split into
 # "(cont.)" continuation slides to keep density reasonable.
 
-def _pptx_layout(prs: Presentation, idx: int, fallback: int = 6):
-    layouts = prs.slide_layouts
-    try:
-        return layouts[idx]
-    except IndexError:
-        return layouts[fallback if fallback < len(layouts) else 0]
+# Semantic slide-layout roles used by the DeckPlan renderer. Rather than
+# assuming every template ships PowerPoint's default 12-layout master in the
+# default order (true for Fronei's built-in templates, but not guaranteed for
+# user-uploaded .pptx templates), layouts are resolved by:
+#   1. Matching the layout's display name against known PowerPoint layout
+#      names/aliases for the role (works for most templates, including
+#      non-default masters that keep conventional English layout names).
+#   2. Falling back to a placeholder-shape heuristic (title-only, title +
+#      single content, title + two content, title + body-only "section").
+#   3. Falling back to the standard PowerPoint default-template index for
+#      the role, then to the first layout.
+# This lets user-uploaded templates act as real branded layout systems
+# instead of just a visual theme applied to a fixed layout order.
+_PPTX_ROLE_NAME_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "title": ("title slide",),
+    "section": ("section header", "section divider", "divider", "agenda"),
+    "content": ("title and content",),
+    "two_content": ("two content", "comparison", "two column"),
+    "title_only": ("title only",),
+}
+
+# Standard PowerPoint default-template layout indices, used as a last-resort
+# fallback when neither name nor placeholder-shape matching finds a layout.
+_PPTX_ROLE_INDEX_FALLBACK: dict[str, int] = {
+    "title": 0,
+    "content": 1,
+    "section": 2,
+    "two_content": 3,
+    "title_only": 5,
+}
+
+
+def _pptx_layout_placeholder_types(layout) -> list:
+    return [ph.placeholder_format.type for ph in layout.placeholders]
+
+
+def _pptx_classify_layout(layout) -> set[str]:
+    """Return the set of roles a layout's placeholder shapes are suited for."""
+    from pptx.enum.shapes import PP_PLACEHOLDER_TYPE as PPT
+
+    types = _pptx_layout_placeholder_types(layout)
+    has_title = PPT.TITLE in types or PPT.CENTER_TITLE in types
+    has_subtitle = PPT.SUBTITLE in types
+    object_count = sum(1 for t in types if t == PPT.OBJECT)
+    body_count = sum(1 for t in types if t == PPT.BODY)
+    content_count = object_count + body_count
+
+    roles: set[str] = set()
+    if PPT.CENTER_TITLE in types and has_subtitle:
+        roles.add("title")
+    if has_title and object_count >= 2:
+        roles.add("two_content")
+    if has_title and content_count == 1:
+        roles.add("content")
+        if body_count == 1 and object_count == 0:
+            roles.add("section")
+    if has_title and content_count == 0:
+        roles.add("title_only")
+    return roles
+
+
+def _pptx_layout_for_role(prs: Presentation, role: str):
+    """Resolve a slide layout for a semantic role (title/content/section/
+    two_content/title_only) — see role-resolution notes above."""
+    layouts = list(prs.slide_layouts)
+    if not layouts:
+        raise ValueError("Presentation has no slide layouts")
+
+    for keyword in _PPTX_ROLE_NAME_KEYWORDS.get(role, ()):
+        for layout in layouts:
+            if keyword in (layout.name or "").lower():
+                return layout
+
+    for layout in layouts:
+        if role in _pptx_classify_layout(layout):
+            return layout
+
+    idx = _PPTX_ROLE_INDEX_FALLBACK.get(role, 0)
+    return layouts[idx] if idx < len(layouts) else layouts[0]
 
 
 def _presentation_from_template(template_id: str | None = None, template_path: str | Path | None = None) -> Presentation:
@@ -671,39 +876,47 @@ def _presentation_from_template(template_id: str | None = None, template_path: s
 
 
 def _pptx_add_runs(text_frame_or_paragraph, text: str) -> None:
-    """Add Markdown-ish inline text (bold/italic/code/links) as runs to a
-    pptx paragraph. `text_frame_or_paragraph` must already be a paragraph."""
+    """Add CommonMark inline text as runs to a pptx paragraph."""
     paragraph = text_frame_or_paragraph
-    pos = 0
-    cleaned = text.strip()
-    matched = False
-    for match in INLINE_RE.finditer(cleaned):
-        matched = True
-        before = cleaned[pos:match.start()]
-        if before:
-            paragraph.add_run().text = before
-        if match.group(1) is not None:
-            paragraph.add_run().text = match.group(1)
-        elif match.group(3) is not None:
-            run = paragraph.add_run()
-            run.text = match.group(3)
-            run.font.underline = True
-        elif match.group(5) is not None:
-            run = paragraph.add_run()
-            run.text = match.group(5)
+    tokens = _inline_tokens(text)
+    if tokens is None:
+        paragraph.add_run().text = str(text or "").strip()
+        return
+
+    bold_depth = 0
+    italic_depth = 0
+    link_depth = 0
+    for token in tokens:
+        if token.type == "strong_open":
+            bold_depth += 1
+            continue
+        if token.type == "strong_close":
+            bold_depth = max(0, bold_depth - 1)
+            continue
+        if token.type == "em_open":
+            italic_depth += 1
+            continue
+        if token.type == "em_close":
+            italic_depth = max(0, italic_depth - 1)
+            continue
+        if token.type == "link_open":
+            link_depth += 1
+            continue
+        if token.type == "link_close":
+            link_depth = max(0, link_depth - 1)
+            continue
+
+        token_text = _inline_token_text(token)
+        if not token_text:
+            continue
+        run = paragraph.add_run()
+        run.text = token_text
+        run.font.bold = bold_depth > 0
+        run.font.italic = italic_depth > 0
+        if token.type == "code_inline":
             run.font.name = "Courier New"
-        elif match.group(6) is not None or match.group(7) is not None:
-            run = paragraph.add_run()
-            run.text = match.group(6) or match.group(7)
-            run.font.bold = True
-        elif match.group(8) is not None or match.group(9) is not None:
-            run = paragraph.add_run()
-            run.text = match.group(8) or match.group(9)
-            run.font.italic = True
-        pos = match.end()
-    remainder = cleaned[pos:]
-    if remainder or not matched:
-        paragraph.add_run().text = remainder if matched else cleaned
+        if link_depth:
+            run.font.underline = True
 
 
 def _pptx_bullet_indent(level: int) -> int:
@@ -758,6 +971,7 @@ def parse_deck_plan(content: str) -> dict | None:
         if not isinstance(raw, dict):
             continue
         layout = str(raw.get("layout") or raw.get("type") or "bullets").lower().strip()
+        layout = DECK_LAYOUT_ALIASES.get(layout, layout)
         title = _shorten(raw.get("title") or raw.get("headline") or raw.get("key_message") or "Untitled", MAX_SLIDE_TITLE_CHARS)
         bullets = raw.get("bullets") or raw.get("points") or []
         if isinstance(bullets, str):
@@ -790,12 +1004,61 @@ def parse_deck_plan(content: str) -> dict | None:
                     "heading": _shorten(col.get("heading") or col.get("title") or "", 50),
                     "bullets": [_shorten(b, 90) for b in col_bullets if str(b or "").strip()][:5],
                 })
+        phases = raw.get("phases") or []
+        normalized_phases = []
+        if isinstance(phases, list):
+            for ph in phases[:6]:
+                if isinstance(ph, dict):
+                    normalized_phases.append({
+                        "label": _shorten(ph.get("label") or ph.get("name") or ph.get("date") or "", 40),
+                        "title": _shorten(ph.get("title") or ph.get("headline") or "", 80),
+                        "description": _shorten(ph.get("description") or ph.get("detail") or ph.get("summary") or "", 160),
+                    })
+                elif str(ph or "").strip():
+                    normalized_phases.append({"label": "", "title": _shorten(ph, 80), "description": ""})
+
+        chart = raw.get("chart")
+        normalized_chart = None
+        if isinstance(chart, dict):
+            categories = chart.get("categories") or chart.get("labels") or []
+            series_raw = chart.get("series") or []
+            series = []
+            if isinstance(categories, list) and isinstance(series_raw, list):
+                for s in series_raw[:4]:
+                    if not isinstance(s, dict):
+                        continue
+                    values = s.get("values") or s.get("data") or []
+                    numeric_values = []
+                    if isinstance(values, list):
+                        for v in values:
+                            try:
+                                numeric_values.append(float(v))
+                            except (TypeError, ValueError):
+                                numeric_values = []
+                                break
+                    if numeric_values:
+                        series.append({
+                            "name": _shorten(s.get("name") or "Series", 40),
+                            "values": numeric_values,
+                        })
+            if categories and series:
+                chart_type = str(chart.get("type") or "bar").lower().strip()
+                if chart_type not in {"bar", "line", "pie"}:
+                    chart_type = "bar"
+                normalized_chart = {
+                    "type": chart_type,
+                    "categories": [_shorten(c, 30) for c in categories][:12],
+                    "series": series,
+                }
+
         normalized["slides"].append({
             "layout": layout,
             "title": title,
             "bullets": bullets,
             "table": table_rows,
             "columns": normalized_columns,
+            "phases": normalized_phases,
+            "chart": normalized_chart,
             "speaker_notes": _clean_inline(str(notes or "")).strip(),
         })
     return normalized if normalized["slides"] else None
@@ -813,14 +1076,34 @@ def deck_plan_to_markdown(content: str) -> str | None:
         if layout in {"section", "section_divider"}:
             lines.extend(["", f"# {slide['title']}"])
             continue
-        lines.extend(["", f"## {slide['title']}"])
-        for bullet in slide.get("bullets") or []:
-            lines.append(f"- {bullet}")
+        if layout == "appendix":
+            lines.extend(["", f"# Appendix: {slide['title']}"])
+        else:
+            lines.extend(["", f"## {slide['title']}"])
+        bullets = slide.get("bullets") or []
+        if layout == "executive_summary" and bullets:
+            lines.append(f"**{bullets[0]}**")
+            for bullet in bullets[1:]:
+                lines.append(f"- {bullet}")
+        elif layout == "recommendation" and bullets:
+            lines.append(f"**Recommendation: {bullets[0]}**")
+            for bullet in bullets[1:]:
+                lines.append(f"- {bullet}")
+        else:
+            for bullet in bullets:
+                lines.append(f"- {bullet}")
+        for phase in slide.get("phases") or []:
+            label = f"{phase['label']}: " if phase.get("label") else ""
+            title = phase.get("title") or ""
+            desc = f" — {phase['description']}" if phase.get("description") else ""
+            lines.append(f"- {label}{title}{desc}")
         for col in slide.get("columns") or []:
             if col.get("heading"):
                 lines.append(f"### {col['heading']}")
             for bullet in col.get("bullets") or []:
                 lines.append(f"- {bullet}")
+        if layout == "architecture" and not slide.get("columns"):
+            lines.append("_(architecture diagram placeholder)_")
         table = slide.get("table") or []
         if table:
             width = max(len(r) for r in table)
@@ -1018,8 +1301,113 @@ def _pptx_add_text_box(slide, left, top, width, height, heading: str, bullets: l
             run.font.size = PptxPt(13)
 
 
+def _pptx_render_executive_summary(slide, bullets: list[str]) -> None:
+    """Big 'so what' statement up top, supporting bullets below."""
+    headline, support = (bullets[0], bullets[1:]) if bullets else ("", [])
+    if headline:
+        box = slide.shapes.add_textbox(PptxInches(0.65), PptxInches(1.5), PptxInches(11.0), PptxInches(1.7))
+        tf = box.text_frame
+        tf.word_wrap = True
+        tf.clear()
+        _pptx_add_runs(tf.paragraphs[0], headline)
+        for run in tf.paragraphs[0].runs:
+            run.font.size = PptxPt(28)
+            run.font.bold = True
+    if support:
+        _pptx_add_text_box(
+            slide, PptxInches(0.65), PptxInches(3.3), PptxInches(11.0), PptxInches(3.2),
+            "", support[:MAX_BULLETS_PER_SLIDE - 1],
+        )
+
+
+def _pptx_render_recommendation(slide, bullets: list[str]) -> None:
+    """Accent card around the recommendation line, remaining bullets as rationale."""
+    primary, rationale = (bullets[0], bullets[1:]) if bullets else ("", [])
+    if primary:
+        box = slide.shapes.add_shape(
+            MSO_SHAPE.ROUNDED_RECTANGLE, PptxInches(0.65), PptxInches(1.5), PptxInches(11.0), PptxInches(1.3)
+        )
+        box.fill.solid()
+        box.fill.fore_color.rgb = RGBColor(0x1F, 0x3B, 0x5C)
+        box.line.fill.background()
+        tf = box.text_frame
+        tf.word_wrap = True
+        tf.clear()
+        _pptx_add_runs(tf.paragraphs[0], f"Recommendation: {primary}")
+        for run in tf.paragraphs[0].runs:
+            run.font.size = PptxPt(18)
+            run.font.bold = True
+            run.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
+        tf.paragraphs[0].alignment = PP_ALIGN.LEFT
+    if rationale:
+        _pptx_add_text_box(
+            slide, PptxInches(0.65), PptxInches(3.1), PptxInches(11.0), PptxInches(3.4),
+            "Rationale", rationale[:MAX_BULLETS_PER_SLIDE],
+        )
+
+
+def _pptx_render_timeline(slide, phases: list[dict]) -> None:
+    """Horizontal timeline of phase markers, each with a label/title/description."""
+    phases = [p for p in phases if isinstance(p, dict) and (p.get("title") or p.get("label") or p.get("description"))][:6]
+    if not phases:
+        return
+    n = len(phases)
+    total_w = 12.0
+    gap = 0.25
+    box_w = (total_w - gap * (n - 1)) / n
+    top = 2.0
+    for idx, ph in enumerate(phases):
+        left = 0.65 + idx * (box_w + gap)
+        if idx > 0:
+            connector = slide.shapes.add_shape(
+                MSO_SHAPE.RECTANGLE, PptxInches(left - gap), PptxInches(top + 0.4),
+                PptxInches(gap), PptxInches(0.04),
+            )
+            connector.fill.solid()
+            connector.fill.fore_color.rgb = RGBColor(0xC0, 0xC0, 0xC0)
+            connector.line.fill.background()
+        marker = slide.shapes.add_shape(
+            MSO_SHAPE.OVAL, PptxInches(left + box_w / 2 - 0.15), PptxInches(top + 0.25), PptxInches(0.3), PptxInches(0.3)
+        )
+        marker.fill.solid()
+        marker.fill.fore_color.rgb = RGBColor(0x1F, 0x3B, 0x5C)
+        marker.line.fill.background()
+        lines = []
+        if ph.get("label"):
+            lines.append(ph["label"])
+        if ph.get("title"):
+            lines.append(ph["title"])
+        if ph.get("description"):
+            lines.append(ph["description"])
+        _pptx_add_text_box(slide, PptxInches(left), PptxInches(top + 0.7), PptxInches(box_w), PptxInches(3.8), "", lines)
+
+
+_PPTX_CHART_TYPE_MAP = {
+    "bar": XL_CHART_TYPE.COLUMN_CLUSTERED,
+    "line": XL_CHART_TYPE.LINE_MARKERS,
+    "pie": XL_CHART_TYPE.PIE,
+}
+
+
+def _pptx_render_chart(slide, chart_spec: dict) -> None:
+    """Render a native python-pptx chart from a normalized chart spec
+    ({"type": "bar|line|pie", "categories": [...], "series": [{"name", "values"}]})."""
+    chart_data = CategoryChartData()
+    chart_data.categories = chart_spec.get("categories") or []
+    series = chart_spec.get("series") or []
+    chart_type = chart_spec.get("type") or "bar"
+    if chart_type == "pie":
+        series = series[:1]
+    for s in series:
+        chart_data.add_series(s.get("name") or "Series", s.get("values") or [])
+    xl_chart_type = _PPTX_CHART_TYPE_MAP.get(chart_type, XL_CHART_TYPE.COLUMN_CLUSTERED)
+    slide.shapes.add_chart(
+        xl_chart_type, PptxInches(1.0), PptxInches(1.6), PptxInches(11.3), PptxInches(5.3), chart_data
+    )
+
+
 def _pptx_render_deck_plan(prs: Presentation, plan: dict, fallback_title: str, subtitle: str | None) -> None:
-    title_layout = _pptx_layout(prs, 0)
+    title_layout = _pptx_layout_for_role(prs, "title")
     title_slide = prs.slides.add_slide(title_layout)
     _pptx_set_title(title_slide, plan.get("title") or fallback_title or "Fronei deck")
     deck_subtitle = plan.get("subtitle") or subtitle
@@ -1034,15 +1422,20 @@ def _pptx_render_deck_plan(prs: Presentation, plan: dict, fallback_title: str, s
         layout = spec.get("layout") or "bullets"
         title = spec.get("title") or "Untitled"
         notes = spec.get("speaker_notes")
+        bullets = spec.get("bullets") or []
         if layout in {"section", "section_divider"}:
-            slide = prs.slides.add_slide(_pptx_layout(prs, 2, fallback=5))
+            slide = prs.slides.add_slide(_pptx_layout_for_role(prs, "section"))
             _pptx_set_title(slide, title)
+        elif spec.get("chart"):
+            slide = prs.slides.add_slide(_pptx_layout_for_role(prs, "title_only"))
+            _pptx_set_title(slide, title)
+            _pptx_render_chart(slide, spec["chart"])
         elif spec.get("table"):
-            slide = prs.slides.add_slide(_pptx_layout(prs, 5, fallback=1))
+            slide = prs.slides.add_slide(_pptx_layout_for_role(prs, "title_only"))
             _pptx_set_title(slide, title)
             _pptx_render_table(slide, spec["table"])
-        elif layout in {"two_column", "comparison"} and spec.get("columns"):
-            slide = prs.slides.add_slide(_pptx_layout(prs, 5, fallback=1))
+        elif layout in {"two_column", "comparison", "architecture"} and spec.get("columns"):
+            slide = prs.slides.add_slide(_pptx_layout_for_role(prs, "two_content"))
             _pptx_set_title(slide, title)
             cols = spec["columns"][:2]
             col_w = PptxInches(5.8)
@@ -1051,22 +1444,158 @@ def _pptx_render_deck_plan(prs: Presentation, plan: dict, fallback_title: str, s
             for idx, col in enumerate(cols):
                 left = PptxInches(0.65 + idx * 6.05)
                 _pptx_add_text_box(slide, left, top, col_w, height, col.get("heading") or "", col.get("bullets") or [])
-        else:
-            slide = prs.slides.add_slide(_pptx_layout(prs, 1))
+        elif layout == "executive_summary":
+            slide = prs.slides.add_slide(_pptx_layout_for_role(prs, "title_only"))
             _pptx_set_title(slide, title)
-            bullets = spec.get("bullets") or []
-            if layout in {"recommendation", "decision"} and bullets:
-                bullets = [f"Recommendation: {bullets[0]}", *bullets[1:]]
+            _pptx_render_executive_summary(slide, bullets)
+        elif layout == "recommendation":
+            slide = prs.slides.add_slide(_pptx_layout_for_role(prs, "title_only"))
+            _pptx_set_title(slide, title)
+            _pptx_render_recommendation(slide, bullets)
+        elif layout == "timeline":
+            slide = prs.slides.add_slide(_pptx_layout_for_role(prs, "title_only"))
+            _pptx_set_title(slide, title)
+            phases = spec.get("phases") or [
+                {"label": "", "title": b, "description": ""} for b in bullets
+            ]
+            _pptx_render_timeline(slide, phases)
+        elif layout == "architecture":
+            slide = prs.slides.add_slide(_pptx_layout_for_role(prs, "title_only"))
+            _pptx_set_title(slide, title)
+            _pptx_add_text_box(
+                slide, PptxInches(0.65), PptxInches(1.55), PptxInches(5.6), PptxInches(4.9),
+                "Architecture diagram", ["(diagram placeholder — describe components and data flow)"],
+            )
+            _pptx_add_text_box(
+                slide, PptxInches(6.5), PptxInches(1.55), PptxInches(5.8), PptxInches(4.9),
+                "", bullets[:MAX_BULLETS_PER_SLIDE] or [""],
+            )
+        else:
+            slide = prs.slides.add_slide(_pptx_layout_for_role(prs, "content"))
+            _pptx_set_title(slide, title)
+            cap = MAX_APPENDIX_BULLETS if layout == "appendix" else MAX_BULLETS_PER_SLIDE
             body = slide.placeholders[1] if len(slide.placeholders) > 1 else None
             if body is not None:
                 tf = body.text_frame
                 tf.clear()
-                for i, bullet in enumerate(bullets[:MAX_BULLETS_PER_SLIDE] or [""]):
+                for i, bullet in enumerate(bullets[:cap] or [""]):
                     p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
                     p.level = 0
                     _pptx_add_runs(p, bullet)
         if notes:
             slide.notes_slide.notes_text_frame.text = notes
+
+
+def _js_pptx_renderer_available() -> bool:
+    if not PPTX_RENDER_JS.exists() or shutil.which("node") is None:
+        return False
+    # Guard against a missing `npm install` under apps/api/pptx_render: without
+    # this check, every default deck would attempt JS rendering, fail, log an
+    # exception, and silently fall back to python-pptx.
+    pptxgenjs_dir = PPTX_RENDER_DIR / "node_modules" / "pptxgenjs"
+    return pptxgenjs_dir.is_dir()
+
+
+def _js_slide_from_deck_spec(spec: dict) -> dict:
+    """Convert one normalized DeckPlan slide (from parse_deck_plan) into the
+    role-based shape consumed by pptx_render/render.js."""
+    layout = spec.get("layout") or "bullets"
+    title = spec.get("title") or "Untitled"
+    notes = spec.get("speaker_notes") or None
+    bullets = spec.get("bullets") or []
+
+    if layout in {"section", "section_divider"}:
+        return {"role": "section", "title": title, "notes": notes}
+    if spec.get("chart"):
+        return {"role": "chart", "title": title, "chart": spec["chart"], "notes": notes}
+    if spec.get("table"):
+        return {"role": "table", "title": title, "rows": spec["table"], "notes": notes}
+    if layout in {"two_column", "comparison", "architecture"} and spec.get("columns"):
+        return {"role": "two_content", "title": title, "columns": spec["columns"][:2], "notes": notes}
+    if layout == "executive_summary":
+        return {"role": "executive_summary", "title": title, "bullets": bullets, "notes": notes}
+    if layout == "recommendation":
+        return {"role": "recommendation", "title": title, "bullets": bullets, "notes": notes}
+    if layout == "timeline":
+        phases = spec.get("phases") or [{"label": "", "title": b, "description": ""} for b in bullets]
+        return {"role": "timeline", "title": title, "phases": phases, "notes": notes}
+    if layout == "architecture":
+        return {"role": "architecture", "title": title, "bullets": bullets[:MAX_BULLETS_PER_SLIDE], "notes": notes}
+
+    cap = MAX_APPENDIX_BULLETS if layout == "appendix" else MAX_BULLETS_PER_SLIDE
+    return {
+        "role": "content",
+        "title": title,
+        "appendix": layout == "appendix",
+        "bullets": [{"level": 0, "text": b} for b in (bullets[:cap] or [""])],
+        "notes": notes,
+    }
+
+
+def _js_slide_from_markdown_spec(spec: dict) -> dict:
+    """Convert one slide from `_parse_pptx_slides`/`_split_dense_slides` into
+    the role-based shape consumed by pptx_render/render.js."""
+    kind = spec.get("kind")
+    notes = spec.get("notes")
+    if kind == "section":
+        return {"role": "section", "title": spec.get("title") or "Untitled", "notes": notes}
+    if kind == "table":
+        return {"role": "table", "title": spec.get("title") or "Table", "rows": spec.get("rows") or [], "notes": notes}
+
+    bullets = spec.get("bullets") or [(0, "")]
+    return {
+        "role": "content",
+        "title": spec.get("title") or "Untitled",
+        "bullets": [{"level": level, "text": text} for level, text in bullets],
+        "notes": notes,
+    }
+
+
+def _build_js_deck_payload(title: str, content: str, subtitle: str | None) -> dict:
+    """Normalize either a structured DeckPlan or markdown-ish slide-plan
+    content into the JSON payload consumed by pptx_render/render.js."""
+    deck_plan = parse_deck_plan(content)
+    if deck_plan:
+        return {
+            "title": deck_plan.get("title") or title or "Fronei deck",
+            "subtitle": deck_plan.get("subtitle") or subtitle,
+            "slides": [_js_slide_from_deck_spec(spec) for spec in deck_plan.get("slides", [])],
+        }
+
+    title_slide_spec, slides = _parse_pptx_slides(content)
+    slides = [
+        s for s in slides
+        if not (s.get("kind") == "content" and not s.get("bullets") and not s.get("notes"))
+    ]
+    slides = _split_dense_slides(slides)
+
+    deck_title = (title_slide_spec or {}).get("title") or _clean_inline(title) or "Fronei deck"
+    deck_subtitle = (title_slide_spec or {}).get("subtitle") or subtitle
+
+    js_slides: list[dict] = []
+    if not slides:
+        lines = _clean_inline(content).split("\n")[:MAX_BULLETS_PER_SLIDE] or [""]
+        js_slides.append({
+            "role": "content",
+            "title": "Overview",
+            "bullets": [{"level": 0, "text": line} for line in lines],
+            "notes": None,
+        })
+    for spec in slides:
+        js_slides.append(_js_slide_from_markdown_spec(spec))
+
+    return {"title": deck_title, "subtitle": deck_subtitle, "slides": js_slides}
+
+
+def _render_pptx_via_pptxgenjs(payload: dict) -> bytes:
+    result = subprocess.run(
+        ["node", str(PPTX_RENDER_JS)],
+        input=json.dumps(payload).encode("utf-8"),
+        capture_output=True,
+        timeout=PPTX_RENDER_TIMEOUT_SECONDS,
+        check=True,
+    )
+    return result.stdout
 
 
 def generate_pptx_bytes(
@@ -1077,7 +1606,33 @@ def generate_pptx_bytes(
     template_path: str | Path | None = None,
 ) -> bytes:
     """Render markdown-ish slide-plan content (see module docstring above the
-    PPTX section), or a structured DeckPlan JSON object, into a PPTX deck."""
+    PPTX section), or a structured DeckPlan JSON object, into a PPTX deck.
+
+    Decks with no branded template (`template_id` unset or "fronei-default",
+    and no `template_path`) are rendered via PptxGenJS (pptx_render/render.js).
+    Decks built from a built-in or user-uploaded `.pptx` template are rendered
+    via python-pptx, which can read that template's layouts/placeholders
+    directly (see `_pptx_layout_for_role`).
+    """
+    uses_template = bool(template_path) or (template_id and template_id != "fronei-default")
+    if not uses_template and _js_pptx_renderer_available():
+        try:
+            payload = _build_js_deck_payload(title, content, subtitle)
+            return _render_pptx_via_pptxgenjs(payload)
+        except Exception:
+            logger.exception("PptxGenJS rendering failed; falling back to python-pptx")
+
+    return _generate_pptx_bytes_python_pptx(title, content, subtitle, template_id, template_path)
+
+
+def _generate_pptx_bytes_python_pptx(
+    title: str,
+    content: str,
+    subtitle: str | None = None,
+    template_id: str | None = None,
+    template_path: str | Path | None = None,
+) -> bytes:
+    """python-pptx fallback / template-aware renderer (see generate_pptx_bytes)."""
     prs = _presentation_from_template(template_id, template_path)
     prs.slide_width = PptxInches(13.333)
     prs.slide_height = PptxInches(7.5)
@@ -1101,7 +1656,7 @@ def generate_pptx_bytes(
     # Title slide
     deck_title = (title_slide_spec or {}).get("title") or _clean_inline(title) or "Fronei deck"
     deck_subtitle = (title_slide_spec or {}).get("subtitle") or subtitle
-    title_layout = _pptx_layout(prs, 0)
+    title_layout = _pptx_layout_for_role(prs, "title")
     slide = prs.slides.add_slide(title_layout)
     _pptx_set_title(slide, deck_title)
     if deck_subtitle:
@@ -1114,7 +1669,7 @@ def generate_pptx_bytes(
     if not slides:
         # No structured body — fall back to a single content slide listing
         # the raw content as bullets so nothing is silently dropped.
-        body_layout = _pptx_layout(prs, 1)
+        body_layout = _pptx_layout_for_role(prs, "content")
         slide = prs.slides.add_slide(body_layout)
         _pptx_set_title(slide, "Overview")
         body = slide.placeholders[1] if len(slide.placeholders) > 1 else None
@@ -1129,16 +1684,16 @@ def generate_pptx_bytes(
     for spec in slides:
         kind = spec.get("kind")
         if kind == "section":
-            layout = _pptx_layout(prs, 2, fallback=5)
+            layout = _pptx_layout_for_role(prs, "section")
             slide = prs.slides.add_slide(layout)
             _pptx_set_title(slide, spec["title"])
         elif kind == "table":
-            layout = _pptx_layout(prs, 5, fallback=1)
+            layout = _pptx_layout_for_role(prs, "title_only")
             slide = prs.slides.add_slide(layout)
             _pptx_set_title(slide, spec["title"])
             _pptx_render_table(slide, spec["rows"])
         else:  # content
-            layout = _pptx_layout(prs, 1)
+            layout = _pptx_layout_for_role(prs, "content")
             slide = prs.slides.add_slide(layout)
             _pptx_set_title(slide, spec["title"] or "Untitled")
             bullets = spec.get("bullets") or []

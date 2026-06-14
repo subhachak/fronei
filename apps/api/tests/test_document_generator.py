@@ -6,7 +6,13 @@ import pytest
 from docx import Document
 from pptx import Presentation
 
-from app.services.document_generator import deck_plan_to_markdown, generate_docx_bytes, generate_pptx_bytes
+from app.services.document_generator import (
+    _pptx_layout_for_role,
+    deck_plan_to_markdown,
+    generate_docx_bytes,
+    generate_pptx_bytes,
+    generate_xlsx_bytes,
+)
 
 
 def _read_docx(content: bytes) -> Document:
@@ -16,6 +22,26 @@ def _read_docx(content: bytes) -> Document:
 def _docx_part(content: bytes, name: str) -> str:
     with ZipFile(BytesIO(content)) as archive:
         return archive.read(name).decode("utf-8")
+
+
+def _slide_texts(slide) -> list:
+    """All text found in a slide's shapes (title placeholders, text boxes, etc.).
+
+    Works for both python-pptx-rendered slides (which use title placeholders)
+    and PptxGenJS-rendered slides (which use plain text boxes only).
+    """
+    texts = []
+    for shape in slide.shapes:
+        if hasattr(shape, "text") and shape.text:
+            texts.append(shape.text)
+    return texts
+
+
+def _all_decks_text(deck) -> list:
+    texts = []
+    for slide in deck.slides:
+        texts.extend(_slide_texts(slide))
+    return texts
 
 
 def test_generate_docx_renders_headings_lists_and_text():
@@ -68,6 +94,20 @@ def test_generate_docx_preserves_common_inline_formatting():
     assert any(rel.target_ref == "https://example.com" for rel in paragraph.part.rels.values())
 
 
+def test_generate_docx_handles_nested_inline_markdown_and_link_parentheses():
+    content = "Use **bold with *nested italic*** and [source](https://example.com/path_(v2))."
+    doc = _read_docx(generate_docx_bytes("Nested inline", content))
+
+    paragraph = next(p for p in doc.paragraphs if "bold with" in p.text)
+    runs_by_text = {run.text: run for run in paragraph.runs if run.text}
+
+    assert runs_by_text["bold with "].bold
+    assert runs_by_text["nested italic"].bold
+    assert runs_by_text["nested italic"].italic
+    assert "w:hyperlink" in paragraph._p.xml
+    assert any(rel.target_ref == "https://example.com/path_(v2)" for rel in paragraph.part.rels.values())
+
+
 def test_generate_docx_preserves_inline_formatting_in_lists_and_tables():
     content = """- **Pinned** memory
 
@@ -81,6 +121,19 @@ def test_generate_docx_preserves_inline_formatting_in_lists_and_tables():
     assert any(run.text == "Pinned" and run.bold for run in list_paragraph.runs)
     table_cell = doc.tables[0].cell(1, 1).paragraphs[0]
     assert any(run.text == "Concise" and run.italic for run in table_cell.runs)
+
+
+def test_generate_xlsx_cleans_nested_inline_markdown():
+    workbook_bytes = generate_xlsx_bytes(
+        "Financial model",
+        "# Summary\n\n- **Margin with *sensitivity*** and [source](https://example.com/a_(b))",
+    )
+    from openpyxl import load_workbook
+
+    wb = load_workbook(BytesIO(workbook_bytes))
+    values = [cell.value for row in wb["Overview"].iter_rows() for cell in row if cell.value]
+
+    assert "• Margin with sensitivity and source (https://example.com/a_(b))" in values
 
 
 @pytest.mark.parametrize(
@@ -186,10 +239,10 @@ Speaker notes: Emphasize that this is a sequencing decision, not just tooling.
 """
     deck = Presentation(BytesIO(generate_pptx_bytes("Client AI Strategy", content)))
 
-    slide_titles = [slide.shapes.title.text for slide in deck.slides if slide.shapes.title]
-    assert slide_titles[0] == "Client AI Strategy"
-    assert "The decision is timing-sensitive" in slide_titles
-    assert "Options" in slide_titles
+    slide_texts = [_slide_texts(slide) for slide in deck.slides]
+    assert "Client AI Strategy" in slide_texts[0]
+    assert any("The decision is timing-sensitive" in texts for texts in slide_texts)
+    assert any("Options" in texts for texts in slide_texts)
     assert any("Demand is already showing up" in shape.text for slide in deck.slides for shape in slide.shapes if hasattr(shape, "text"))
     table_text = []
     for slide in deck.slides:
@@ -238,12 +291,12 @@ def test_generate_pptx_renders_structured_deck_plan_json():
     })
 
     deck = Presentation(BytesIO(generate_pptx_bytes("Fallback title", content)))
-    slide_titles = [slide.shapes.title.text for slide in deck.slides if slide.shapes.title]
+    slide_texts = [_slide_texts(slide) for slide in deck.slides]
 
-    assert slide_titles[0] == "Client AI Strategy"
-    assert "Decision context" in slide_titles
-    assert "The decision is timing-sensitive" in slide_titles
-    assert "Buy is faster; build is more defensible" in slide_titles
+    assert "Client AI Strategy" in slide_texts[0]
+    assert any("Decision context" in texts for texts in slide_texts)
+    assert any("The decision is timing-sensitive" in texts for texts in slide_texts)
+    assert any("Buy is faster; build is more defensible" in texts for texts in slide_texts)
     assert any("Fastest launch" in shape.text for slide in deck.slides for shape in slide.shapes if hasattr(shape, "text"))
     table_text = []
     for slide in deck.slides:
@@ -280,6 +333,192 @@ def test_generate_pptx_uses_builtin_template_without_sample_slides():
     assert slide_titles == ["Platform Modernization", "Phased migration lowers execution risk"]
 
 
+def test_generate_pptx_renders_new_layout_hints():
+    content = json.dumps({
+        "title": "AI Platform Roadmap",
+        "subtitle": "For the steering committee",
+        "slides": [
+            {
+                "layout": "executive_summary",
+                "title": "The platform pays for itself within a year",
+                "bullets": [
+                    "Consolidating onto one platform cuts run-rate cost by 30%",
+                    "Reduces vendor sprawl across three business units",
+                    "Unlocks shared data foundation for future AI use cases",
+                ],
+            },
+            {
+                "layout": "decision_slide",
+                "title": "Proceed with a phased platform consolidation",
+                "bullets": [
+                    "Consolidate onto Platform A starting Q3",
+                    "Lower long-term TCO than maintaining three platforms",
+                    "Vendor has committed migration support",
+                ],
+            },
+            {
+                "layout": "roadmap",
+                "title": "Three phases over twelve months",
+                "phases": [
+                    {"label": "Phase 1", "title": "Foundation", "description": "Stand up shared infrastructure"},
+                    {"label": "Phase 2", "title": "Migration", "description": "Move priority workloads"},
+                    {"label": "Phase 3", "title": "Optimization", "description": "Retire legacy platforms"},
+                ],
+            },
+            {
+                "layout": "architecture",
+                "title": "Target architecture centralizes data access",
+                "bullets": ["Single API gateway", "Shared data layer", "Unified identity provider"],
+            },
+            {
+                "layout": "risk_matrix",
+                "title": "Key migration risks are manageable",
+                "table": {
+                    "headers": ["Risk", "Likelihood", "Impact", "Owner"],
+                    "rows": [["Data loss during cutover", "Low", "High", "Platform team"]],
+                },
+            },
+            {
+                "layout": "appendix",
+                "title": "Supporting detail",
+                "bullets": [f"Detail point {i}" for i in range(8)],
+            },
+        ],
+    })
+
+    deck = Presentation(BytesIO(generate_pptx_bytes("Fallback title", content)))
+    slide_texts = [_slide_texts(slide) for slide in deck.slides]
+
+    assert any("The platform pays for itself within a year" in texts for texts in slide_texts)
+    assert any("Proceed with a phased platform consolidation" in texts for texts in slide_texts)
+    assert any("Three phases over twelve months" in texts for texts in slide_texts)
+    assert any("Target architecture centralizes data access" in texts for texts in slide_texts)
+    assert any("Key migration risks are manageable" in texts for texts in slide_texts)
+    assert any("Supporting detail" in texts for texts in slide_texts)
+
+    all_text = []
+    for slide in deck.slides:
+        for shape in slide.shapes:
+            if hasattr(shape, "text"):
+                all_text.append(shape.text)
+    joined = "\n".join(all_text)
+
+    # Executive summary headline rendered
+    assert "Consolidating onto one platform cuts run-rate cost by 30%" in joined
+    # Recommendation callout rendered with prefix
+    assert "Recommendation: Consolidate onto Platform A starting Q3" in joined
+    # Timeline phases rendered
+    assert "Foundation" in joined and "Migration" in joined and "Optimization" in joined
+    # Architecture placeholder + bullets rendered
+    assert "Architecture diagram" in joined
+    assert "Single API gateway" in joined
+    # Appendix dense bullets all rendered (up to MAX_APPENDIX_BULLETS = 10)
+    for i in range(8):
+        assert f"Detail point {i}" in joined
+
+    table_text = []
+    for slide in deck.slides:
+        for shape in slide.shapes:
+            if getattr(shape, "has_table", False):
+                table = shape.table
+                for row in table.rows:
+                    table_text.extend(cell.text for cell in row.cells)
+    assert "Data loss during cutover" in table_text
+
+
+def test_generate_pptx_renders_native_chart_for_financial_model():
+    content = json.dumps({
+        "title": "AI Platform Roadmap",
+        "slides": [
+            {
+                "layout": "financial_model",
+                "title": "Revenue grows steadily after consolidation",
+                "chart": {
+                    "type": "line",
+                    "categories": ["2024", "2025", "2026"],
+                    "series": [{"name": "Revenue ($M)", "values": [1.2, 1.8, 2.6]}],
+                },
+            },
+        ],
+    })
+
+    deck = Presentation(BytesIO(generate_pptx_bytes("Fallback title", content)))
+    slide_texts = [_slide_texts(slide) for slide in deck.slides]
+    assert any("Revenue grows steadily after consolidation" in texts for texts in slide_texts)
+
+    chart_shapes = [shape for slide in deck.slides for shape in slide.shapes if shape.has_chart]
+    assert len(chart_shapes) == 1
+    chart = chart_shapes[0].chart
+    plot = chart.plots[0]
+    assert list(plot.categories) == ["2024", "2025", "2026"]
+    series = list(chart.series)
+    assert series[0].name == "Revenue ($M)"
+    assert list(series[0].values) == [1.2, 1.8, 2.6]
+
+
+def test_generate_xlsx_adds_native_chart_for_numeric_table():
+    content = (
+        "# Revenue plan\n\n"
+        "## Projection\n\n"
+        "| Year | Revenue | Cost |\n"
+        "| --- | --- | --- |\n"
+        "| 2024 | 1.2 | 0.9 |\n"
+        "| 2025 | 1.8 | 1.1 |\n"
+        "| 2026 | 2.6 | 1.4 |\n"
+    )
+    workbook_bytes = generate_xlsx_bytes("Revenue plan", content)
+    from openpyxl import load_workbook
+
+    wb = load_workbook(BytesIO(workbook_bytes))
+    sheet_names = [name for name in wb.sheetnames if name != "Overview"]
+    assert sheet_names, "expected a sheet for the markdown table"
+    ws = wb[sheet_names[0]]
+
+    # Numeric cells should be rewritten as real numbers, not strings.
+    assert ws.cell(row=2, column=2).value == 1.2
+    assert ws.cell(row=2, column=3).value == 0.9
+
+    assert len(ws._charts) == 1
+
+
+def test_deck_plan_to_markdown_handles_new_layout_hints():
+    content = json.dumps({
+        "title": "AI Platform Roadmap",
+        "slides": [
+            {
+                "layout": "executive_summary",
+                "title": "The platform pays for itself within a year",
+                "bullets": ["Cuts run-rate cost by 30%", "Reduces vendor sprawl"],
+            },
+            {
+                "layout": "recommendation",
+                "title": "Proceed with consolidation",
+                "bullets": ["Consolidate onto Platform A", "Lower long-term TCO"],
+            },
+            {
+                "layout": "roadmap",
+                "title": "Three phases",
+                "phases": [
+                    {"label": "Phase 1", "title": "Foundation", "description": "Stand up infrastructure"},
+                ],
+            },
+            {
+                "layout": "appendix",
+                "title": "Supporting detail",
+                "bullets": ["Extra context"],
+            },
+        ],
+    })
+
+    markdown = deck_plan_to_markdown(content)
+
+    assert markdown is not None
+    assert "**Cuts run-rate cost by 30%**" in markdown
+    assert "**Recommendation: Consolidate onto Platform A**" in markdown
+    assert "Phase 1: Foundation — Stand up infrastructure" in markdown
+    assert "# Appendix: Supporting detail" in markdown
+
+
 def test_deck_plan_to_markdown_returns_readable_slide_plan():
     content = json.dumps({
         "title": "Client AI Strategy",
@@ -294,3 +533,44 @@ def test_deck_plan_to_markdown_returns_readable_slide_plan():
     assert markdown.startswith("# Client AI Strategy")
     assert "## The decision is timing-sensitive" in markdown
     assert "- Move in phases" in markdown
+
+
+def test_pptx_layout_for_role_resolves_renamed_layouts_via_heuristic():
+    """A template whose layouts have been renamed away from the standard
+    PowerPoint names should still resolve to the correct semantic role via
+    placeholder-shape heuristics, not just name-matching or index fallback."""
+    prs = Presentation()
+
+    p_ns = "{http://schemas.openxmlformats.org/presentationml/2006/main}"
+
+    def _rename(layout, new_name):
+        csld = layout.element.find(f"{p_ns}cSld")
+        csld.set("name", new_name)
+
+    # Rename "Section Header" (title + body only) away from any keyword match.
+    section_layout = prs.slide_layouts[2]
+    _rename(section_layout, "Custom Divider Style")
+
+    # Rename "Two Content" and "Comparison" (both title + 2 object placeholders)
+    # away from any keyword match.
+    two_content_layout = prs.slide_layouts[3]
+    _rename(two_content_layout, "Side-by-Side Panels")
+    _rename(prs.slide_layouts[4], "Split View")
+
+    resolved_section = _pptx_layout_for_role(prs, "section")
+    resolved_two_content = _pptx_layout_for_role(prs, "two_content")
+
+    assert resolved_section is section_layout
+    assert resolved_two_content is two_content_layout
+
+
+def test_pptx_layout_for_role_falls_back_to_index_when_unresolvable():
+    """When neither name-matching nor placeholder heuristics find a match,
+    resolution should fall back to the standard-index default without error."""
+    prs = Presentation()
+    layout = _pptx_layout_for_role(prs, "title_only")
+    assert layout is prs.slide_layouts[5]
+
+    # Unknown role falls back to index 0 (title slide) gracefully.
+    fallback = _pptx_layout_for_role(prs, "nonexistent_role")
+    assert fallback is prs.slide_layouts[0]

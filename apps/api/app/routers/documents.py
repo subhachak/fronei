@@ -42,6 +42,7 @@ from app.services.document_templates import (
     list_document_templates,
     store_user_pptx_template,
 )
+from app.services.pptx_render_qa import run_pptx_render_qa
 from app.services.llm_gateway import invoke_llm
 from app.services.personal_context import build_context
 from app.services.planner import run_planner
@@ -179,7 +180,8 @@ DeckPlan schema:
   "subtitle": "Audience, client, or context",
   "slides": [
     {
-      "layout": "section | bullets | two_column | comparison | table | recommendation",
+      "layout": "section | bullets | executive_summary | two_column | comparison | architecture | table | \
+recommendation | timeline | risk_matrix | financial_model | appendix",
       "title": "Assertion-style slide title",
       "bullets": ["short support point"],
       "columns": [
@@ -190,21 +192,51 @@ DeckPlan schema:
         "headers": ["Criterion", "Option A", "Option B"],
         "rows": [["Cost", "Low", "Medium"]]
       },
+      "phases": [
+        {"label": "Phase 1 / Q1", "title": "Foundation", "description": "What happens in this phase"}
+      ],
+      "chart": {
+        "type": "bar | line | pie",
+        "categories": ["2024", "2025", "2026"],
+        "series": [{"name": "Revenue", "values": [1.2, 1.8, 2.6]}]
+      },
       "speaker_notes": "Presenter talk track, nuance, caveats, and transitions."
     }
   ]
 }
 
+Layout guide (use the most specific layout that fits — generic `bullets` is the fallback, not the default):
+- `executive_summary`: first content slide for executive_report/proposal decks. `bullets[0]` is the single \
+"so what" headline (one sentence, the bottom line); remaining bullets are supporting points.
+- `recommendation`: use for the decision/ask slide. `bullets[0]` is the recommendation itself (rendered in an \
+accent callout); remaining bullets are the rationale.
+- `timeline`: phased plans and roadmaps. Provide `phases` (3-6 entries, each with `label` e.g. "Phase 1" or a \
+date/quarter, `title`, and a short `description`). Falls back to `bullets` as phase titles if `phases` is omitted.
+- `architecture`: technical/system-design slides. Either provide `columns` (diagram side vs. explanation side) \
+or `bullets` describing components/data flow — a diagram placeholder is rendered alongside.
+- `risk_matrix`: provide a `table` with headers `["Risk", "Likelihood", "Impact", "Owner"]` (or similar risk \
+register columns).
+- `financial_model`: provide a `chart` (preferred — renders as a native chart) and/or a `table` of figures \
+(e.g. cost/benefit, ROI, budget by line item, revenue projection). `chart.categories` are the x-axis labels \
+(e.g. years/quarters) and each `series` entry is a numeric line/bar with a name. Use `type: "line"` for trends \
+over time, `"bar"` for comparisons across categories, `"pie"` for composition/share. All `series.values` must be \
+plain numbers (no currency symbols, commas, or percent signs).
+- Any slide may include a `chart` alongside or instead of a `table` when the underlying data is genuinely \
+numeric and a chart communicates the point better than a table.
+- `appendix`: reference/backup material placed at the end of the deck after the main narrative. Denser bullet \
+lists (up to ~10) are acceptable here.
+- `two_column` / `comparison`: trade-offs, requires `columns`.
+- `table`: genuine structured comparisons or numeric data not covered by risk_matrix/financial_model.
+- `section`: sparingly, to separate major parts of the story.
+
 Deck quality rules:
-- Build a narrative arc: context -> analysis/options -> recommendation -> next steps.
+- Build a narrative arc: context -> analysis/options -> recommendation -> next steps. For executive_report and \
+proposal decks, open the content with an `executive_summary` slide and close with a `recommendation` slide.
 - Use 6-12 slides unless the user asks for a shorter or longer deck.
 - Slide titles must make a point on their own, not label a topic. Use "Strangler migration cuts delivery risk" \
 instead of "Migration options."
 - Bullets must be short, specific, and scannable. Prefer 3-5 bullets per slide.
 - Use speaker_notes to carry nuance, assumptions, data caveats, and the talk track that should not clutter slides.
-- Use `comparison` or `two_column` layouts for trade-offs; use `table` only for genuine structured comparisons \
-or numeric data.
-- Use `section` slides sparingly to separate major parts of the story.
 - Do not invent precise facts, figures, names, dates, or citations not supplied by the user or source context.
 - Avoid generic consulting filler. Every slide should answer: "what should the stakeholder understand, decide, \
 or do?"
@@ -651,6 +683,11 @@ def build_document_artifact(
             preview["format"] = "pptx"
             preview["filename"] = f"{_safe_filename(title)}.pptx"
             preview["pptx_base64"] = base64.b64encode(content).decode("ascii")
+            if get_settings().pptx_render_qa_enabled:
+                try:
+                    preview["render_qa"] = run_pptx_render_qa(content)
+                except Exception:
+                    logger.exception("PPTX render QA failed")
         except Exception as exc:
             logger.exception("Failed to render PPTX artifact")
             preview["generation_error"] = f"PowerPoint rendering failed: {exc}"

@@ -70,6 +70,13 @@ class Settings(BaseSettings):
     # point at a mounted volume, e.g. /data/fronei/document_templates.
     document_template_storage_dir: str = "./data/document_templates"
 
+    # Whether to run LibreOffice/poppler-based PPTX render QA synchronously on
+    # the document-generation request path. This can take up to ~60s per deck
+    # (see pptx_render_qa.CONVERT_TIMEOUT_SECONDS). Disabled by default in
+    # production to avoid adding tens of seconds of latency to every PPTX
+    # generation request; enable for local/staging diagnostics.
+    pptx_render_qa_enabled: bool = True
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     @property

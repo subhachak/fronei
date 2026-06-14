@@ -1241,13 +1241,13 @@ def _shorten_at_boundary(text: str, limit: int) -> tuple[str, str | None]:
     for m in _TITLE_CLAUSE_BREAK_RE.finditer(window):
         best_cut = m.start() + 1  # keep the punctuation, drop the trailing space
     if best_cut >= limit * 0.4:
-        return cleaned[:best_cut].rstrip(), cleaned
+        return cleaned[:best_cut].rstrip().rstrip("-–—").rstrip(), cleaned
 
     last_space = window.rfind(" ")
     if last_space >= limit * 0.4:
-        return cleaned[:last_space].rstrip(), cleaned
+        return cleaned[:last_space].rstrip().rstrip("-–—").rstrip(), cleaned
 
-    return window.rstrip(), cleaned
+    return window.rstrip().rstrip("-–—").rstrip(), cleaned
 
 
 def _shorten(text: str, limit: int) -> str:
@@ -1889,6 +1889,9 @@ def _compose_slide_job(index: int, slide: dict) -> tuple[dict, dict]:
             slide["layout"] = str(archetype_spec["layout"])
             layout = slide["layout"]
             warnings.append("layout_routed_from_archetype")
+    if _derive_fallback_payload_fields(slide):
+        warnings.append("fallback_payload_derived")
+    if archetype_spec:
         missing = _missing_archetype_required_fields(slide, archetype_spec)
         if missing:
             warnings.append(f"archetype_missing_payload:{','.join(missing)}")
@@ -2174,8 +2177,127 @@ def _deck_archetype_warnings(jobs: list[dict]) -> list[str]:
 def _slide_has_no_visible_payload(slide: dict) -> bool:
     return not any(
         slide.get(key)
-        for key in ("bullets", "table", "columns", "phases", "chart", "stats", "callout")
+        for key in (
+            "bullets", "table", "columns", "phases", "chart", "stats", "callout",
+            "options", "units", "bars", "decisions", "platform", "heatmap",
+        )
     )
+
+
+def _derive_fallback_payload_fields(slide: dict) -> bool:
+    """Backfill columns/bullets/stats from options/units/bars/decisions/platform.
+
+    Several board-deck archetypes (risk_register, operating_model,
+    comparison_matrix, architecture_map, investment_case, board_decision)
+    route to generic render layouts ("comparison", "architecture",
+    "stat_cards", "recommendation") whose renderers consume columns/bullets/
+    stats rather than the newer options/units/bars/decisions/platform fields.
+    This derives the generic fields so the structured data is not dropped.
+    Returns True if any field was backfilled.
+    """
+    archetype = str(slide.get("archetype") or "")
+    changed = False
+
+    def _options_to_columns(options: list) -> list[dict]:
+        cols = []
+        for opt in options:
+            if not isinstance(opt, dict):
+                continue
+            bullets = []
+            if opt.get("summary"):
+                bullets.append(opt["summary"])
+            bullets.extend(opt.get("bullets") or [])
+            cols.append({"heading": opt.get("name") or "Option", "bullets": bullets[:4]})
+        return cols
+
+    def _units_to_columns(units: list) -> list[dict]:
+        cols = []
+        for unit in units:
+            if not isinstance(unit, dict):
+                continue
+            bullets = list(unit.get("tools") or [])
+            if unit.get("note"):
+                bullets.append(unit["note"])
+            cols.append({"heading": unit.get("name") or "Business unit", "bullets": bullets[:4]})
+        return cols
+
+    if archetype in {"comparison_matrix", "risk_register", "operating_model"} and not slide.get("columns"):
+        if slide.get("options"):
+            cols = _options_to_columns(slide["options"])
+            if cols:
+                slide["columns"] = cols
+                changed = True
+        elif slide.get("units"):
+            cols = _units_to_columns(slide["units"])
+            if cols:
+                slide["columns"] = cols
+                changed = True
+
+    if archetype == "architecture_map" and not slide.get("bullets") and not slide.get("columns"):
+        platform = slide.get("platform") or {}
+        if platform:
+            bullets = []
+            if platform.get("subtitle"):
+                bullets.append(platform["subtitle"])
+            for domain in platform.get("domains") or []:
+                bullets.append(f"Business unit: {domain}")
+            for cap in platform.get("capabilities") or []:
+                bullets.append(f"Shared capability: {cap}")
+            if bullets:
+                slide["bullets"] = bullets[:6]
+                changed = True
+        if not slide.get("bullets") and not slide.get("columns"):
+            if slide.get("units"):
+                cols = _units_to_columns(slide["units"])
+                if cols:
+                    slide["columns"] = cols
+                    changed = True
+            elif slide.get("options"):
+                cols = _options_to_columns(slide["options"])
+                if cols:
+                    slide["columns"] = cols
+                    changed = True
+
+    if (
+        (archetype in {"investment_case", "metric_scorecard"} or str(slide.get("layout") or "") == "stat_cards")
+        and not slide.get("stats")
+        and slide.get("bars")
+    ):
+        stats = []
+        for bar in slide["bars"]:
+            if not isinstance(bar, dict):
+                continue
+            value = bar.get("display")
+            if not value and bar.get("value") is not None:
+                value = str(bar.get("value"))
+            label = bar.get("label") or ""
+            if not value and not label:
+                continue
+            stats.append({"value": value or "", "label": label})
+        if stats:
+            slide["stats"] = stats[:4]
+            changed = True
+
+    if archetype == "board_decision" and slide.get("decisions"):
+        decision_bullets = []
+        for decision in slide["decisions"]:
+            if not isinstance(decision, dict):
+                continue
+            label = decision.get("label") or ""
+            text = decision.get("text") or ""
+            if label and text:
+                decision_bullets.append(f"{label}: {text}")
+            else:
+                decision_bullets.append(text or label)
+        decision_bullets = [b for b in decision_bullets if b]
+        if decision_bullets:
+            existing = slide.get("bullets") or []
+            new_bullets = [b for b in decision_bullets if b not in existing]
+            if new_bullets:
+                slide["bullets"] = (existing + new_bullets)[:6]
+                changed = True
+
+    return changed
 
 
 def repair_deck_plan_for_qa(plan: dict, issues: list[dict]) -> tuple[dict, bool]:
@@ -3093,7 +3215,14 @@ def _js_slide_from_deck_spec(spec: dict) -> dict:
     if layout == "executive_summary":
         return with_blueprint({"role": "executive_summary", "title": title, "bullets": bullets, "notes": notes})
     if layout == "recommendation":
-        return with_blueprint({"role": "recommendation", "title": title, "bullets": bullets, "notes": notes})
+        return with_blueprint({
+            "role": "recommendation",
+            "title": title,
+            "bullets": bullets,
+            "stats": spec.get("stats") or [],
+            "callout": spec.get("callout"),
+            "notes": notes,
+        })
     if layout == "stat_cards":
         return with_blueprint({
             "role": "stat_cards",

@@ -73,6 +73,30 @@ function token(name, fallback) {
   return themeTokens()[name] || fallback;
 }
 
+// Rough perceived luminance (0-255) of a hex color, used to decide whether
+// a color should be treated as "dark" (suitable as a hero background) or
+// "light" (suitable as text on a dark background) regardless of which theme
+// token happens to hold it.
+function luminance(hex) {
+  const clean = String(hex || "").replace("#", "");
+  if (clean.length !== 6) return 255;
+  const r = parseInt(clean.slice(0, 2), 16);
+  const g = parseInt(clean.slice(2, 4), 16);
+  const b = parseInt(clean.slice(4, 6), 16);
+  if ([r, g, b].some((v) => Number.isNaN(v))) return 255;
+  return 0.299 * r + 0.587 * g + 0.114 * b;
+}
+
+// Returns { dark, light } hex colors picked from the theme's fg/bg tokens so
+// dark-hero components (section dividers, cover strips) render correctly
+// whether the theme's "fg" is a dark-on-light text color (warm-editorial) or
+// a light-on-dark text color (modern-tech).
+function heroTones() {
+  const fg = token("fg", TEXT_DARK);
+  const bg = token("bg", BG);
+  return luminance(fg) <= luminance(bg) ? { dark: fg, light: bg } : { dark: bg, light: fg };
+}
+
 function headingFace() {
   return token("heading_font", HEADING_FACE);
 }
@@ -482,12 +506,11 @@ function renderTitleSlide(pptx, title, subtitle) {
 
 function renderSectionSlide(pptx, spec) {
   const slide = pptx.addSlide();
-  const fg = token("fg", TEXT_DARK);
-  const bg = token("bg", BG);
+  const { dark: heroBg, light: heroFg } = heroTones();
   const accent = token("accent", ACCENT);
   const accent2 = token("accent2", TEAL);
   const muted = token("muted", TEXT_MUTED);
-  slide.background = { color: fg };
+  slide.background = { color: heroBg };
   slide.addShape("rect", {
     x: 0,
     y: 0,
@@ -522,7 +545,7 @@ function renderSectionSlide(pptx, spec) {
       h: 0.9,
       fontSize: 34,
       bold: true,
-      color: bg,
+      color: heroBg,
       fontFace: headingFace(),
       align: "left",
       valign: "middle",
@@ -537,7 +560,7 @@ function renderSectionSlide(pptx, spec) {
     h: 1.8,
     fontSize: 36,
     bold: true,
-    color: WHITE,
+    color: heroFg,
     fontFace: headingFace(),
     align: "left",
     valign: "middle",
@@ -815,6 +838,7 @@ function renderRiskRegisterSlide(pptx, spec) {
   const fg = token("fg", NAVY);
   const card = token("card", CARD_BG);
   const cardLine = token("card_line", ACCENT_LINE);
+  const { dark: heroDark, light: heroLight } = heroTones();
   const rows = (spec.columns && spec.columns.length)
     ? spec.columns.slice(0, 3).map((col) => ({
         risk: col.heading || "Risk",
@@ -851,8 +875,8 @@ function renderRiskRegisterSlide(pptx, spec) {
       y,
       w: 11.65,
       h: rowH,
-      fill: { color: idx === 0 ? fg : card },
-      line: { color: idx === 0 ? fg : cardLine },
+      fill: { color: idx === 0 ? heroDark : card },
+      line: { color: idx === 0 ? heroDark : cardLine },
       rectRadius: 0.05,
     });
     addAccentStrip(slide, 0.72, y, 11.65, riskColor, { orientation: "left", h: rowH });
@@ -864,7 +888,7 @@ function renderRiskRegisterSlide(pptx, spec) {
       h: 0.72,
       fontSize: 12,
       bold: true,
-      color: idx === 0 ? WHITE : fg,
+      color: idx === 0 ? heroLight : fg,
       fontFace: bodyFace(),
       fit: "shrink",
       wrap: true,
@@ -875,7 +899,7 @@ function renderRiskRegisterSlide(pptx, spec) {
       w: 2.9,
       h: 0.76,
       fontSize: 11,
-      color: idx === 0 ? WHITE : token("fg", TEXT_DARK),
+      color: idx === 0 ? heroLight : token("fg", TEXT_DARK),
       fontFace: bodyFace(),
       fit: "shrink",
       wrap: true,
@@ -886,7 +910,7 @@ function renderRiskRegisterSlide(pptx, spec) {
       w: 4.8,
       h: 0.76,
       fontSize: 11,
-      color: idx === 0 ? WHITE : token("fg", TEXT_DARK),
+      color: idx === 0 ? heroLight : token("fg", TEXT_DARK),
       fontFace: bodyFace(),
       fit: "shrink",
       wrap: true,
@@ -1060,6 +1084,7 @@ function renderOperatingModelSlide(pptx, spec) {
   const cardLine = token("card_line", ACCENT_LINE);
   const accent = token("accent", GOLD);
   const accent2 = token("accent2", TEAL);
+  const { dark: heroDark, light: heroLight } = heroTones();
   lanes.slice(0, 4).forEach((lane, idx) => {
     const y = top + idx * (laneH + 0.22);
     const dark = idx === 0;
@@ -1068,12 +1093,12 @@ function renderOperatingModelSlide(pptx, spec) {
       y,
       w: 11.65,
       h: laneH,
-      fill: { color: dark ? fg : card },
-      line: { color: dark ? fg : cardLine },
+      fill: { color: dark ? heroDark : card },
+      line: { color: dark ? heroDark : cardLine },
       rectRadius: 0.05,
     });
     addAccentStrip(slide, 0.72, y, 11.65, accentPalette(idx), { orientation: "left", h: laneH });
-    addIconBadge(slide, 0.96, y + 0.25, "✓", { fill: dark ? accent : accent2, color: dark ? fg : WHITE, w: 0.4, h: 0.4, fontSize: 12 });
+    addIconBadge(slide, 0.96, y + 0.25, "✓", { fill: dark ? accent : accent2, color: dark ? NAVY : WHITE, w: 0.4, h: 0.4, fontSize: 12 });
     slide.addText(bulletText(lane.heading || `Owner ${idx + 1}`, 42), {
       x: 1.55,
       y: y + 0.2,
@@ -1081,7 +1106,7 @@ function renderOperatingModelSlide(pptx, spec) {
       h: 0.5,
       fontSize: 13 * fontBoost,
       bold: true,
-      color: dark ? WHITE : fg,
+      color: dark ? heroLight : fg,
       fontFace: headingFace(),
       fit: "shrink",
     });
@@ -1091,7 +1116,7 @@ function renderOperatingModelSlide(pptx, spec) {
       w: 7.62,
       h: 0.48,
       fontSize: 11 * fontBoost,
-      color: dark ? WHITE : token("fg", TEXT_DARK),
+      color: dark ? heroLight : token("fg", TEXT_DARK),
       fontFace: bodyFace(),
       fit: "shrink",
       wrap: true,
@@ -1177,11 +1202,24 @@ function renderChartSlide(pptx, spec) {
   const chartType = CHART_TYPE_MAP[chart.type] || "bar";
   if (chartType === "pie") series = series.slice(0, 1);
 
-  const chartData = series.map((s) => ({
-    name: s.name || "Series",
-    labels: categories,
-    values: s.values || [],
-  }));
+  // De-duplicate series names: when two series truncate to the same legend
+  // text, distinguish them so the legend doesn't show identical labels.
+  const seenNames = new Map();
+  const chartData = series.map((s, idx) => {
+    let name = s.name || `Series ${idx + 1}`;
+    if (seenNames.has(name)) {
+      const count = seenNames.get(name) + 1;
+      seenNames.set(name, count);
+      name = `${name} (${count})`;
+    } else {
+      seenNames.set(name, 1);
+    }
+    return {
+      name,
+      labels: categories,
+      values: s.values || [],
+    };
+  });
 
   const options = {
     x: 1.0,
@@ -1201,6 +1239,20 @@ function renderChartSlide(pptx, spec) {
   };
   if (chartType === "pie") {
     options.dataBorder = { pt: 1, color: WHITE };
+  }
+  // Reduce val-axis gridline density so tick labels don't overlap when the
+  // data range is small (e.g. all values between 0 and 2).
+  if (chartType !== "pie") {
+    const allValues = chartData.flatMap((s) => (s.values || []).map(Number).filter((v) => !Number.isNaN(v)));
+    if (allValues.length) {
+      const maxAbs = Math.max(...allValues.map((v) => Math.abs(v)), 0);
+      if (maxAbs > 0) {
+        const rawStep = maxAbs / 4;
+        const magnitude = Math.pow(10, Math.floor(Math.log10(rawStep)));
+        const niceStep = Math.ceil(rawStep / magnitude) * magnitude;
+        options.valAxisMajorUnit = niceStep;
+      }
+    }
   }
 
   slide.addChart(pptx.charts[chartType.toUpperCase()] || chartType, chartData, options);
@@ -1348,33 +1400,125 @@ function renderRecommendationSlide(pptx, spec) {
       wrap: true,
     });
   }
-  if (rationale.length) {
-    const cards = rationale.slice(0, 3);
-    cards.forEach((b, idx) => {
-      const x = 0.72 + idx * 3.95;
+  // Lower section: fill the area between the recommendation banner (ends
+  // ~3.0) and the footer (~6.88) with rationale cards. When there are fewer
+  // than 3 rationale bullets, pad the row with stat cards (if available) so
+  // the slide doesn't end with a large empty bottom area.
+  const cardTop = 3.25;
+  const cardH = 3.35;
+  const gap = 0.22;
+  const cardW = (SLIDE_W - 2 * 0.72 - 2 * gap) / 3;
+  const stats = (spec.stats || []).slice(0, 3);
+  const cards = rationale.slice(0, 3);
+  const extraSlots = Math.max(0, 3 - cards.length);
+  const statCards = stats.slice(0, extraSlots);
+
+  cards.forEach((b, idx) => {
+    const x = 0.72 + idx * (cardW + gap);
+    slide.addShape("roundRect", {
+      x,
+      y: cardTop,
+      w: cardW,
+      h: cardH,
+      fill: { color: CARD_BG },
+      line: { color: ACCENT_LINE },
+      rectRadius: 0.06,
+    });
+    addAccentStrip(slide, x, cardTop, cardW, accentPalette(idx));
+    addIconBadge(slide, x + 0.22, cardTop + 0.32, iconFor(b), { fill: TEAL, color: WHITE, w: 0.46, h: 0.46, fontSize: 13 });
+    slide.addText(bulletText(b, 140), {
+      x: x + 0.22,
+      y: cardTop + 1.0,
+      w: cardW - 0.44,
+      h: cardH - 1.2,
+      fontSize: 12.5 * boost,
+      color: TEXT_DARK,
+      fontFace: bodyFace(),
+      valign: "top",
+      fit: "shrink",
+      wrap: true,
+    });
+  });
+
+  statCards.forEach((stat, idx) => {
+    const col = cards.length + idx;
+    const x = 0.72 + col * (cardW + gap);
+    slide.addShape("roundRect", {
+      x,
+      y: cardTop,
+      w: cardW,
+      h: cardH,
+      fill: { color: CARD_BG },
+      line: { color: ACCENT_LINE },
+      rectRadius: 0.06,
+    });
+    addAccentStrip(slide, x, cardTop, cardW, accentPalette(col));
+    slide.addText(stat.value || "", {
+      x: x + 0.22,
+      y: cardTop + 0.32,
+      w: cardW - 0.44,
+      h: 0.7,
+      fontSize: 28,
+      bold: true,
+      color: NAVY,
+      fontFace: headingFace(),
+      fit: "shrink",
+    });
+    slide.addText(stat.label || "", {
+      x: x + 0.22,
+      y: cardTop + 1.1,
+      w: cardW - 0.44,
+      h: cardH - 1.3,
+      fontSize: 12 * boost,
+      color: TEXT_MUTED,
+      fontFace: bodyFace(),
+      valign: "top",
+      fit: "shrink",
+      wrap: true,
+    });
+  });
+
+  // If neither rationale bullets nor stats are available, fall back to a
+  // full-width callout so the bottom of the slide isn't left empty.
+  if (!cards.length && !statCards.length) {
+    const callout = spec.callout && spec.callout.text;
+    if (callout) {
       slide.addShape("roundRect", {
-        x,
-        y: 3.48,
-        w: 3.65,
-        h: 1.65,
+        x: 0.72,
+        y: cardTop,
+        w: SLIDE_W - 2 * 0.72,
+        h: cardH,
         fill: { color: CARD_BG },
         line: { color: ACCENT_LINE },
         rectRadius: 0.06,
       });
-      addIconBadge(slide, x + 0.18, 3.78, iconFor(b), { fill: TEAL, color: WHITE, w: 0.42, h: 0.42, fontSize: 12 });
-      slide.addText(bulletText(b, 88), {
-        x: x + 0.74,
-        y: 3.68,
-      w: 2.65,
-      h: 1.1,
-      fontSize: 11.5 * boost,
-      color: TEXT_DARK,
-      fontFace: bodyFace(),
-      valign: "middle",
-      fit: "shrink",
-      wrap: true,
+      addAccentStrip(slide, 0.72, cardTop, SLIDE_W - 2 * 0.72, accentPalette(0));
+      if (spec.callout.label) {
+        slide.addText(String(spec.callout.label).toUpperCase(), {
+          x: 1.0,
+          y: cardTop + 0.28,
+          w: SLIDE_W - 2 * 1.0,
+          h: 0.3,
+          fontSize: 11,
+          bold: true,
+          color: token("accent", ACCENT),
+          fontFace: bodyFace(),
+          charSpacing: 1.4,
+        });
+      }
+      slide.addText(callout, {
+        x: 1.0,
+        y: cardTop + 0.7,
+        w: SLIDE_W - 2 * 1.0,
+        h: cardH - 1.0,
+        fontSize: 16 * boost,
+        color: TEXT_DARK,
+        fontFace: bodyFace(),
+        valign: "top",
+        fit: "shrink",
+        wrap: true,
       });
-    });
+    }
   }
   addFooter(slide);
   addNotes(slide, spec.notes);
@@ -1826,6 +1970,7 @@ function renderArchitectureSlide(pptx, spec) {
   const cardLine = token("card_line", ACCENT_LINE);
   const accent = token("accent", GOLD);
   const accent2 = token("accent2", TEAL);
+  const { dark: heroDark, light: heroLight } = heroTones();
   const bullets = spec.bullets && spec.bullets.length ? spec.bullets : [""];
   const nodes = bullets.slice(0, 5).map((b) => bulletText(typeof b === "object" ? b.text : b, 48)).filter(Boolean);
   const diagramX = 0.72;
@@ -1861,8 +2006,8 @@ function renderArchitectureSlide(pptx, spec) {
   ];
   nodes.forEach((node, idx) => {
     const [x, y] = coordinates[idx] || coordinates[coordinates.length - 1];
-    const fill = idx === 1 || idx === 3 ? fg : idx === 2 ? accent2 : token("bg", SOFT_BG);
-    const dark = fill === fg || fill === accent2;
+    const fill = idx === 1 || idx === 3 ? heroDark : idx === 2 ? accent2 : token("bg", SOFT_BG);
+    const dark = fill === heroDark || fill === accent2;
     slide.addShape("roundRect", {
       x,
       y,
@@ -1879,7 +2024,7 @@ function renderArchitectureSlide(pptx, spec) {
       h: 0.52,
       fontSize: 8.6,
       bold: true,
-      color: dark ? WHITE : token("fg", TEXT_DARK),
+      color: dark ? heroLight : token("fg", TEXT_DARK),
       fontFace: bodyFace(),
       align: "center",
       valign: "middle",
@@ -1903,8 +2048,8 @@ function renderArchitectureSlide(pptx, spec) {
     y: 1.62,
     w: 4.45,
     h: 4.85,
-    fill: { color: fg },
-    line: { color: fg },
+    fill: { color: heroDark },
+    line: { color: heroDark },
     rectRadius: 0.06,
   });
   slide.addText("Design implication", {
@@ -1917,7 +2062,7 @@ function renderArchitectureSlide(pptx, spec) {
     color: accent,
     fontFace: headingFace(),
   });
-  slide.addText(bulletsToTextProps(bullets.slice(0, 4).map((b) => ({ level: 0, text: bulletText(typeof b === "object" ? b.text : b, 80) })), { fontSize: 11.2, color: WHITE }), {
+  slide.addText(bulletsToTextProps(bullets.slice(0, 4).map((b) => ({ level: 0, text: bulletText(typeof b === "object" ? b.text : b, 80) })), { fontSize: 11.2, color: heroLight }), {
     x: panelX + 0.28,
     y: 2.62,
     w: 3.85,

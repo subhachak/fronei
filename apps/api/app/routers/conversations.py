@@ -971,11 +971,19 @@ def _document_finalization_payload(db, user_id: str, conv: Conversation, user_ms
     brief = {k: v for k, v in brief.items() if not str(k).startswith("_")}
     format_options = list(extra.get("format_options") or plan.document_format_options or ["markdown"])
     supported_formats = list(extra.get("supported_formats") or ["docx", "markdown"])
+    force_pptx = brief.get("doc_type") == "presentation"
+    if force_pptx:
+        if "pptx" not in format_options:
+            format_options = ["pptx", *format_options]
+        if "pptx" in supported_formats:
+            plan.document_format_recommendation = "pptx"
     format_recommendation = (
         extra.get("format_recommendation")
         or plan.document_format_recommendation
         or (format_options[0] if format_options else "markdown")
     )
+    if force_pptx and "pptx" in supported_formats:
+        format_recommendation = "pptx"
     templates = list_document_templates(brief.get("doc_type"), brief, db=db, user_id=user_id)
     recommended_template_id = recommend_template_id(brief)
     recommended = next((t for t in templates if t.get("recommended")), None)
@@ -1284,6 +1292,8 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                         yield _pipeline_log("working", "Drafting your document from research findings…")
                         doc_cap = gate.capabilities["document"]
                         fmt = doc_cap.extra.get("format_recommendation", "markdown")
+                        if (plan.document_brief or {}).get("doc_type") == "presentation":
+                            fmt = "pptx"
 
                         followup_context_parts = [f"Research follow-up findings:\n{result.answer}"]
                         if followup.source_logs:
@@ -1474,6 +1484,8 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                     yield _pipeline_log("working", "Drafting your document from research findings…")
                     doc_cap = gate.capabilities["document"]
                     fmt = doc_cap.extra.get("format_recommendation", "markdown")
+                    if (plan.document_brief or {}).get("doc_type") == "presentation":
+                        fmt = "pptx"
 
                     research_context_parts = [f"Research findings:\n{result.answer}"]
                     if research.source_logs:
@@ -1662,6 +1674,8 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                 yield _pipeline_log("working", "Drafting your document…")
                 doc_cap = gate.capabilities["document"]
                 fmt = doc_cap.extra.get("format_recommendation", "markdown")
+                if (plan.document_brief or {}).get("doc_type") == "presentation":
+                    fmt = "pptx"
                 result, doc_body, chat_summary, doc_type = generate_document_output(
                     plan, route, history, wc, planner_ctx,
                     _document_context_for_generation(setup.doc_context, plan), req.deep_research, enable_native,

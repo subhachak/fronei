@@ -898,6 +898,56 @@ def test_document_generation_pauses_for_late_finalization(client, monkeypatch):
         assert turn.status == "awaiting_confirmation"
 
 
+def test_presentation_finalization_defaults_to_pptx_even_without_planner_format_options(client, monkeypatch):
+    c, _Session = client
+
+    plan = passthrough("Create a presentation about the migration strategy.")
+    plan.intent = "Create a presentation about the migration strategy"
+    plan.wants_document_output = True
+    plan.document_brief = {"doc_type": "presentation", "title": "Migration Strategy"}
+    plan.document_format_options = []
+    plan.document_format_recommendation = None
+    plan.plan_confidence = "high"
+
+    route = RouteDecision(
+        task_type="writing",
+        complexity="high",
+        profile="balanced",
+        primary_model="gpt-4.1",
+        fallbacks=[],
+        reason="presentation format fallback test",
+    )
+    wc = WebContextResult(context=None, status="Web context not requested.", provider="", sources_count=0, search_query=None)
+
+    def fake_build_pipeline_setup(req, conv_arg, history, settings, **kwargs):
+        return PipelineSetup(
+            plan=plan,
+            route=route,
+            wc=wc,
+            enable_native=False,
+            planner_ctx=None,
+            running_summary="",
+            profile="balanced",
+            doc_context="",
+            artifact_context="",
+        )
+
+    monkeypatch.setattr(conversations, "build_pipeline_setup", fake_build_pipeline_setup)
+
+    response = c.post(
+        "/conversations/chat/stream",
+        json={"message": "Create a presentation about the migration strategy.", "document_requested": True},
+    )
+
+    assert response.status_code == 200
+    events = _events(response.text)
+    assert events[-1][0] == "document_brief_proposed"
+    proposal = events[-1][1]
+    assert proposal["brief"]["doc_type"] == "presentation"
+    assert proposal["format_recommendation"] == "pptx"
+    assert proposal["format_options"][0] == "pptx"
+
+
 def test_execute_plan_after_document_finalization_generates_artifact(client, monkeypatch):
     c, Session = client
 
@@ -998,7 +1048,8 @@ def test_execute_plan_after_document_finalization_generates_artifact(client, mon
     assert events[-1][0] == "done"
     done = events[-1][1]
     assert done["document_preview"] is not None
-    assert done["document_preview"]["format"] == "markdown"
+    assert done["document_preview"]["format"] == "pptx"
+    assert done["document_preview"]["pptx_base64"]
     assert done["answer"] == "- Deck summary"
     assert captured["brief"]["title"] == "Client Migration Strategy"
     assert captured["brief"]["template_id"] == "fronei-default"

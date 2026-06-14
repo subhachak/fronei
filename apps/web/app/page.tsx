@@ -2708,6 +2708,23 @@ function firstSupportedDocumentFormat(
   return (['docx', 'markdown', 'xlsx', 'pptx'].includes(match) ? match : 'markdown') as DocumentOutputFormat
 }
 
+function documentFormatChoicesForType(
+  docType: string,
+  proposal: Pick<DocumentFinalizationProposal, 'format_options' | 'supported_formats' | 'format_recommendation'>,
+): { options: string[]; recommendation: DocumentOutputFormat } {
+  const supported = proposal.supported_formats?.length ? proposal.supported_formats : ['markdown', 'docx']
+  let options = proposal.format_options?.length ? proposal.format_options : ['markdown', 'docx']
+  let recommendation = proposal.format_recommendation
+  if (docType === 'presentation' && supported.includes('pptx')) {
+    options = ['pptx', ...options.filter(f => f !== 'pptx')]
+    recommendation = 'pptx'
+  }
+  return {
+    options,
+    recommendation: firstSupportedDocumentFormat(recommendation, options, supported),
+  }
+}
+
 function PlanModal({
   proposal,
   onClose,
@@ -2888,9 +2905,8 @@ function DocumentFinalizationModal({
   const [audience, setAudience] = useState(String(brief.audience || ''))
   const [tone, setTone] = useState(String(brief.tone || ''))
   const [length, setLength] = useState(String(brief.length || ''))
-  const [format, setFormat] = useState<DocumentOutputFormat>(
-    firstSupportedDocumentFormat(proposal.format_recommendation, proposal.format_options, proposal.supported_formats)
-  )
+  const initialFormatChoices = documentFormatChoicesForType(String(brief.doc_type || 'executive_report'), proposal)
+  const [format, setFormat] = useState<DocumentOutputFormat>(initialFormatChoices.recommendation)
   const initialTemplates = proposal.templates?.length ? proposal.templates : [{
     id: 'fronei-default',
     name: 'Fronei default',
@@ -2903,9 +2919,19 @@ function DocumentFinalizationModal({
   )
   const [templateUploadStatus, setTemplateUploadStatus] = useState('')
   const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const formatChoices = documentFormatChoicesForType(docType, proposal)
   const formatsToShow = PLAN_FORMAT_ORDER.filter(
-    f => proposal.format_options.includes(f) || proposal.supported_formats.includes(f)
+    f => docType === 'presentation'
+      ? f === 'pptx'
+      : formatChoices.options.includes(f) || proposal.supported_formats.includes(f)
   )
+
+  useEffect(() => {
+    setFormat(current => {
+      if (docType === 'presentation') return formatChoices.recommendation
+      return proposal.supported_formats.includes(current) ? current : formatChoices.recommendation
+    })
+  }, [docType, formatChoices.recommendation, proposal.supported_formats])
 
   async function uploadTemplate(file: File | null) {
     if (!file) return
@@ -2983,7 +3009,9 @@ function DocumentFinalizationModal({
             <span>Output format</span>
             <div className="doc-format-row" role="group" aria-label="Output format">
               {formatsToShow.map(f => {
-                const isSupported = proposal.supported_formats.includes(f)
+                const isSupported = docType === 'presentation'
+                  ? f === 'pptx' && proposal.supported_formats.includes('pptx')
+                  : proposal.supported_formats.includes(f)
                 return (
                   <button
                     key={f}

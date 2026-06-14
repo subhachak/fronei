@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import re
@@ -1084,6 +1085,52 @@ def _shorten(text: str, limit: int) -> str:
     return cleaned[: max(0, limit - 3)].rstrip() + "..."
 
 
+def _shorten_to_notes(text: str, limit: int) -> tuple[str, str | None]:
+    """Like `_shorten`, but also returns the full original text when it had
+    to be truncated, so callers can route the overflow into speaker notes
+    instead of silently dropping it (copy/notes separation)."""
+    cleaned = re.sub(r"\s+", " ", _clean_inline(str(text or ""))).strip()
+    if len(cleaned) <= limit:
+        return cleaned, None
+    return cleaned[: max(0, limit - 3)].rstrip() + "...", cleaned
+
+
+def _slide_visual_object(
+    table_rows: list, columns: list, phases: list, chart: dict | None
+) -> str | None:
+    """The single "visual job" a slide is committed to, derived from which
+    structured content it carries. Part of the SlideBlueprint commitment
+    (archetype + density + visual_object) made before rendering."""
+    if chart:
+        return "chart"
+    if table_rows:
+        return "table"
+    if phases:
+        return "timeline"
+    if columns:
+        return "columns"
+    return None
+
+
+def _slide_density(bullet_count: int, table_rows: list, columns: list, phases: list) -> str:
+    """Coarse content-density classification ("low" | "medium" | "high") used
+    as part of the SlideBlueprint commitment. Density is computed from
+    whichever structured content the slide carries, not just bullets."""
+    if phases:
+        weight = len(phases)
+    elif columns:
+        weight = sum(len(c.get("bullets") or []) for c in columns)
+    elif table_rows:
+        weight = len(table_rows)
+    else:
+        weight = bullet_count
+    if weight <= 3:
+        return "low"
+    if weight <= MAX_BULLETS_PER_SLIDE:
+        return "medium"
+    return "high"
+
+
 def _extract_json_candidate(content: str) -> str | None:
     stripped = content.strip()
     if not stripped:
@@ -1127,20 +1174,39 @@ def parse_deck_plan(content: str) -> dict | None:
         layout = str(raw.get("layout") or raw.get("type") or "bullets").lower().strip()
         layout = DECK_LAYOUT_ALIASES.get(layout, layout)
         title = _shorten(raw.get("title") or raw.get("headline") or raw.get("key_message") or "Untitled", MAX_SLIDE_TITLE_CHARS)
-        bullets = raw.get("bullets") or raw.get("points") or []
-        if isinstance(bullets, str):
-            bullets = [bullets]
-        bullets = [str(b) for b in bullets if str(b or "").strip()]
-        if layout in {"executive_summary", "recommendation"} and bullets:
+        bullets_raw = raw.get("bullets") or raw.get("points") or []
+        if isinstance(bullets_raw, str):
+            bullets_raw = [bullets_raw]
+        bullets_raw = [str(b) for b in bullets_raw if str(b or "").strip()]
+
+        # Copy/notes separation: any text that gets truncated to fit on the
+        # slide, and any bullets beyond the per-slide cap, are routed into
+        # speaker_notes (full detail preserved) rather than silently lost.
+        overflow_notes: list[str] = []
+        if layout in {"executive_summary", "recommendation"} and bullets_raw:
             # The first bullet is the headline/primary assertion rendered in a
             # large font (e.g. _pptx_render_executive_summary's 28pt headline)
             # — give it the same generous budget as slide titles instead of
             # truncating it mid-sentence at the standard bullet length.
-            bullets = [_shorten(bullets[0], MAX_SLIDE_TITLE_CHARS)] + [
-                _shorten(b, MAX_BULLET_CHARS) for b in bullets[1:]
-            ]
+            headline, headline_overflow = _shorten_to_notes(bullets_raw[0], MAX_SLIDE_TITLE_CHARS)
+            if headline_overflow:
+                overflow_notes.append(f"Full headline: {headline_overflow}")
+            bullets = [headline]
+            rest = bullets_raw[1:]
         else:
-            bullets = [_shorten(b, MAX_BULLET_CHARS) for b in bullets]
+            bullets = []
+            rest = bullets_raw
+        for b in rest:
+            shortened, overflow = _shorten_to_notes(b, MAX_BULLET_CHARS)
+            bullets.append(shortened)
+            if overflow:
+                overflow_notes.append(f"Full point: {overflow}")
+        bullet_cap = MAX_APPENDIX_BULLETS if layout == "appendix" else MAX_BULLETS_PER_SLIDE
+        if len(bullets) > bullet_cap:
+            dropped = bullets[bullet_cap:]
+            bullets = bullets[:bullet_cap]
+            for d in dropped:
+                overflow_notes.append(f"Additional point: {d}")
         notes = raw.get("speaker_notes") or raw.get("notes") or ""
         table = raw.get("table")
         if isinstance(table, dict):
@@ -1215,17 +1281,137 @@ def parse_deck_plan(content: str) -> dict | None:
                     "series": series,
                 }
 
+        # SlideBlueprint commitment: an archetype, content density, and the
+        # single "visual job" the slide is doing — computed deterministically
+        # from the normalized content so every slide is committed to a shape
+        # before rendering, even if the planner didn't supply hints.
+        archetype = str(raw.get("archetype") or "").strip() or layout
+        visual_object = _slide_visual_object(table_rows, normalized_columns, normalized_phases, normalized_chart)
+        density = _slide_density(len(bullets), table_rows, normalized_columns, normalized_phases)
+        raw_density = str(raw.get("density") or "").lower().strip()
+        if raw_density in {"low", "medium", "high"}:
+            density = raw_density
+
+        base_notes = _clean_inline(str(notes or "")).strip()
+        speaker_notes = "\n".join([n for n in [base_notes, *overflow_notes] if n])
+
         normalized["slides"].append({
             "layout": layout,
+            "archetype": archetype,
+            "density": density,
+            "visual_object": visual_object,
             "title": title,
             "bullets": bullets,
             "table": table_rows,
             "columns": normalized_columns,
             "phases": normalized_phases,
             "chart": normalized_chart,
-            "speaker_notes": _clean_inline(str(notes or "")).strip(),
+            "speaker_notes": speaker_notes,
         })
     return normalized if normalized["slides"] else None
+
+
+def repair_deck_plan_for_qa(plan: dict, issues: list[dict]) -> tuple[dict, bool]:
+    """Apply small, deterministic edits to `plan` aimed at resolving render-QA
+    issues (currently: `dense_text` / `dense_ink` — visually crowded slides).
+
+    Render-QA slide numbers are 1-based across the *rendered* deck, where
+    slide 1 is always the title slide (not present in `plan["slides"]`).
+    So `plan["slides"][i]` corresponds to rendered slide `i + 2`.
+
+    Returns `(plan, changed)` where `changed` is False once no further
+    deterministic repair could be made (callers should stop looping).
+    """
+    plan = copy.deepcopy(plan)
+    slides = plan.get("slides") or []
+    changed = False
+
+    crowded_slide_nums = {
+        issue["slide"]
+        for issue in issues
+        if issue.get("type") in {"dense_text", "dense_ink"} and isinstance(issue.get("slide"), int)
+    }
+
+    for slide_num in crowded_slide_nums:
+        idx = slide_num - 2
+        if idx < 0 or idx >= len(slides):
+            continue
+        slide = slides[idx]
+
+        # 1) Drop the last bullet, if there's more than one — cheapest way to
+        #    reduce density without losing the slide's core message. The
+        #    dropped bullet's full text is preserved in speaker_notes rather
+        #    than lost (copy/notes separation).
+        bullets = slide.get("bullets") or []
+        if len(bullets) > 1:
+            dropped = bullets[-1]
+            slide["bullets"] = bullets[:-1]
+            _append_speaker_note(slide, f"Trimmed for slide density: {dropped}")
+            changed = True
+            _recompute_slide_blueprint(slide)
+            continue
+
+        # 2) Drop the last row of a table (keep the header row).
+        table = slide.get("table") or []
+        if len(table) > 2:
+            slide["table"] = table[:-1]
+            changed = True
+            _recompute_slide_blueprint(slide)
+            continue
+
+        # 3) Drop the last phase of a timeline.
+        phases = slide.get("phases") or []
+        if len(phases) > 2:
+            dropped_phase = phases[-1]
+            slide["phases"] = phases[:-1]
+            phase_summary = dropped_phase.get("title") or dropped_phase.get("label") or ""
+            if phase_summary:
+                _append_speaker_note(slide, f"Trimmed phase for slide density: {phase_summary}")
+            changed = True
+            _recompute_slide_blueprint(slide)
+            continue
+
+        # 4) Trim a bullet from whichever column currently has the most.
+        columns = slide.get("columns") or []
+        if columns:
+            longest = max(columns, key=lambda c: len(c.get("bullets") or []))
+            if len(longest.get("bullets") or []) > 1:
+                dropped_col_bullet = longest["bullets"][-1]
+                longest["bullets"] = longest["bullets"][:-1]
+                _append_speaker_note(
+                    slide, f"Trimmed for slide density ({longest.get('heading') or 'column'}): {dropped_col_bullet}"
+                )
+                changed = True
+                _recompute_slide_blueprint(slide)
+                continue
+
+        # 5) Last resort: shorten the single remaining bullet/headline text.
+        if bullets and len(bullets[0]) > 60:
+            shortened, overflow = _shorten_to_notes(bullets[0], 60)
+            slide["bullets"] = [shortened]
+            if overflow:
+                _append_speaker_note(slide, f"Full point: {overflow}")
+            changed = True
+            _recompute_slide_blueprint(slide)
+            continue
+
+    return plan, changed
+
+
+def _append_speaker_note(slide: dict, note: str) -> None:
+    existing = slide.get("speaker_notes") or ""
+    slide["speaker_notes"] = "\n".join([p for p in [existing, note] if p])
+
+
+def _recompute_slide_blueprint(slide: dict) -> None:
+    """Refresh the SlideBlueprint (density/visual_object) after a repair-loop
+    edit changes a slide's content shape."""
+    slide["visual_object"] = _slide_visual_object(
+        slide.get("table") or [], slide.get("columns") or [], slide.get("phases") or [], slide.get("chart")
+    )
+    slide["density"] = _slide_density(
+        len(slide.get("bullets") or []), slide.get("table") or [], slide.get("columns") or [], slide.get("phases") or []
+    )
 
 
 def deck_plan_to_markdown(content: str) -> str | None:

@@ -1,6 +1,7 @@
 import json
 
 from app.routers import documents
+from app.config import get_settings
 
 
 def test_build_document_artifact_generates_pptx_payload():
@@ -46,6 +47,54 @@ def test_build_document_artifact_reports_render_failure(monkeypatch):
     assert preview["format"] == "markdown"
     assert preview["requested_format"] == "pptx"
     assert "PowerPoint rendering failed" in preview["generation_error"]
+
+
+def test_build_document_artifact_repairs_dense_slide_via_render_qa(monkeypatch):
+    assert get_settings().pptx_render_qa_enabled is True
+
+    deck_plan = json.dumps({
+        "title": "Client AI Strategy",
+        "slides": [
+            {
+                "layout": "bullets",
+                "title": "Roadmap",
+                "bullets": [
+                    "Bullet number 1 with some supporting detail",
+                    "Bullet number 2 with some supporting detail",
+                    "Bullet number 3 with some supporting detail",
+                    "Bullet number 4 with some supporting detail",
+                    "Bullet number 5 with some supporting detail",
+                    "Bullet number 6 with some supporting detail",
+                ],
+            },
+        ],
+    })
+
+    qa_results = [
+        {
+            "available": True,
+            "slide_count": 2,
+            "issues": [{"slide": 2, "type": "dense_text", "detail": "too much text"}],
+        },
+        {"available": True, "slide_count": 2, "issues": []},
+    ]
+
+    def fake_run_qa(content, *args, **kwargs):
+        return qa_results.pop(0)
+
+    monkeypatch.setattr(documents, "run_pptx_render_qa", fake_run_qa)
+
+    preview = documents.build_document_artifact("", deck_plan, "presentation", "pptx")
+
+    assert preview["format"] == "pptx"
+    assert "generation_error" not in preview
+    assert preview["render_qa"]["repair_iterations"] == 1
+    assert preview["render_qa"]["issues"] == []
+    # The repaired plan should have one fewer visible bullet, with the
+    # dropped bullet's full text preserved in speaker notes rather than lost.
+    assert "- Bullet number 6" not in preview["markdown"]
+    assert "- Bullet number 5" in preview["markdown"]
+    assert "Trimmed for slide density: Bullet number 6" in preview["markdown"]
 
 
 def test_build_document_artifact_uses_readable_preview_for_deck_plan_json():

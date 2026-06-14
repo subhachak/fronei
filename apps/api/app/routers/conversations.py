@@ -38,6 +38,7 @@ from app.services.chat_pipeline import (
 )
 from app.routers.documents import build_document_artifact
 from app.services import plan_gate
+from app.services.document_templates import list_document_templates, recommend_template_id, resolve_template_path
 from app.services.planner import apply_confirmed_plan, passthrough, plan_from_dict, plan_to_dict, run_planner
 from app.services.prompts import ARTIFACT_PROMPTS
 from app.services.web_context import WebContextResult
@@ -946,7 +947,7 @@ def _planner_selected_log(plan) -> str:
     message = (
         "Planner unavailable — using safe passthrough"
         if model == "none"
-        else f"Planner selected: {model}"
+        else "Planning complete"
     )
     return _pipeline_log(
         "planning",
@@ -963,7 +964,7 @@ def _document_finalization_confirmed(req: ConvChatRequest) -> bool:
     return bool(req.confirmed_plan.document_brief or req.confirmed_plan.document_format)
 
 
-def _document_finalization_payload(conv: Conversation, user_msg: ConversationMessage, plan, gate) -> dict:
+def _document_finalization_payload(db, user_id: str, conv: Conversation, user_msg: ConversationMessage, plan, gate) -> dict:
     doc_cap = gate.capabilities["document"]
     extra = doc_cap.extra or {}
     brief = dict(extra.get("brief") or plan.document_brief or {})
@@ -975,6 +976,13 @@ def _document_finalization_payload(conv: Conversation, user_msg: ConversationMes
         or plan.document_format_recommendation
         or (format_options[0] if format_options else "markdown")
     )
+    templates = list_document_templates(brief.get("doc_type"), brief, db=db, user_id=user_id)
+    recommended_template_id = recommend_template_id(brief)
+    recommended = next((t for t in templates if t.get("recommended")), None)
+    if recommended:
+        recommended_template_id = str(recommended.get("id"))
+    elif not any(t.get("id") == recommended_template_id for t in templates):
+        recommended_template_id = str(templates[0].get("id")) if templates else "fronei-default"
     return {
         "conversation_id": conv.public_id,
         "message_id": user_msg.id,
@@ -982,19 +990,12 @@ def _document_finalization_payload(conv: Conversation, user_msg: ConversationMes
         "format_options": format_options,
         "format_recommendation": format_recommendation,
         "supported_formats": supported_formats,
-        "templates": [
-            {
-                "id": "fronei-default",
-                "name": "Fronei default",
-                "description": "Clean default styling until saved brand templates are configured.",
-                "recommended": True,
-            }
-        ],
-        "template_recommendation": "fronei-default",
+        "templates": templates,
+        "template_recommendation": recommended_template_id,
     }
 
 
-def _maybe_propose_document_finalization(db, conv: Conversation, user_msg: ConversationMessage, req: ConvChatRequest, plan, gate) -> str | None:
+def _maybe_propose_document_finalization(db, user_id: str, conv: Conversation, user_msg: ConversationMessage, req: ConvChatRequest, plan, gate) -> str | None:
     if not (plan.wants_document_output and gate.capabilities["document"].enabled):
         return None
     if _document_finalization_confirmed(req):
@@ -1002,7 +1003,7 @@ def _maybe_propose_document_finalization(db, conv: Conversation, user_msg: Conve
     user_msg.plan_json = json.dumps(plan_to_dict(plan))
     conv.updated_at = datetime.now(timezone.utc)
     db.commit()
-    return _sse("document_brief_proposed", _document_finalization_payload(conv, user_msg, plan, gate))
+    return _sse("document_brief_proposed", _document_finalization_payload(db, user_id, conv, user_msg, plan, gate))
 
 
 def _remember_document_source_context(plan, context: str, research_run_id: int | None = None) -> None:
@@ -1299,7 +1300,7 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                         artifact_context = ARTIFACT_PROMPTS.get(req.artifact_type or "", "")
                         followup_cost = result.estimated_cost_usd or 0.0
                         _remember_document_source_context(plan, doc_context, existing_run_id)
-                        finalization_event = _maybe_propose_document_finalization(db, conv, user_msg, req, plan, gate)
+                        finalization_event = _maybe_propose_document_finalization(db, user_id, conv, user_msg, req, plan, gate)
                         if finalization_event:
                             yield finalization_event
                             return
@@ -1319,7 +1320,13 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                             + plan.planner_cost_usd
                         )
                         title = (plan.document_brief or {}).get("title") or plan.intent
-                        document_preview = build_document_artifact(title or "Fronei document", doc_body, doc_type, fmt)
+                        template_id = (plan.document_brief or {}).get("template_id")
+                        template_path = resolve_template_path(db, user_id, template_id if isinstance(template_id, str) else None)
+                        document_preview = build_document_artifact(
+                            title or "Fronei document", doc_body, doc_type, fmt,
+                            template_id=template_id if isinstance(template_id, str) else None,
+                            template_path=str(template_path) if template_path else None,
+                        )
                     else:
                         for chunk in [final_answer[i:i+80] for i in range(0, len(final_answer), 80)]:
                             yield _sse("token", {"text": chunk})
@@ -1482,7 +1489,7 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                     empty_wc = WebContextResult(context=None, status="", provider="", sources_count=0, search_query=None)
                     artifact_context = ARTIFACT_PROMPTS.get(req.artifact_type or "", "")
                     _remember_document_source_context(plan, doc_context, research.run.id)
-                    finalization_event = _maybe_propose_document_finalization(db, conv, user_msg, req, plan, gate)
+                    finalization_event = _maybe_propose_document_finalization(db, user_id, conv, user_msg, req, plan, gate)
                     if finalization_event:
                         yield finalization_event
                         return
@@ -1502,7 +1509,13 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                         + plan.planner_cost_usd
                     )
                     title = (plan.document_brief or {}).get("title") or plan.intent
-                    document_preview = build_document_artifact(title or "Fronei document", doc_body, doc_type, fmt)
+                    template_id = (plan.document_brief or {}).get("template_id")
+                    template_path = resolve_template_path(db, user_id, template_id if isinstance(template_id, str) else None)
+                    document_preview = build_document_artifact(
+                        title or "Fronei document", doc_body, doc_type, fmt,
+                        template_id=template_id if isinstance(template_id, str) else None,
+                        template_path=str(template_path) if template_path else None,
+                    )
                 elif should_refine(result.answer, output_mode, twin_profile):
                     yield _sse("refine_start", {})
                     refined_text = ""
@@ -1641,7 +1654,7 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
             # just the outcome of this turn — not a separate flow. Generate the
             # document body + a short chat-facing bullet outline in one call.
             if plan.wants_document_output and gate.capabilities["document"].enabled:
-                finalization_event = _maybe_propose_document_finalization(db, conv, user_msg, req, plan, gate)
+                finalization_event = _maybe_propose_document_finalization(db, user_id, conv, user_msg, req, plan, gate)
                 if finalization_event:
                     yield finalization_event
                     return
@@ -1683,7 +1696,13 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                 memory_extractor.schedule(user_id, conv.id, req.message, final_answer)
 
                 title = (plan.document_brief or {}).get("title") or plan.intent
-                document_preview = build_document_artifact(title or "Fronei document", doc_body, doc_type, fmt)
+                template_id = (plan.document_brief or {}).get("template_id")
+                template_path = resolve_template_path(db, user_id, template_id if isinstance(template_id, str) else None)
+                document_preview = build_document_artifact(
+                    title or "Fronei document", doc_body, doc_type, fmt,
+                    template_id=template_id if isinstance(template_id, str) else None,
+                    template_path=str(template_path) if template_path else None,
+                )
 
                 yield _sse("done", {
                     "message_id": asst_msg.id,

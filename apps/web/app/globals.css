@@ -4222,6 +4222,14 @@ pre:hover .code-copy-btn { opacity: 1; }
   gap: 10px;
 }
 
+.doc-template-upload-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
 .doc-brief-field {
   display: flex;
   flex-direction: column;

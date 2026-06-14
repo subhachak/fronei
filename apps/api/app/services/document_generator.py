@@ -4,6 +4,7 @@ import json
 import re
 from datetime import date
 from io import BytesIO
+from pathlib import Path
 
 from docx import Document
 from docx.enum.text import WD_BREAK
@@ -16,6 +17,8 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 from pptx import Presentation
 from pptx.util import Inches as PptxInches, Pt as PptxPt
+
+from app.services.document_templates import resolve_pptx_template_path
 
 
 TABLE_SEPARATOR_RE = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$")
@@ -653,6 +656,20 @@ def _pptx_layout(prs: Presentation, idx: int, fallback: int = 6):
         return layouts[fallback if fallback < len(layouts) else 0]
 
 
+def _presentation_from_template(template_id: str | None = None, template_path: str | Path | None = None) -> Presentation:
+    template_path = Path(template_path) if template_path else resolve_pptx_template_path(template_id)
+    prs = Presentation(str(template_path)) if template_path else Presentation()
+    # Built-in templates carry sample slides so users can inspect them outside
+    # the app. Keep masters/layouts/theme, but remove sample content before
+    # rendering the generated deck.
+    while len(prs.slides) > 0:
+        slide_id_list = prs.slides._sldIdLst
+        rel_id = slide_id_list[0].rId
+        prs.part.drop_rel(rel_id)
+        slide_id_list.remove(slide_id_list[0])
+    return prs
+
+
 def _pptx_add_runs(text_frame_or_paragraph, text: str) -> None:
     """Add Markdown-ish inline text (bold/italic/code/links) as runs to a
     pptx paragraph. `text_frame_or_paragraph` must already be a paragraph."""
@@ -1052,10 +1069,16 @@ def _pptx_render_deck_plan(prs: Presentation, plan: dict, fallback_title: str, s
             slide.notes_slide.notes_text_frame.text = notes
 
 
-def generate_pptx_bytes(title: str, content: str, subtitle: str | None = None) -> bytes:
+def generate_pptx_bytes(
+    title: str,
+    content: str,
+    subtitle: str | None = None,
+    template_id: str | None = None,
+    template_path: str | Path | None = None,
+) -> bytes:
     """Render markdown-ish slide-plan content (see module docstring above the
     PPTX section), or a structured DeckPlan JSON object, into a PPTX deck."""
-    prs = Presentation()
+    prs = _presentation_from_template(template_id, template_path)
     prs.slide_width = PptxInches(13.333)
     prs.slide_height = PptxInches(7.5)
 

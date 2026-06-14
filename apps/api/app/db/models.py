@@ -229,6 +229,26 @@ class UserProfile(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
+class DocumentTemplate(Base):
+    __tablename__ = "document_templates"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    public_id: Mapped[str] = mapped_column(
+        String(32), unique=True, index=True, nullable=False, default=lambda: secrets.token_hex(12)
+    )
+    user_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(160), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    doc_type: Mapped[str] = mapped_column(String(64), default="presentation")
+    storage_key: Mapped[str] = mapped_column(String(512), nullable=False)
+    original_filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    content_type: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    file_size: Mapped[int] = mapped_column(Integer, default=0)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
 class WritingSample(Base):
     __tablename__ = "writing_samples"
 
@@ -482,6 +502,28 @@ def _ensure_sqlite_schema(bind) -> None:
         """)
     if has_table("user_profiles"):
         statements.append("CREATE UNIQUE INDEX IF NOT EXISTS ix_user_profiles_user_id ON user_profiles (user_id)")
+
+    if not has_table("document_templates"):
+        statements.append("""
+            CREATE TABLE document_templates (
+                id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                public_id VARCHAR(32) NOT NULL,
+                user_id VARCHAR(128) NOT NULL,
+                name VARCHAR(160) NOT NULL,
+                description TEXT,
+                doc_type VARCHAR(64) DEFAULT 'presentation',
+                storage_key VARCHAR(512) NOT NULL,
+                original_filename VARCHAR(255),
+                content_type VARCHAR(120),
+                file_size INTEGER DEFAULT 0,
+                is_active BOOLEAN DEFAULT 1,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL
+            )
+        """)
+    if has_table("document_templates"):
+        statements.append("CREATE UNIQUE INDEX IF NOT EXISTS ix_document_templates_public_id ON document_templates (public_id)")
+        statements.append("CREATE INDEX IF NOT EXISTS ix_document_templates_user_id ON document_templates (user_id)")
 
     admin_table_sql = {
         "user_admin_controls": """

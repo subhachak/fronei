@@ -66,6 +66,10 @@ class Settings(BaseSettings):
     max_document_workers: int = 5
     max_decompose_workers: int = 4
 
+    # Persistent user-uploaded document templates. In production this should
+    # point at a mounted volume, e.g. /data/fronei/document_templates.
+    document_template_storage_dir: str = "./data/document_templates"
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     @property

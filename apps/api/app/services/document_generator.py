@@ -201,6 +201,21 @@ def _pptx_set_slide_background(slide) -> None:
     except Exception:
         pass
 
+
+def _pptx_add_slide(prs: Presentation, role: str):
+    """Add a slide for `role` and immediately paint the theme background.
+
+    Without this, slides rendered onto a template layout that *has* a title
+    placeholder (the common case for real PowerPoint templates) never call
+    `_pptx_set_slide_background` — only the placeholder-less fallback path
+    did — so themed decks rendered with plain white backgrounds regardless
+    of the active theme's `bg` color. Centralizing add_slide here ensures
+    every slide gets the theme background up front; per-shape fills (cards,
+    accent rules, etc.) are layered on top by the layout-specific renderers."""
+    slide = prs.slides.add_slide(_pptx_layout_for_role(prs, role))
+    _pptx_set_slide_background(slide)
+    return slide
+
 # Appendix slides are reference material — denser content is acceptable, so
 # they get a higher per-slide bullet cap than the standard body slides.
 MAX_APPENDIX_BULLETS = 10
@@ -1633,8 +1648,15 @@ def _pptx_set_title(slide, text: str) -> None:
         p = tf.paragraphs[0]
         _pptx_add_runs(p, text or "Untitled")
         font_size = _pptx_title_font_size(text or "Untitled")
+        theme = _pptx_theme()
         for run in p.runs:
             run.font.size = PptxPt(font_size)
+            # Now that every slide gets the theme background painted
+            # (_pptx_add_slide), the template layout's default placeholder
+            # font color may no longer have contrast (e.g. dark text on a
+            # dark theme background). Force the theme's foreground color so
+            # titles stay legible across all themes.
+            run.font.color.rgb = theme["fg"]
         return
 
     # Some branded templates define slide layouts with no placeholders at
@@ -1830,8 +1852,7 @@ def _pptx_render_chart(slide, chart_spec: dict) -> None:
 
 
 def _pptx_render_deck_plan(prs: Presentation, plan: dict, fallback_title: str, subtitle: str | None) -> None:
-    title_layout = _pptx_layout_for_role(prs, "title")
-    title_slide = prs.slides.add_slide(title_layout)
+    title_slide = _pptx_add_slide(prs, "title")
     _pptx_set_title(title_slide, plan.get("title") or fallback_title or "Fronei deck")
     deck_subtitle = plan.get("subtitle") or subtitle
     if deck_subtitle:
@@ -1843,6 +1864,9 @@ def _pptx_render_deck_plan(prs: Presentation, plan: dict, fallback_title: str, s
         if subtitle_placeholder is not None:
             subtitle_placeholder.text_frame.text = ""
             _pptx_add_runs(subtitle_placeholder.text_frame.paragraphs[0], deck_subtitle)
+            theme = _pptx_theme()
+            for run in subtitle_placeholder.text_frame.paragraphs[0].runs:
+                run.font.color.rgb = theme["muted"]
         else:
             # No subtitle placeholder on this template's title layout — drop a
             # styled textbox below the (also-fallback) title textbox.
@@ -1864,18 +1888,18 @@ def _pptx_render_deck_plan(prs: Presentation, plan: dict, fallback_title: str, s
         notes = spec.get("speaker_notes")
         bullets = spec.get("bullets") or []
         if layout in {"section", "section_divider"}:
-            slide = prs.slides.add_slide(_pptx_layout_for_role(prs, "section"))
+            slide = _pptx_add_slide(prs, "section")
             _pptx_set_title(slide, title)
         elif spec.get("chart"):
-            slide = prs.slides.add_slide(_pptx_layout_for_role(prs, "title_only"))
+            slide = _pptx_add_slide(prs, "title_only")
             _pptx_set_title(slide, title)
             _pptx_render_chart(slide, spec["chart"])
         elif spec.get("table"):
-            slide = prs.slides.add_slide(_pptx_layout_for_role(prs, "title_only"))
+            slide = _pptx_add_slide(prs, "title_only")
             _pptx_set_title(slide, title)
             _pptx_render_table(slide, spec["table"])
         elif layout in {"two_column", "comparison", "architecture"} and spec.get("columns"):
-            slide = prs.slides.add_slide(_pptx_layout_for_role(prs, "two_content"))
+            slide = _pptx_add_slide(prs, "two_content")
             _pptx_set_title(slide, title)
             cols = spec["columns"][:3]
             n = max(len(cols), 1)
@@ -1899,22 +1923,22 @@ def _pptx_render_deck_plan(prs: Presentation, plan: dict, fallback_title: str, s
                     col.get("heading") or "", col.get("bullets") or [],
                 )
         elif layout == "executive_summary":
-            slide = prs.slides.add_slide(_pptx_layout_for_role(prs, "title_only"))
+            slide = _pptx_add_slide(prs, "title_only")
             _pptx_set_title(slide, title)
             _pptx_render_executive_summary(slide, bullets)
         elif layout == "recommendation":
-            slide = prs.slides.add_slide(_pptx_layout_for_role(prs, "title_only"))
+            slide = _pptx_add_slide(prs, "title_only")
             _pptx_set_title(slide, title)
             _pptx_render_recommendation(slide, bullets)
         elif layout == "timeline":
-            slide = prs.slides.add_slide(_pptx_layout_for_role(prs, "title_only"))
+            slide = _pptx_add_slide(prs, "title_only")
             _pptx_set_title(slide, title)
             phases = spec.get("phases") or [
                 {"label": "", "title": b, "description": ""} for b in bullets
             ]
             _pptx_render_timeline(slide, phases)
         elif layout == "architecture":
-            slide = prs.slides.add_slide(_pptx_layout_for_role(prs, "title_only"))
+            slide = _pptx_add_slide(prs, "title_only")
             _pptx_set_title(slide, title)
             _pptx_add_text_box(
                 slide, PptxInches(0.65), PptxInches(1.55), PptxInches(5.6), PptxInches(4.9),
@@ -1925,17 +1949,20 @@ def _pptx_render_deck_plan(prs: Presentation, plan: dict, fallback_title: str, s
                 "", bullets[:MAX_BULLETS_PER_SLIDE] or [""],
             )
         else:
-            slide = prs.slides.add_slide(_pptx_layout_for_role(prs, "content"))
+            slide = _pptx_add_slide(prs, "content")
             _pptx_set_title(slide, title)
             cap = MAX_APPENDIX_BULLETS if layout == "appendix" else MAX_BULLETS_PER_SLIDE
             body = slide.placeholders[1] if len(slide.placeholders) > 1 else None
             if body is not None:
+                theme = _pptx_theme()
                 tf = body.text_frame
                 tf.clear()
                 for i, bullet in enumerate(bullets[:cap] or [""]):
                     p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
                     p.level = 0
                     _pptx_add_runs(p, bullet)
+                    for run in p.runs:
+                        run.font.color.rgb = theme["fg"]
             else:
                 # Template layout has no body placeholder either — fall back
                 # to a textbox positioned below the (also-fallback) title.

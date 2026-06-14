@@ -325,9 +325,18 @@ def test_generate_pptx_uses_builtin_template_without_sample_slides():
     deck = Presentation(BytesIO(generate_pptx_bytes(
         "Fallback title",
         content,
-        template_id="architecture-slate",
+        template_id="data-product-os",
     )))
-    slide_titles = [slide.shapes.title.text for slide in deck.slides if slide.shapes.title]
+
+    def _slide_title(slide):
+        if slide.shapes.title:
+            return slide.shapes.title.text
+        for shape in slide.shapes:
+            if shape.has_text_frame and shape.text_frame.text.strip():
+                return shape.text_frame.text.strip()
+        return ""
+
+    slide_titles = [_slide_title(slide) for slide in deck.slides]
 
     assert len(deck.slides) == 2
     assert slide_titles == ["Platform Modernization", "Phased migration lowers execution risk"]

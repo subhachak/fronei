@@ -29,7 +29,7 @@ def test_user_template_upload_list_and_delete(monkeypatch, tmp_path):
     )
     app.dependency_overrides[get_current_user_id] = lambda: "u1"
 
-    template_bytes = Path("app/assets/pptx_templates/strategy_canvas.pptx").read_bytes()
+    template_bytes = Path("app/assets/pptx_templates/clean_light.pptx").read_bytes()
     try:
         with TestClient(app) as client:
             upload = client.post(
@@ -53,7 +53,7 @@ def test_user_template_upload_list_and_delete(monkeypatch, tmp_path):
             templates = listing.json()["templates"]
             assert templates[0]["id"] == uploaded["id"]
             assert templates[0]["recommended"] is True
-            assert any(t["id"] == "strategy-canvas" for t in templates)
+            assert any(t["id"] == "clean-light" for t in templates)
 
             with Session() as db:
                 row = db.query(DocumentTemplate).filter(DocumentTemplate.public_id == uploaded["id"]).one()
@@ -98,12 +98,12 @@ def test_template_grammar_for_builtin_template():
     grammar = document_templates.template_grammar_for_selection(
         None,
         "u1",
-        "strategy-canvas",
+        "clean-light",
         {"doc_type": "presentation", "audience": "Executive committee"},
     )
 
     assert grammar["mode"] == "template_following"
-    assert grammar["template_id"] == "strategy-canvas"
+    assert grammar["template_id"] == "clean-light"
     assert grammar["available_slide_types"]
     assert "TEMPLATE-FIRST PRESENTATION DESIGN BRIEF" in document_templates.template_design_context(grammar)
 

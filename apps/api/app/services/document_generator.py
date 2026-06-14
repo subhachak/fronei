@@ -82,6 +82,124 @@ PPTX_TITLE_BOX_H = 1.0
 PPTX_TITLE_RULE_Y = 1.32
 PPTX_CONTENT_TOP_Y = 1.65
 
+# Per-template design tokens for the python-pptx fallback renderer. Each of
+# the built-in "design scaffold" templates (warm-editorial, modern-tech,
+# executive-navy, data-product-os, clean-light) ships its own bg/card/fg/
+# muted/accent/accent2 palette and heading/body fonts, extracted from that
+# template's "design system snapshot" slide. The fallback renderer (used for
+# templates whose layouts have no placeholders) looks up the active theme via
+# `_pptx_theme()` so generated decks match the uploaded template's palette
+# instead of a single hardcoded warm-editorial look.
+PPTX_DEFAULT_THEME: dict = {
+    "bg": RGBColor(0xF6, 0xF0, 0xE6),
+    "card": PPTX_FALLBACK_CARD_BG_RGB,
+    "card_line": PPTX_FALLBACK_CARD_LINE_RGB,
+    "fg": PPTX_FALLBACK_TEXT_RGB,
+    "muted": RGBColor(0x6B, 0x5E, 0x52),
+    "accent": PPTX_FALLBACK_ACCENT_RGB,
+    "accent2": RGBColor(0x0F, 0x76, 0x6E),
+    "heading_font": PPTX_FALLBACK_HEADING_FONT,
+    "body_font": PPTX_FALLBACK_BODY_FONT,
+}
+
+PPTX_TEMPLATE_THEMES: dict[str, dict] = {
+    "warm-editorial": {
+        "bg": RGBColor(0xF6, 0xF0, 0xE6),
+        "card": RGBColor(0xFF, 0xFD, 0xF8),
+        "card_line": RGBColor(0xD8, 0xCD, 0xC6),
+        "fg": RGBColor(0x1F, 0x29, 0x37),
+        "muted": RGBColor(0x6B, 0x5E, 0x52),
+        "accent": RGBColor(0xB4, 0x50, 0x09),
+        "accent2": RGBColor(0x0F, 0x76, 0x6E),
+        "heading_font": "Georgia",
+        "body_font": "Calibri",
+    },
+    "modern-tech": {
+        "bg": RGBColor(0x08, 0x0C, 0x11),
+        "card": RGBColor(0x12, 0x1A, 0x24),
+        "card_line": RGBColor(0x24, 0x30, 0x3D),
+        "fg": RGBColor(0xEF, 0xF6, 0xFF),
+        "muted": RGBColor(0xAA, 0xB8, 0xC7),
+        "accent": RGBColor(0x22, 0xD3, 0xEE),
+        "accent2": RGBColor(0xA3, 0xE6, 0x35),
+        "heading_font": "Calibri",
+        "body_font": "Calibri",
+    },
+    "executive-navy": {
+        "bg": RGBColor(0x10, 0x18, 0x27),
+        "card": RGBColor(0x17, 0x20, 0x33),
+        "card_line": RGBColor(0x2A, 0x37, 0x52),
+        "fg": RGBColor(0xF8, 0xFA, 0xFC),
+        "muted": RGBColor(0xA7, 0xB2, 0xC5),
+        "accent": RGBColor(0x38, 0xBD, 0xF8),
+        "accent2": RGBColor(0x7C, 0x3A, 0xED),
+        "heading_font": "Calibri",
+        "body_font": "Calibri",
+    },
+    "data-product-os": {
+        "bg": RGBColor(0x0B, 0x12, 0x20),
+        "card": RGBColor(0x11, 0x18, 0x27),
+        "card_line": RGBColor(0x1E, 0x29, 0x3B),
+        "fg": RGBColor(0xF1, 0xF5, 0xF9),
+        "muted": RGBColor(0xCB, 0xD5, 0xE1),
+        "accent": RGBColor(0x34, 0xD3, 0x99),
+        "accent2": RGBColor(0xF5, 0x9E, 0x0B),
+        "heading_font": "Calibri",
+        "body_font": "Calibri",
+    },
+    "clean-light": {
+        "bg": RGBColor(0xF8, 0xFA, 0xFC),
+        "card": RGBColor(0xFF, 0xFF, 0xFF),
+        "card_line": RGBColor(0xE2, 0xE8, 0xF0),
+        "fg": RGBColor(0x0F, 0x17, 0x2A),
+        "muted": RGBColor(0x47, 0x55, 0x69),
+        "accent": RGBColor(0x25, 0x63, 0xEB),
+        "accent2": RGBColor(0x10, 0xB9, 0x81),
+        "heading_font": "Calibri",
+        "body_font": "Calibri",
+    },
+}
+
+# Active theme for the current render call (set by
+# `_generate_pptx_bytes_python_pptx` before rendering, restored afterward).
+# Module-level rather than threaded through every helper signature for
+# simplicity — PPTX generation is synchronous/single-call per request.
+_ACTIVE_PPTX_THEME: dict = PPTX_DEFAULT_THEME
+
+
+def _pptx_theme() -> dict:
+    return _ACTIVE_PPTX_THEME
+
+
+def _pptx_set_theme(template_id: str | None) -> dict:
+    """Activate the design theme for `template_id` and return the previous
+    theme so the caller can restore it after rendering."""
+    global _ACTIVE_PPTX_THEME
+    previous = _ACTIVE_PPTX_THEME
+    _ACTIVE_PPTX_THEME = PPTX_TEMPLATE_THEMES.get(template_id or "", PPTX_DEFAULT_THEME)
+    return previous
+
+
+def _pptx_restore_theme(previous: dict) -> None:
+    global _ACTIVE_PPTX_THEME
+    _ACTIVE_PPTX_THEME = previous
+
+
+def _pptx_set_slide_background(slide) -> None:
+    """Fill the slide background with the active theme's `bg` color. New
+    slides added to a placeholder-less template layout don't inherit a
+    background fill, so dark themes would otherwise render on a white page."""
+    theme = _pptx_theme()
+    bg = theme.get("bg")
+    if bg is None:
+        return
+    try:
+        fill = slide.background.fill
+        fill.solid()
+        fill.fore_color.rgb = bg
+    except Exception:
+        pass
+
 # Appendix slides are reference material — denser content is acceptable, so
 # they get a higher per-slide bullet cap than the standard body slides.
 MAX_APPENDIX_BULLETS = 10
@@ -1342,6 +1460,8 @@ def _pptx_set_title(slide, text: str) -> None:
 
 
 def _pptx_add_title_textbox(slide, text: str) -> None:
+    theme = _pptx_theme()
+    _pptx_set_slide_background(slide)
     box = slide.shapes.add_textbox(
         PptxInches(0.65), PptxInches(0.42), PptxInches(11.0), PptxInches(PPTX_TITLE_BOX_H)
     )
@@ -1357,14 +1477,14 @@ def _pptx_add_title_textbox(slide, text: str) -> None:
     for run in p.runs:
         run.font.size = PptxPt(font_size)
         run.font.bold = True
-        run.font.name = PPTX_FALLBACK_HEADING_FONT
-        run.font.color.rgb = PPTX_FALLBACK_TEXT_RGB
+        run.font.name = theme["heading_font"]
+        run.font.color.rgb = theme["fg"]
 
     rule = slide.shapes.add_shape(
         MSO_SHAPE.RECTANGLE, PptxInches(0.65), PptxInches(PPTX_TITLE_RULE_Y), PptxInches(1.0), PptxInches(0.04)
     )
     rule.fill.solid()
-    rule.fill.fore_color.rgb = PPTX_FALLBACK_ACCENT_RGB
+    rule.fill.fore_color.rgb = theme["accent"]
     rule.line.fill.background()
 
 
@@ -1389,6 +1509,7 @@ def _pptx_render_table(slide, rows: list[list[str]]) -> None:
 
 
 def _pptx_add_text_box(slide, left, top, width, height, heading: str, bullets: list[str]) -> None:
+    theme = _pptx_theme()
     box = slide.shapes.add_textbox(left, top, width, height)
     tf = box.text_frame
     tf.word_wrap = True
@@ -1399,20 +1520,21 @@ def _pptx_add_text_box(slide, left, top, width, height, heading: str, bullets: l
         for run in p.runs:
             run.font.bold = True
             run.font.size = PptxPt(15)
-            run.font.name = PPTX_FALLBACK_HEADING_FONT
-            run.font.color.rgb = PPTX_FALLBACK_TEXT_RGB
+            run.font.name = theme["heading_font"]
+            run.font.color.rgb = theme["fg"]
     for idx, bullet in enumerate(bullets):
         p = tf.paragraphs[0] if idx == 0 and not heading else tf.add_paragraph()
         p.level = 0
         _pptx_add_runs(p, bullet)
         for run in p.runs:
             run.font.size = PptxPt(13)
-            run.font.name = PPTX_FALLBACK_BODY_FONT
-            run.font.color.rgb = PPTX_FALLBACK_TEXT_RGB
+            run.font.name = theme["body_font"]
+            run.font.color.rgb = theme["fg"]
 
 
 def _pptx_render_executive_summary(slide, bullets: list[str]) -> None:
     """Big 'so what' statement up top, supporting bullets below."""
+    theme = _pptx_theme()
     headline, support = (bullets[0], bullets[1:]) if bullets else ("", [])
     if headline:
         box = slide.shapes.add_textbox(PptxInches(0.65), PptxInches(1.5), PptxInches(11.0), PptxInches(1.7))
@@ -1423,6 +1545,8 @@ def _pptx_render_executive_summary(slide, bullets: list[str]) -> None:
         for run in tf.paragraphs[0].runs:
             run.font.size = PptxPt(28)
             run.font.bold = True
+            run.font.name = theme["heading_font"]
+            run.font.color.rgb = theme["fg"]
     if support:
         _pptx_add_text_box(
             slide, PptxInches(0.65), PptxInches(3.3), PptxInches(11.0), PptxInches(3.2),
@@ -1432,13 +1556,14 @@ def _pptx_render_executive_summary(slide, bullets: list[str]) -> None:
 
 def _pptx_render_recommendation(slide, bullets: list[str]) -> None:
     """Accent card around the recommendation line, remaining bullets as rationale."""
+    theme = _pptx_theme()
     primary, rationale = (bullets[0], bullets[1:]) if bullets else ("", [])
     if primary:
         box = slide.shapes.add_shape(
             MSO_SHAPE.ROUNDED_RECTANGLE, PptxInches(0.65), PptxInches(1.5), PptxInches(11.0), PptxInches(1.3)
         )
         box.fill.solid()
-        box.fill.fore_color.rgb = RGBColor(0x1F, 0x3B, 0x5C)
+        box.fill.fore_color.rgb = theme["accent2"]
         box.line.fill.background()
         tf = box.text_frame
         tf.word_wrap = True
@@ -1447,6 +1572,7 @@ def _pptx_render_recommendation(slide, bullets: list[str]) -> None:
         for run in tf.paragraphs[0].runs:
             run.font.size = PptxPt(18)
             run.font.bold = True
+            run.font.name = theme["heading_font"]
             run.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
         tf.paragraphs[0].alignment = PP_ALIGN.LEFT
     if rationale:
@@ -1461,6 +1587,7 @@ def _pptx_render_timeline(slide, phases: list[dict]) -> None:
     phases = [p for p in phases if isinstance(p, dict) and (p.get("title") or p.get("label") or p.get("description"))][:6]
     if not phases:
         return
+    theme = _pptx_theme()
     n = len(phases)
     total_w = 12.0
     gap = 0.25
@@ -1474,13 +1601,13 @@ def _pptx_render_timeline(slide, phases: list[dict]) -> None:
                 PptxInches(gap), PptxInches(0.04),
             )
             connector.fill.solid()
-            connector.fill.fore_color.rgb = RGBColor(0xC0, 0xC0, 0xC0)
+            connector.fill.fore_color.rgb = theme["card_line"]
             connector.line.fill.background()
         marker = slide.shapes.add_shape(
             MSO_SHAPE.OVAL, PptxInches(left + box_w / 2 - 0.15), PptxInches(top + 0.25), PptxInches(0.3), PptxInches(0.3)
         )
         marker.fill.solid()
-        marker.fill.fore_color.rgb = RGBColor(0x1F, 0x3B, 0x5C)
+        marker.fill.fore_color.rgb = theme["accent"]
         marker.line.fill.background()
         lines = []
         if ph.get("label"):
@@ -1539,10 +1666,11 @@ def _pptx_render_deck_plan(prs: Presentation, plan: dict, fallback_title: str, s
             tf = box.text_frame
             tf.word_wrap = True
             _pptx_add_runs(tf.paragraphs[0], deck_subtitle)
+            theme = _pptx_theme()
             for run in tf.paragraphs[0].runs:
                 run.font.size = PptxPt(16)
-                run.font.name = PPTX_FALLBACK_BODY_FONT
-                run.font.color.rgb = PPTX_FALLBACK_NAVY_RGB
+                run.font.name = theme["body_font"]
+                run.font.color.rgb = theme["muted"]
 
     for spec in plan.get("slides", []):
         layout = spec.get("layout") or "bullets"
@@ -1571,12 +1699,13 @@ def _pptx_render_deck_plan(prs: Presentation, plan: dict, fallback_title: str, s
             col_w = PptxInches(col_w_in)
             top = PptxInches(PPTX_CONTENT_TOP_Y)
             height = PptxInches(4.9)
+            theme = _pptx_theme()
             for idx, col in enumerate(cols):
                 left = PptxInches(0.65 + idx * (col_w_in + gap))
                 card = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, left, top, col_w, height)
                 card.fill.solid()
-                card.fill.fore_color.rgb = PPTX_FALLBACK_CARD_BG_RGB
-                card.line.color.rgb = PPTX_FALLBACK_CARD_LINE_RGB
+                card.fill.fore_color.rgb = theme["card"]
+                card.line.color.rgb = theme["card_line"]
                 card.shadow.inherit = False
                 inset = PptxInches(0.18)
                 _pptx_add_text_box(
@@ -1783,6 +1912,14 @@ def _generate_pptx_bytes_python_pptx(
     prs.slide_width = PptxInches(13.333)
     prs.slide_height = PptxInches(7.5)
 
+    previous_theme = _pptx_set_theme(template_id)
+    try:
+        return _render_pptx_body(prs, content, title, subtitle)
+    finally:
+        _pptx_restore_theme(previous_theme)
+
+
+def _render_pptx_body(prs: Presentation, content: str, title: str, subtitle: str | None) -> bytes:
     deck_plan = parse_deck_plan(content)
     if deck_plan:
         _pptx_render_deck_plan(prs, deck_plan, title, subtitle)

@@ -26,6 +26,10 @@ def test_canonical_layout_aliases_and_unknown_fallback():
     assert canonical_layout("toc") == ("agenda", None)
     assert canonical_layout("quote") == ("callout", None)
     assert canonical_layout("thank_you") == ("recommendation", None)
+    assert canonical_layout("decision_pack_cover") == ("cover_metric_strip", None)
+    assert canonical_layout("estate_map") == ("current_state_estate_map", None)
+    assert canonical_layout("option_matrix") == ("option_score_matrix", None)
+    assert canonical_layout("target_operating_model") == ("platform_operating_model_hub", None)
 
     layout, warning = canonical_layout("totally_custom_layout")
     assert layout == "content"
@@ -70,6 +74,33 @@ def test_slide_templates_cover_required_catalog_entries():
         "operating_model",
         "investment_case",
         "appendix",
+        "cover_metric_strip",
+        "current_state_estate_map",
+        "impact_scorecard_bars",
+        "option_score_matrix",
+        "platform_operating_model_hub",
+        "roadmap_phase_cards",
+        "risk_control_rows",
+        "decision_ask_panel",
     }
 
     assert required.issubset(SLIDE_TEMPLATES)
+
+
+def test_component_tree_for_board_pack_slide_uses_rich_payloads():
+    tree = component_tree_for_slide({
+        "layout": "option_score_matrix",
+        "title": "Choose the managed platform path",
+        "options": [
+            {
+                "name": "Managed platform",
+                "summary": "Fastest path to governed reuse.",
+                "scores": {"cost": 3, "control": 2, "adoption": 3},
+                "recommended": True,
+            }
+        ],
+    })
+
+    assert tree["template"] == "option_score_matrix"
+    comparison = next(component for component in tree["components"] if component["type"] == "ComparisonCard")
+    assert comparison["columns"][0]["name"] == "Managed platform"

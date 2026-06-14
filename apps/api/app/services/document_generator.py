@@ -270,6 +270,54 @@ DECK_LAYOUT_ALIASES = {
     "by_the_numbers": "stat_cards",
 }
 SLIDE_ARCHETYPE_LIBRARY = {
+    "decision_pack_cover": {
+        "layout": "cover_metric_strip",
+        "proof_objects": {"stat_cards", "insight_cards"},
+        "required_any": {"stats", "bullets"},
+        "render_hints": {"tone": "decisive", "visual_weight": "cover_metrics", "accent": "decision"},
+    },
+    "current_state_estate_map": {
+        "layout": "current_state_estate_map",
+        "proof_objects": {"comparison", "insight_cards"},
+        "required_any": {"units", "columns", "bullets"},
+        "render_hints": {"tone": "diagnostic", "visual_weight": "estate_map", "accent": "technical"},
+    },
+    "impact_scorecard_bars": {
+        "layout": "impact_scorecard_bars",
+        "proof_objects": {"stat_cards", "chart"},
+        "required_any": {"stats", "bars"},
+        "render_hints": {"tone": "quantified", "visual_weight": "scorecard_bars", "accent": "financial"},
+    },
+    "option_score_matrix": {
+        "layout": "option_score_matrix",
+        "proof_objects": {"comparison"},
+        "required_any": {"options", "columns"},
+        "render_hints": {"tone": "evaluative", "visual_weight": "score_matrix", "accent": "operational"},
+    },
+    "platform_operating_model_hub": {
+        "layout": "platform_operating_model_hub",
+        "proof_objects": {"architecture", "comparison"},
+        "required_any": {"platform", "columns", "bullets"},
+        "render_hints": {"tone": "operational", "visual_weight": "hub_spoke", "accent": "technical"},
+    },
+    "roadmap_phase_cards": {
+        "layout": "roadmap_phase_cards",
+        "proof_objects": {"timeline"},
+        "required_any": {"phases"},
+        "render_hints": {"tone": "sequenced", "visual_weight": "phase_cards", "accent": "execution"},
+    },
+    "risk_control_rows": {
+        "layout": "risk_control_rows",
+        "proof_objects": {"comparison", "table"},
+        "required_any": {"columns", "table"},
+        "render_hints": {"tone": "controlled", "visual_weight": "risk_rows", "accent": "risk"},
+    },
+    "decision_ask_panel": {
+        "layout": "decision_ask_panel",
+        "proof_objects": {"stat_cards", "comparison"},
+        "required_any": {"decisions", "stats", "bullets"},
+        "render_hints": {"tone": "decisive", "visual_weight": "decision_panel", "accent": "decision"},
+    },
     "board_decision": {
         "layout": "recommendation",
         "proof_objects": {"insight_cards", "comparison", "stat_cards"},
@@ -1231,6 +1279,99 @@ def _shorten_to_notes(text: str, limit: int) -> tuple[str, str | None]:
     return _shorten_at_boundary(text, limit)
 
 
+def _normalize_options(raw_options: object, limit: int) -> list[dict]:
+    if not isinstance(raw_options, list):
+        return []
+    options: list[dict] = []
+    for item in raw_options[:4]:
+        if not isinstance(item, dict):
+            continue
+        bullets = item.get("bullets") or item.get("points") or []
+        if isinstance(bullets, str):
+            bullets = [bullets]
+        scores = item.get("scores") if isinstance(item.get("scores"), dict) else {}
+        options.append({
+            "name": _shorten(item.get("name") or item.get("title") or item.get("heading") or "Option", 48),
+            "summary": _shorten(item.get("summary") or item.get("description") or "", limit),
+            "bullets": [_shorten(b, limit) for b in bullets if str(b or "").strip()][:3],
+            "scores": {str(k): max(0, min(3, int(v))) for k, v in scores.items() if str(v).isdigit()},
+            "recommended": bool(item.get("recommended")),
+        })
+    return options
+
+
+def _normalize_units(raw_units: object, limit: int) -> list[dict]:
+    if not isinstance(raw_units, list):
+        return []
+    units: list[dict] = []
+    for idx, item in enumerate(raw_units[:4]):
+        if isinstance(item, dict):
+            tools = item.get("tools") or item.get("items") or []
+            if isinstance(tools, str):
+                tools = [tools]
+            units.append({
+                "name": _shorten(item.get("name") or item.get("label") or f"BU {idx + 1}", 28),
+                "tools": [_shorten(t, 30) for t in tools if str(t or "").strip()][:3],
+                "note": _shorten(item.get("note") or item.get("caption") or "", limit),
+            })
+        elif str(item or "").strip():
+            units.append({"name": _shorten(item, 28), "tools": [], "note": ""})
+    return units
+
+
+def _normalize_bars(raw_bars: object, limit: int) -> list[dict]:
+    if not isinstance(raw_bars, list):
+        return []
+    bars: list[dict] = []
+    for item in raw_bars[:5]:
+        if not isinstance(item, dict):
+            continue
+        value = item.get("value")
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            numeric = None
+        bars.append({
+            "label": _shorten(item.get("label") or item.get("name") or "", 44),
+            "value": numeric,
+            "display": _shorten(item.get("display") or item.get("text") or item.get("value") or "", 28),
+            "color": _shorten(item.get("color") or "", 20),
+        })
+    return [b for b in bars if b["label"] or b["display"]]
+
+
+def _normalize_decisions(raw_decisions: object, limit: int) -> list[dict]:
+    if not isinstance(raw_decisions, list):
+        return []
+    decisions: list[dict] = []
+    for idx, item in enumerate(raw_decisions[:4]):
+        if isinstance(item, dict):
+            decisions.append({
+                "label": _shorten(item.get("label") or f"Decision {idx + 1}", 28),
+                "text": _shorten(item.get("text") or item.get("title") or item.get("description") or "", limit),
+            })
+        elif str(item or "").strip():
+            decisions.append({"label": f"Decision {idx + 1}", "text": _shorten(item, limit)})
+    return decisions
+
+
+def _normalize_platform(raw_platform: object, limit: int) -> dict:
+    if not isinstance(raw_platform, dict):
+        return {}
+    domains = raw_platform.get("domains") or raw_platform.get("business_units") or []
+    if isinstance(domains, str):
+        domains = [domains]
+    capabilities = raw_platform.get("capabilities") or raw_platform.get("layers") or []
+    if isinstance(capabilities, str):
+        capabilities = [capabilities]
+    return {
+        "name": _shorten(raw_platform.get("name") or raw_platform.get("title") or "Enterprise AI Platform", 48),
+        "subtitle": _shorten(raw_platform.get("subtitle") or raw_platform.get("description") or "", limit),
+        "domains": [_shorten(d, 28) for d in domains if str(d or "").strip()][:4],
+        "capabilities": [_shorten(c, 52) for c in capabilities if str(c or "").strip()][:4],
+    }
+
+
 def _slide_visual_object(
     table_rows: list, columns: list, phases: list, chart: dict | None, stats: list | None = None
 ) -> str | None:
@@ -1499,6 +1640,12 @@ def parse_deck_plan(content: str) -> dict | None:
                     "series": series,
                 }
 
+        normalized_options = _normalize_options(raw.get("options"), comparison_bullet_limit)
+        normalized_units = _normalize_units(raw.get("units") or raw.get("business_units"), comparison_bullet_limit)
+        normalized_bars = _normalize_bars(raw.get("bars"), comparison_bullet_limit)
+        normalized_decisions = _normalize_decisions(raw.get("decisions"), comparison_bullet_limit)
+        normalized_platform = _normalize_platform(raw.get("platform"), comparison_bullet_limit)
+
         # SlideBlueprint commitment: an archetype, content density, and the
         # single "visual job" the slide is doing — computed deterministically
         # from the normalized content so every slide is committed to a shape
@@ -1536,6 +1683,11 @@ def parse_deck_plan(content: str) -> dict | None:
             "chart": normalized_chart,
             "stats": normalized_stats,
             "callout": normalized_callout,
+            "options": normalized_options,
+            "units": normalized_units,
+            "bars": normalized_bars,
+            "decisions": normalized_decisions,
+            "platform": normalized_platform,
             "speaker_notes": speaker_notes,
         })
     return normalized if normalized["slides"] else None
@@ -1765,6 +1917,12 @@ def _compose_slide_job(index: int, slide: dict) -> tuple[dict, dict]:
 
 
 def _slide_proof_object(slide: dict) -> str:
+    if slide.get("platform"):
+        return "architecture"
+    if slide.get("options") or slide.get("decisions") or slide.get("units"):
+        return "comparison"
+    if slide.get("bars"):
+        return "chart"
     if slide.get("heatmap"):
         return "risk_heatmap"
     if slide.get("chart"):
@@ -2889,6 +3047,31 @@ def _js_slide_from_deck_spec(spec: dict) -> dict:
 
     if layout in {"section", "section_divider"}:
         return with_blueprint({"role": "section", "title": title, "notes": notes})
+    if layout in {
+        "cover_metric_strip",
+        "current_state_estate_map",
+        "impact_scorecard_bars",
+        "option_score_matrix",
+        "platform_operating_model_hub",
+        "roadmap_phase_cards",
+        "risk_control_rows",
+        "decision_ask_panel",
+    }:
+        return with_blueprint({
+            "role": layout,
+            "title": title,
+            "bullets": bullets,
+            "stats": spec.get("stats") or [],
+            "columns": spec.get("columns") or [],
+            "phases": spec.get("phases") or [],
+            "options": spec.get("options") or [],
+            "units": spec.get("units") or [],
+            "bars": spec.get("bars") or [],
+            "decisions": spec.get("decisions") or [],
+            "platform": spec.get("platform") or {},
+            "callout": spec.get("callout"),
+            "notes": notes,
+        })
     if layout == "agenda":
         return with_blueprint({"role": "agenda", "title": title, "bullets": bullets, "notes": notes})
     if layout == "callout":

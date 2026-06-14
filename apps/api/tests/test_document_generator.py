@@ -1327,6 +1327,179 @@ def test_generate_pptx_bytes_renders_slide_subtitle():
     assert "Centralize the foundation while federating accountable ownership." in all_text
 
 
+def test_parse_deck_plan_preserves_board_deck_component_fields():
+    plan = parse_deck_plan(json.dumps({
+        "title": "AI platform consolidation",
+        "theme": "modern-tech",
+        "slides": [
+            {
+                "layout": "option_matrix",
+                "title": "Managed platform is the practical path",
+                "subtitle": "The option matrix makes speed, control, and cost trade-offs explicit.",
+                "options": [
+                    {
+                        "name": "Managed platform",
+                        "summary": "Fastest path to governed reuse.",
+                        "scores": {"cost": 3, "control": 2, "adoption": 3},
+                        "recommended": True,
+                    }
+                ],
+                "decisions": [{"label": "Decision 1", "text": "Approve platform standard"}],
+                "platform": {
+                    "name": "Enterprise AI Platform",
+                    "domains": ["Digital", "Stores"],
+                    "capabilities": ["ModelOps", "Controls"],
+                },
+                "units": [{"name": "Digital", "tools": ["Tool A", "Tool B"], "note": "Duplicate review"}],
+                "bars": [{"label": "Run-rate waste", "value": 100, "display": "$4-6M"}],
+            }
+        ],
+    }))
+
+    slide = plan["slides"][0]
+    assert plan["theme"] == "modern-tech"
+    assert slide["layout"] == "option_score_matrix"
+    assert slide["options"][0]["recommended"] is True
+    assert slide["decisions"][0]["text"] == "Approve platform standard"
+    assert slide["platform"]["name"] == "Enterprise AI Platform"
+    assert slide["units"][0]["tools"] == ["Tool A", "Tool B"]
+    assert slide["bars"][0]["display"] == "$4-6M"
+
+
+def test_build_js_payload_routes_board_deck_templates():
+    content = json.dumps({
+        "title": "AI platform consolidation",
+        "theme": "modern-tech",
+        "slides": [
+            {"layout": "decision_pack_cover", "title": "Consolidate AI tooling", "stats": [{"value": "$4-6M", "label": "Annual waste"}]},
+            {"layout": "estate_map", "title": "Fragmentation spans four units", "units": [{"name": "Digital", "tools": ["A", "B"]}]},
+            {"layout": "impact_bars", "title": "Savings are material", "stats": [{"value": "$4M", "label": "Savings"}], "bars": [{"label": "Waste", "value": 100, "display": "$4M"}]},
+            {"layout": "option_matrix", "title": "Managed platform wins", "options": [{"name": "Buy", "summary": "Fastest", "recommended": True}]},
+            {"layout": "platform_hub", "title": "Shared platform, federated ownership", "platform": {"name": "AI Platform", "domains": ["BU1"], "capabilities": ["Controls"]}},
+            {"layout": "phase_cards", "title": "Move in three phases", "phases": [{"label": "P1", "title": "Foundation", "description": "Start"}]},
+            {"layout": "risk_rows", "title": "Risks have named controls", "columns": [{"heading": "Adoption", "bullets": ["Owner-led enablement"]}]},
+            {"layout": "decision_panel", "title": "Approve the path", "stats": [{"value": "$1.2M", "label": "Funding ask"}], "decisions": [{"label": "Decision 1", "text": "Approve standard"}]},
+        ],
+    })
+
+    payload = _build_js_deck_payload("Fallback", content, None)
+    roles = [slide["role"] for slide in payload["slides"]]
+
+    assert payload["design_system"]["theme"] == "modern-tech"
+    assert roles == [
+        "cover_metric_strip",
+        "current_state_estate_map",
+        "impact_scorecard_bars",
+        "option_score_matrix",
+        "platform_operating_model_hub",
+        "roadmap_phase_cards",
+        "risk_control_rows",
+        "decision_ask_panel",
+    ]
+
+
+def test_generate_pptx_bytes_renders_board_deck_component_pack():
+    content = json.dumps({
+        "title": "AI Platform Consolidation Steering Committee",
+        "subtitle": "Decision pack for Q3 funding and standardization",
+        "theme": "modern-tech",
+        "slides": [
+            {
+                "layout": "cover_metric_strip",
+                "title": "Consolidate AI tooling to cut duplicated spend",
+                "subtitle": "Approve a shared platform model while keeping business units accountable.",
+                "stats": [
+                    {"value": "$4-6M", "label": "Annual duplication"},
+                    {"value": "18 mo", "label": "Target payback"},
+                    {"value": "7+", "label": "Disconnected tools"},
+                ],
+                "bullets": ["Approve the managed platform path and release Phase 1 funding."],
+            },
+            {
+                "layout": "current_state_estate_map",
+                "title": "Fragmentation is spread across operating units",
+                "subtitle": "Each unit is solving similar governance and tooling problems independently.",
+                "units": [
+                    {"name": "Digital", "tools": ["GenAI Studio", "Vector DB"], "note": "separate review"},
+                    {"name": "Stores", "tools": ["Agent POC", "Workflow bot"], "note": "shadow support"},
+                    {"name": "Supply Chain", "tools": ["Forecast lab", "Ops copilots"], "note": "duplicate infra"},
+                    {"name": "Marketing", "tools": ["Content AI", "Asset tagging"], "note": "policy variance"},
+                ],
+                "bullets": ["Governance repeats", "Licensing overlaps", "MLOps varies"],
+            },
+            {
+                "layout": "impact_scorecard_bars",
+                "title": "The financial case clears the decision threshold",
+                "subtitle": "Savings, speed, and governance improvement are large enough to warrant action.",
+                "stats": [
+                    {"value": "$4-6M", "label": "Annual waste removed"},
+                    {"value": "$1.2M", "label": "Phase 1 ask"},
+                    {"value": "11 wks", "label": "Overhead eliminated"},
+                ],
+                "bars": [
+                    {"label": "Current waste", "value": 100, "display": "$4-6M"},
+                    {"label": "Phase 1 ask", "value": 25, "display": "$1.2M"},
+                    {"label": "Payback exposure", "value": 45, "display": "18 mo"},
+                ],
+            },
+            {
+                "layout": "option_score_matrix",
+                "title": "Managed platform beats build and point tools",
+                "subtitle": "The recommended path balances speed, defensibility, and operating ownership.",
+                "options": [
+                    {"name": "Build", "summary": "Maximum control but slowest delivery.", "scores": {"cost": 1, "control": 3, "adoption": 1}},
+                    {"name": "Point tools", "summary": "Fast locally but hard to govern.", "scores": {"cost": 2, "control": 1, "adoption": 2}},
+                    {"name": "Managed platform", "summary": "Reusable foundation with federated access.", "scores": {"cost": 3, "control": 2, "adoption": 3}, "recommended": True},
+                ],
+            },
+            {
+                "layout": "platform_operating_model_hub",
+                "title": "Central platform, federated domain ownership",
+                "subtitle": "Shared controls and infrastructure remove duplication without slowing domains.",
+                "platform": {
+                    "name": "Enterprise AI Platform",
+                    "subtitle": "controls | MLOps | observability | reusable patterns",
+                    "domains": ["Digital", "Stores", "Supply Chain", "Marketing"],
+                    "capabilities": ["ModelOps registry", "Policy enforcement", "Cost observability"],
+                },
+            },
+            {
+                "layout": "risk_control_rows",
+                "title": "Execution risks are controllable with clear owners",
+                "subtitle": "The plan needs named controls before funds are released.",
+                "columns": [
+                    {"heading": "Vendor lock-in", "bullets": ["Exit clauses and portability standards"]},
+                    {"heading": "Adoption lag", "bullets": ["Domain owner scorecards"]},
+                    {"heading": "Security drift", "bullets": ["Central policy gates"]},
+                ],
+            },
+            {
+                "layout": "decision_ask_panel",
+                "title": "Three approvals unlock the migration window",
+                "subtitle": "A single steering decision avoids another quarter of fragmented spend.",
+                "stats": [{"value": "$1.2M", "label": "Phase 1 funding ask", "source": "Q3 release"}],
+                "decisions": [
+                    {"label": "Decision 1", "text": "Approve managed platform standard"},
+                    {"label": "Decision 2", "text": "Release Phase 1 funding"},
+                    {"label": "Decision 3", "text": "Name platform owner"},
+                ],
+            },
+        ],
+    })
+
+    deck = Presentation(BytesIO(generate_pptx_bytes("Fallback title", content)))
+    all_text = "\n".join(_all_decks_text(deck))
+    shape_count = sum(len(slide.shapes) for slide in deck.slides)
+
+    assert len(deck.slides) >= 8  # default title slide + seven board-pack slides, plus any composition inserts
+    assert "STEERING COMMITTEE" in all_text
+    assert "Fragmentation is spread across operating units" in all_text
+    assert "Managed platform" in all_text
+    assert "Enterprise AI Platform" in all_text
+    assert "Approve managed platform standard" in all_text
+    assert shape_count >= 85
+
+
 def test_default_pptx_renderer_uses_board_briefing_visual_system():
     content = json.dumps({
         "title": "Q3 Enterprise eCommerce Modernization",

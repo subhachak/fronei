@@ -183,10 +183,10 @@ DeckPlan schema:
   "slides": [
     {
       "layout": "section | cover | bullets | executive_summary | comparison | architecture | table | \
-recommendation | timeline | risk_matrix | financial_model | appendix | takeaways",
+recommendation | timeline | risk_matrix | financial_model | stat_cards | appendix | takeaways",
       "density": "low | medium | high (optional — your estimate of how much content this slide carries; \
 the renderer also computes this and will trim automatically if you under-call it)",
-      "title": "Assertion-style slide title",
+      "title": "Short assertion-style slide title (target 40-60 chars, hard cap ~80)",
       "bullets": ["short support point"],
       "columns": [
         {"heading": "Option A", "bullets": ["short point"]},
@@ -204,6 +204,10 @@ the renderer also computes this and will trim automatically if you under-call it
         "categories": ["2024", "2025", "2026"],
         "series": [{"name": "Revenue", "values": [1.2, 1.8, 2.6]}]
       },
+      "stats": [
+        {"value": "$4.2M", "label": "Annual run-rate savings", "source": "optional citation"}
+      ],
+      "callout": {"label": "Key Insight", "text": "One or two sentences elaborating on the stats above."},
       "speaker_notes": "Presenter talk track, nuance, caveats, and transitions."
     }
   ]
@@ -233,6 +237,11 @@ register columns).
 (e.g. years/quarters) and each `series` entry is a numeric line/bar with a name. Use `type: "line"` for trends \
 over time, `"bar"` for comparisons across categories, `"pie"` for composition/share. All `series.values` must be \
 plain numbers (no currency symbols, commas, or percent signs).
+- `stat_cards`: market-context / "by the numbers" slides. Provide up to 4 `stats` entries, each with a short \
+`value` (e.g. "$4.2M", "37%", "3.5x" — keep to ~16 chars) and a `label` describing what it measures. Optionally \
+add a `callout` (`label` + `text`) below the cards to interpret what the numbers mean for the stakeholder — this \
+is the highest-impact slide for grounding a deck in concrete numbers, so use it whenever the source material \
+contains 2-4 strong metrics.
 - `takeaways`: use for the closing synthesis. It should not repeat the executive summary; it should tell the \
 stakeholder what to remember and what happens next.
 - Any slide may include a `chart` alongside or instead of a `table` when the underlying data is genuinely \
@@ -246,8 +255,11 @@ Deck quality rules:
 - Build a narrative arc: context -> analysis/options -> recommendation -> next steps. For executive_report and \
 proposal decks, open the content with an `executive_summary` slide and close with a `recommendation` slide.
 - Use 6-12 slides unless the user asks for a shorter or longer deck.
-- Slide titles must make a point on their own, not label a topic. Keep titles under 12 words and short enough \
-to fit on one line when possible. Use "Strangler migration cuts delivery risk" instead of "Migration options."
+- Slide titles must make a point on their own, not label a topic — write a short assertion, not a run-on \
+sentence. Target 40-60 characters and never exceed ~80; titles must fit on one line. Use "Strangler migration \
+cuts delivery risk" instead of "Migration options" or "An analysis of how a strangler-pattern migration \
+approach can help reduce overall delivery risk for the platform." If a title runs long, cut it down to its core \
+claim rather than relying on the renderer to truncate it.
 - Bullets must be short, specific, and scannable. Prefer 2-3 bullets per slide, and no more than 6 — extra \
 bullets are automatically dropped from the slide (and moved to speaker_notes) rather than rendered, so don't \
 pad a slide expecting all of it to be visible.

@@ -7,7 +7,11 @@ from docx import Document
 from pptx import Presentation
 
 from app.services.document_generator import (
+    MAX_SLIDE_TITLE_CHARS,
+    _build_js_deck_payload,
+    _js_slide_from_deck_spec,
     _pptx_layout_for_role,
+    _shorten_title_to_notes,
     deck_plan_to_markdown,
     generate_docx_bytes,
     generate_pptx_bytes,
@@ -763,3 +767,271 @@ def test_repair_deck_plan_for_qa_preserves_dropped_bullet_in_speaker_notes():
     assert len(slide["bullets"]) == 5
     assert any("Trimmed for slide density" in n for n in slide["speaker_notes"].splitlines())
     assert slide["density"] in {"low", "medium", "high"}
+
+
+def test_repair_deck_plan_for_qa_does_not_duplicate_notes_across_repeated_passes():
+    plan = _deck_plan_with_crowded_slide()
+    issues = [{"slide": 2, "type": "dense_text", "detail": "too much text"}]
+
+    repaired, _ = repair_deck_plan_for_qa(plan, issues)
+    # Run the same repair pass again on the already-repaired plan.
+    repaired_again, _ = repair_deck_plan_for_qa(repaired, issues)
+
+    slide = repaired_again["slides"][0]
+    note_lines = slide["speaker_notes"].splitlines()
+    # No duplicate lines, even after a second identical repair pass.
+    assert len(note_lines) == len(set(note_lines))
+
+
+def test_parse_deck_plan_does_not_duplicate_identical_overflow_notes():
+    long_text = "This sentence is intentionally long enough to overflow both fields. " * 2
+    plan = parse_deck_plan(json.dumps({
+        "title": "Deck",
+        "slides": [
+            {
+                "layout": "executive_summary",
+                "title": long_text,
+                "bullets": [long_text],
+            },
+        ],
+    }))
+
+    assert plan is not None
+    slide = plan["slides"][0]
+    note_lines = slide["speaker_notes"].splitlines()
+    assert len(note_lines) == len(set(note_lines))
+
+
+# ---------------------------------------------------------------------------
+# Title clause-boundary shortening (#86)
+# ---------------------------------------------------------------------------
+
+
+def test_shorten_title_to_notes_short_title_unchanged():
+    title, overflow = _shorten_title_to_notes("AI governance cuts time-to-value", 90)
+    assert title == "AI governance cuts time-to-value"
+    assert overflow is None
+
+
+def test_shorten_title_to_notes_breaks_on_clause_boundary():
+    long_title = "Strangler migration cuts risk: a phased rollout across regions and business units globally"
+    title, overflow = _shorten_title_to_notes(long_title, 40)
+
+    assert len(title) <= 40
+    assert not title.endswith("...")
+    # Cut at the colon clause boundary, not mid-word.
+    assert title.endswith(":")
+    assert overflow == long_title
+
+
+def test_shorten_title_to_notes_word_boundary_no_mid_word_cut():
+    long_title = (
+        "An analysis of how a strangler-pattern migration approach can help reduce overall "
+        "delivery risk for the platform: a deep dive"
+    )
+    title, overflow = _shorten_title_to_notes(long_title, 90)
+
+    assert len(title) <= 90
+    assert not title.endswith("...")
+    assert title[-1] != " "
+    # No word is cut in half — the shortened title's words are a prefix of the original's.
+    original_words = long_title.split(" ")
+    shortened_words = title.rstrip(":").split(" ")
+    assert original_words[: len(shortened_words)] == shortened_words
+    assert overflow == long_title
+
+
+def test_shorten_title_to_notes_falls_back_to_word_boundary():
+    long_title = "word " * 40  # no punctuation, so falls back to last space before limit
+    title, overflow = _shorten_title_to_notes(long_title.strip(), 50)
+
+    assert len(title) <= 50
+    assert not title.endswith("...")
+    assert title.rstrip() == title  # trailing whitespace trimmed
+    assert title[-1] != " "
+    # No word is cut in half.
+    assert all(w == "word" for w in title.split())
+    assert overflow == long_title.strip()
+
+
+def test_parse_deck_plan_shortens_overlong_title_and_routes_to_notes():
+    long_title = (
+        "An analysis of how a strangler-pattern migration approach can help reduce overall "
+        "delivery risk for the platform and improve time-to-market across teams"
+    )
+    plan = parse_deck_plan(json.dumps({
+        "title": "Deck",
+        "slides": [
+            {"layout": "bullets", "title": long_title, "bullets": ["Point one"]},
+        ],
+    }))
+
+    assert plan is not None
+    slide = plan["slides"][0]
+    assert len(slide["title"]) <= MAX_SLIDE_TITLE_CHARS
+    assert not slide["title"].endswith("...")
+    assert f"Full title: {long_title}" in slide["speaker_notes"]
+
+
+# ---------------------------------------------------------------------------
+# stat_cards + callout archetype (#85)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_deck_plan_normalizes_stat_cards_and_callout():
+    plan = parse_deck_plan(json.dumps({
+        "title": "Deck",
+        "slides": [
+            {
+                "layout": "stat_cards",
+                "title": "The market favors fast movers",
+                "stats": [
+                    {"value": "$4.2M", "label": "Annual run-rate savings", "source": "Internal model"},
+                    {"value": "37%", "label": "Reduction in cycle time"},
+                    {"value": "3.5x", "label": "ROI over 24 months"},
+                    {"value": "12", "label": "Markets addressable"},
+                    {"value": "9", "label": "Dropped — only first 4 kept"},
+                ],
+                "callout": {"label": "Key Insight", "text": "These figures support an accelerated rollout."},
+            },
+        ],
+    }))
+
+    assert plan is not None
+    slide = plan["slides"][0]
+    assert slide["layout"] == "stat_cards"
+    assert len(slide["stats"]) == 4
+    assert slide["stats"][0] == {
+        "value": "$4.2M",
+        "label": "Annual run-rate savings",
+        "source": "Internal model",
+    }
+    assert slide["stats"][1]["source"] == ""
+    assert slide["callout"] == {
+        "label": "Key Insight",
+        "text": "These figures support an accelerated rollout.",
+    }
+    assert slide["visual_object"] == "stat_cards"
+
+
+def test_parse_deck_plan_stat_cards_layout_aliases():
+    plan = parse_deck_plan(json.dumps({
+        "title": "Deck",
+        "slides": [
+            {"layout": "kpi_grid", "title": "By the numbers", "stats": [{"value": "10x", "label": "Growth"}]},
+            {"layout": "market_context", "title": "Market context", "metrics": [{"value": "$1B", "label": "TAM"}]},
+        ],
+    }))
+
+    assert plan is not None
+    assert plan["slides"][0]["layout"] == "stat_cards"
+    assert plan["slides"][0]["stats"] == [{"value": "10x", "label": "Growth", "source": ""}]
+    assert plan["slides"][1]["layout"] == "stat_cards"
+    assert plan["slides"][1]["stats"] == [{"value": "$1B", "label": "TAM", "source": ""}]
+
+
+def test_parse_deck_plan_callout_overflow_routes_to_notes():
+    long_text = "This insight needs a lot of words to explain fully. " * 6
+    plan = parse_deck_plan(json.dumps({
+        "title": "Deck",
+        "slides": [
+            {
+                "layout": "stat_cards",
+                "title": "By the numbers",
+                "stats": [{"value": "42%", "label": "Adoption rate"}],
+                "callout": {"text": long_text},
+            },
+        ],
+    }))
+
+    assert plan is not None
+    slide = plan["slides"][0]
+    assert slide["callout"]["label"] == "Key Insight"
+    assert len(slide["callout"]["text"]) <= 200
+    assert f"Full insight: {long_text.strip()}" in slide["speaker_notes"]
+
+
+def test_deck_plan_to_markdown_renders_stat_cards():
+    plan = {
+        "title": "Deck",
+        "subtitle": None,
+        "slides": [
+            {
+                "layout": "stat_cards",
+                "title": "By the numbers",
+                "bullets": [],
+                "stats": [
+                    {"value": "$4.2M", "label": "Annual savings", "source": "Internal model"},
+                    {"value": "37%", "label": "Faster cycle time", "source": ""},
+                ],
+                "callout": {"label": "Key Insight", "text": "Momentum is building."},
+            },
+        ],
+    }
+    markdown = deck_plan_to_markdown(json.dumps(plan))
+
+    assert "**$4.2M** — Annual savings (Internal model)" in markdown
+    assert "**37%** — Faster cycle time" in markdown
+    assert "> **Key Insight:** Momentum is building." in markdown
+
+
+def test_js_slide_from_deck_spec_maps_stat_cards():
+    spec = {
+        "layout": "stat_cards",
+        "title": "By the numbers",
+        "stats": [{"value": "$4.2M", "label": "Annual savings", "source": ""}],
+        "callout": {"label": "Key Insight", "text": "Momentum is building."},
+        "speaker_notes": "Notes.",
+    }
+    js_slide = _js_slide_from_deck_spec(spec)
+
+    assert js_slide["role"] == "stat_cards"
+    assert js_slide["title"] == "By the numbers"
+    assert js_slide["stats"] == spec["stats"]
+    assert js_slide["callout"] == spec["callout"]
+
+
+def test_build_js_deck_payload_numbers_section_slides():
+    plan = {
+        "title": "Deck",
+        "subtitle": None,
+        "slides": [
+            {"layout": "section", "title": "Market context"},
+            {"layout": "bullets", "title": "Demand is accelerating", "bullets": ["Point one"]},
+            {"layout": "section", "title": "Recommendation"},
+            {"layout": "recommendation", "title": "Proceed", "bullets": ["Approve phase 1"]},
+        ],
+    }
+    payload = _build_js_deck_payload("Deck", json.dumps(plan), None)
+    section_slides = [s for s in payload["slides"] if s["role"] == "section"]
+
+    assert [s["section_number"] for s in section_slides] == [1, 2]
+    # Non-section slides are untouched.
+    assert all("section_number" not in s for s in payload["slides"] if s["role"] != "section")
+
+
+def test_generate_pptx_bytes_renders_stat_cards_slide():
+    plan = {
+        "title": "Deck",
+        "subtitle": None,
+        "slides": [
+            {
+                "layout": "stat_cards",
+                "title": "By the numbers",
+                "bullets": [],
+                "stats": [
+                    {"value": "$4.2M", "label": "Annual savings", "source": "Internal model"},
+                    {"value": "37%", "label": "Faster cycle time", "source": ""},
+                ],
+                "callout": {"label": "Key Insight", "text": "Momentum is building."},
+            },
+        ],
+    }
+    content = generate_pptx_bytes("Deck", json.dumps(plan), template_id=None)
+    prs = Presentation(BytesIO(content))
+
+    assert len(prs.slides) == 2
+    texts = _slide_texts(prs.slides[1])
+    assert any("$4.2M" in t for t in texts)
+    assert any("Annual savings" in t for t in texts)
+    assert any("Momentum is building." in t for t in texts)

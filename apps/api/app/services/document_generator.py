@@ -27,6 +27,7 @@ from pptx.dml.color import RGBColor
 from pptx.enum.chart import XL_CHART_TYPE
 from pptx.enum.shapes import MSO_SHAPE
 from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
+from pptx.oxml.ns import qn as pptx_qn
 from pptx.util import Inches as PptxInches, Pt as PptxPt
 
 from app.services.document_templates import resolve_pptx_template_path
@@ -57,11 +58,11 @@ KNOWN_DOC_TYPES = {
 }
 SPEAKER_NOTES_RE = re.compile(r"^speaker notes?\s*:\s*(.*)$", re.IGNORECASE)
 MAX_BULLETS_PER_SLIDE = 6
-# Slide titles are assertion-style and can legitimately run 70-110 chars.
-# Titles now wrap (word_wrap + TOP anchor) instead of overflowing, so this
-# limit exists mainly as a sanity ceiling rather than a wrap target — a
-# lower value here produced visibly truncated titles ending in "...".
-MAX_SLIDE_TITLE_CHARS = 120
+# Slide titles are assertion-style, short headlines. The prompt asks the LLM
+# for ~40-60 chars; this is the ceiling beyond which _shorten_title_to_notes
+# shortens at a clause/word boundary (never mid-word, never literal "...")
+# and routes the full title to speaker_notes.
+MAX_SLIDE_TITLE_CHARS = 90
 MAX_BULLET_CHARS = 90
 
 # Default theme used by the python-pptx fallback renderer when the uploaded
@@ -239,6 +240,12 @@ DECK_LAYOUT_ALIASES = {
     "governance_grid": "comparison",
     "principles_grid": "comparison",
     "takeaways": "executive_summary",
+    "stats": "stat_cards",
+    "metrics": "stat_cards",
+    "kpi": "stat_cards",
+    "kpi_grid": "stat_cards",
+    "market_context": "stat_cards",
+    "by_the_numbers": "stat_cards",
 }
 COVER_DOC_TYPES = {"executive_report", "proposal", "technical_spec"}
 COMPACT_HEADER_DOC_TYPES = {"memo", "one_pager", "resume"}
@@ -1100,6 +1107,41 @@ def _shorten(text: str, limit: int) -> str:
     return cleaned[: max(0, limit - 3)].rstrip() + "..."
 
 
+_TITLE_CLAUSE_BREAK_RE = re.compile(r"[.!?:;—–-]\s")
+
+
+def _shorten_title_to_notes(text: str, limit: int) -> tuple[str, str | None]:
+    """Shorten a slide title without ever cutting mid-word or appending a
+    literal "...". Slide titles wrap (word_wrap + TOP anchor), so a long
+    title rendered in full just takes an extra line — but assertion-style
+    titles read far better when cut at a natural clause boundary than when
+    hard-truncated mid-sentence with "...".
+
+    Strategy: if the cleaned title fits within `limit`, return it as-is. If
+    not, prefer cutting at the last sentence/clause-ending punctuation
+    (. ! ? : ; — - ) within the limit (as long as that keeps at least ~40%
+    of the budget, so we don't end up with a one-word title). Otherwise cut
+    at the last word boundary before `limit`. The full original title is
+    returned as the second element so callers can preserve it in
+    speaker_notes."""
+    cleaned = re.sub(r"\s+", " ", _clean_inline(str(text or ""))).strip()
+    if len(cleaned) <= limit:
+        return cleaned, None
+
+    window = cleaned[:limit]
+    best_cut = -1
+    for m in _TITLE_CLAUSE_BREAK_RE.finditer(window):
+        best_cut = m.start() + 1  # keep the punctuation, drop the trailing space
+    if best_cut >= limit * 0.4:
+        return cleaned[:best_cut].rstrip(), cleaned
+
+    last_space = window.rfind(" ")
+    if last_space >= limit * 0.4:
+        return cleaned[:last_space].rstrip(), cleaned
+
+    return window.rstrip(), cleaned
+
+
 def _shorten_to_notes(text: str, limit: int) -> tuple[str, str | None]:
     """Like `_shorten`, but also returns the full original text when it had
     to be truncated, so callers can route the overflow into speaker notes
@@ -1111,7 +1153,7 @@ def _shorten_to_notes(text: str, limit: int) -> tuple[str, str | None]:
 
 
 def _slide_visual_object(
-    table_rows: list, columns: list, phases: list, chart: dict | None
+    table_rows: list, columns: list, phases: list, chart: dict | None, stats: list | None = None
 ) -> str | None:
     """The single "visual job" a slide is committed to, derived from which
     structured content it carries. Part of the SlideBlueprint commitment
@@ -1122,17 +1164,23 @@ def _slide_visual_object(
         return "table"
     if phases:
         return "timeline"
+    if stats:
+        return "stat_cards"
     if columns:
         return "columns"
     return None
 
 
-def _slide_density(bullet_count: int, table_rows: list, columns: list, phases: list) -> str:
+def _slide_density(
+    bullet_count: int, table_rows: list, columns: list, phases: list, stats: list | None = None
+) -> str:
     """Coarse content-density classification ("low" | "medium" | "high") used
     as part of the SlideBlueprint commitment. Density is computed from
     whichever structured content the slide carries, not just bullets."""
     if phases:
         weight = len(phases)
+    elif stats:
+        weight = len(stats)
     elif columns:
         weight = sum(len(c.get("bullets") or []) for c in columns)
     elif table_rows:
@@ -1188,7 +1236,8 @@ def parse_deck_plan(content: str) -> dict | None:
             continue
         layout = str(raw.get("layout") or raw.get("type") or "bullets").lower().strip()
         layout = DECK_LAYOUT_ALIASES.get(layout, layout)
-        title = _shorten(raw.get("title") or raw.get("headline") or raw.get("key_message") or "Untitled", MAX_SLIDE_TITLE_CHARS)
+        raw_title = raw.get("title") or raw.get("headline") or raw.get("key_message") or "Untitled"
+        title, title_overflow = _shorten_title_to_notes(raw_title, MAX_SLIDE_TITLE_CHARS)
         bullets_raw = raw.get("bullets") or raw.get("points") or []
         if isinstance(bullets_raw, str):
             bullets_raw = [bullets_raw]
@@ -1198,6 +1247,8 @@ def parse_deck_plan(content: str) -> dict | None:
         # slide, and any bullets beyond the per-slide cap, are routed into
         # speaker_notes (full detail preserved) rather than silently lost.
         overflow_notes: list[str] = []
+        if title_overflow:
+            overflow_notes.append(f"Full title: {title_overflow}")
         if layout in {"executive_summary", "recommendation"} and bullets_raw:
             # The first bullet is the headline/primary assertion rendered in a
             # large font (e.g. _pptx_render_executive_summary's 28pt headline)
@@ -1249,6 +1300,41 @@ def parse_deck_plan(content: str) -> dict | None:
                     "heading": _shorten(col.get("heading") or col.get("title") or "", 50),
                     "bullets": [_shorten(b, 90) for b in col_bullets if str(b or "").strip()][:5],
                 })
+        stats_raw = raw.get("stats") or raw.get("metrics") or raw.get("kpis") or []
+        normalized_stats = []
+        if isinstance(stats_raw, list):
+            for stat in stats_raw[:4]:
+                if not isinstance(stat, dict):
+                    continue
+                value = _shorten(stat.get("value") or stat.get("number") or stat.get("metric") or "", 16)
+                label = _shorten(stat.get("label") or stat.get("title") or stat.get("description") or "", 60)
+                if not value and not label:
+                    continue
+                normalized_stats.append({
+                    "value": value,
+                    "label": label,
+                    "source": _shorten(stat.get("source") or stat.get("citation") or "", 60),
+                })
+
+        callout_raw = raw.get("callout") or raw.get("key_insight") or raw.get("insight")
+        normalized_callout = None
+        if isinstance(callout_raw, dict):
+            callout_text, callout_overflow = _shorten_to_notes(
+                callout_raw.get("text") or callout_raw.get("body") or callout_raw.get("description") or "", 200
+            )
+            if callout_text:
+                normalized_callout = {
+                    "label": _shorten(callout_raw.get("label") or callout_raw.get("title") or "Key Insight", 30),
+                    "text": callout_text,
+                }
+                if callout_overflow:
+                    overflow_notes.append(f"Full insight: {callout_overflow}")
+        elif isinstance(callout_raw, str) and callout_raw.strip():
+            callout_text, callout_overflow = _shorten_to_notes(callout_raw, 200)
+            normalized_callout = {"label": "Key Insight", "text": callout_text}
+            if callout_overflow:
+                overflow_notes.append(f"Full insight: {callout_overflow}")
+
         phases = raw.get("phases") or []
         normalized_phases = []
         if isinstance(phases, list):
@@ -1301,14 +1387,23 @@ def parse_deck_plan(content: str) -> dict | None:
         # from the normalized content so every slide is committed to a shape
         # before rendering, even if the planner didn't supply hints.
         archetype = str(raw.get("archetype") or "").strip() or layout
-        visual_object = _slide_visual_object(table_rows, normalized_columns, normalized_phases, normalized_chart)
-        density = _slide_density(len(bullets), table_rows, normalized_columns, normalized_phases)
+        visual_object = _slide_visual_object(table_rows, normalized_columns, normalized_phases, normalized_chart, normalized_stats)
+        density = _slide_density(len(bullets), table_rows, normalized_columns, normalized_phases, normalized_stats)
         raw_density = str(raw.get("density") or "").lower().strip()
         if raw_density in {"low", "medium", "high"}:
             density = raw_density
 
         base_notes = _clean_inline(str(notes or "")).strip()
-        speaker_notes = "\n".join([n for n in [base_notes, *overflow_notes] if n])
+        # Dedupe overflow note lines (e.g. identical "Full title"/"Full headline"
+        # entries when headline and title overflow to the same text) while
+        # preserving order.
+        seen_notes: set[str] = set()
+        deduped_overflow: list[str] = []
+        for n in overflow_notes:
+            if n not in seen_notes:
+                seen_notes.add(n)
+                deduped_overflow.append(n)
+        speaker_notes = "\n".join([n for n in [base_notes, *deduped_overflow] if n])
 
         normalized["slides"].append({
             "layout": layout,
@@ -1321,6 +1416,8 @@ def parse_deck_plan(content: str) -> dict | None:
             "columns": normalized_columns,
             "phases": normalized_phases,
             "chart": normalized_chart,
+            "stats": normalized_stats,
+            "callout": normalized_callout,
             "speaker_notes": speaker_notes,
         })
     return normalized if normalized["slides"] else None
@@ -1414,7 +1511,14 @@ def repair_deck_plan_for_qa(plan: dict, issues: list[dict]) -> tuple[dict, bool]
 
 
 def _append_speaker_note(slide: dict, note: str) -> None:
+    """Append a note line to speaker_notes, skipping exact-duplicate lines.
+    Repair passes can run more than once over the same slide (e.g. repeated
+    "Trimmed for slide density" or "Full point" entries), so dedupe on the
+    exact line to keep notes from growing unboundedly."""
     existing = slide.get("speaker_notes") or ""
+    existing_lines = set(existing.splitlines())
+    if note in existing_lines:
+        return
     slide["speaker_notes"] = "\n".join([p for p in [existing, note] if p])
 
 
@@ -1422,10 +1526,10 @@ def _recompute_slide_blueprint(slide: dict) -> None:
     """Refresh the SlideBlueprint (density/visual_object) after a repair-loop
     edit changes a slide's content shape."""
     slide["visual_object"] = _slide_visual_object(
-        slide.get("table") or [], slide.get("columns") or [], slide.get("phases") or [], slide.get("chart")
+        slide.get("table") or [], slide.get("columns") or [], slide.get("phases") or [], slide.get("chart"), slide.get("stats") or []
     )
     slide["density"] = _slide_density(
-        len(slide.get("bullets") or []), slide.get("table") or [], slide.get("columns") or [], slide.get("phases") or []
+        len(slide.get("bullets") or []), slide.get("table") or [], slide.get("columns") or [], slide.get("phases") or [], slide.get("stats") or []
     )
 
 
@@ -1467,6 +1571,12 @@ def deck_plan_to_markdown(content: str) -> str | None:
                 lines.append(f"### {col['heading']}")
             for bullet in col.get("bullets") or []:
                 lines.append(f"- {bullet}")
+        for stat in slide.get("stats") or []:
+            source = f" ({stat['source']})" if stat.get("source") else ""
+            lines.append(f"- **{stat.get('value', '')}** — {stat.get('label', '')}{source}")
+        callout = slide.get("callout")
+        if callout:
+            lines.append(f"> **{callout.get('label') or 'Key Insight'}:** {callout.get('text', '')}")
         if layout == "architecture" and not slide.get("columns"):
             lines.append("_(architecture diagram placeholder)_")
         table = slide.get("table") or []
@@ -1716,6 +1826,25 @@ def _pptx_render_table(slide, rows: list[list[str]]) -> None:
                         run.font.bold = True
 
 
+def _pptx_set_bullet_marker(paragraph, color: RGBColor, char: str = "▪") -> None:
+    """Give a paragraph a small colored square bullet (matching the
+    ACCENT_BULLET marker used by the pptxgenjs renderer), via raw OOXML
+    <a:buClr>/<a:buFont>/<a:buChar> elements. python-pptx has no native API
+    for bullet color, so we manipulate the paragraph's <a:pPr> directly."""
+    pPr = paragraph._p.get_or_add_pPr()
+    for tag in ("a:buNone", "a:buAutoNum", "a:buChar", "a:buFont", "a:buClr"):
+        for el in pPr.findall(pptx_qn(tag)):
+            pPr.remove(el)
+    buClr = pPr.makeelement(pptx_qn("a:buClr"), {})
+    srgb = pPr.makeelement(pptx_qn("a:srgbClr"), {"val": str(color)})
+    buClr.append(srgb)
+    buFont = pPr.makeelement(pptx_qn("a:buFont"), {"typeface": "Arial", "pitchFamily": "34", "charset": "0"})
+    buChar = pPr.makeelement(pptx_qn("a:buChar"), {"char": char})
+    pPr.append(buClr)
+    pPr.append(buFont)
+    pPr.append(buChar)
+
+
 def _pptx_add_text_box(slide, left, top, width, height, heading: str, bullets: list[str]) -> None:
     theme = _pptx_theme()
     box = slide.shapes.add_textbox(left, top, width, height)
@@ -1734,6 +1863,8 @@ def _pptx_add_text_box(slide, left, top, width, height, heading: str, bullets: l
         p = tf.paragraphs[0] if idx == 0 and not heading else tf.add_paragraph()
         p.level = 0
         _pptx_add_runs(p, bullet)
+        if bullet:
+            _pptx_set_bullet_marker(p, theme["accent"])
         for run in p.runs:
             run.font.size = PptxPt(13)
             run.font.name = theme["body_font"]
@@ -1790,6 +1921,90 @@ def _pptx_render_recommendation(slide, bullets: list[str]) -> None:
         )
 
 
+def _pptx_render_stat_cards(slide, stats: list[dict], callout: dict | None) -> None:
+    """Row of up to 4 metric cards (value + label + optional source), plus an
+    optional accent-colored 'Key Insight' callout box beneath them."""
+    theme = _pptx_theme()
+    stats = [s for s in (stats or []) if isinstance(s, dict) and (s.get("value") or s.get("label"))][:4]
+    if not stats:
+        return
+
+    top = PptxInches(1.5)
+    card_height = PptxInches(2.0)
+    gutter = 0.25
+    total_width = 11.0
+    card_width = (total_width - gutter * (len(stats) - 1)) / len(stats)
+
+    for i, stat in enumerate(stats):
+        left = PptxInches(0.65 + i * (card_width + gutter))
+        card = slide.shapes.add_shape(
+            MSO_SHAPE.ROUNDED_RECTANGLE, left, top, PptxInches(card_width), card_height
+        )
+        card.fill.solid()
+        card.fill.fore_color.rgb = theme["card"]
+        card.line.color.rgb = theme["card_line"]
+        card.line.width = PptxPt(1)
+        tf = card.text_frame
+        tf.word_wrap = True
+        tf.clear()
+        tf.margin_left = PptxInches(0.1)
+        tf.margin_right = PptxInches(0.1)
+
+        value_p = tf.paragraphs[0]
+        _pptx_add_runs(value_p, stat.get("value") or "")
+        for run in value_p.runs:
+            run.font.size = PptxPt(28)
+            run.font.bold = True
+            run.font.name = theme["heading_font"]
+            run.font.color.rgb = theme["accent"]
+        value_p.alignment = PP_ALIGN.CENTER
+
+        if stat.get("label"):
+            label_p = tf.add_paragraph()
+            _pptx_add_runs(label_p, stat["label"])
+            for run in label_p.runs:
+                run.font.size = PptxPt(13)
+                run.font.name = theme["body_font"]
+                run.font.color.rgb = theme["fg"]
+            label_p.alignment = PP_ALIGN.CENTER
+
+        if stat.get("source"):
+            source_p = tf.add_paragraph()
+            _pptx_add_runs(source_p, stat["source"])
+            for run in source_p.runs:
+                run.font.size = PptxPt(9)
+                run.font.italic = True
+                run.font.name = theme["body_font"]
+                run.font.color.rgb = theme["muted"]
+            source_p.alignment = PP_ALIGN.CENTER
+
+    if callout and (callout.get("text") or "").strip():
+        box = slide.shapes.add_shape(
+            MSO_SHAPE.ROUNDED_RECTANGLE, PptxInches(0.65), PptxInches(3.85), PptxInches(11.0), PptxInches(1.6)
+        )
+        box.fill.solid()
+        box.fill.fore_color.rgb = theme["accent2"]
+        box.line.fill.background()
+        tf = box.text_frame
+        tf.word_wrap = True
+        tf.clear()
+        tf.margin_left = PptxInches(0.2)
+        tf.margin_right = PptxInches(0.2)
+        label_p = tf.paragraphs[0]
+        _pptx_add_runs(label_p, callout.get("label") or "Key Insight")
+        for run in label_p.runs:
+            run.font.size = PptxPt(14)
+            run.font.bold = True
+            run.font.name = theme["heading_font"]
+            run.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
+        text_p = tf.add_paragraph()
+        _pptx_add_runs(text_p, callout.get("text") or "")
+        for run in text_p.runs:
+            run.font.size = PptxPt(14)
+            run.font.name = theme["body_font"]
+            run.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
+
+
 def _pptx_render_timeline(slide, phases: list[dict]) -> None:
     """Horizontal timeline of phase markers, each with a label/title/description."""
     phases = [p for p in phases if isinstance(p, dict) and (p.get("title") or p.get("label") or p.get("description"))][:6]
@@ -1834,9 +2049,31 @@ _PPTX_CHART_TYPE_MAP = {
 }
 
 
+def _pptx_chart_palette(theme: dict) -> list[RGBColor]:
+    """Derive a small multi-series chart palette from the active theme's
+    accent colors, mirroring the [ACCENT, NAVY, "8C6F5D", "C9A14A"] palette
+    used by the pptxgenjs renderer so charts read consistently across both
+    rendering paths and across templates."""
+    accent = theme["accent"]
+    accent2 = theme["accent2"]
+
+    def _mix(c1: RGBColor, c2: RGBColor, t: float) -> RGBColor:
+        return RGBColor(
+            int(c1[0] + (c2[0] - c1[0]) * t),
+            int(c1[1] + (c2[1] - c1[1]) * t),
+            int(c1[2] + (c2[2] - c1[2]) * t),
+        )
+
+    muted = theme["muted"]
+    return [accent, accent2, muted, _mix(accent, accent2, 0.5)]
+
+
 def _pptx_render_chart(slide, chart_spec: dict) -> None:
     """Render a native python-pptx chart from a normalized chart spec
-    ({"type": "bar|line|pie", "categories": [...], "series": [{"name", "values"}]})."""
+    ({"type": "bar|line|pie", "categories": [...], "series": [{"name", "values"}]}),
+    styled with the active template's theme colors and with data labels
+    enabled so values are legible without a separate table."""
+    theme = _pptx_theme()
     chart_data = CategoryChartData()
     chart_data.categories = chart_spec.get("categories") or []
     series = chart_spec.get("series") or []
@@ -1846,9 +2083,56 @@ def _pptx_render_chart(slide, chart_spec: dict) -> None:
     for s in series:
         chart_data.add_series(s.get("name") or "Series", s.get("values") or [])
     xl_chart_type = _PPTX_CHART_TYPE_MAP.get(chart_type, XL_CHART_TYPE.COLUMN_CLUSTERED)
-    slide.shapes.add_chart(
+    graphic_frame = slide.shapes.add_chart(
         xl_chart_type, PptxInches(1.0), PptxInches(1.6), PptxInches(11.3), PptxInches(5.3), chart_data
     )
+    chart = graphic_frame.chart
+    chart.has_title = False
+    palette = _pptx_chart_palette(theme)
+
+    chart.has_legend = len(series) > 1 or chart_type == "pie"
+    if chart.has_legend:
+        chart.legend.position = 2  # XL_LEGEND_POSITION.BOTTOM
+        chart.legend.include_in_layout = False
+        chart.legend.font.size = PptxPt(11)
+        chart.legend.font.color.rgb = theme["fg"]
+
+    if chart_type == "pie":
+        point_count = len(chart_data.categories)
+        for idx, point in enumerate(chart.plots[0].series[0].points):
+            point.format.fill.solid()
+            point.format.fill.fore_color.rgb = palette[idx % len(palette)]
+        plot = chart.plots[0]
+        plot.has_data_labels = True
+        data_labels = plot.data_labels
+        data_labels.show_percentage = True
+        data_labels.show_value = False
+        data_labels.number_format = "0%"
+        data_labels.number_format_is_linked = False
+        data_labels.font.size = PptxPt(11)
+        data_labels.font.color.rgb = theme["fg"]
+    else:
+        for idx, plot_series in enumerate(chart.plots[0].series):
+            color = palette[idx % len(palette)]
+            if chart_type == "line":
+                plot_series.format.line.color.rgb = color
+                plot_series.format.line.width = PptxPt(2.25)
+            else:
+                plot_series.format.fill.solid()
+                plot_series.format.fill.fore_color.rgb = color
+        plot = chart.plots[0]
+        plot.has_data_labels = True
+        data_labels = plot.data_labels
+        data_labels.show_value = True
+        data_labels.number_format = "0.#"
+        data_labels.number_format_is_linked = False
+        data_labels.font.size = PptxPt(10)
+        data_labels.font.color.rgb = theme["muted"]
+
+    if chart_type != "pie":
+        for axis in (chart.category_axis, chart.value_axis):
+            axis.tick_labels.font.size = PptxPt(11)
+            axis.tick_labels.font.color.rgb = theme["muted"]
 
 
 def _pptx_render_deck_plan(prs: Presentation, plan: dict, fallback_title: str, subtitle: str | None) -> None:
@@ -1930,6 +2214,10 @@ def _pptx_render_deck_plan(prs: Presentation, plan: dict, fallback_title: str, s
             slide = _pptx_add_slide(prs, "title_only")
             _pptx_set_title(slide, title)
             _pptx_render_recommendation(slide, bullets)
+        elif layout == "stat_cards":
+            slide = _pptx_add_slide(prs, "title_only")
+            _pptx_set_title(slide, title)
+            _pptx_render_stat_cards(slide, spec.get("stats") or [], spec.get("callout"))
         elif layout == "timeline":
             slide = _pptx_add_slide(prs, "title_only")
             _pptx_set_title(slide, title)
@@ -2004,6 +2292,14 @@ def _js_slide_from_deck_spec(spec: dict) -> dict:
         return {"role": "executive_summary", "title": title, "bullets": bullets, "notes": notes}
     if layout == "recommendation":
         return {"role": "recommendation", "title": title, "bullets": bullets, "notes": notes}
+    if layout == "stat_cards":
+        return {
+            "role": "stat_cards",
+            "title": title,
+            "stats": spec.get("stats") or [],
+            "callout": spec.get("callout"),
+            "notes": notes,
+        }
     if layout == "timeline":
         phases = spec.get("phases") or [{"label": "", "title": b, "description": ""} for b in bullets]
         return {"role": "timeline", "title": title, "phases": phases, "notes": notes}
@@ -2039,6 +2335,18 @@ def _js_slide_from_markdown_spec(spec: dict) -> dict:
     }
 
 
+def _number_section_slides(js_slides: list[dict]) -> list[dict]:
+    """Assign a 1-based `section_number` to each "section" role slide so the
+    renderer can show a "01 / Section Title" style divider, mirroring the
+    numbered section breaks seen in the Claude reference deck."""
+    n = 0
+    for slide in js_slides:
+        if slide.get("role") == "section":
+            n += 1
+            slide["section_number"] = n
+    return js_slides
+
+
 def _build_js_deck_payload(title: str, content: str, subtitle: str | None) -> dict:
     """Normalize either a structured DeckPlan or markdown-ish slide-plan
     content into the JSON payload consumed by pptx_render/render.js."""
@@ -2047,7 +2355,9 @@ def _build_js_deck_payload(title: str, content: str, subtitle: str | None) -> di
         return {
             "title": deck_plan.get("title") or title or "Fronei deck",
             "subtitle": deck_plan.get("subtitle") or subtitle,
-            "slides": [_js_slide_from_deck_spec(spec) for spec in deck_plan.get("slides", [])],
+            "slides": _number_section_slides(
+                [_js_slide_from_deck_spec(spec) for spec in deck_plan.get("slides", [])]
+            ),
         }
 
     title_slide_spec, slides = _parse_pptx_slides(content)
@@ -2072,7 +2382,7 @@ def _build_js_deck_payload(title: str, content: str, subtitle: str | None) -> di
     for spec in slides:
         js_slides.append(_js_slide_from_markdown_spec(spec))
 
-    return {"title": deck_title, "subtitle": deck_subtitle, "slides": js_slides}
+    return {"title": deck_title, "subtitle": deck_subtitle, "slides": _number_section_slides(js_slides)}
 
 
 def _render_pptx_via_pptxgenjs(payload: dict) -> bytes:

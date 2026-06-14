@@ -113,17 +113,25 @@ function addNotes(slide, notes) {
   if (notes) slide.addNotes(notes);
 }
 
+// Top-level bullets use a small accent-colored square marker (rather than the
+// default round bullet) to echo the colored accent markers seen on the
+// Claude reference deck's bullet slides. Nested bullets keep a plain dash so
+// the accent marker stays a top-level "this is a key point" signal.
+const ACCENT_BULLET = { code: "25AA", color: ACCENT, indent: 18 };
+const SUB_BULLET = { code: "2013", indent: 14 };
+
 function bulletsToTextProps(bullets, opts) {
   opts = opts || {};
   const items = (bullets && bullets.length ? bullets : [{ level: 0, text: "" }]);
   return items.map((b) => {
     const level = typeof b === "object" ? (b.level || 0) : 0;
     const text = typeof b === "object" ? (b.text || "") : String(b || "");
+    const bulletStyle = !text ? false : level === 0 ? ACCENT_BULLET : SUB_BULLET;
     return {
       text,
       options: Object.assign(
         {
-          bullet: text ? { indent: 14 } : false,
+          bullet: bulletStyle,
           indentLevel: Math.max(0, Math.min(level, 4)),
           fontSize: opts.fontSize || 16,
           color: opts.color || TEXT_DARK,
@@ -188,9 +196,39 @@ function renderTitleSlide(pptx, title, subtitle) {
 function renderSectionSlide(pptx, spec) {
   const slide = pptx.addSlide();
   slide.background = { color: TEXT_DARK };
+
+  const titleY = SLIDE_H / 2 - 0.8;
+
+  if (spec.section_number) {
+    const label = `${String(spec.section_number).padStart(2, "0")}`;
+    // Small accent rule above the number, echoing the orange underline used
+    // on regular slide titles, to tie section breaks to the deck's visual language.
+    slide.addShape("rect", {
+      x: MARGIN_X,
+      y: titleY - 0.55,
+      w: 0.6,
+      h: 0.05,
+      fill: { color: ACCENT },
+      line: { color: ACCENT },
+    });
+    slide.addText(label, {
+      x: MARGIN_X,
+      y: titleY - 0.5,
+      w: 3.0,
+      h: 0.5,
+      fontSize: 16,
+      bold: true,
+      color: ACCENT,
+      fontFace: HEADING_FACE,
+      align: "left",
+      valign: "top",
+      charSpacing: 2,
+    });
+  }
+
   slide.addText(bulletText(spec.title || "Untitled", 70), {
     x: MARGIN_X,
-    y: SLIDE_H / 2 - 0.8,
+    y: titleY,
     w: 9.5,
     h: 1.6,
     fontSize: 32,
@@ -493,6 +531,85 @@ function renderTimelineSlide(pptx, spec) {
   return slide;
 }
 
+function renderStatCardsSlide(pptx, spec) {
+  const slide = pptx.addSlide();
+  addTitle(slide, spec.title);
+  const stats = (spec.stats || []).filter((s) => s && (s.value || s.label)).slice(0, 4);
+  if (!stats.length) {
+    addNotes(slide, spec.notes);
+    return slide;
+  }
+
+  const top = 1.5;
+  const cardH = 2.0;
+  const gap = 0.25;
+  const totalW = 12.0;
+  const n = stats.length;
+  const cardW = (totalW - gap * (n - 1)) / n;
+
+  stats.forEach((stat, idx) => {
+    const left = MARGIN_X + idx * (cardW + gap);
+    slide.addShape("roundRect", {
+      x: left,
+      y: top,
+      w: cardW,
+      h: cardH,
+      fill: { color: CARD_BG },
+      line: { color: ACCENT_LINE, width: 1 },
+      rectRadius: 0.06,
+    });
+    const parts = [{ text: stat.value || "", options: { fontSize: 28, bold: true, color: ACCENT, fontFace: HEADING_FACE, breakLine: true, align: "center" } }];
+    if (stat.label) {
+      parts.push({ text: stat.label, options: { fontSize: 13, color: TEXT_DARK, fontFace: BODY_FACE, breakLine: true, align: "center" } });
+    }
+    if (stat.source) {
+      parts.push({ text: stat.source, options: { fontSize: 9, italic: true, color: TEXT_MUTED, fontFace: BODY_FACE, align: "center" } });
+    }
+    slide.addText(parts, {
+      x: left + 0.1,
+      y: top,
+      w: cardW - 0.2,
+      h: cardH,
+      valign: "middle",
+      align: "center",
+      wrap: true,
+    });
+  });
+
+  const callout = spec.callout;
+  if (callout && (callout.text || "").trim()) {
+    slide.addShape("roundRect", {
+      x: MARGIN_X,
+      y: 3.85,
+      w: SLIDE_W - MARGIN_X * 2,
+      h: 1.6,
+      fill: { color: TEXT_DARK },
+      line: { color: TEXT_DARK },
+      rectRadius: 0.08,
+    });
+    slide.addText(
+      [
+        { text: callout.label || "Key Insight", options: { fontSize: 14, bold: true, color: WHITE, fontFace: HEADING_FACE, breakLine: true } },
+        { text: callout.text || "", options: { fontSize: 14, color: WHITE, fontFace: BODY_FACE } },
+      ],
+      {
+        x: MARGIN_X + 0.2,
+        y: 3.85,
+        w: SLIDE_W - MARGIN_X * 2 - 0.4,
+        h: 1.6,
+        valign: "middle",
+        align: "left",
+        wrap: true,
+        fontFace: BODY_FACE,
+        lineSpacingMultiple: 1.1,
+      }
+    );
+  }
+
+  addNotes(slide, spec.notes);
+  return slide;
+}
+
 function renderArchitectureSlide(pptx, spec) {
   const slide = pptx.addSlide();
   addTitle(slide, spec.title);
@@ -546,6 +663,8 @@ function renderSlide(pptx, spec) {
       return renderTimelineSlide(pptx, spec);
     case "architecture":
       return renderArchitectureSlide(pptx, spec);
+    case "stat_cards":
+      return renderStatCardsSlide(pptx, spec);
     default:
       return renderContentSlide(pptx, spec);
   }
@@ -572,7 +691,34 @@ async function main() {
   }
 
   const buffer = await pptx.write({ outputType: "nodebuffer" });
-  process.stdout.write(buffer);
+  const colored = await _applyAccentBulletColors(buffer);
+  process.stdout.write(colored);
+}
+
+/**
+ * pptxgenjs has no API for bullet character color, so the ACCENT_BULLET
+ * markers from bulletsToTextProps come out of pptx.write() as plain
+ * "<a:buSzPct.../><a:buChar char="▪"/>" runs (default text color). Patch the
+ * generated slide XML directly via JSZip to insert an "<a:buClr>" element
+ * (OOXML requires buClr before buSzPct/buFont/buChar) so the small square
+ * markers render in the accent color, matching the orange accent rules used
+ * elsewhere in the deck. Sub-bullet "–" markers (SUB_BULLET) are left as-is.
+ */
+async function _applyAccentBulletColors(buffer) {
+  const JSZip = require("jszip");
+  const zip = await JSZip.loadAsync(buffer);
+  const buClr = `<a:buClr><a:srgbClr val="${ACCENT}"/></a:buClr>`;
+  const needle = '<a:buSzPct val="100000"/><a:buChar char="&#x25AA;"/>';
+  const replacement = `${buClr}${needle}`;
+
+  const slideFiles = Object.keys(zip.files).filter((name) => /^ppt\/slides\/slide\d+\.xml$/.test(name));
+  for (const name of slideFiles) {
+    const xml = await zip.file(name).async("string");
+    if (xml.includes(needle)) {
+      zip.file(name, xml.split(needle).join(replacement));
+    }
+  }
+  return zip.generateAsync({ type: "nodebuffer" });
 }
 
 main().catch((err) => {

@@ -11,6 +11,7 @@ from app.services.document_generator import (
     _build_js_deck_payload,
     _js_slide_from_deck_spec,
     _pptx_layout_for_role,
+    _shorten,
     _shorten_title_to_notes,
     compose_deck_plan_parallel,
     deck_plan_to_markdown,
@@ -1042,6 +1043,14 @@ def test_shorten_title_to_notes_falls_back_to_word_boundary():
     assert overflow == long_title.strip()
 
 
+def test_shorten_generic_copy_uses_word_boundary():
+    text = "Transformation modernization governance"
+    shortened = _shorten(text, 24)
+
+    assert shortened == "Transformation"
+    assert "moderniz" not in shortened
+
+
 def test_parse_deck_plan_shortens_overlong_title_and_routes_to_notes():
     long_title = (
         "An analysis of how a strangler-pattern migration approach can help reduce overall "
@@ -1215,6 +1224,63 @@ def test_build_js_deck_payload_numbers_section_slides():
     assert all("section_number" not in s for s in payload["slides"] if s["role"] != "section")
 
 
+def test_build_js_deck_payload_uses_requested_design_theme():
+    plan = {
+        "title": "Deck",
+        "theme": "modern-tech",
+        "slides": [
+            {"layout": "bullets", "title": "The platform needs a system", "bullets": ["One clear point"]},
+        ],
+    }
+
+    payload = _build_js_deck_payload("Deck", json.dumps(plan), None)
+
+    assert payload["design_system"]["theme"] == "modern-tech"
+    assert payload["design_system"]["tokens"]["theme"]["bg"] == "080C11"
+
+
+def test_parse_deck_plan_preserves_slide_subtitle_and_notes_overflow():
+    long_subtitle = (
+        "Centralize the foundation while keeping business units accountable for "
+        "domain use cases, outcomes, controls, and adoption across the portfolio."
+    )
+    plan = parse_deck_plan(json.dumps({
+        "title": "Deck",
+        "slides": [
+            {
+                "layout": "comparison",
+                "title": "Consolidate on one platform",
+                "subtitle": long_subtitle,
+                "columns": [{"heading": "Option", "bullets": ["Point"]}],
+            },
+        ],
+    }))
+
+    assert plan is not None
+    slide = plan["slides"][0]
+    assert slide["subtitle"].startswith("Centralize the foundation")
+    assert len(slide["subtitle"]) <= 110
+    assert "Full subtitle:" in slide["speaker_notes"]
+
+
+def test_build_js_deck_payload_carries_slide_subtitle():
+    plan = {
+        "title": "Deck",
+        "slides": [
+            {
+                "layout": "bullets",
+                "title": "Consolidate on one platform",
+                "subtitle": "Centralize the foundation while federating accountable ownership.",
+                "bullets": ["One clear point"],
+            },
+        ],
+    }
+
+    payload = _build_js_deck_payload("Deck", json.dumps(plan), None)
+
+    assert payload["slides"][0]["subtitle"] == "Centralize the foundation while federating accountable ownership."
+
+
 def test_generate_pptx_bytes_renders_stat_cards_slide():
     plan = {
         "title": "Deck",
@@ -1240,6 +1306,25 @@ def test_generate_pptx_bytes_renders_stat_cards_slide():
     assert any("$4.2M" in t for t in texts)
     assert any("Annual savings" in t for t in texts)
     assert any("Momentum is building." in t for t in texts)
+
+
+def test_generate_pptx_bytes_renders_slide_subtitle():
+    content = json.dumps({
+        "title": "Deck",
+        "slides": [
+            {
+                "layout": "bullets",
+                "title": "Consolidate on one platform",
+                "subtitle": "Centralize the foundation while federating accountable ownership.",
+                "bullets": ["Approve phase 1"],
+            },
+        ],
+    })
+
+    deck = Presentation(BytesIO(generate_pptx_bytes("Deck", content)))
+    all_text = "\n".join(_all_decks_text(deck))
+
+    assert "Centralize the foundation while federating accountable ownership." in all_text
 
 
 def test_default_pptx_renderer_uses_board_briefing_visual_system():
@@ -1343,7 +1428,8 @@ def test_default_pptx_renderer_branches_on_slide_archetypes():
     )
 
     assert "Risk posture" in all_text
-    assert "Operating lanes" in all_text
+    assert "Centralized only" in all_text
+    assert "Operating lanes" not in all_text
     assert "Investment case" in all_text
     assert "RECOMMENDED" in all_text
 

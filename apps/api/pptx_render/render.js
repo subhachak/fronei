@@ -73,27 +73,37 @@ function token(name, fallback) {
   return themeTokens()[name] || fallback;
 }
 
+function headingFace() {
+  return token("heading_font", HEADING_FACE);
+}
+
+function bodyFace() {
+  return token("body_font", BODY_FACE);
+}
+
 function slideBg(slide) {
-  slide.background = { color: BG };
+  slide.background = { color: token("bg", BG) };
 }
 
 function addBoardChrome(slide, sectionLabel) {
   slideBg(slide);
+  const accent = token("accent", GOLD);
+  const accent2 = token("accent2", TEAL);
   slide.addShape("rect", {
     x: 0,
     y: 0,
     w: 0.24,
     h: SLIDE_H,
-    fill: { color: TEAL },
-    line: { color: TEAL },
+    fill: { color: accent2 },
+    line: { color: accent2 },
   });
   slide.addShape("rect", {
     x: 0.24,
     y: 0,
     w: 0.035,
     h: SLIDE_H,
-    fill: { color: GOLD },
-    line: { color: GOLD },
+    fill: { color: accent },
+    line: { color: accent },
   });
   if (sectionLabel) {
     slide.addText(String(sectionLabel).toUpperCase(), {
@@ -103,8 +113,8 @@ function addBoardChrome(slide, sectionLabel) {
       h: 0.24,
       fontSize: 7.5,
       bold: true,
-      color: TEXT_MUTED,
-      fontFace: BODY_FACE,
+      color: token("muted", TEXT_MUTED),
+      fontFace: bodyFace(),
       charSpacing: 1.2,
     });
   }
@@ -122,14 +132,39 @@ function templateFor(spec) {
   return componentTreeFor(spec).template || blueprintFor(spec).template || spec.role || "content";
 }
 
+function densityFor(spec) {
+  const bp = blueprintFor(spec);
+  const d = String(spec.density || bp.density || "medium").toLowerCase();
+  return ["low", "medium", "high"].includes(d) ? d : "medium";
+}
+
+function densityFontBoost(spec) {
+  const d = densityFor(spec);
+  if (d === "low") return 1.16;
+  if (d === "medium") return 1.06;
+  return 1;
+}
+
+function contentValign(spec) {
+  return densityFor(spec) === "high" ? "top" : "middle";
+}
+
 function emphasisColor(spec) {
   const bp = blueprintFor(spec);
-  return EMPHASIS_COLORS[bp.emphasis] || TEAL;
+  const themed = {
+    decision: token("accent", GOLD),
+    financial: token("accent", GOLD),
+    risk: token("warn", EMPHASIS_COLORS.risk),
+    technical: token("accent2", TEAL),
+    execution: token("accent2", EMPHASIS_COLORS.execution),
+    operational: token("success", TEAL),
+  };
+  return themed[bp.emphasis] || token("accent2", EMPHASIS_COLORS[bp.emphasis] || TEAL);
 }
 
 function emphasisInk(spec) {
   const color = emphasisColor(spec);
-  return color === GOLD ? NAVY : WHITE;
+  return color === token("accent", GOLD) ? token("fg", NAVY) : WHITE;
 }
 
 function blueprintLabel(spec) {
@@ -191,33 +226,49 @@ const TITLE_BOX_H = 1.0;
 const TITLE_RULE_Y = 1.32;
 const CONTENT_TOP_Y = 1.65;
 
-function addTitle(slide, text) {
+function addTitle(slide, text, subtitle) {
   addBoardChrome(slide);
+  const hasSubtitle = !!String(subtitle || "").trim();
+  const ruleY = hasSubtitle ? 1.48 : TITLE_RULE_Y;
   slide.addText(bulletText(text || "Untitled", 78), {
-    x: 0.72,
+    x: MARGIN_X,
     y: 0.42,
     w: 9.4,
-    h: TITLE_BOX_H,
+    h: hasSubtitle ? 0.66 : TITLE_BOX_H,
     fontSize: titleFontSize(text),
     bold: true,
-    color: NAVY,
-    fontFace: HEADING_FACE,
+    color: token("fg", NAVY),
+    fontFace: headingFace(),
     align: "left",
     valign: "top",
     fit: "shrink",
   });
+  if (hasSubtitle) {
+    slide.addText(bulletText(subtitle, 112), {
+      x: MARGIN_X,
+      y: 1.08,
+      w: 9.55,
+      h: 0.28,
+      fontSize: 10.5,
+      color: token("muted", TEXT_MUTED),
+      fontFace: bodyFace(),
+      align: "left",
+      valign: "top",
+      fit: "shrink",
+    });
+  }
   slide.addShape("rect", {
-    x: 0.72,
-    y: TITLE_RULE_Y,
+    x: MARGIN_X,
+    y: ruleY,
     w: 1.0,
     h: 0.04,
-    fill: { color: ACCENT },
-    line: { color: ACCENT },
+    fill: { color: token("accent", ACCENT) },
+    line: { color: token("accent", ACCENT) },
   });
 }
 
 function addSlideTitle(slide, spec) {
-  addTitle(slide, spec.title);
+  addTitle(slide, spec.title, spec.subtitle || spec.dek);
   addBlueprintKicker(slide, spec);
 }
 
@@ -255,6 +306,24 @@ function addIconBadge(slide, x, y, label, opts = {}) {
     align: "center",
     valign: "middle",
     fit: "shrink",
+  });
+}
+
+function accentPalette(index = 0) {
+  const palette = token("chart_palette", [token("accent", ACCENT), token("accent2", TEAL), token("success", TEAL), token("warn", EMPHASIS_COLORS.risk)]);
+  return palette[index % palette.length] || token("accent", ACCENT);
+}
+
+function addAccentStrip(slide, x, y, w, color, opts = {}) {
+  const orientation = opts.orientation || "top";
+  const thickness = opts.thickness || 0.08;
+  slide.addShape("rect", {
+    x,
+    y,
+    w: orientation === "left" ? thickness : w,
+    h: orientation === "left" ? (opts.h || 1) : thickness,
+    fill: { color },
+    line: { color },
   });
 }
 
@@ -413,49 +482,77 @@ function renderTitleSlide(pptx, title, subtitle) {
 
 function renderSectionSlide(pptx, spec) {
   const slide = pptx.addSlide();
-  slide.background = { color: TEXT_DARK };
-
-  const titleY = SLIDE_H / 2 - 0.8;
+  const fg = token("fg", TEXT_DARK);
+  const bg = token("bg", BG);
+  const accent = token("accent", ACCENT);
+  const accent2 = token("accent2", TEAL);
+  const muted = token("muted", TEXT_MUTED);
+  slide.background = { color: fg };
+  slide.addShape("rect", {
+    x: 0,
+    y: 0,
+    w: 4.25,
+    h: SLIDE_H,
+    fill: { color: accent2 },
+    line: { color: accent2 },
+  });
+  slide.addShape("rect", {
+    x: 4.25,
+    y: 0,
+    w: 0.06,
+    h: SLIDE_H,
+    fill: { color: accent },
+    line: { color: accent },
+  });
 
   if (spec.section_number) {
     const label = `${String(spec.section_number).padStart(2, "0")}`;
-    // Small accent rule above the number, echoing the orange underline used
-    // on regular slide titles, to tie section breaks to the deck's visual language.
     slide.addShape("rect", {
-      x: MARGIN_X,
-      y: titleY - 0.55,
-      w: 0.6,
+      x: 1.1,
+      y: 2.25,
+      w: 1.35,
       h: 0.05,
-      fill: { color: ACCENT },
-      line: { color: ACCENT },
+      fill: { color: accent },
+      line: { color: accent },
     });
     slide.addText(label, {
-      x: MARGIN_X,
-      y: titleY - 0.5,
-      w: 3.0,
-      h: 0.5,
-      fontSize: 16,
+      x: 1.1,
+      y: 2.48,
+      w: 2.1,
+      h: 0.9,
+      fontSize: 34,
       bold: true,
-      color: ACCENT,
-      fontFace: HEADING_FACE,
+      color: bg,
+      fontFace: headingFace(),
       align: "left",
-      valign: "top",
-      charSpacing: 2,
+      valign: "middle",
+      fit: "shrink",
     });
   }
 
   slide.addText(bulletText(spec.title || "Untitled", 70), {
-    x: MARGIN_X,
-    y: titleY,
-    w: 9.5,
-    h: 1.6,
-    fontSize: 32,
+    x: 4.85,
+    y: 2.35,
+    w: 7.4,
+    h: 1.8,
+    fontSize: 36,
     bold: true,
     color: WHITE,
-    fontFace: HEADING_FACE,
+    fontFace: headingFace(),
     align: "left",
     valign: "middle",
     fit: "shrink",
+  });
+  slide.addText("SECTION", {
+    x: 4.9,
+    y: 4.5,
+    w: 2.0,
+    h: 0.26,
+    fontSize: 9,
+    bold: true,
+    color: muted,
+    fontFace: bodyFace(),
+    charSpacing: 2,
   });
   addNotes(slide, spec.notes);
   return slide;
@@ -672,8 +769,9 @@ function renderTwoContentSlide(pptx, spec) {
   const colW = (totalW - gap * (n - 1)) / n;
   const top = CONTENT_TOP_Y;
   const height = SLIDE_H - top - 0.35;
-  const headingFontSize = n >= 3 ? 14 : 15;
-  const bulletFontSize = n >= 3 ? 11 : 12;
+  const boost = densityFontBoost(spec);
+  const headingFontSize = (n >= 3 ? 14 : 15) * boost;
+  const bulletFontSize = (n >= 3 ? 11 : 12) * boost;
   const bulletCap = n >= 3 ? 4 : 3;
   cols.forEach((col, idx) => {
     const left = MARGIN_X + idx * (colW + gap);
@@ -687,15 +785,9 @@ function renderTwoContentSlide(pptx, spec) {
       line: { color: ACCENT_LINE, transparency: 20 },
       rectRadius: 0.04,
     });
-    slide.addShape("rect", {
-      x: left,
-      y: top,
-      w: colW,
-      h: 0.08,
-      fill: { color: idx % 2 === 0 ? accent : GOLD },
-      line: { color: idx % 2 === 0 ? accent : GOLD },
-    });
-    addIconBadge(slide, left + 0.2, top + 0.28, icon, { fill: idx % 2 === 0 ? accent : GOLD, color: idx % 2 === 0 ? accentInk : NAVY, w: 0.46, h: 0.46, fontSize: 14 });
+    const stripColor = idx % 2 === 0 ? accent : accentPalette(idx);
+    addAccentStrip(slide, left, top, colW, stripColor);
+    addIconBadge(slide, left + 0.2, top + 0.28, icon, { fill: stripColor, color: idx % 2 === 0 ? accentInk : NAVY, w: 0.46, h: 0.46, fontSize: 14 });
     const parts = [];
     if (col.heading) {
       parts.push({ text: bulletText(col.heading, 42), options: { fontSize: headingFontSize, bold: true, color: NAVY, fontFace: HEADING_FACE, breakLine: true } });
@@ -706,8 +798,8 @@ function renderTwoContentSlide(pptx, spec) {
       y: top + 0.92,
       w: colW - 0.4,
       h: height - 1.05,
-      valign: "top",
-      fontFace: BODY_FACE,
+      valign: contentValign(spec),
+      fontFace: bodyFace(),
       lineSpacingMultiple: 1.1,
     });
   });
@@ -719,7 +811,10 @@ function renderTwoContentSlide(pptx, spec) {
 function renderRiskRegisterSlide(pptx, spec) {
   const slide = pptx.addSlide();
   addSlideTitle(slide, spec);
-  const riskColor = EMPHASIS_COLORS.risk;
+  const riskColor = token("warn", EMPHASIS_COLORS.risk);
+  const fg = token("fg", NAVY);
+  const card = token("card", CARD_BG);
+  const cardLine = token("card_line", ACCENT_LINE);
   const rows = (spec.columns && spec.columns.length)
     ? spec.columns.slice(0, 3).map((col) => ({
         risk: col.heading || "Risk",
@@ -756,10 +851,11 @@ function renderRiskRegisterSlide(pptx, spec) {
       y,
       w: 11.65,
       h: rowH,
-      fill: { color: idx === 0 ? NAVY : CARD_BG },
-      line: { color: idx === 0 ? NAVY : ACCENT_LINE },
+      fill: { color: idx === 0 ? fg : card },
+      line: { color: idx === 0 ? fg : cardLine },
       rectRadius: 0.05,
     });
+    addAccentStrip(slide, 0.72, y, 11.65, riskColor, { orientation: "left", h: rowH });
     addIconBadge(slide, 0.95, y + 0.34, "!", { fill: riskColor, color: WHITE, w: 0.42, h: 0.42, fontSize: 13 });
     slide.addText(bulletText(row.risk, 48), {
       x: 1.48,
@@ -768,8 +864,8 @@ function renderRiskRegisterSlide(pptx, spec) {
       h: 0.72,
       fontSize: 12,
       bold: true,
-      color: idx === 0 ? WHITE : NAVY,
-      fontFace: BODY_FACE,
+      color: idx === 0 ? WHITE : fg,
+      fontFace: bodyFace(),
       fit: "shrink",
       wrap: true,
     });
@@ -779,8 +875,8 @@ function renderRiskRegisterSlide(pptx, spec) {
       w: 2.9,
       h: 0.76,
       fontSize: 11,
-      color: idx === 0 ? WHITE : TEXT_DARK,
-      fontFace: BODY_FACE,
+      color: idx === 0 ? WHITE : token("fg", TEXT_DARK),
+      fontFace: bodyFace(),
       fit: "shrink",
       wrap: true,
     });
@@ -790,8 +886,8 @@ function renderRiskRegisterSlide(pptx, spec) {
       w: 4.8,
       h: 0.76,
       fontSize: 11,
-      color: idx === 0 ? WHITE : TEXT_DARK,
-      fontFace: BODY_FACE,
+      color: idx === 0 ? WHITE : token("fg", TEXT_DARK),
+      fontFace: bodyFace(),
       fit: "shrink",
       wrap: true,
     });
@@ -804,7 +900,7 @@ function renderRiskRegisterSlide(pptx, spec) {
     fontSize: 13,
     bold: true,
     color: riskColor,
-    fontFace: HEADING_FACE,
+    fontFace: headingFace(),
   });
   addFooter(slide);
   addNotes(slide, spec.notes);
@@ -819,9 +915,9 @@ function renderRiskHeatmapSlide(pptx, spec) {
   const gridY = 1.72;
   const cell = 1.18;
   const colors = {
-    low: "D7EFE7",
-    medium: "F6DF9D",
-    high: "E89186",
+    low: token("success", "D7EFE7"),
+    medium: token("accent", "F6DF9D"),
+    high: token("warn", "E89186"),
   };
   const order = ["low", "medium", "high"];
   slide.addText("Impact", {
@@ -831,8 +927,8 @@ function renderRiskHeatmapSlide(pptx, spec) {
     h: 0.3,
     fontSize: 8,
     bold: true,
-    color: TEXT_MUTED,
-    fontFace: BODY_FACE,
+    color: token("muted", TEXT_MUTED),
+    fontFace: bodyFace(),
     rotate: 270,
   });
   slide.addText("Likelihood", {
@@ -842,8 +938,8 @@ function renderRiskHeatmapSlide(pptx, spec) {
     h: 0.2,
     fontSize: 8,
     bold: true,
-    color: TEXT_MUTED,
-    fontFace: BODY_FACE,
+    color: token("muted", TEXT_MUTED),
+    fontFace: bodyFace(),
     align: "center",
   });
   for (let yIdx = 0; yIdx < 3; yIdx++) {
@@ -868,8 +964,8 @@ function renderRiskHeatmapSlide(pptx, spec) {
         h: 0.18,
         fontSize: 6.5,
         bold: true,
-        color: TEXT_MUTED,
-        fontFace: BODY_FACE,
+        color: token("muted", TEXT_MUTED),
+        fontFace: bodyFace(),
       });
     }
   }
@@ -884,8 +980,8 @@ function renderRiskHeatmapSlide(pptx, spec) {
       y,
       w: 0.32,
       h: 0.32,
-      fill: { color: NAVY },
-      line: { color: GOLD, width: 1 },
+      fill: { color: token("fg", NAVY) },
+      line: { color: token("accent", GOLD), width: 1 },
     });
     slide.addText(String(idx + 1), {
       x,
@@ -895,7 +991,7 @@ function renderRiskHeatmapSlide(pptx, spec) {
       fontSize: 8,
       bold: true,
       color: WHITE,
-      fontFace: BODY_FACE,
+      fontFace: bodyFace(),
       align: "center",
     });
   });
@@ -904,10 +1000,11 @@ function renderRiskHeatmapSlide(pptx, spec) {
     y: 1.65,
     w: 7.15,
     h: 4.45,
-    fill: { color: CARD_BG },
-    line: { color: ACCENT_LINE },
+    fill: { color: token("card", CARD_BG) },
+    line: { color: token("card_line", ACCENT_LINE) },
     rectRadius: 0.06,
   });
+  addAccentStrip(slide, 5.05, 1.65, 7.15, token("warn", EMPHASIS_COLORS.risk), { orientation: "left", h: 4.45 });
   slide.addText("Risk register", {
     x: 5.32,
     y: 1.92,
@@ -915,12 +1012,12 @@ function renderRiskHeatmapSlide(pptx, spec) {
     h: 0.28,
     fontSize: 13,
     bold: true,
-    color: EMPHASIS_COLORS.risk,
-    fontFace: HEADING_FACE,
+    color: token("warn", EMPHASIS_COLORS.risk),
+    fontFace: headingFace(),
   });
   items.forEach((item, idx) => {
     const y = 2.45 + idx * 0.68;
-    addIconBadge(slide, 5.32, y, String(idx + 1), { fill: EMPHASIS_COLORS.risk, color: WHITE, w: 0.32, h: 0.32, fontSize: 9 });
+    addIconBadge(slide, 5.32, y, String(idx + 1), { fill: token("warn", EMPHASIS_COLORS.risk), color: WHITE, w: 0.32, h: 0.32, fontSize: 9 });
     slide.addText(`${bulletText(item.label, 44)} · ${item.likelihood}/${item.impact}`, {
       x: 5.78,
       y: y - 0.03,
@@ -928,8 +1025,8 @@ function renderRiskHeatmapSlide(pptx, spec) {
       h: 0.26,
       fontSize: 10.5,
       bold: true,
-      color: NAVY,
-      fontFace: BODY_FACE,
+      color: token("fg", NAVY),
+      fontFace: bodyFace(),
       fit: "shrink",
     });
     if (item.mitigation) {
@@ -939,8 +1036,8 @@ function renderRiskHeatmapSlide(pptx, spec) {
         w: 5.85,
         h: 0.22,
         fontSize: 8.5,
-        color: TEXT_MUTED,
-        fontFace: BODY_FACE,
+        color: token("muted", TEXT_MUTED),
+        fontFace: bodyFace(),
         fit: "shrink",
       });
     }
@@ -957,6 +1054,12 @@ function renderOperatingModelSlide(pptx, spec) {
   const lanes = cols.length ? cols : slideBullets(spec, 4).map((b, idx) => ({ heading: `Lane ${idx + 1}`, bullets: [b] }));
   const top = 1.58;
   const laneH = 0.98;
+  const fontBoost = densityFontBoost(spec);
+  const fg = token("fg", NAVY);
+  const card = token("card", CARD_BG);
+  const cardLine = token("card_line", ACCENT_LINE);
+  const accent = token("accent", GOLD);
+  const accent2 = token("accent2", TEAL);
   lanes.slice(0, 4).forEach((lane, idx) => {
     const y = top + idx * (laneH + 0.22);
     const dark = idx === 0;
@@ -965,20 +1068,21 @@ function renderOperatingModelSlide(pptx, spec) {
       y,
       w: 11.65,
       h: laneH,
-      fill: { color: dark ? NAVY : CARD_BG },
-      line: { color: dark ? NAVY : ACCENT_LINE },
+      fill: { color: dark ? fg : card },
+      line: { color: dark ? fg : cardLine },
       rectRadius: 0.05,
     });
-    addIconBadge(slide, 0.96, y + 0.25, "✓", { fill: dark ? GOLD : TEAL, color: dark ? NAVY : WHITE, w: 0.4, h: 0.4, fontSize: 12 });
+    addAccentStrip(slide, 0.72, y, 11.65, accentPalette(idx), { orientation: "left", h: laneH });
+    addIconBadge(slide, 0.96, y + 0.25, "✓", { fill: dark ? accent : accent2, color: dark ? fg : WHITE, w: 0.4, h: 0.4, fontSize: 12 });
     slide.addText(bulletText(lane.heading || `Owner ${idx + 1}`, 42), {
       x: 1.55,
       y: y + 0.2,
       w: 2.55,
       h: 0.5,
-      fontSize: 13,
+      fontSize: 13 * fontBoost,
       bold: true,
-      color: dark ? WHITE : NAVY,
-      fontFace: HEADING_FACE,
+      color: dark ? WHITE : fg,
+      fontFace: headingFace(),
       fit: "shrink",
     });
     slide.addText((lane.bullets || []).slice(0, 2).map((b) => bulletText(b, 78)).join("  |  "), {
@@ -986,22 +1090,13 @@ function renderOperatingModelSlide(pptx, spec) {
       y: y + 0.22,
       w: 7.62,
       h: 0.48,
-      fontSize: 11,
-      color: dark ? WHITE : TEXT_DARK,
-      fontFace: BODY_FACE,
+      fontSize: 11 * fontBoost,
+      color: dark ? WHITE : token("fg", TEXT_DARK),
+      fontFace: bodyFace(),
       fit: "shrink",
       wrap: true,
+      valign: contentValign(spec),
     });
-  });
-  slide.addText("Operating lanes", {
-    x: 0.72,
-    y: 6.05,
-    w: 2.6,
-    h: 0.28,
-    fontSize: 13,
-    bold: true,
-    color: TEAL,
-    fontFace: HEADING_FACE,
   });
   addFooter(slide);
   addNotes(slide, spec.notes);
@@ -1013,6 +1108,7 @@ function renderComparisonMatrixSlide(pptx, spec) {
   addSlideTitle(slide, spec);
   const cols = (spec.columns || []).slice(0, 3);
   if (!cols.length) return renderTwoContentSlide(pptx, spec);
+  const boost = densityFontBoost(spec);
   const top = 1.65;
   const colW = 3.65;
   cols.forEach((col, idx) => {
@@ -1043,21 +1139,22 @@ function renderComparisonMatrixSlide(pptx, spec) {
       y: top + 0.62,
       w: colW - 0.44,
       h: 0.62,
-      fontSize: 15,
+      fontSize: 15 * boost,
       bold: true,
       color: recommended ? WHITE : NAVY,
       fontFace: HEADING_FACE,
       fit: "shrink",
       wrap: true,
     });
-    slide.addText(bulletsToTextProps((col.bullets || []).slice(0, 4).map((b) => ({ level: 0, text: bulletText(b, 76) })), { fontSize: 10.6, color: recommended ? WHITE : TEXT_DARK }), {
+    slide.addText(bulletsToTextProps((col.bullets || []).slice(0, 4).map((b) => ({ level: 0, text: bulletText(b, 76) })), { fontSize: 10.6 * boost, color: recommended ? WHITE : TEXT_DARK }), {
       x: x + 0.24,
       y: top + 1.55,
       w: colW - 0.48,
       h: 2.25,
-      fontFace: BODY_FACE,
+      fontFace: bodyFace(),
       fit: "shrink",
       wrap: true,
+      valign: contentValign(spec),
     });
   });
   addFooter(slide);
@@ -1094,13 +1191,15 @@ function renderChartSlide(pptx, spec) {
     showLegend: series.length > 1 || chartType === "pie",
     legendPos: "b",
     showTitle: false,
+    showValue: false,
+    showCatName: false,
+    showSerName: false,
     chartColors: token("chart_palette", [ACCENT, NAVY, "8C6F5D", "C9A14A"]),
     catAxisLabelFontSize: 11,
     valAxisLabelFontSize: 11,
     dataLabelFontSize: 10,
   };
   if (chartType === "pie") {
-    options.showValue = false;
     options.dataBorder = { pt: 1, color: WHITE };
   }
 
@@ -1220,6 +1319,7 @@ function renderExecutiveSummarySlide(pptx, spec) {
 function renderRecommendationSlide(pptx, spec) {
   const slide = pptx.addSlide();
   addSlideTitle(slide, spec);
+  const boost = densityFontBoost(spec);
   const bullets = spec.bullets || [];
   const primary = bullets[0] || "";
   const rationale = bullets.slice(1, 1 + MAX_BULLETS_PER_SLIDE);
@@ -1265,14 +1365,14 @@ function renderRecommendationSlide(pptx, spec) {
       slide.addText(bulletText(b, 88), {
         x: x + 0.74,
         y: 3.68,
-        w: 2.65,
-        h: 1.1,
-        fontSize: 11.5,
-        color: TEXT_DARK,
-        fontFace: BODY_FACE,
-        valign: "middle",
-        fit: "shrink",
-        wrap: true,
+      w: 2.65,
+      h: 1.1,
+      fontSize: 11.5 * boost,
+      color: TEXT_DARK,
+      fontFace: bodyFace(),
+      valign: "middle",
+      fit: "shrink",
+      wrap: true,
       });
     });
   }
@@ -1296,6 +1396,7 @@ function renderTimelineSlide(pptx, spec) {
   const n = phases.length;
   const boxW = (totalW - gap * (n - 1)) / n;
   const top = 1.82;
+  const boost = densityFontBoost(spec);
 
   phases.forEach((ph, idx) => {
     const left = 0.72 + idx * (boxW + gap);
@@ -1326,6 +1427,7 @@ function renderTimelineSlide(pptx, spec) {
       line: { color: idx === 1 ? NAVY : ACCENT_LINE },
       rectRadius: 0.06,
     });
+    addAccentStrip(slide, left, top + 0.72 + 3.43, boxW, accentPalette(idx), { thickness: 0.09 });
     const lines = [];
     if (ph.label) lines.push(ph.label);
     if (ph.title) lines.push(ph.title);
@@ -1335,9 +1437,9 @@ function renderTimelineSlide(pptx, spec) {
       y: top + 0.95,
       w: boxW - 0.32,
       h: 2.95,
-      valign: "top",
-      fontFace: BODY_FACE,
-      fontSize: 10.4,
+      valign: contentValign(spec),
+      fontFace: bodyFace(),
+      fontSize: 10.4 * boost,
       bold: false,
       color: idx === 1 ? WHITE : TEXT_DARK,
       fit: "shrink",
@@ -1536,6 +1638,11 @@ function renderInvestmentCaseSlide(pptx, spec) {
 function renderArchitectureSlide(pptx, spec) {
   const slide = pptx.addSlide();
   addSlideTitle(slide, spec);
+  const fg = token("fg", NAVY);
+  const card = token("card", CARD_BG);
+  const cardLine = token("card_line", ACCENT_LINE);
+  const accent = token("accent", GOLD);
+  const accent2 = token("accent2", TEAL);
   const bullets = spec.bullets && spec.bullets.length ? spec.bullets : [""];
   const nodes = bullets.slice(0, 5).map((b) => bulletText(typeof b === "object" ? b.text : b, 48)).filter(Boolean);
   const diagramX = 0.72;
@@ -1547,8 +1654,8 @@ function renderArchitectureSlide(pptx, spec) {
     y: diagramY,
     w: diagramW,
     h: diagramH,
-    fill: { color: CARD_BG },
-    line: { color: ACCENT_LINE },
+    fill: { color: card },
+    line: { color: cardLine },
     rectRadius: 0.06,
   });
   slide.addText("Target flow", {
@@ -1558,8 +1665,8 @@ function renderArchitectureSlide(pptx, spec) {
     h: 0.25,
     fontSize: 11,
     bold: true,
-    color: TEXT_MUTED,
-    fontFace: BODY_FACE,
+    color: token("muted", TEXT_MUTED),
+    fontFace: bodyFace(),
     charSpacing: 1,
   });
   const coordinates = [
@@ -1571,15 +1678,15 @@ function renderArchitectureSlide(pptx, spec) {
   ];
   nodes.forEach((node, idx) => {
     const [x, y] = coordinates[idx] || coordinates[coordinates.length - 1];
-    const fill = idx === 1 || idx === 3 ? NAVY : idx === 2 ? TEAL : SOFT_BG;
-    const dark = fill === NAVY || fill === TEAL;
+    const fill = idx === 1 || idx === 3 ? fg : idx === 2 ? accent2 : token("bg", SOFT_BG);
+    const dark = fill === fg || fill === accent2;
     slide.addShape("roundRect", {
       x,
       y,
       w: 1.45,
       h: 0.82,
       fill: { color: fill },
-      line: { color: dark ? fill : ACCENT_LINE },
+      line: { color: dark ? fill : cardLine },
       rectRadius: 0.05,
     });
     slide.addText(node, {
@@ -1589,8 +1696,8 @@ function renderArchitectureSlide(pptx, spec) {
       h: 0.52,
       fontSize: 8.6,
       bold: true,
-      color: dark ? WHITE : TEXT_DARK,
-      fontFace: BODY_FACE,
+      color: dark ? WHITE : token("fg", TEXT_DARK),
+      fontFace: bodyFace(),
       align: "center",
       valign: "middle",
       fit: "shrink",
@@ -1603,7 +1710,7 @@ function renderArchitectureSlide(pptx, spec) {
         y: y + 0.41,
         w: nx - (x + 1.45),
         h: ny + 0.41 - (y + 0.41),
-        line: { color: GOLD, width: 1.5, beginArrowType: "none", endArrowType: "triangle" },
+        line: { color: accent, width: 1.5, beginArrowType: "none", endArrowType: "triangle" },
       });
     }
   });
@@ -1613,8 +1720,8 @@ function renderArchitectureSlide(pptx, spec) {
     y: 1.62,
     w: 4.45,
     h: 4.85,
-    fill: { color: NAVY },
-    line: { color: NAVY },
+    fill: { color: fg },
+    line: { color: fg },
     rectRadius: 0.06,
   });
   slide.addText("Design implication", {
@@ -1624,8 +1731,8 @@ function renderArchitectureSlide(pptx, spec) {
     h: 0.35,
     fontSize: 13,
     bold: true,
-    color: GOLD,
-    fontFace: HEADING_FACE,
+    color: accent,
+    fontFace: headingFace(),
   });
   slide.addText(bulletsToTextProps(bullets.slice(0, 4).map((b) => ({ level: 0, text: bulletText(typeof b === "object" ? b.text : b, 80) })), { fontSize: 11.2, color: WHITE }), {
     x: panelX + 0.28,
@@ -1633,7 +1740,7 @@ function renderArchitectureSlide(pptx, spec) {
     w: 3.85,
     h: 2.95,
     valign: "top",
-    fontFace: BODY_FACE,
+    fontFace: bodyFace(),
     lineSpacingMultiple: 1.08,
   });
   addFooter(slide);

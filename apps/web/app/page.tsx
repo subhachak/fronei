@@ -496,6 +496,7 @@ type ConfirmedPlanOverrides = {
   document?: boolean
   document_format?: string
   document_brief?: Record<string, unknown>
+  clarifications?: string
 }
 
 type MessageOut = {
@@ -2692,6 +2693,7 @@ function PlanModal({
   const [format, setFormat] = useState(
     caps.document?.format_recommendation || formatOptions[0] || 'markdown'
   )
+  const [clarifications, setClarifications] = useState('')
 
   const formatsToShow = PLAN_FORMAT_ORDER.filter(
     f => formatOptions.includes(f) || supportedFormats.includes(f)
@@ -2717,8 +2719,18 @@ function PlanModal({
         </header>
         <div className="doc-brief-body">
           {proposal.open_questions.length > 0 && (
-            <div className="doc-brief-suggestion">
-              {proposal.open_questions.join(' ')}
+            <div className="doc-brief-field">
+              <div className="doc-brief-suggestion">
+                {proposal.open_questions.join(' ')}
+              </div>
+              <span>Your answer (optional, but helps Fronei tailor the result)</span>
+              <textarea
+                className="doc-brief-textarea"
+                rows={3}
+                placeholder="Type your answer here…"
+                value={clarifications}
+                onChange={e => setClarifications(e.target.value)}
+              />
             </div>
           )}
 
@@ -2848,6 +2860,7 @@ function PlanModal({
               research_mode: deepResearch ? researchMode : undefined,
               document: wantsDoc,
               document_format: wantsDoc ? format : undefined,
+              clarifications: clarifications.trim() || undefined,
             })}
           >
             <i className="ti ti-player-play" aria-hidden="true" />

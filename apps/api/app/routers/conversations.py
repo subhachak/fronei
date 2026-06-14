@@ -1,5 +1,6 @@
 """Multi-turn conversation router."""
 import json
+import logging
 import queue as _queue_module
 import re
 import threading as _threading
@@ -43,6 +44,8 @@ from app.services.web_context import WebContextResult
 from app.services.rate_limit import check_rate_limit, rate_limiter
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
+
+logger = logging.getLogger(__name__)
 
 
 # ── Error translation ─────────────────────────────────────────────────────────
@@ -649,8 +652,13 @@ def _is_turn_cancelled(db, turn: ConversationTurn | None, *, allow_db_check: boo
         return True
     if not allow_db_check:
         return False
-    db.refresh(turn)
-    return turn.status == "cancelled"
+    # Avoid db.refresh(turn): it would reload ALL columns from the DB and
+    # discard the in-memory progress_json/lifecycle_json/status mutations
+    # _record_turn_event has been accumulating but hasn't committed yet (those
+    # are queued for the background flusher). Instead, check just the status
+    # column for a cross-process/admin cancellation.
+    status = db.query(ConversationTurn.status).filter(ConversationTurn.id == turn.id).scalar()
+    return status == "cancelled"
 
 
 def _append_turn_progress(turn: ConversationTurn, event_type: str, data: dict) -> None:
@@ -679,6 +687,70 @@ def _append_turn_lifecycle(turn: ConversationTurn, event: str, data: dict | None
         **(data or {}),
     })
     turn.lifecycle_json = json.dumps(rows[-120:])
+
+
+# ── Background flush of non-terminal turn progress/lifecycle updates ──────────
+# In prod (Neon Postgres), every commit is a network round trip. Progress
+# updates (pipeline_log stage transitions, "pending -> running") are frequent
+# but only matter for "what's this turn up to right now" polling/admin views —
+# they don't need to land synchronously on the request thread. We stash the
+# latest progress/lifecycle snapshot per turn in memory and let a background
+# thread flush it periodically. Terminal events (done/error/cancelled/
+# awaiting_confirmation) are still committed synchronously and immediately,
+# since those matter for recovery and are low-frequency (once per turn).
+_TURN_PENDING: dict[str, dict] = {}
+_TURN_PENDING_LOCK = _threading.Lock()
+_TURN_FLUSH_INTERVAL_SECONDS = 1.5
+_turn_flush_thread_started = False
+_turn_flush_thread_lock = _threading.Lock()
+
+
+def _ensure_turn_flush_thread() -> None:
+    global _turn_flush_thread_started
+    if _turn_flush_thread_started:
+        return
+    with _turn_flush_thread_lock:
+        if _turn_flush_thread_started:
+            return
+        _turn_flush_thread_started = True
+        _threading.Thread(target=_turn_flush_loop, daemon=True).start()
+
+
+def _turn_flush_loop() -> None:
+    import time as _time
+    while True:
+        _time.sleep(_TURN_FLUSH_INTERVAL_SECONDS)
+        flush_pending_turn_updates()
+
+
+def flush_pending_turn_updates() -> None:
+    """Write any queued non-terminal turn progress/lifecycle updates."""
+    global _TURN_PENDING
+    with _TURN_PENDING_LOCK:
+        if not _TURN_PENDING:
+            return
+        batch = _TURN_PENDING
+        _TURN_PENDING = {}
+    db = SessionLocal()
+    try:
+        for public_id, values in batch.items():
+            db.query(ConversationTurn).filter(
+                ConversationTurn.public_id == public_id,
+                ConversationTurn.status.in_(ACTIVE_TURN_STATUSES),
+            ).update(values, synchronize_session=False)
+        db.commit()
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
+
+
+def _queue_turn_progress_update(turn: ConversationTurn, values: dict) -> None:
+    _ensure_turn_flush_thread()
+    with _TURN_PENDING_LOCK:
+        existing = _TURN_PENDING.get(turn.public_id, {})
+        existing.update(values)
+        _TURN_PENDING[turn.public_id] = existing
 
 
 def _record_turn_lifecycle_by_public_id(turn_public_id: str | None, event: str, data: dict | None = None) -> None:
@@ -712,6 +784,7 @@ def _record_turn_event(db, turn: ConversationTurn | None, payload: str) -> None:
     now = datetime.now(timezone.utc)
     turn.updated_at = now
     _append_turn_progress(turn, event_type, data)
+    terminal = event_type in ("done", "error", "plan_proposed")
     if event_type == "done":
         turn.status = "completed"
         turn.completed_at = now
@@ -732,7 +805,37 @@ def _record_turn_event(db, turn: ConversationTurn | None, payload: str) -> None:
     elif turn.status == "pending":
         turn.status = "running"
         _append_turn_lifecycle(turn, "running")
-    db.commit()
+
+    if terminal:
+        # Drop any not-yet-flushed progress update for this turn — the full
+        # state (including progress_json/lifecycle_json mutated above) is
+        # written synchronously below, so the background writer doesn't need
+        # to (and shouldn't, since the turn is no longer "active") touch it.
+        with _TURN_PENDING_LOCK:
+            _TURN_PENDING.pop(turn.public_id, None)
+        try:
+            db.commit()
+        except Exception:
+            # This commit only updates the conversation_turns bookkeeping row —
+            # the actual answer (for "done") was already persisted to
+            # conversation_messages by _stream_turn before this event fired.
+            # If Neon hiccups on this specific write, don't let it swallow the
+            # "done"/"error" SSE event and strand a fully-generated answer
+            # behind a generic error. Roll back so the session is usable again,
+            # log for visibility, and let the event reach the client; the
+            # conversation_turns row will be reconciled (or marked stale) later.
+            logger.exception("Failed to persist terminal turn state for turn %s", turn.public_id)
+            db.rollback()
+    else:
+        # Non-terminal: avoid a synchronous commit (and the Neon round trip
+        # that comes with it) on the request thread. Queue the latest
+        # progress/lifecycle snapshot for the background flusher instead.
+        _queue_turn_progress_update(turn, {
+            "status": turn.status,
+            "progress_json": turn.progress_json,
+            "lifecycle_json": turn.lifecycle_json,
+            "updated_at": turn.updated_at,
+        })
 
 
 def _turn_completed_done_event(db, turn: ConversationTurn) -> str | None:
@@ -1758,8 +1861,20 @@ def execute_plan(
             user_memory = build_context(db, user_id)
             profile = conv.profile
 
+            message_text = user_msg.content
+            clarifications = (body.confirmed_plan.clarifications or "").strip()
+            if clarifications:
+                message_text = (
+                    f"{user_msg.content}\n\n"
+                    f"Additional context from user (answers to clarifying questions):\n{clarifications}"
+                )
+                plan.enriched_prompt = (
+                    f"{plan.enriched_prompt}\n\nUser clarifications:\n{clarifications}"
+                    if plan.enriched_prompt else message_text
+                )
+
             req = ConvChatRequest(
-                message=user_msg.content,
+                message=message_text,
                 conversation_id=conv_id,
                 profile=profile,
                 deep_research=bool(body.confirmed_plan.deep_research) if body.confirmed_plan.deep_research is not None else plan.recommend_deep_research,

@@ -447,6 +447,10 @@ def generate_doc_plan(
     )
     outline_data = _parse_json_object(outline_result.answer) or {}
     outline = _coerce_outline(outline_data)
+    # The active theme/design system is a user/template selection, not a
+    # planner choice. Keep it authoritative even if the LLM emits a stale
+    # default such as "dark" in its outline JSON.
+    outline["theme"] = theme
 
     total_prompt_tokens = outline_result.prompt_tokens or 0
     total_completion_tokens = outline_result.completion_tokens or 0
@@ -527,7 +531,7 @@ def generate_doc_plan(
     doc_plan = DocPlan(
         doc_type="presentation",
         design_system=design_system,
-        theme=outline.get("theme", theme),
+        theme=theme,
         title=outline["title"],
         subtitle=outline.get("subtitle"),
         sections=sections,
@@ -929,7 +933,7 @@ def _coerce_presentation_plan(
     return DocPlan(
         title=outline.get("title") or narrative.title,
         subtitle=outline.get("subtitle") or narrative.audience,
-        theme=outline.get("theme") if outline.get("theme") in ("dark", "light") else theme,
+        theme=theme,
         design_system=design_system,
         sections=sections,
     )
@@ -1104,6 +1108,8 @@ def generate_design_plan(
         plan = _fallback_design_plan(presentation_plan, quality_mode=mode)
     if not plan.slide_treatments:
         plan = _fallback_design_plan(presentation_plan, quality_mode=mode)
+    plan.design_system = presentation_plan.design_system
+    plan.theme = presentation_plan.theme
     plan.quality_mode = mode
     plan = _apply_brand_context(plan, brand_profile, user_document_profile)
     return plan, result

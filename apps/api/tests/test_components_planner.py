@@ -885,9 +885,15 @@ def test_generate_agentdeck_v2_plan_threads_brand_and_user_document_profile(monk
     doc_plan, design_plan, result = generate_agentdeck_v2_plan(
         "Build a steering committee deck",
         _route(),
+        theme="light",
+        design_system="brand_user_1_modern_tech",
         brand_profile=brand,
         user_document_profile=udp,
     )
+    assert doc_plan.design_system == "brand_user_1_modern_tech"
+    assert doc_plan.theme == "light"
+    assert design_plan.design_system == "brand_user_1_modern_tech"
+    assert design_plan.theme == "light"
     assert design_plan.brand_profile_id == "modern-tech"
     assert design_plan.user_document_profile["preferred_tone"] == "direct"
     # Narrative call (first payload) should carry the UDP context.

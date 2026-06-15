@@ -15,6 +15,7 @@ from app.db.models import (
     Base,
     Conversation,
     ConversationMessage,
+    DocumentTemplate,
     ResearchClaim,
     ResearchQuestion,
     ResearchRun,
@@ -1110,6 +1111,59 @@ def test_execute_plan_after_document_finalization_generates_artifact(client, mon
     assert captured["brand_profile"].source_template_id == "fronei-default"
     assert captured["user_document_profile"].preferred_tone == "direct"
     assert captured["user_document_profile"].preferred_slide_density == "sparse"
+
+
+def test_document_generation_profiles_regenerates_missing_brand_design_system(client, monkeypatch):
+    _c, Session = client
+
+    plan = passthrough("Create a client presentation.")
+    plan.document_brief = {
+        "doc_type": "presentation",
+        "template_id": "tpl-brand",
+        "title": "Client deck",
+    }
+
+    with Session() as db:
+        row = DocumentTemplate(
+            public_id="tpl-brand",
+            user_id="u1",
+            name="Brand Template",
+            description="Uploaded brand deck",
+            doc_type="presentation",
+            storage_key="templates/u1/tpl-brand.pptx",
+            original_filename="brand.pptx",
+            content_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            file_size=123,
+            design_system_id="brand_u1_tpl_brand",
+            is_active=True,
+        )
+        db.add(row)
+        db.commit()
+
+        monkeypatch.setattr(conversations, "template_grammar_for_selection", lambda *args, **kwargs: {
+            "mode": "template_following",
+            "template_id": "tpl-brand",
+            "colors": ["0057B8", "FFC72C"],
+            "fonts": ["Aptos"],
+        })
+        monkeypatch.setattr(conversations, "get_design_system", lambda _design_system_id: (_ for _ in ()).throw(KeyError("missing")))
+        regenerated: dict[str, str] = {}
+
+        def fake_write_brand_design_system(brand_profile, *, design_system_id, base="agentdeck_v1"):
+            regenerated["design_system_id"] = design_system_id
+            regenerated["source_template_id"] = brand_profile.source_template_id
+
+        monkeypatch.setattr(conversations, "write_brand_design_system", fake_write_brand_design_system)
+
+        brand_profile, design_system_id, user_profile = conversations._document_generation_profiles(db, "u1", plan)
+
+        assert brand_profile.source_template_id == "tpl-brand"
+        assert design_system_id == "brand_u1_tpl_brand"
+        assert regenerated == {
+            "design_system_id": "brand_u1_tpl_brand",
+            "source_template_id": "tpl-brand",
+        }
+        assert user_profile.user_id == "u1"
 
 
 def test_execute_plan_with_pptx_format_coerces_generation_to_presentation(client, monkeypatch):

@@ -219,6 +219,20 @@ Reviewed against the audit above. Diagnosis confirmed; three refinements adopted
 - Targeted backend tests: `113 passed`.
 - OpenAPI import check: `openapi ok`.
 
+### 2026-06-15 — Slice 1b: turn profiler moved into Admin turns
+
+**Shipped**
+
+- Moved the turn-profiler UI out of Settings → Dashboard and into Admin → Turn profiler, next to the live turn controls.
+- Added a turn-level / conversation-roll-up toggle so admins can inspect individual slow turns or aggregate latency/cost by unique conversation.
+- Extended `/admin/turn-profiler` with `conversation_rollups`, including total latency, p95 latency, cost, token count, slowest turn, status counts, turn-kind counts, and aggregate bottleneck stage per conversation.
+- Kept the profiler turn-level data intact: stage summaries, model summaries, slow turns, recommendations, unattributed latency, and per-turn bottlenecks.
+
+**Verified**
+
+- Web `npx tsc --noEmit -p tsconfig.json` clean.
+- Targeted backend tests: `29 passed`.
+
 ### 2026-06-15 — Slice 2: quick wins + research crawl parallelism
 
 **Shipped**

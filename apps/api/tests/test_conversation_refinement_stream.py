@@ -879,7 +879,7 @@ def test_document_generation_pauses_for_late_finalization(client, monkeypatch):
     }
     plan.document_format_options = ["pptx", "docx", "markdown"]
     plan.document_format_recommendation = "pptx"
-    plan.plan_confidence = "high"
+    plan.plan_confidence = "medium"
 
     route = RouteDecision(
         task_type="writing",
@@ -946,7 +946,7 @@ def test_presentation_finalization_defaults_to_pptx_even_without_planner_format_
     plan.document_brief = {"doc_type": "presentation", "title": "Migration Strategy"}
     plan.document_format_options = []
     plan.document_format_recommendation = None
-    plan.plan_confidence = "high"
+    plan.plan_confidence = "medium"
 
     route = RouteDecision(
         task_type="writing",
@@ -985,6 +985,151 @@ def test_presentation_finalization_defaults_to_pptx_even_without_planner_format_
     assert proposal["brief"]["doc_type"] == "presentation"
     assert proposal["format_recommendation"] == "pptx"
     assert proposal["format_options"][0] == "pptx"
+
+
+def test_planner_questions_are_asked_before_document_finalization(client, monkeypatch):
+    c, _Session = client
+
+    plan = passthrough("Create a presentation about the roadmap.")
+    plan.intent = "Create a presentation about the roadmap"
+    plan.wants_document_output = True
+    plan.document_brief = {"doc_type": "presentation", "title": "Roadmap"}
+    plan.document_format_options = ["pptx"]
+    plan.document_format_recommendation = "pptx"
+    plan.plan_confidence = "low"
+    plan.open_questions = ["Which audience should this deck target?"]
+
+    route = RouteDecision(
+        task_type="writing",
+        complexity="high",
+        profile="balanced",
+        primary_model="gpt-4.1",
+        fallbacks=[],
+        reason="clarification before document finalization test",
+    )
+    wc = WebContextResult(context=None, status="Web context not requested.", provider="", sources_count=0, search_query=None)
+
+    def fake_build_pipeline_setup(req, conv_arg, history, settings, **kwargs):
+        return PipelineSetup(
+            plan=plan,
+            route=route,
+            wc=wc,
+            enable_native=False,
+            planner_ctx=None,
+            running_summary="",
+            profile="balanced",
+            doc_context="",
+            artifact_context="",
+        )
+
+    monkeypatch.setattr(conversations, "build_pipeline_setup", fake_build_pipeline_setup)
+
+    response = c.post(
+        "/conversations/chat/stream",
+        json={"message": "Create a presentation about the roadmap.", "document_requested": True},
+    )
+
+    assert response.status_code == 200
+    events = _events(response.text)
+    assert events[-1][0] == "plan_proposed"
+    proposal = events[-1][1]
+    assert proposal["open_questions"] == ["Which audience should this deck target?"]
+    assert proposal["capabilities"]["document"]["enabled"] is True
+
+
+def test_high_confidence_presentation_skips_late_finalization_and_applies_defaults(client):
+    _c, Session = client
+
+    plan = passthrough("Create a presentation about Q3 platform modernization.")
+    plan.intent = "Create a presentation about Q3 platform modernization"
+    plan.wants_document_output = True
+    plan.document_brief = {"doc_type": "presentation", "title": "Q3 Platform Modernization"}
+    plan.document_format_options = []
+    plan.document_format_recommendation = None
+    plan.plan_confidence = "high"
+    plan.open_questions = []
+
+    with Session() as db:
+        conv = Conversation(user_id="u1", title="Deck", profile="balanced", message_count=0)
+        db.add(conv)
+        db.flush()
+        user_msg = ConversationMessage(
+            conversation_id=conv.id,
+            role="user",
+            content="Create a presentation about Q3 platform modernization.",
+        )
+        db.add(user_msg)
+        db.commit()
+
+        gate = conversations.plan_gate.evaluate(plan)
+        event = conversations._maybe_propose_document_finalization(
+            db,
+            "u1",
+            conv,
+            user_msg,
+            conversations.ConvChatRequest(message="Create a presentation about Q3 platform modernization."),
+            plan,
+            gate,
+        )
+
+    assert event is None
+    assert plan.document_format_recommendation == "pptx"
+    assert plan.document_format_options[0] == "pptx"
+    assert plan.document_brief["template_id"] == "fronei-default"
+    assert plan.document_brief["theme"] == "dark"
+
+
+def test_high_confidence_presentation_defaults_to_user_template_light_theme(client):
+    _c, Session = client
+
+    plan = passthrough("Using my Fronei brand template, build a 10-slide deck.")
+    plan.intent = "Build a deck using the user's brand template"
+    plan.wants_document_output = True
+    plan.document_brief = {"doc_type": "presentation", "title": "Q3 Platform Modernization Review"}
+    plan.document_format_options = []
+    plan.document_format_recommendation = None
+    plan.plan_confidence = "high"
+    plan.open_questions = []
+
+    with Session() as db:
+        db.add(DocumentTemplate(
+            public_id="tpl_brand",
+            user_id="u1",
+            name="Fronei Brand",
+            doc_type="presentation",
+            storage_key="missing-template.pptx",
+            original_filename="brand.pptx",
+            content_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            file_size=123,
+            is_active=True,
+            updated_at=datetime.now(timezone.utc),
+        ))
+        conv = Conversation(user_id="u1", title="Deck", profile="balanced", message_count=0)
+        db.add(conv)
+        db.flush()
+        user_msg = ConversationMessage(
+            conversation_id=conv.id,
+            role="user",
+            content="Using my Fronei brand template, build a 10-slide deck.",
+        )
+        db.add(user_msg)
+        db.commit()
+
+        gate = conversations.plan_gate.evaluate(plan)
+        event = conversations._maybe_propose_document_finalization(
+            db,
+            "u1",
+            conv,
+            user_msg,
+            conversations.ConvChatRequest(message="Using my Fronei brand template, build a 10-slide deck."),
+            plan,
+            gate,
+        )
+
+    assert event is None
+    assert plan.document_format_recommendation == "pptx"
+    assert plan.document_brief["template_id"] == "tpl_brand"
+    assert plan.document_brief["theme"] == "light"
 
 
 def test_execute_plan_after_document_finalization_generates_artifact(client, monkeypatch):

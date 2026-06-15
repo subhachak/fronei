@@ -696,11 +696,21 @@ type TurnProfilerTurn = {
   prompt_tokens: number; completion_tokens: number; stage_sum_ms: number; unattributed_ms: number
   bottleneck_stage?: string | null; bottleneck_ms: number; stage_timings: StageTiming[]
 }
+type TurnProfilerConversation = {
+  conversation_id: string; user_id: string; turn_count: number
+  total_latency_ms: number; avg_latency_ms: number; p95_latency_ms: number
+  total_cost_usd: number; total_tokens: number
+  slowest_turn_id?: string | null; slowest_turn_ms: number
+  bottleneck_stage?: string | null; bottleneck_ms: number
+  first_seen_at?: string | null; last_seen_at?: string | null
+  status_counts: Record<string, number>; turn_kind_counts: Record<string, number>
+}
 type TurnProfilerData = {
   range: string
   summary: { turns: number; avg_latency_ms: number; p50_latency_ms: number; p95_latency_ms: number; total_cost_usd: number; total_tokens: number }
   stage_summary: TurnProfilerStage[]
   model_summary: TurnProfilerModel[]
+  conversation_rollups: TurnProfilerConversation[]
   slow_turns: TurnProfilerTurn[]
   recent_turns: TurnProfilerTurn[]
   recommendations: { severity: string; title: string; detail: string; action: string }[]
@@ -964,11 +974,6 @@ function fmtTime(iso: string): string {
 function shortModel(m: string): string {
   const parts = m.split('/')
   return parts[parts.length - 1]
-}
-
-function shortUserId(userId: string | null | undefined): string {
-  if (!userId) return 'unknown'
-  return userId.length > 18 ? `${userId.slice(0, 10)}...${userId.slice(-4)}` : userId
 }
 
 function fmt$(n: number, digits = 4): string {
@@ -3935,7 +3940,6 @@ function DashboardView({
   const [range, setRange] = useState<Range>('7d')
   const [data, setData] = useState<AnalyticsData | null>(null)
   const [ops, setOps] = useState<any>(null)
-  const [profiler, setProfiler] = useState<TurnProfilerData | null>(null)
   const [budgetInput, setBudgetInput] = useState('')
   const [adminOverrideEnabled, setAdminOverrideEnabled] = useState(true)
   const [loading, setLoading] = useState(true)
@@ -3961,18 +3965,15 @@ function DashboardView({
   useEffect(() => {
     if (!isAdmin) return
     let cancelled = false
-    Promise.all([
-      apiFetch('/admin/ops-summary').then(r => r.ok ? r.json() : null),
-      apiFetch(`/admin/turn-profiler?range=${range}&limit=100`).then(r => r.ok ? r.json() : null),
-    ])
-      .then(([opsData, profilerData]) => {
+    apiFetch('/admin/ops-summary')
+      .then(r => r.ok ? r.json() : null)
+      .then((opsData) => {
         if (cancelled) return
         if (opsData) {
           setOps(opsData)
           setBudgetInput(opsData.budget?.monthly_budget_usd == null ? '' : String(opsData.budget.monthly_budget_usd))
           setAdminOverrideEnabled(Boolean(opsData.budget?.admin_override_enabled))
         }
-        if (profilerData) setProfiler(profilerData)
       })
       .catch(() => {})
     return () => { cancelled = true }
@@ -4099,95 +4100,6 @@ function DashboardView({
                   ) : <span className="settings-muted">No stage timing data yet. New turns will start populating this table.</span>}
                 </div>
 
-                <div className="settings-card">
-                  <div className="settings-card-head">
-                    <div>
-                      <strong>Turn profiler</strong>
-                      <span>Per-turn stage timing, model cost, bottlenecks, and unattributed latency.</span>
-                    </div>
-                    <span className="exec-pill">{profiler?.summary.turns ?? 0} turns</span>
-                  </div>
-                  {profiler ? (
-                    <>
-                      <div className="dash-summary-grid">
-                        <div className="card stat-summary-card"><div className="stat-summary-label">p50 latency</div><div className="stat-summary-value blue">{fmtMs(profiler.summary.p50_latency_ms)}</div></div>
-                        <div className="card stat-summary-card"><div className="stat-summary-label">p95 latency</div><div className="stat-summary-value blue">{fmtMs(profiler.summary.p95_latency_ms)}</div></div>
-                        <div className="card stat-summary-card"><div className="stat-summary-label">Profiled cost</div><div className="stat-summary-value green">{fmt$(profiler.summary.total_cost_usd, 4)}</div></div>
-                        <div className="card stat-summary-card"><div className="stat-summary-label">Tokens</div><div className="stat-summary-value">{profiler.summary.total_tokens.toLocaleString()}</div></div>
-                      </div>
-                      {profiler.recommendations?.length > 0 && (
-                        <div className="settings-card-list" style={{ marginTop: 12 }}>
-                          {profiler.recommendations.map((rec, idx) => (
-                            <div key={`${rec.title}-${idx}`} className="settings-memory">
-                              <span className={`exec-pill ${rec.severity === 'high' ? 'danger-pill' : rec.severity === 'medium' ? 'warn-pill' : ''}`}>{rec.severity}</span>
-                              <div className="memory-main">
-                                <p><strong>{rec.title}</strong></p>
-                                <p>{rec.detail}</p>
-                                <span className="memory-footnote">{rec.action}</span>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                      <div className="dash-two-col" style={{ marginTop: 14 }}>
-                        <div className="admin-table-wrap">
-                          <table className="admin-table">
-                            <thead><tr><th>Stage</th><th>Total</th><th>p95</th><th>Max</th><th>Runs</th></tr></thead>
-                            <tbody>
-                              {profiler.stage_summary.slice(0, 8).map(stage => (
-                                <tr key={stage.stage}>
-                                  <td className="mono">{stage.stage}</td>
-                                  <td>{fmtMs(stage.total_ms)}</td>
-                                  <td>{fmtMs(stage.p95_ms)}</td>
-                                  <td>{fmtMs(stage.max_ms)}</td>
-                                  <td>{stage.count}</td>
-                                </tr>
-                              ))}
-                              {profiler.stage_summary.length === 0 && <tr><td colSpan={5} className="muted-text">No stage spans yet.</td></tr>}
-                            </tbody>
-                          </table>
-                        </div>
-                        <div className="admin-table-wrap">
-                          <table className="admin-table">
-                            <thead><tr><th>Model</th><th>Turns</th><th>p95</th><th>Cost</th></tr></thead>
-                            <tbody>
-                              {profiler.model_summary.slice(0, 8).map(model => (
-                                <tr key={model.model}>
-                                  <td className="mono">{shortModel(model.model)}</td>
-                                  <td>{model.count}</td>
-                                  <td>{fmtMs(model.p95_ms)}</td>
-                                  <td>{fmt$(model.cost_usd, 4)}</td>
-                                </tr>
-                              ))}
-                              {profiler.model_summary.length === 0 && <tr><td colSpan={4} className="muted-text">No model timing yet.</td></tr>}
-                            </tbody>
-                          </table>
-                        </div>
-                      </div>
-                      <div className="admin-table-wrap" style={{ marginTop: 14 }}>
-                        <table className="admin-table">
-                          <thead><tr><th>Slow turn</th><th>Kind</th><th>Latency</th><th>Bottleneck</th><th>Unattributed</th><th>Cost</th></tr></thead>
-                          <tbody>
-                            {profiler.slow_turns.slice(0, 10).map(turn => (
-                              <tr key={`${turn.message_id}-${turn.turn_id || 'msg'}`}>
-                                <td>
-                                  <div className="mono">{turn.turn_id || `msg:${turn.message_id}`}</div>
-                                  <div className="muted-text" style={{ fontSize: 11 }}>{shortUserId(turn.user_id)} · {turn.conversation_id || 'no conversation id'}</div>
-                                </td>
-                                <td>{turn.turn_kind || turn.task_type || 'unknown'}</td>
-                                <td>{fmtMs(turn.latency_ms)}</td>
-                                <td>{turn.bottleneck_stage ? `${turn.bottleneck_stage} · ${fmtMs(turn.bottleneck_ms)}` : '—'}</td>
-                                <td className={turn.unattributed_ms > 2000 ? 'warn-text' : ''}>{fmtMs(turn.unattributed_ms)}</td>
-                                <td>{fmt$(turn.cost_usd, 5)}</td>
-                              </tr>
-                            ))}
-                            {profiler.slow_turns.length === 0 && <tr><td colSpan={6} className="muted-text">No profiled turns for this range.</td></tr>}
-                          </tbody>
-                        </table>
-                      </div>
-                    </>
-                  ) : <span className="settings-muted">No profiler data loaded yet.</span>}
-                </div>
               </div>
             )}
 
@@ -4294,6 +4206,8 @@ function AdminView({
   const [turnUserFilter, setTurnUserFilter] = useState('')
   const [turnIdleFilter, setTurnIdleFilter] = useState('')
   const [turnRuntime, setTurnRuntime] = useState<any>(null)
+  const [turnProfiler, setTurnProfiler] = useState<TurnProfilerData | null>(null)
+  const [turnProfilerView, setTurnProfilerView] = useState<'turns' | 'conversations'>('turns')
   const [errors, setErrors] = useState<any[]>([])
   const [audit, setAudit] = useState<any[]>([])
   const [system, setSystem] = useState<any>(null)
@@ -4314,7 +4228,7 @@ function AdminView({
     { id: 'providers', label: 'Providers', icon: 'ti-plug-connected' },
     { id: 'routing',   label: 'Routing',   icon: 'ti-route' },
     { id: 'research',  label: 'Research',  icon: 'ti-microscope' },
-    { id: 'turns',     label: 'Turns',     icon: 'ti-activity' },
+    { id: 'turns',     label: 'Turn profiler', icon: 'ti-activity' },
     { id: 'errors',    label: 'Errors',    icon: 'ti-alert-triangle' },
     { id: 'audit',     label: 'Audit',     icon: 'ti-clipboard-list' },
     { id: 'system',    label: 'System',    icon: 'ti-server-cog' },
@@ -4341,6 +4255,7 @@ function AdminView({
       ['research', json('/admin/research-runs')],
       ['turns', json(`/admin/turns?status=${encodeURIComponent(turnStatus)}${turnUserFilter.trim() ? `&user_id=${encodeURIComponent(turnUserFilter.trim())}` : ''}${turnIdleFilter.trim() ? `&min_idle_seconds=${encodeURIComponent(turnIdleFilter.trim())}` : ''}`)],
       ['turnRuntime', json('/admin/turn-runtime')],
+      ['turnProfiler', json('/admin/turn-profiler?range=7d&limit=100')],
       ['errors', json('/admin/errors')],
       ['audit', json('/admin/audit')],
       ['system', json('/admin/system')],
@@ -4362,6 +4277,7 @@ function AdminView({
       if (key === 'research') setResearch(value.items ?? [])
       if (key === 'turns') setTurns(value.items ?? [])
       if (key === 'turnRuntime') setTurnRuntime(value)
+      if (key === 'turnProfiler') setTurnProfiler(value)
       if (key === 'errors') setErrors(value.items ?? [])
       if (key === 'audit') setAudit(value.items ?? [])
       if (key === 'system') setSystem(value)
@@ -4870,6 +4786,129 @@ function AdminView({
         )}
 
         {tab === 'turns' && (
+          <>
+          <div className="card admin-table-card">
+            <div className="admin-card-head">
+              <div>
+                <div className="chart-card-title" style={{ marginBottom: 0 }}>Turn profiler</div>
+                <div className="muted-text" style={{ fontSize: 12, marginTop: 4 }}>Per-turn latency, cost, stage bottlenecks, and conversation roll-ups for the last 7 days.</div>
+              </div>
+              <div className="theme-btn-group">
+                <button className={`theme-btn-opt${turnProfilerView === 'turns' ? ' active' : ''}`} onClick={() => setTurnProfilerView('turns')} type="button">Turn level</button>
+                <button className={`theme-btn-opt${turnProfilerView === 'conversations' ? ' active' : ''}`} onClick={() => setTurnProfilerView('conversations')} type="button">Conversation roll-up</button>
+              </div>
+            </div>
+            {turnProfiler ? (
+              <>
+                <div className="dash-summary-grid">
+                  <div className="card stat-summary-card"><div className="stat-summary-label">Profiled turns</div><div className="stat-summary-value">{turnProfiler.summary.turns.toLocaleString()}</div></div>
+                  <div className="card stat-summary-card"><div className="stat-summary-label">p50 latency</div><div className="stat-summary-value blue">{fmtMs(turnProfiler.summary.p50_latency_ms)}</div></div>
+                  <div className="card stat-summary-card"><div className="stat-summary-label">p95 latency</div><div className="stat-summary-value blue">{fmtMs(turnProfiler.summary.p95_latency_ms)}</div></div>
+                  <div className="card stat-summary-card"><div className="stat-summary-label">Profiled cost</div><div className="stat-summary-value green">{fmt$(turnProfiler.summary.total_cost_usd, 4)}</div></div>
+                </div>
+                {turnProfiler.recommendations?.length > 0 && (
+                  <div className="settings-card-list" style={{ marginTop: 12 }}>
+                    {turnProfiler.recommendations.map((rec, idx) => (
+                      <div key={`${rec.title}-${idx}`} className="settings-memory">
+                        <span className={`exec-pill ${rec.severity === 'high' ? 'danger-pill' : rec.severity === 'medium' ? 'warn-pill' : ''}`}>{rec.severity}</span>
+                        <div className="memory-main">
+                          <p><strong>{rec.title}</strong></p>
+                          <p>{rec.detail}</p>
+                          <span className="memory-footnote">{rec.action}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {turnProfilerView === 'turns' ? (
+                  <>
+                    <div className="dash-two-col" style={{ marginTop: 14 }}>
+                      <div className="admin-table-wrap">
+                        <table className="admin-table">
+                          <thead><tr><th>Stage</th><th>Total</th><th>p95</th><th>Max</th><th>Runs</th></tr></thead>
+                          <tbody>
+                            {turnProfiler.stage_summary.slice(0, 8).map(stage => (
+                              <tr key={stage.stage}>
+                                <td className="mono">{stage.stage}</td>
+                                <td>{fmtMs(stage.total_ms)}</td>
+                                <td>{fmtMs(stage.p95_ms)}</td>
+                                <td>{fmtMs(stage.max_ms)}</td>
+                                <td>{stage.count}</td>
+                              </tr>
+                            ))}
+                            {turnProfiler.stage_summary.length === 0 && <tr><td colSpan={5} className="muted-text">No stage spans yet.</td></tr>}
+                          </tbody>
+                        </table>
+                      </div>
+                      <div className="admin-table-wrap">
+                        <table className="admin-table">
+                          <thead><tr><th>Model</th><th>Turns</th><th>p95</th><th>Cost</th></tr></thead>
+                          <tbody>
+                            {turnProfiler.model_summary.slice(0, 8).map(model => (
+                              <tr key={model.model}>
+                                <td className="mono">{shortModel(model.model)}</td>
+                                <td>{model.count}</td>
+                                <td>{fmtMs(model.p95_ms)}</td>
+                                <td>{fmt$(model.cost_usd, 4)}</td>
+                              </tr>
+                            ))}
+                            {turnProfiler.model_summary.length === 0 && <tr><td colSpan={4} className="muted-text">No model timing yet.</td></tr>}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                    <div className="admin-table-wrap" style={{ marginTop: 14 }}>
+                      <table className="admin-table">
+                        <thead><tr><th>Slow turn</th><th>User / conversation</th><th>Kind</th><th>Latency</th><th>Bottleneck</th><th>Unattributed</th><th>Cost</th></tr></thead>
+                        <tbody>
+                          {turnProfiler.slow_turns.slice(0, 10).map(turn => (
+                            <tr key={`${turn.message_id}-${turn.turn_id || 'msg'}`}>
+                              <td className="mono">{turn.turn_id || `msg:${turn.message_id}`}</td>
+                              <td>
+                                <div>{userLabel(turn.user_id)}</div>
+                                <div className="muted-text" style={{ fontSize: 11 }}>{turn.conversation_id || 'no conversation id'}</div>
+                              </td>
+                              <td>{turn.turn_kind || turn.task_type || 'unknown'}</td>
+                              <td>{fmtMs(turn.latency_ms)}</td>
+                              <td>{turn.bottleneck_stage ? `${turn.bottleneck_stage} · ${fmtMs(turn.bottleneck_ms)}` : '—'}</td>
+                              <td className={turn.unattributed_ms > 2000 ? 'warn-text' : ''}>{fmtMs(turn.unattributed_ms)}</td>
+                              <td>{fmt$(turn.cost_usd, 5)}</td>
+                            </tr>
+                          ))}
+                          {turnProfiler.slow_turns.length === 0 && <tr><td colSpan={7} className="muted-text">No profiled turns for this range.</td></tr>}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
+                ) : (
+                  <div className="admin-table-wrap" style={{ marginTop: 14 }}>
+                    <table className="admin-table">
+                      <thead><tr><th>Conversation</th><th>User</th><th>Turns</th><th>Total latency</th><th>p95</th><th>Bottleneck</th><th>Cost</th><th>Slowest turn</th></tr></thead>
+                      <tbody>
+                        {turnProfiler.conversation_rollups.slice(0, 25).map(conv => (
+                          <tr key={conv.conversation_id}>
+                            <td className="mono">{conv.conversation_id}</td>
+                            <td>{userLabel(conv.user_id)}</td>
+                            <td>{conv.turn_count}</td>
+                            <td>{fmtMs(conv.total_latency_ms)}</td>
+                            <td>{fmtMs(conv.p95_latency_ms)}</td>
+                            <td>{conv.bottleneck_stage ? `${conv.bottleneck_stage} · ${fmtMs(conv.bottleneck_ms)}` : '—'}</td>
+                            <td>{fmt$(conv.total_cost_usd, 5)}</td>
+                            <td>
+                              <div className="mono">{conv.slowest_turn_id || '—'}</div>
+                              <div className="muted-text" style={{ fontSize: 11 }}>{fmtMs(conv.slowest_turn_ms)}</div>
+                            </td>
+                          </tr>
+                        ))}
+                        {turnProfiler.conversation_rollups.length === 0 && <tr><td colSpan={8} className="muted-text">No conversation roll-ups for this range.</td></tr>}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </>
+            ) : <span className="settings-muted">No profiler data loaded yet.</span>}
+          </div>
+
           <div className="card admin-table-card">
             <div className="admin-card-head">
               <div>
@@ -4947,6 +4986,7 @@ function AdminView({
               )}
             </tbody></table></div>
           </div>
+          </>
         )}
 
         {tab === 'errors' && (

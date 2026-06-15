@@ -202,3 +202,6 @@ def test_turn_profiler_payload_extracts_stage_bottlenecks(db):
     assert payload["stage_summary"][0]["stage"] == "artifact_build"
     assert payload["slow_turns"][0]["bottleneck_stage"] == "artifact_build"
     assert payload["slow_turns"][0]["unattributed_ms"] == 300
+    assert payload["conversation_rollups"][0]["conversation_id"] == conv.public_id
+    assert payload["conversation_rollups"][0]["turn_count"] == 1
+    assert payload["conversation_rollups"][0]["bottleneck_stage"] == "artifact_build"

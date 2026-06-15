@@ -636,6 +636,76 @@ def _turn_profiler_payload(db, *, since: datetime | None, limit: int) -> dict:
         reverse=True,
     )
     slow_turns = sorted(profiled_turns, key=lambda item: item["latency_ms"], reverse=True)[:25]
+    conversations: dict[str, dict[str, Any]] = {}
+    for turn in profiled_turns:
+        conversation_id = turn.get("conversation_id") or "unknown"
+        bucket = conversations.setdefault(conversation_id, {
+            "conversation_id": conversation_id,
+            "user_id": turn.get("user_id"),
+            "turn_count": 0,
+            "latency_values": [],
+            "total_latency_ms": 0,
+            "total_cost_usd": 0.0,
+            "total_tokens": 0,
+            "stage_totals": defaultdict(int),
+            "status_counts": defaultdict(int),
+            "turn_kind_counts": defaultdict(int),
+            "slowest_turn_id": None,
+            "slowest_turn_ms": 0,
+            "first_seen_at": turn.get("created_at"),
+            "last_seen_at": turn.get("created_at"),
+        })
+        latency = _ms(turn.get("latency_ms"))
+        bucket["turn_count"] += 1
+        bucket["latency_values"].append(latency)
+        bucket["total_latency_ms"] += latency
+        bucket["total_cost_usd"] += float(turn.get("cost_usd") or 0.0)
+        bucket["total_tokens"] += int(turn.get("prompt_tokens") or 0) + int(turn.get("completion_tokens") or 0)
+        bucket["status_counts"][turn.get("status") or "unknown"] += 1
+        bucket["turn_kind_counts"][turn.get("turn_kind") or turn.get("task_type") or "unknown"] += 1
+        for stage in turn.get("stage_timings") or []:
+            if not isinstance(stage, dict):
+                continue
+            stage_name = str(stage.get("stage") or "").strip()
+            if stage_name:
+                bucket["stage_totals"][stage_name] += _ms(stage.get("latency_ms"))
+        if latency >= bucket["slowest_turn_ms"]:
+            bucket["slowest_turn_ms"] = latency
+            bucket["slowest_turn_id"] = turn.get("turn_id") or f"msg:{turn.get('message_id')}"
+        created_at = turn.get("created_at")
+        if created_at:
+            if not bucket["first_seen_at"] or created_at < bucket["first_seen_at"]:
+                bucket["first_seen_at"] = created_at
+            if not bucket["last_seen_at"] or created_at > bucket["last_seen_at"]:
+                bucket["last_seen_at"] = created_at
+
+    conversation_rollups = []
+    for bucket in conversations.values():
+        values = bucket["latency_values"]
+        bottleneck_stage = None
+        bottleneck_ms = 0
+        if bucket["stage_totals"]:
+            bottleneck_stage, bottleneck_ms = max(bucket["stage_totals"].items(), key=lambda item: item[1])
+        conversation_rollups.append({
+            "conversation_id": bucket["conversation_id"],
+            "user_id": bucket["user_id"],
+            "turn_count": bucket["turn_count"],
+            "total_latency_ms": bucket["total_latency_ms"],
+            "avg_latency_ms": round(sum(values) / len(values), 1) if values else 0,
+            "p95_latency_ms": _percentile(values, 0.95),
+            "total_cost_usd": round(bucket["total_cost_usd"], 6),
+            "total_tokens": bucket["total_tokens"],
+            "slowest_turn_id": bucket["slowest_turn_id"],
+            "slowest_turn_ms": bucket["slowest_turn_ms"],
+            "bottleneck_stage": bottleneck_stage,
+            "bottleneck_ms": bottleneck_ms,
+            "first_seen_at": bucket["first_seen_at"],
+            "last_seen_at": bucket["last_seen_at"],
+            "status_counts": dict(sorted(bucket["status_counts"].items())),
+            "turn_kind_counts": dict(sorted(bucket["turn_kind_counts"].items())),
+        })
+    conversation_rollups.sort(key=lambda item: (item["total_latency_ms"], item["turn_count"]), reverse=True)
+
     recommendations: list[dict[str, str]] = []
     if stage_summary:
         top = stage_summary[0]
@@ -666,6 +736,7 @@ def _turn_profiler_payload(db, *, since: datetime | None, limit: int) -> dict:
         "model_summary": model_summary,
         "turn_kind_counts": dict(sorted(turn_kind_counts.items())),
         "turn_status_counts": dict(sorted(turn_status_counts.items())),
+        "conversation_rollups": conversation_rollups[:25],
         "slow_turns": slow_turns,
         "recent_turns": profiled_turns[:limit],
         "recommendations": recommendations,

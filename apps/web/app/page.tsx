@@ -588,9 +588,15 @@ type GeneratedDocument = {
   docxBase64?: string
   xlsxBase64?: string
   pptxBase64?: string
-  format?: DocumentOutputFormat
+  format?: DocumentOutputFormat | 'failed'
   requestedFormat?: string
   generationError?: string
+  generationFailure?: {
+    stage?: string
+    user_message?: string
+    retryable?: boolean
+    debug_info?: string
+  }
   outputFormats?: DocumentOutputFormat[]
 }
 
@@ -3227,15 +3233,16 @@ function DocumentPreviewModal({ doc, onClose }: { doc: GeneratedDocument; onClos
   const [error, setError] = useState(false)
   const isXlsx = doc.format === 'xlsx'
   const isPptx = doc.format === 'pptx'
+  const isFailed = doc.format === 'failed'
   const isMarkdownOnly = !isXlsx && !isPptx && !doc.docxBase64
-  const previewLabel = isPptx ? 'Slide plan' : DOC_TYPE_LABELS[doc.docType] ?? 'Document'
+  const previewLabel = isFailed ? 'Generation issue' : isPptx ? 'Slide plan' : DOC_TYPE_LABELS[doc.docType] ?? 'Document'
 
   useEffect(() => {
     let cancelled = false
     setHtml(null)
     setError(false)
     const docxBase64 = doc.docxBase64
-    if (isXlsx || isPptx || !docxBase64) {
+    if (isFailed || isXlsx || isPptx || !docxBase64) {
       setError(true)
       return () => { cancelled = true }
     }
@@ -3248,7 +3255,7 @@ function DocumentPreviewModal({ doc, onClose }: { doc: GeneratedDocument; onClos
         if (!cancelled) setError(true)
       })
     return () => { cancelled = true }
-  }, [doc.docxBase64, isXlsx, isPptx])
+  }, [doc.docxBase64, isFailed, isXlsx, isPptx])
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
@@ -3276,24 +3283,26 @@ function DocumentPreviewModal({ doc, onClose }: { doc: GeneratedDocument; onClos
             )}
           </div>
           <div className="doc-preview-actions">
-            <button
-              className="send-btn"
-              type="button"
-              onClick={() => {
-                if (isXlsx && doc.xlsxBase64) {
-                  downloadBlob(base64ToBlob(doc.xlsxBase64, XLSX_MIME), doc.filename)
-                } else if (isPptx && doc.pptxBase64) {
-                  downloadBlob(base64ToBlob(doc.pptxBase64, PPTX_MIME), doc.filename)
-                } else if (doc.docxBase64) {
-                  downloadBlob(base64ToBlob(doc.docxBase64, DOCX_MIME), doc.filename)
-                } else {
-                  downloadBlob(new Blob([doc.markdown], { type: 'text/markdown;charset=utf-8' }), safeDownloadName(doc.title, 'md'))
-                }
-              }}
-            >
-              <i className="ti ti-file-download" aria-hidden="true" />
-              {isXlsx ? 'Download .xlsx' : isPptx ? 'Download .pptx' : isMarkdownOnly ? 'Download .md' : 'Download .docx'}
-            </button>
+            {!isFailed && (
+              <button
+                className="send-btn"
+                type="button"
+                onClick={() => {
+                  if (isXlsx && doc.xlsxBase64) {
+                    downloadBlob(base64ToBlob(doc.xlsxBase64, XLSX_MIME), doc.filename)
+                  } else if (isPptx && doc.pptxBase64) {
+                    downloadBlob(base64ToBlob(doc.pptxBase64, PPTX_MIME), doc.filename)
+                  } else if (doc.docxBase64) {
+                    downloadBlob(base64ToBlob(doc.docxBase64, DOCX_MIME), doc.filename)
+                  } else {
+                    downloadBlob(new Blob([doc.markdown], { type: 'text/markdown;charset=utf-8' }), safeDownloadName(doc.title, 'md'))
+                  }
+                }}
+              >
+                <i className="ti ti-file-download" aria-hidden="true" />
+                {isXlsx ? 'Download .xlsx' : isPptx ? 'Download .pptx' : isMarkdownOnly ? 'Download .md' : 'Download .docx'}
+              </button>
+            )}
             {doc.outputFormats?.includes('markdown') && (
               <button
                 className="action-btn"
@@ -3310,7 +3319,11 @@ function DocumentPreviewModal({ doc, onClose }: { doc: GeneratedDocument; onClos
           </div>
         </header>
         <div className="doc-preview-body">
-          {error ? (
+          {isFailed ? (
+            <div className="markdown-body doc-preview-content">
+              <p>{doc.generationError || 'Document generation failed. Please retry.'}</p>
+            </div>
+          ) : error ? (
             <div className="markdown-body doc-preview-content" dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(marked.parse(doc.markdown) as string) }} />
           ) : html === null ? (
             <div className="thinking-state">
@@ -5920,6 +5933,7 @@ export default function Home() {
                     format:     (data.document_preview as any).format,
                     requestedFormat: (data.document_preview as any).requested_format,
                     generationError: (data.document_preview as any).generation_error,
+                    generationFailure: (data.document_preview as any).generation_failure,
                   } as GeneratedDocument
                 : null,
             } : m))
@@ -6551,12 +6565,12 @@ export default function Home() {
                           className="doc-generated-icon-btn"
                           type="button"
                           onClick={() => setPreviewDoc(m.document_preview!)}
-                          title={m.document_preview.format === 'xlsx' ? 'Preview spreadsheet' : m.document_preview.format === 'pptx' ? 'View slide plan' : 'Preview document'}
-                          aria-label={m.document_preview.format === 'xlsx' ? 'Preview spreadsheet' : m.document_preview.format === 'pptx' ? 'View slide plan' : 'Preview document'}
+                          title={m.document_preview.format === 'failed' ? 'View generation issue' : m.document_preview.format === 'xlsx' ? 'Preview spreadsheet' : m.document_preview.format === 'pptx' ? 'View slide plan' : 'Preview document'}
+                          aria-label={m.document_preview.format === 'failed' ? 'View generation issue' : m.document_preview.format === 'xlsx' ? 'Preview spreadsheet' : m.document_preview.format === 'pptx' ? 'View slide plan' : 'Preview document'}
                         >
-                          <i className="ti ti-eye" aria-hidden="true" />
+                          <i className={m.document_preview.format === 'failed' ? 'ti ti-alert-triangle' : 'ti ti-eye'} aria-hidden="true" />
                         </button>
-                        {m.document_preview.format === 'xlsx' ? (
+                        {m.document_preview.format === 'failed' ? null : m.document_preview.format === 'xlsx' ? (
                           <button
                             className="doc-generated-icon-btn doc-generated-download"
                             type="button"

@@ -24,6 +24,7 @@ from typing import Type
 from pydantic import BaseModel, Field
 
 from . import content_schemas as cs
+from .fit_contract import FIT_CONTRACTS, FitContract
 
 
 class LayoutPrimitive(str, Enum):
@@ -65,6 +66,7 @@ class ComponentDef(BaseModel):
     applicable_slide_layouts: list[str]
     selection_tags: list[str] = Field(default_factory=list)
     usage_stats: ComponentUsageStats = Field(default_factory=ComponentUsageStats)
+    fit_contract: FitContract = Field(default_factory=FitContract)
 
     model_config = {"arbitrary_types_allowed": True}
 
@@ -85,6 +87,7 @@ _DEFS: list[ComponentDef] = [
             "SECTION_HEADER",
         ],
         selection_tags=["header", "navigation", "section_label"],
+        fit_contract=FIT_CONTRACTS["header_bar"],
     ),
     ComponentDef(
         id="card",
@@ -99,6 +102,7 @@ _DEFS: list[ComponentDef] = [
             "generic", "summary", "framework", "pillar", "category",
             "comparison", "narrative",
         ],
+        fit_contract=FIT_CONTRACTS["card"],
     ),
     ComponentDef(
         id="stat_card",
@@ -107,6 +111,7 @@ _DEFS: list[ComponentDef] = [
         design_system_refs=["stat_card"],
         applicable_slide_layouts=["CONTENT_HERO_STAT", "CONTENT_4COL"],
         selection_tags=["kpi", "metric", "financial", "highlight"],
+        fit_contract=FIT_CONTRACTS["stat_card"],
     ),
     ComponentDef(
         id="badge",
@@ -115,6 +120,7 @@ _DEFS: list[ComponentDef] = [
         design_system_refs=["badge"],
         applicable_slide_layouts=[],  # inline-only; not independently zone-fillable
         selection_tags=["status", "category", "tag"],
+        fit_contract=FIT_CONTRACTS["badge"],
     ),
     ComponentDef(
         id="divider",
@@ -123,6 +129,7 @@ _DEFS: list[ComponentDef] = [
         design_system_refs=["divider"],
         applicable_slide_layouts=[],  # inline-only
         selection_tags=["separator", "visual_rhythm"],
+        fit_contract=FIT_CONTRACTS["divider"],
     ),
     ComponentDef(
         id="bullet_list",
@@ -133,6 +140,7 @@ _DEFS: list[ComponentDef] = [
             "CONTENT_1COL", "CONTENT_2COL", "CONTENT_3COL", "CONTENT_TABLE_SIDEBAR",
         ],
         selection_tags=["narrative", "summary", "key_points", "text"],
+        fit_contract=FIT_CONTRACTS["bullet_list"],
     ),
     ComponentDef(
         id="table",
@@ -141,6 +149,7 @@ _DEFS: list[ComponentDef] = [
         design_system_refs=["table"],
         applicable_slide_layouts=["CONTENT_1COL", "CONTENT_TABLE_SIDEBAR"],
         selection_tags=["comparison", "structured_data", "risk_register", "matrix"],
+        fit_contract=FIT_CONTRACTS["table"],
     ),
     ComponentDef(
         id="callout_bar",
@@ -154,6 +163,7 @@ _DEFS: list[ComponentDef] = [
             "CONTENT_HERO_STAT", "CONTENT_TABLE_SIDEBAR", "CONTENT_SPLIT_DECISIONS",
         ],
         selection_tags=["insight", "takeaway", "recommendation", "warning"],
+        fit_contract=FIT_CONTRACTS["callout_bar"],
     ),
     ComponentDef(
         id="progress_bar",
@@ -162,6 +172,7 @@ _DEFS: list[ComponentDef] = [
         design_system_refs=["progress_bar"],
         applicable_slide_layouts=[],  # inline-only (within cards)
         selection_tags=["completion", "status", "progress"],
+        fit_contract=FIT_CONTRACTS["progress_bar"],
     ),
     ComponentDef(
         id="icon_circle",
@@ -170,6 +181,7 @@ _DEFS: list[ComponentDef] = [
         design_system_refs=["icon_circle"],
         applicable_slide_layouts=[],  # inline-only (within cards/timeline_node)
         selection_tags=["icon", "step_number", "feature"],
+        fit_contract=FIT_CONTRACTS["icon_circle"],
     ),
     ComponentDef(
         id="timeline_node",
@@ -178,6 +190,7 @@ _DEFS: list[ComponentDef] = [
         design_system_refs=["timeline_node"],
         applicable_slide_layouts=[],  # used via the `timeline` composite
         selection_tags=["timeline_step", "milestone"],
+        fit_contract=FIT_CONTRACTS["timeline_node"],
     ),
     # -- composites ---------------------------------------------------------
     ComponentDef(
@@ -187,6 +200,7 @@ _DEFS: list[ComponentDef] = [
         design_system_refs=["stat_card"],
         applicable_slide_layouts=["CONTENT_HERO_STAT"],
         selection_tags=["kpi", "metric", "financial", "supporting_metrics"],
+        fit_contract=FIT_CONTRACTS["stat_strip"],
     ),
     ComponentDef(
         id="decision_list",
@@ -195,6 +209,7 @@ _DEFS: list[ComponentDef] = [
         design_system_refs=["card", "badge"],
         applicable_slide_layouts=["CONTENT_SPLIT_DECISIONS"],
         selection_tags=["decision", "action_plan", "recommendation", "governance"],
+        fit_contract=FIT_CONTRACTS["decision_list"],
     ),
     ComponentDef(
         id="timeline",
@@ -203,6 +218,7 @@ _DEFS: list[ComponentDef] = [
         design_system_refs=["timeline_node", "divider"],
         applicable_slide_layouts=["CONTENT_1COL", "CONTENT_2COL"],
         selection_tags=["timeline", "roadmap", "process", "phases"],
+        fit_contract=FIT_CONTRACTS["timeline"],
     ),
 ]
 

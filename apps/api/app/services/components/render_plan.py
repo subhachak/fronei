@@ -24,6 +24,7 @@ from typing import Any, Literal, Optional, Union
 from pydantic import BaseModel, Field, model_validator
 
 from ..design_systems.registry import design_system_payload, get_design_system
+from .quality_mode import QualityMode
 from .registry import get_component
 
 Theme = Literal["dark", "light"]

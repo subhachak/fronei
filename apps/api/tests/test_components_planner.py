@@ -12,10 +12,12 @@ agentdeck_framework_architecture.md §4):
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
 
+from app.config import get_settings
 from app.schemas import RouteDecision
 from app.services.llm_gateway import LLMResult
 from app.services.components import (
@@ -252,6 +254,47 @@ def test_generate_doc_plan_happy_path(monkeypatch):
 
     assert calls["n"] == 2  # outline + blocks calls
     assert result.fallback_errors == []
+
+
+def test_agentdeck_usage_stats_weighting_defaults_off():
+    assert get_settings().agentdeck_usage_stats_weighting_enabled is False
+
+
+def test_generate_doc_plan_ignores_usage_stats_when_weighting_disabled(monkeypatch):
+    outline_json = json.dumps({
+        "title": "AI Strategy Review",
+        "sections": [
+            {
+                "slide_layout": "CONTENT_1COL",
+                "section_title": "Adoption is accelerating",
+                "content_brief": "Summarize adoption momentum.",
+                "content_tags": ["narrative"],
+            },
+        ],
+    })
+    captured = {}
+
+    def _fake_invoke_llm(*args, **kwargs):
+        return _llm_result(outline_json)
+
+    def _fake_build_blocks_user_message(outline, *, usage_stats_map=None):
+        captured["usage_stats_map"] = usage_stats_map
+        return json.dumps({"deck_title": outline["title"], "slides": []}), []
+
+    monkeypatch.setattr("app.services.components.planner.invoke_llm", _fake_invoke_llm)
+    monkeypatch.setattr("app.services.components.planner._build_blocks_user_message", _fake_build_blocks_user_message)
+    monkeypatch.setattr(
+        "app.services.components.planner.get_settings",
+        lambda: SimpleNamespace(agentdeck_usage_stats_weighting_enabled=False),
+    )
+
+    class ExplodingDb:
+        def query(self, *args, **kwargs):
+            raise AssertionError("usage stats should not be loaded when weighting is disabled")
+
+    generate_doc_plan("Summarize adoption", _route(), db=ExplodingDb())
+
+    assert captured["usage_stats_map"] == {}
 
 
 def test_generate_doc_plan_invalid_block_falls_back_gracefully(monkeypatch):

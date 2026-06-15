@@ -78,6 +78,12 @@ class Settings(BaseSettings):
     # generation request; enable for local/staging diagnostics.
     pptx_render_qa_enabled: bool = True
 
+    # AgentDeck v2: keep component-usage logging passive until enough real
+    # samples exist to make the signal reliable. When false, the planner still
+    # logs component usage/QA outcomes but does not use history to rank
+    # component candidates.
+    agentdeck_usage_stats_weighting_enabled: bool = False
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     @property

@@ -60,6 +60,7 @@ router = APIRouter(prefix="/documents", tags=["documents"])
 logger = logging.getLogger(__name__)
 MAX_UPLOAD_BYTES = 30 * 1024 * 1024   # 30 MB
 SUPPORTED_RENDER_FORMATS = {"markdown", "docx", "xlsx", "pptx"}
+DOCUMENT_FAILURE_FORMAT = "failed"
 DOC_TYPES = {
     "executive_report",
     "proposal",
@@ -792,8 +793,11 @@ def build_document_artifact(
 ) -> dict:
     """Build a document_preview payload for a planner-driven document output.
 
-    Unsupported or failed binary renders fall back to Markdown, but the payload
-    carries an explicit generation_error so the UI can be honest with users.
+    Unsupported or failed non-PPTX binary renders fall back to Markdown, but
+    requested PPTX generation is strict: once the pipeline enters the PPTX
+    artifact stage, AgentDeck compose/render failures return a structured
+    failure payload instead of silently downgrading to Markdown or the legacy
+    renderer.
     """
     # Phase 3 (#124): "presentation" docs from `generate_document_output` are
     # now `DocPlan` JSON (the structured planner's output, #122) rather than
@@ -836,6 +840,25 @@ def build_document_artifact(
     }
     if composition:
         preview["composition"] = {k: v for k, v in composition.items() if k != "jobs"}
+
+    def _generation_failure(stage: str, message: str, exc: Exception | None = None) -> dict:
+        detail = str(exc) if exc is not None else message
+        failure = {
+            "stage": stage,
+            "user_message": message,
+            "retryable": True,
+            "debug_info": detail,
+        }
+        failed = dict(preview)
+        failed.update({
+            "format": DOCUMENT_FAILURE_FORMAT,
+            "filename": "",
+            "markdown": "",
+            "generation_error": message,
+            "generation_failure": failure,
+        })
+        return failed
+
     if fmt not in SUPPORTED_RENDER_FORMATS:
         preview["generation_error"] = f"{fmt} output is not supported yet; showing Markdown instead."
         return preview
@@ -862,38 +885,46 @@ def build_document_artifact(
     elif requested_format == "pptx":
         try:
             # AgentDeck v1 cutover (architecture doc §9 decision 1): for
-            # "presentation" docs with a structured DeckPlan, bridge-compose
-            # to PptxRenderPlan and render via render_agentdeck.js. Any
-            # composer/render failure falls back to the legacy python-pptx /
-            # pptxgenjs template renderer rather than failing the request.
+            # "presentation" docs with a structured plan, bridge-compose to
+            # PptxRenderPlan and render via render_agentdeck.js. AgentDeck
+            # compose/render failures are strict as of AgentDeck v2 Phase 1:
+            # return DocumentGenerationFailure instead of falling back to the
+            # legacy renderer or Markdown.
             agentdeck_plan = None
             agentdeck_theme = "dark"
             if doc_type == "presentation" and doc_plan_obj is not None:
                 agentdeck_theme = "light" if doc_plan_obj.theme == "light" else "dark"
                 try:
                     agentdeck_plan = compose_docplan_to_pptx_render_plan(doc_plan_obj, theme=agentdeck_theme)
-                except Exception:
-                    logger.exception("agentdeck DocPlan composer failed; falling back to legacy pptx renderer")
+                except Exception as exc:
+                    logger.exception("agentdeck DocPlan composer failed")
+                    return _generation_failure(
+                        "composer",
+                        "PowerPoint planning succeeded, but slide composition failed. Please retry generation.",
+                        exc,
+                    )
             elif doc_type == "presentation" and deck_plan:
                 raw_theme = str(deck_plan.get("theme") or "").lower()
                 agentdeck_theme = "light" if "light" in raw_theme else "dark"
                 try:
                     agentdeck_plan = compose_pptx_render_plan(deck_plan, theme=agentdeck_theme)
-                except Exception:
-                    logger.exception("agentdeck composer failed; falling back to legacy pptx renderer")
+                except Exception as exc:
+                    logger.exception("agentdeck composer failed")
+                    return _generation_failure(
+                        "composer",
+                        "PowerPoint planning succeeded, but slide composition failed. Please retry generation.",
+                        exc,
+                    )
 
             if agentdeck_plan is not None:
                 try:
                     content = generate_agentdeck_pptx_bytes(agentdeck_plan)
-                except Exception:
-                    logger.exception("agentdeck pptx render failed; falling back to legacy pptx renderer")
-                    agentdeck_plan = None
-                    content = generate_pptx_bytes(
-                        title,
-                        body_markdown,
-                        "Generated by Fronei",
-                        template_id=template_id,
-                        template_path=template_path,
+                except Exception as exc:
+                    logger.exception("agentdeck pptx render failed")
+                    return _generation_failure(
+                        "renderer",
+                        "PowerPoint rendering failed. Please retry generation.",
+                        exc,
                     )
             else:
                 content = generate_pptx_bytes(
@@ -974,7 +1005,11 @@ def build_document_artifact(
                 preview["render_qa"] = render_qa
         except Exception as exc:
             logger.exception("Failed to render PPTX artifact")
-            preview["generation_error"] = f"PowerPoint rendering failed: {exc}"
+            return _generation_failure(
+                "renderer",
+                "PowerPoint rendering failed. Please retry generation.",
+                exc,
+            )
     return preview
 
 

@@ -3,8 +3,19 @@ services:
     name: fronei-api
     env: python
     rootDir: apps/api
-    buildCommand: pip install -e .
-    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    # Node.js + pptxgenjs are required by the AgentDeck PptxGenJS renderer
+    # (pptx_render/). Without a `node` binary on PATH,
+    # _agentdeck_renderer_available() is always False and
+    # generate_agentdeck_pptx_bytes() raises "agentdeck renderer unavailable"
+    # for every presentation request. Render's python env build runs as a
+    # non-root user, so install a local Node toolchain instead of apt-get.
+    buildCommand: |
+      pip install -e .
+      curl -fsSL https://nodejs.org/dist/v20.18.0/node-v20.18.0-linux-x64.tar.xz -o /tmp/node.tar.xz
+      mkdir -p ./node-runtime
+      tar -xJf /tmp/node.tar.xz -C ./node-runtime --strip-components=1
+      cd pptx_render && ../node-runtime/bin/npm install --omit=dev
+    startCommand: PATH="$PWD/node-runtime/bin:$PATH" uvicorn app.main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: APP_ENV
         value: production

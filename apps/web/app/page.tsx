@@ -3245,7 +3245,6 @@ function DocumentFinalizationModal({
   const [audience, setAudience] = useState(String(brief.audience || ''))
   const [tone, setTone] = useState(String(brief.tone || ''))
   const [length, setLength] = useState(String(brief.length || ''))
-  const [agentDeckTheme, setAgentDeckTheme] = useState<'dark' | 'light'>(brief.theme === 'light' ? 'light' : 'dark')
   const initialFormatChoices = documentFormatChoicesForType(String(brief.doc_type || 'executive_report'), proposal)
   const [format, setFormat] = useState<DocumentOutputFormat>(initialFormatChoices.recommendation)
   const initialTemplates = proposal.templates?.length ? proposal.templates : [{
@@ -3254,10 +3253,18 @@ function DocumentFinalizationModal({
     description: 'Clean default styling',
     recommended: true,
   }]
-  const [templates, setTemplates] = useState<DocumentTemplateOption[]>(initialTemplates)
-  const [templateId, setTemplateId] = useState(
-    proposal.template_recommendation || initialTemplates.find(t => t.recommended)?.id || initialTemplates[0]?.id || 'fronei-default'
+  const isBrandTemplate = (template: DocumentTemplateOption | undefined) => Boolean(
+    template?.user_template || template?.design_system?.startsWith('brand_')
   )
+  const initialTemplateId = proposal.template_recommendation || initialTemplates.find(t => t.recommended)?.id || initialTemplates[0]?.id || 'fronei-default'
+  const initialTemplate = initialTemplates.find(t => t.id === initialTemplateId)
+  const [agentDeckTheme, setAgentDeckTheme] = useState<'dark' | 'light'>(
+    brief.theme === 'light' || brief.theme === 'dark'
+      ? brief.theme
+      : isBrandTemplate(initialTemplate) ? 'light' : 'dark'
+  )
+  const [templates, setTemplates] = useState<DocumentTemplateOption[]>(initialTemplates)
+  const [templateId, setTemplateId] = useState(initialTemplateId)
   const [templateUploadStatus, setTemplateUploadStatus] = useState('')
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const formatChoices = documentFormatChoicesForType(docType, proposal)
@@ -3273,6 +3280,12 @@ function DocumentFinalizationModal({
       return proposal.supported_formats.includes(current) ? current : formatChoices.recommendation
     })
   }, [docType, formatChoices.recommendation, proposal.supported_formats])
+
+  useEffect(() => {
+    if (brief.theme === 'light' || brief.theme === 'dark') return
+    const selected = templates.find(t => t.id === templateId)
+    setAgentDeckTheme(isBrandTemplate(selected) ? 'light' : 'dark')
+  }, [brief.theme, templateId, templates])
 
   // Re-fetch the template list whenever the document type changes, since
   // proposal.templates was only computed for the originally-proposed doc_type
@@ -3416,8 +3429,8 @@ function DocumentFinalizationModal({
                     </span>
                     {t.description && <span className="doc-plan-option-reason">{t.description}</span>}
                   </button>
-                  {docType === 'presentation' && templateId === t.id && t.design_system === 'agentdeck_v1' && (
-                    <div className="doc-format-row" role="group" aria-label="AgentDeck theme">
+                  {docType === 'presentation' && templateId === t.id && (t.design_system === 'agentdeck_v1' || isBrandTemplate(t)) && (
+                    <div className="doc-format-row" role="group" aria-label="Presentation theme">
                       {(['dark', 'light'] as const).map(theme => (
                         <button
                           key={theme}

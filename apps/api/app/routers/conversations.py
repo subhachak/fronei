@@ -48,6 +48,8 @@ from app.services.document_templates import (
     template_design_context,
     template_grammar_for_selection,
 )
+from app.services.design_systems.brand_generator import design_system_id_for_template, write_brand_design_system
+from app.services.design_systems.registry import get_design_system
 from app.services.brand import (
     brand_profile_from_template_grammar,
     user_document_profile_from_memory,
@@ -1303,8 +1305,16 @@ def _document_generation_profiles(db, user_id: str, plan) -> tuple[object | None
                 )
                 .first()
             )
-            if row is not None and row.design_system_id:
-                design_system_id = row.design_system_id
+            if row is not None:
+                design_system_id = row.design_system_id or design_system_id_for_template(user_id, row.public_id)
+                try:
+                    get_design_system(design_system_id)
+                except KeyError:
+                    if brand_profile is not None:
+                        write_brand_design_system(brand_profile, design_system_id=design_system_id)
+                        row.design_system_id = design_system_id
+                        row.updated_at = datetime.now(timezone.utc)
+                        db.commit()
         except Exception:
             logger.exception("Failed to resolve brand design_system_id for template %s", template_id)
 

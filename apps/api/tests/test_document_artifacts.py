@@ -60,6 +60,7 @@ def test_build_document_artifact_agentdeck_render_failure_does_not_use_legacy_re
             SectionPlan(
                 slide_layout="CONTENT_1COL",
                 section_title="Adoption is accelerating",
+                dek="Early teams are already moving from experimentation to production.",
                 blocks=[
                     ContentBlock(
                         zone="body",
@@ -198,6 +199,95 @@ def test_build_document_artifact_draft_quality_skips_repair_loop(monkeypatch):
     assert preview["render_qa"]["issues"]
     assert "repair_iterations" not in preview["render_qa"]
     assert "- Bullet number 6" in preview["markdown"]
+
+
+def test_build_document_artifact_executive_quality_runs_vision_judge(monkeypatch):
+    doc_plan = DocPlan(
+        title="AI Strategy Review",
+        sections=[
+            SectionPlan(
+                slide_layout="CONTENT_1COL",
+                section_title="Adoption is accelerating",
+                dek="Early teams are already moving from experimentation to production.",
+                blocks=[
+                    ContentBlock(
+                        zone="body",
+                        component_id="bullet_list",
+                        data={"items": [{"text": "Unit A live", "level": 0}]},
+                    )
+                ],
+            ),
+        ],
+    )
+    include_images_values: list[bool] = []
+
+    def fake_run_qa(content, *args, **kwargs):
+        include_images_values.append(bool(kwargs.get("include_images")))
+        return {
+            "available": True,
+            "slide_count": 2,
+            "issues": [],
+            "images": [{"slide": 1, "mime_type": "image/png", "base64": "abc"}] if kwargs.get("include_images") else [],
+        }
+
+    def fake_judge(*, doc_plan, render_qa):
+        return [], [{"slide": 1, "status": "pass", "score": 0.95, "issues": []}], type(
+            "JudgeResult",
+            (),
+            {"model_used": "vision-test", "latency_ms": 12, "estimated_cost_usd": 0.001},
+        )()
+
+    monkeypatch.setattr(documents, "run_pptx_render_qa", fake_run_qa)
+    monkeypatch.setattr(documents, "judge_rendered_slides", fake_judge)
+
+    preview = documents.build_document_artifact(
+        "", doc_plan.model_dump_json(), "presentation", "pptx", quality_mode="executive"
+    )
+
+    assert preview["format"] == "pptx"
+    assert include_images_values == [True]
+    assert preview["render_qa"]["vision_judge"]["available"] is True
+    assert preview["render_qa"]["vision_judge"]["model"] == "vision-test"
+    assert "images" not in preview["render_qa"]
+
+
+def test_build_document_artifact_standard_quality_skips_vision_judge(monkeypatch):
+    doc_plan = DocPlan(
+        title="AI Strategy Review",
+        sections=[
+            SectionPlan(
+                slide_layout="CONTENT_1COL",
+                section_title="Adoption is accelerating",
+                dek="Early teams are already moving from experimentation to production.",
+                blocks=[
+                    ContentBlock(
+                        zone="body",
+                        component_id="bullet_list",
+                        data={"items": [{"text": "Unit A live", "level": 0}]},
+                    )
+                ],
+            ),
+        ],
+    )
+    include_images_values: list[bool] = []
+
+    def fake_run_qa(content, *args, **kwargs):
+        include_images_values.append(bool(kwargs.get("include_images")))
+        return {"available": True, "slide_count": 2, "issues": []}
+
+    def fake_judge(*args, **kwargs):
+        raise AssertionError("vision judge should not run for standard quality")
+
+    monkeypatch.setattr(documents, "run_pptx_render_qa", fake_run_qa)
+    monkeypatch.setattr(documents, "judge_rendered_slides", fake_judge)
+
+    preview = documents.build_document_artifact(
+        "", doc_plan.model_dump_json(), "presentation", "pptx", quality_mode="standard"
+    )
+
+    assert preview["format"] == "pptx"
+    assert include_images_values == [False]
+    assert "vision_judge" not in preview["render_qa"]
 
 
 def test_build_document_artifact_uses_readable_preview_for_deck_plan_json():

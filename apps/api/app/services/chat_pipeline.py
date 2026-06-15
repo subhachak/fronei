@@ -27,6 +27,7 @@ from app.services.prompts import ARTIFACT_PROMPTS
 from app.services.router import choose_route
 from app.services.web_context import WebContextResult, gather_web_context
 from app.services.document_generator import parse_deck_plan
+from app.services.brand import BrandProfile, UserDocumentProfile
 from app.services.components.quality_mode import normalize_quality_mode
 
 
@@ -470,6 +471,8 @@ def generate_document_output(
     artifact_context: str = "",
     user_memory: str = "",
     db: object | None = None,
+    brand_profile: BrandProfile | None = None,
+    user_document_profile: UserDocumentProfile | None = None,
 ) -> tuple[LLMResult, str, str, str]:
     """Two-pass document generation: draft, then a revision pass that tightens
     against an anti-"AI slop" checklist (generic phrasing, redundancy, missing
@@ -525,6 +528,8 @@ def generate_document_output(
             extra_context=extra_context,
             db=db,
             quality_mode=quality_mode,
+            brand_profile=brand_profile,
+            user_document_profile=user_document_profile,
         )
         body = doc_plan.model_dump_json()
         bullets = [

@@ -4,6 +4,7 @@ from .repair_loop import repair_docplan_for_qa
 from .render_checks import run_render_checks
 from .slide_judge import SlideJudgeResult, judge_slide
 from .types import QAIssue, QAIssueType
+from .vision_judge import judge_rendered_slides
 
 __all__ = [
     "DeckJudgeResult",
@@ -12,6 +13,7 @@ __all__ = [
     "SlideJudgeResult",
     "judge_deck",
     "judge_slide",
+    "judge_rendered_slides",
     "repair_docplan_for_qa",
     "run_plan_checks",
     "run_render_checks",

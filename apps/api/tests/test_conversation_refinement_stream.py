@@ -21,6 +21,7 @@ from app.db.models import (
     ResearchSource,
     ConversationTurn,
     TwinProfile,
+    UserProfile,
 )
 from app.main import app
 from app.routers import conversations, research_runs
@@ -655,7 +656,7 @@ def test_execute_plan_with_research_and_document_confirmed_generates_document(cl
 
     captured_doc_call: dict = {}
 
-    def fake_generate_document_output(plan_arg, route_arg, history, wc, planner_ctx, doc_context, deep_research, enable_native, artifact_context="", user_memory="", db=None):
+    def fake_generate_document_output(plan_arg, route_arg, history, wc, planner_ctx, doc_context, deep_research, enable_native, artifact_context="", user_memory="", db=None, **kwargs):
         captured_doc_call["doc_context"] = doc_context
         captured_doc_call["wants_document_output"] = plan_arg.wants_document_output
         doc_result = LLMResult(
@@ -785,7 +786,7 @@ def test_execute_plan_research_followup_with_document_confirmed_generates_docume
 
     captured_doc_call: dict = {}
 
-    def fake_generate_document_output(plan_arg, route_arg, history, wc, planner_ctx, doc_context, deep_research, enable_native, artifact_context="", user_memory="", db=None):
+    def fake_generate_document_output(plan_arg, route_arg, history, wc, planner_ctx, doc_context, deep_research, enable_native, artifact_context="", user_memory="", db=None, **kwargs):
         captured_doc_call["doc_context"] = doc_context
         captured_doc_call["wants_document_output"] = plan_arg.wants_document_output
         return (
@@ -968,6 +969,16 @@ def test_execute_plan_after_document_finalization_generates_artifact(client, mon
     with Session() as db:
         conv = Conversation(user_id="u1", title="Deck", profile="balanced", message_count=0)
         db.add(conv)
+        db.add(UserProfile(
+            user_id="u1",
+            profile_json=json.dumps({
+                "preferred_tone": "direct",
+                "preferred_slide_density": "sparse",
+                "common_audiences": ["Client steering committee"],
+                "communication_style": "Concise, decisive, and specific.",
+                "key_preferences": ["Avoid generic slide copy"],
+            }),
+        ))
         db.flush()
         user_msg = ConversationMessage(
             conversation_id=conv.id,
@@ -1010,10 +1021,12 @@ def test_execute_plan_after_document_finalization_generates_artifact(client, mon
 
     captured: dict = {}
 
-    def fake_generate_document_output(plan_arg, route_arg, history, wc, planner_ctx, doc_context, deep_research, enable_native, artifact_context="", user_memory="", db=None):
+    def fake_generate_document_output(plan_arg, route_arg, history, wc, planner_ctx, doc_context, deep_research, enable_native, artifact_context="", user_memory="", db=None, **kwargs):
         captured["brief"] = plan_arg.document_brief
         captured["doc_context"] = doc_context
         captured["artifact_context"] = artifact_context
+        captured["brand_profile"] = kwargs.get("brand_profile")
+        captured["user_document_profile"] = kwargs.get("user_document_profile")
         return (
             LLMResult(
                 answer="# Migration Strategy\n\nBody.\n\n---SUMMARY---\n- Deck summary",
@@ -1059,6 +1072,9 @@ def test_execute_plan_after_document_finalization_generates_artifact(client, mon
     assert "Use phased migration" in captured["doc_context"]
     assert "TEMPLATE-FIRST PRESENTATION DESIGN BRIEF" in captured["artifact_context"]
     assert "Fronei premium freehand" in captured["artifact_context"]
+    assert captured["brand_profile"].source_template_id == "fronei-default"
+    assert captured["user_document_profile"].preferred_tone == "direct"
+    assert captured["user_document_profile"].preferred_slide_density == "sparse"
 
 
 def test_execute_plan_with_pptx_format_coerces_generation_to_presentation(client, monkeypatch):
@@ -1120,7 +1136,7 @@ def test_execute_plan_with_pptx_format_coerces_generation_to_presentation(client
 
     captured: dict = {}
 
-    def fake_generate_document_output(plan_arg, route_arg, history, wc, planner_ctx, doc_context, deep_research, enable_native, artifact_context="", user_memory="", db=None):
+    def fake_generate_document_output(plan_arg, route_arg, history, wc, planner_ctx, doc_context, deep_research, enable_native, artifact_context="", user_memory="", db=None, **kwargs):
         captured["brief"] = plan_arg.document_brief
         captured["artifact_context"] = artifact_context
         return (

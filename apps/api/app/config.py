@@ -84,6 +84,13 @@ class Settings(BaseSettings):
     # component candidates.
     agentdeck_usage_stats_weighting_enabled: bool = False
 
+    # AgentDeck executive-mode visual judge. This is intentionally gated behind
+    # both quality_mode="executive" and this flag because it sends rendered
+    # slide thumbnails to a vision-capable model and adds cost/latency.
+    agentdeck_vision_judge_enabled: bool = True
+    agentdeck_vision_judge_model: str = "gemini/gemini-2.5-flash"
+    agentdeck_vision_judge_max_slides: int = 12
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     @property

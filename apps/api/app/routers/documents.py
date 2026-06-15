@@ -55,7 +55,7 @@ from app.services.document_templates import (
     store_user_pptx_template,
 )
 from app.services.pptx_render_qa import run_pptx_render_qa
-from app.services.qa import QAIssue, repair_docplan_for_qa, run_plan_checks, run_render_checks
+from app.services.qa import QAIssue, judge_rendered_slides, repair_docplan_for_qa, run_plan_checks, run_render_checks
 from app.services.llm_gateway import invoke_llm
 from app.services.personal_context import build_context
 from app.services.planner import run_planner
@@ -853,6 +853,52 @@ def build_document_artifact(
     if composition:
         preview["composition"] = {k: v for k, v in composition.items() if k != "jobs"}
 
+    def _vision_judge_enabled() -> bool:
+        return (
+            doc_plan_obj is not None
+            and requested_format == "pptx"
+            and resolved_quality_mode == "executive"
+            and get_settings().agentdeck_vision_judge_enabled
+        )
+
+    def _run_render_qa(content_bytes: bytes) -> dict | None:
+        if not get_settings().pptx_render_qa_enabled:
+            return None
+        try:
+            return run_pptx_render_qa(content_bytes, include_images=_vision_judge_enabled())
+        except Exception:
+            logger.exception("PPTX render QA failed")
+            return None
+
+    def _strip_qa_images(qa: dict | None) -> None:
+        if isinstance(qa, dict):
+            qa.pop("images", None)
+
+    def _attach_vision_judge(qa: dict | None, current_doc_plan: DocPlan) -> list[QAIssue]:
+        if not _vision_judge_enabled() or not qa or not qa.get("available") or not qa.get("images"):
+            return []
+        try:
+            vision_issues, slide_results, judge_result = judge_rendered_slides(
+                doc_plan=current_doc_plan,
+                render_qa=qa,
+            )
+        except Exception:
+            logger.exception("AgentDeck vision judge failed")
+            qa["vision_judge"] = {"available": False, "reason": "vision judge failed"}
+            return []
+        qa["vision_judge"] = {
+            "available": True,
+            "model": judge_result.model_used,
+            "latency_ms": judge_result.latency_ms,
+            "estimated_cost_usd": judge_result.estimated_cost_usd,
+            "issues": [issue.to_render_qa_issue() for issue in vision_issues],
+            "slides": slide_results,
+        }
+        if vision_issues:
+            existing = qa.setdefault("deterministic_issues", [])
+            existing.extend(issue.to_render_qa_issue() for issue in vision_issues)
+        return vision_issues
+
     def _generation_failure(stage: str, message: str, exc: Exception | None = None) -> dict:
         detail = str(exc) if exc is not None else message
         failure = {
@@ -948,12 +994,7 @@ def build_document_artifact(
                     template_id=template_id,
                     template_path=template_path,
                 )
-            render_qa: dict | None = None
-            if get_settings().pptx_render_qa_enabled:
-                try:
-                    render_qa = run_pptx_render_qa(content)
-                except Exception:
-                    logger.exception("PPTX render QA failed")
+            render_qa: dict | None = _run_render_qa(content)
             if agentdeck_plan is not None:
                 deterministic_issues = [issue.to_render_qa_issue() for issue in plan_issues]
                 if render_qa is not None:
@@ -984,9 +1025,7 @@ def build_document_artifact(
                     try:
                         repaired_render_plan = compose_docplan_to_pptx_render_plan(repaired_doc_plan, theme=agentdeck_theme)
                         repaired_content = generate_agentdeck_pptx_bytes(repaired_render_plan)
-                        repaired_qa = None
-                        if get_settings().pptx_render_qa_enabled:
-                            repaired_qa = run_pptx_render_qa(repaired_content)
+                        repaired_qa = _run_render_qa(repaired_content)
                         repaired_plan_issues = run_plan_checks(repaired_doc_plan)
                         repaired_deterministic = [issue.to_render_qa_issue() for issue in repaired_plan_issues]
                         if repaired_qa is not None:
@@ -1016,6 +1055,41 @@ def build_document_artifact(
                     doc_plan_obj = current_doc_plan
                     preview["markdown"] = _docplan_to_markdown(doc_plan_obj) or preview.get("markdown")
                     render_qa = render_qa or {"available": False, "issues": []}
+                    render_qa["repair_iterations"] = repair_iterations
+
+            # Executive-mode visual judge: inspect rendered slide thumbnails
+            # after deterministic repairs, then give the structural repair loop
+            # any remaining quality-mode budget to fix vision-found issues.
+            if doc_plan_obj is not None and agentdeck_plan is not None and render_qa is not None:
+                current_doc_plan = doc_plan_obj
+                vision_issues = _attach_vision_judge(render_qa, current_doc_plan)
+                while vision_issues and repair_iterations < repair_iteration_cap(resolved_quality_mode):
+                    repaired_doc_plan, changed = repair_docplan_for_qa(current_doc_plan, vision_issues)
+                    if not changed:
+                        break
+                    try:
+                        repaired_render_plan = compose_docplan_to_pptx_render_plan(repaired_doc_plan, theme=agentdeck_theme)
+                        repaired_content = generate_agentdeck_pptx_bytes(repaired_render_plan)
+                        repaired_qa = _run_render_qa(repaired_content) or {"available": False, "issues": []}
+                        repaired_plan_issues = run_plan_checks(repaired_doc_plan)
+                        repaired_deterministic = [issue.to_render_qa_issue() for issue in repaired_plan_issues]
+                        if repaired_qa is not None:
+                            repaired_deterministic.extend(
+                                issue.to_render_qa_issue() for issue in run_render_checks(repaired_qa)
+                            )
+                    except Exception:
+                        logger.exception("AgentDeck vision repair-loop re-render failed")
+                        break
+                    repair_iterations += 1
+                    current_doc_plan = repaired_doc_plan
+                    doc_plan_obj = repaired_doc_plan
+                    agentdeck_plan = repaired_render_plan
+                    content = repaired_content
+                    render_qa = repaired_qa
+                    if repaired_deterministic:
+                        render_qa["deterministic_issues"] = repaired_deterministic
+                    vision_issues = _attach_vision_judge(render_qa, current_doc_plan)
+                    preview["markdown"] = _docplan_to_markdown(doc_plan_obj) or preview.get("markdown")
                     render_qa["repair_iterations"] = repair_iterations
 
             # Repair loop: if render QA flags crowded slides and we have a
@@ -1053,7 +1127,7 @@ def build_document_artifact(
                                 template_id=template_id,
                                 template_path=template_path,
                             )
-                        repaired_qa = run_pptx_render_qa(repaired_content)
+                        repaired_qa = _run_render_qa(repaired_content) or {"available": False, "issues": []}
                     except Exception:
                         logger.exception("PPTX repair-loop re-render failed")
                         break
@@ -1078,6 +1152,7 @@ def build_document_artifact(
             preview["filename"] = f"{_safe_filename(title)}.pptx"
             preview["pptx_base64"] = base64.b64encode(content).decode("ascii")
             if render_qa is not None:
+                _strip_qa_images(render_qa)
                 preview["render_qa"] = render_qa
         except Exception as exc:
             logger.exception("Failed to render PPTX artifact")

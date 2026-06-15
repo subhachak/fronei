@@ -15,7 +15,7 @@ from app.config import get_settings
 from app.db.models import (
     Conversation, ConversationMessage, ConversationTurn, RequestLog, SessionLocal,
     get_effective_monthly_budget, get_monthly_spend, get_turn_runtime_config,
-    get_twin_profile, is_user_pending, is_user_suspended,
+    get_twin_profile, is_user_pending, is_user_suspended, UserProfile,
 )
 from app.schemas import (
     ConvChatRequest, ConvChatResponse, ExecutePlanRequest,
@@ -45,6 +45,10 @@ from app.services.document_templates import (
     resolve_template_path,
     template_design_context,
     template_grammar_for_selection,
+)
+from app.services.brand import (
+    brand_profile_from_template_grammar,
+    user_document_profile_from_memory,
 )
 from app.services.planner import apply_confirmed_plan, passthrough, plan_from_dict, plan_to_dict, run_planner
 from app.services.prompts import ARTIFACT_PROMPTS
@@ -1104,6 +1108,39 @@ def _presentation_artifact_context(base_context: str, db, user_id: str, plan) ->
     return "\n\n".join(part for part in [base_context or "", design_context] if part)
 
 
+def _load_profile_json_for_documents(db, user_id: str) -> dict:
+    try:
+        profile = db.query(UserProfile).filter(UserProfile.user_id == user_id).first()
+    except Exception:
+        logger.exception("Failed to load user document profile")
+        return {}
+    if not profile or not profile.profile_json:
+        return {}
+    try:
+        data = json.loads(profile.profile_json)
+    except (TypeError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _document_generation_profiles(db, user_id: str, plan) -> tuple[object | None, object | None]:
+    brief = dict(plan.document_brief or {})
+    if brief.get("doc_type") != "presentation":
+        return None, user_document_profile_from_memory(user_id, _load_profile_json_for_documents(db, user_id))
+
+    user_profile = user_document_profile_from_memory(user_id, _load_profile_json_for_documents(db, user_id))
+    template_id = brief.get("template_id")
+    if not isinstance(template_id, str) or not template_id:
+        template_id = recommend_template_id(brief)
+    brand_profile = None
+    try:
+        grammar = template_grammar_for_selection(db, user_id, template_id, brief)
+        brand_profile = brand_profile_from_template_grammar(grammar, user_id=user_id)
+    except Exception:
+        logger.exception("Failed to build AgentDeck brand profile")
+    return brand_profile, user_profile
+
+
 def _document_failure_answer(document_preview: dict | None) -> str | None:
     failure = (document_preview or {}).get("generation_failure")
     if not isinstance(failure, dict):
@@ -1396,6 +1433,7 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                         if finalization_event:
                             yield finalization_event
                             return
+                        brand_profile, user_document_profile = _document_generation_profiles(db, user_id, plan)
 
                         result, doc_body, chat_summary, doc_type = generate_document_output(
                             plan, route, history, empty_wc, planner_ctx,
@@ -1403,6 +1441,8 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                             artifact_context=artifact_context,
                             user_memory=user_memory,
                             db=db,
+                            brand_profile=brand_profile,
+                            user_document_profile=user_document_profile,
                         )
                         log_doc_plan_usage(db, doc_type, doc_body)
                         for chunk in [chat_summary[i:i + 80] for i in range(0, len(chat_summary), 80)]:
@@ -1594,12 +1634,16 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                     if finalization_event:
                         yield finalization_event
                         return
+                    brand_profile, user_document_profile = _document_generation_profiles(db, user_id, plan)
 
                     result, doc_body, chat_summary, doc_type = generate_document_output(
                         plan, route, history, empty_wc, planner_ctx,
                         doc_context, False, False,
                         artifact_context=artifact_context,
                         user_memory=user_memory,
+                        db=db,
+                        brand_profile=brand_profile,
+                        user_document_profile=user_document_profile,
                     )
                     log_doc_plan_usage(db, doc_type, doc_body)
                     for chunk in [chat_summary[i:i + 80] for i in range(0, len(chat_summary), 80)]:
@@ -1768,12 +1812,15 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                 yield _pipeline_log("working", "Drafting your document…")
                 fmt = _document_output_format(plan, gate)
                 _coerce_presentation_brief_for_pptx(plan, fmt)
+                brand_profile, user_document_profile = _document_generation_profiles(db, user_id, plan)
                 result, doc_body, chat_summary, doc_type = generate_document_output(
                     plan, route, history, wc, planner_ctx,
                     _document_context_for_generation(setup.doc_context, plan), req.deep_research, enable_native,
                     artifact_context=_presentation_artifact_context(setup.artifact_context or "", db, user_id, plan),
                     user_memory=user_memory,
                     db=db,
+                    brand_profile=brand_profile,
+                    user_document_profile=user_document_profile,
                 )
                 log_doc_plan_usage(db, doc_type, doc_body)
                 for chunk in [chat_summary[i:i + 80] for i in range(0, len(chat_summary), 80)]:

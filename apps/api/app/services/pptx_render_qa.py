@@ -14,6 +14,7 @@ import logging
 import shutil
 import subprocess
 import tempfile
+import base64
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -47,7 +48,12 @@ def render_qa_available() -> bool:
     return bool(SOFFICE_BIN and PDFTOTEXT_BIN and PDFTOPPM_BIN)
 
 
-def run_pptx_render_qa(pptx_bytes: bytes, *, timeout: int = CONVERT_TIMEOUT_SECONDS) -> dict:
+def run_pptx_render_qa(
+    pptx_bytes: bytes,
+    *,
+    timeout: int = CONVERT_TIMEOUT_SECONDS,
+    include_images: bool = False,
+) -> dict:
     """Render `pptx_bytes` headlessly and flag slides likely to render poorly.
 
     Returns:
@@ -119,7 +125,7 @@ def run_pptx_render_qa(pptx_bytes: bytes, *, timeout: int = CONVERT_TIMEOUT_SECO
                 issues.extend(result["issues"])
                 metrics.append(result["metrics"])
 
-            return {
+            result = {
                 "available": True,
                 "slide_count": slide_count,
                 "issues": sorted(issues, key=lambda item: (item.get("slide") or 0, item.get("type") or "")),
@@ -127,9 +133,27 @@ def run_pptx_render_qa(pptx_bytes: bytes, *, timeout: int = CONVERT_TIMEOUT_SECO
                 "parallel": True,
                 "workers": min(slide_count or 1, max(1, get_settings().max_pptx_render_qa_workers)),
             }
+            if include_images:
+                result["images"] = _rendered_slide_images(image_paths)
+            return result
     except Exception as exc:  # pragma: no cover - belt-and-braces, QA must never break generation
         logger.exception("Unexpected error during PPTX render QA")
         return {"available": False, "reason": f"Unexpected error: {exc}", "issues": []}
+
+
+def _rendered_slide_images(image_paths: list[Path]) -> list[dict]:
+    max_slides = max(1, get_settings().agentdeck_vision_judge_max_slides)
+    images = []
+    for idx, path in enumerate(image_paths[:max_slides], start=1):
+        try:
+            images.append({
+                "slide": idx,
+                "mime_type": "image/png",
+                "base64": base64.b64encode(path.read_bytes()).decode("ascii"),
+            })
+        except Exception:
+            logger.warning("Failed to attach rendered slide image %s", path, exc_info=True)
+    return images
 
 
 def _inspect_rendered_slides_parallel(pages_text: list[str], image_paths: list[Path], slide_count: int) -> list[dict]:

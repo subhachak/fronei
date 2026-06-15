@@ -17,11 +17,19 @@ jobs:
         with:
           python-version: '3.11'
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
       - name: Install uv
         run: pip install uv --quiet
 
       - name: Install dependencies
         run: uv sync --frozen --extra dev
+
+      - name: Install AgentDeck PptxGenJS renderer deps
+        working-directory: apps/api/pptx_render
+        run: npm ci --omit=dev
 
       - name: Compile Python
         run: uv run python -m py_compile $(find app tests -name '*.py' -print)

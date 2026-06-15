@@ -45,6 +45,13 @@ from app.services.components.planner import (
     _minimal_presentation_plan,
 )
 from app.services.components.selection import rank_components
+from app.services.components.planner import _user_document_profile_context
+from app.services.brand import (
+    BrandProfile,
+    UserDocumentProfile,
+    brand_profile_from_template_grammar,
+    user_document_profile_from_memory,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -639,6 +646,173 @@ def test_generate_agentdeck_v2_plan_additive_wrapper(monkeypatch):
     assert doc_plan.sections[0].dek == "Multiple tools create duplicate governance."
     assert doc_plan.sections[0].blocks[0].component_id == "bullet_list"
     assert design_plan.slide_treatments[0].slide_id == "context"
+    assert result.fallback_errors == []
+
+
+# ---------------------------------------------------------------------------
+# BrandProfile / UserDocumentProfile (#155 / #156)
+# ---------------------------------------------------------------------------
+
+
+def test_brand_profile_from_template_grammar():
+    grammar = {
+        "template_id": "modern-tech",
+        "colors": ["0A0A0A", "FF6A00"],
+        "fonts": ["Segoe UI"],
+        "available_slide_types": ["cover", "data_exhibit"],
+        "observed_slide_roles": ["hero_cover", "data_exhibit"],
+    }
+    profile = brand_profile_from_template_grammar(grammar, user_id="user-1")
+    assert profile.id == "modern-tech"
+    assert profile.user_id == "user-1"
+    assert profile.source_template_id == "modern-tech"
+    assert profile.color_tokens == ["0A0A0A", "FF6A00"]
+    assert profile.font_tokens == ["Segoe UI"]
+    assert profile.layout_preferences == ["cover", "data_exhibit"]
+    assert profile.extracted_components == ["hero_cover", "data_exhibit"]
+    assert profile.forbidden_patterns
+
+
+def test_user_document_profile_from_memory_extracts_known_fields():
+    profile_json = {
+        "preferred_tone": "direct",
+        "preferred_depth": "executive",
+        "preferred_slide_density": "sparse",
+        "common_audiences": ["board", "steering committee"],
+        "industry_context": "retail supply chain",
+        "communication_style": "concise and structured",
+        "key_preferences": ["Avoid generic bullet-only slides", "Use data exhibits"],
+    }
+    profile = user_document_profile_from_memory("user-1", profile_json)
+    assert profile.user_id == "user-1"
+    assert profile.preferred_tone == "direct"
+    assert profile.preferred_depth == "executive"
+    assert profile.preferred_slide_density == "sparse"
+    assert profile.common_audiences == ["board", "steering committee"]
+    assert profile.industry_context == "retail supply chain"
+    assert profile.writing_style == "concise and structured"
+    assert profile.past_rejected_patterns == ["Avoid generic bullet-only slides"]
+
+
+def test_user_document_profile_from_memory_handles_empty_input():
+    profile = user_document_profile_from_memory("user-1", None)
+    assert profile.user_id == "user-1"
+    assert profile.preferred_tone is None
+    assert profile.common_audiences == []
+    assert profile.past_rejected_patterns == []
+
+
+def test_user_document_profile_context_renders_known_fields():
+    profile = UserDocumentProfile(
+        user_id="user-1",
+        preferred_tone="direct",
+        preferred_slide_density="sparse",
+        common_audiences=["board"],
+        past_rejected_patterns=["Avoid walls of text"],
+    )
+    context = _user_document_profile_context(profile)
+    assert "USER DOCUMENT PREFERENCES" in context
+    assert "direct" in context
+    assert "sparse" in context
+    assert "board" in context
+    assert "Avoid walls of text" in context
+
+
+def test_user_document_profile_context_empty_for_blank_profile():
+    assert _user_document_profile_context(None) == ""
+    assert _user_document_profile_context(UserDocumentProfile(user_id="user-1")) == ""
+
+
+def test_generate_design_plan_applies_brand_and_user_document_profile(monkeypatch):
+    monkeypatch.setattr("app.services.components.planner.invoke_llm", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("down")))
+    presentation = _minimal_presentation_plan(_narrative())
+    brand = BrandProfile(id="modern-tech", user_id="user-1", color_tokens=["0A0A0A"])
+    udp = UserDocumentProfile(user_id="user-1", preferred_tone="direct")
+    design, _result = generate_design_plan(presentation, _route(), brand_profile=brand, user_document_profile=udp)
+    assert design.brand_profile_id == "modern-tech"
+    assert design.brand_profile["color_tokens"] == ["0A0A0A"]
+    assert design.user_document_profile["preferred_tone"] == "direct"
+
+
+def test_generate_agentdeck_v2_plan_threads_brand_and_user_document_profile(monkeypatch):
+    responses = [
+        json.dumps(_narrative().model_dump(mode="json")),
+        json.dumps({
+            "title": "AI Platform Consolidation",
+            "sections": [
+                {
+                    "slide_id": "context",
+                    "slide_layout": "CONTENT_1COL",
+                    "section_title": "Fragmentation slows delivery",
+                    "dek": "Multiple tools create duplicate governance.",
+                    "purpose": "analysis",
+                    "audience_question": "Where is the drag?",
+                    "message": "The current landscape creates avoidable cycle time.",
+                }
+            ],
+        }),
+        json.dumps({
+            "design_system": "agentdeck_v1",
+            "theme": "dark",
+            "slide_treatments": [
+                {
+                    "slide_id": "context",
+                    "visual_role": "analysis",
+                    "layout_id": "CONTENT_1COL",
+                    "component_choices": {"body": ["bullet_list"]},
+                }
+            ],
+        }),
+        json.dumps({
+            "title": "AI Platform Consolidation",
+            "sections": [
+                {
+                    "slide_layout": "CONTENT_1COL",
+                    "section_title": "Fragmentation slows delivery",
+                    "content_brief": "Explain why duplicate tooling slows delivery.",
+                    "content_tags": ["narrative"],
+                }
+            ],
+        }),
+        json.dumps({
+            "sections": [
+                {
+                    "index": 0,
+                    "blocks": [
+                        {
+                            "zone": "body",
+                            "component_id": "bullet_list",
+                            "data": {"items": [{"text": "Duplicate tools create duplicate reviews."}]},
+                        }
+                    ],
+                }
+            ]
+        }),
+    ]
+
+    captured_payloads: list[str] = []
+
+    def _fake_invoke_llm(payload, *args, **kwargs):
+        captured_payloads.append(payload)
+        return _llm_result(responses.pop(0))
+
+    monkeypatch.setattr("app.services.components.planner.invoke_llm", _fake_invoke_llm)
+
+    brand = BrandProfile(id="modern-tech", user_id="user-1", color_tokens=["0A0A0A"])
+    udp = UserDocumentProfile(user_id="user-1", preferred_tone="direct", common_audiences=["board"])
+
+    doc_plan, design_plan, result = generate_agentdeck_v2_plan(
+        "Build a steering committee deck",
+        _route(),
+        brand_profile=brand,
+        user_document_profile=udp,
+    )
+    assert design_plan.brand_profile_id == "modern-tech"
+    assert design_plan.user_document_profile["preferred_tone"] == "direct"
+    # Narrative call (first payload) should carry the UDP context.
+    assert "USER DOCUMENT PREFERENCES" in captured_payloads[0]
+    # Slide-planning call (second payload) should carry the structured UDP.
+    assert "preferred_tone" in captured_payloads[1]
     assert result.fallback_errors == []
 
 

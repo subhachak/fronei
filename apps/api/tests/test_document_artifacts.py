@@ -115,6 +115,33 @@ def test_build_document_artifact_agentdeck_compose_failure_does_not_use_legacy_r
     assert "bad plan" in preview["generation_failure"]["debug_info"]
 
 
+def test_build_document_artifact_missing_brand_design_system_falls_back():
+    doc_plan = DocPlan(
+        title="AI Strategy Review",
+        design_system="brand_u1_missing_uploaded_template",
+        sections=[
+            SectionPlan(
+                slide_layout="CONTENT_1COL",
+                section_title="Adoption is accelerating",
+                dek="Early teams are already moving from experimentation to production.",
+                blocks=[
+                    ContentBlock(
+                        zone="body",
+                        component_id="bullet_list",
+                        data={"items": [{"text": "Unit A live", "level": 0}]},
+                    )
+                ],
+            ),
+        ],
+    )
+
+    preview = documents.build_document_artifact("", doc_plan.model_dump_json(), "presentation", "pptx")
+
+    assert preview["format"] == "pptx"
+    assert preview["pptx_base64"]
+    assert "generation_failure" not in preview
+
+
 def test_build_document_artifact_repairs_dense_slide_via_render_qa(monkeypatch):
     assert get_settings().pptx_render_qa_enabled is False
 

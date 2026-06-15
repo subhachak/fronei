@@ -123,6 +123,17 @@ def test_ensure_sqlite_schema_adds_missing_legacy_columns():
                 status VARCHAR(32) NOT NULL
             )
         """))
+        conn.execute(text("""
+            CREATE TABLE document_templates (
+                id INTEGER PRIMARY KEY,
+                public_id VARCHAR(32) NOT NULL,
+                user_id VARCHAR(128) NOT NULL,
+                name VARCHAR(160) NOT NULL,
+                storage_key VARCHAR(512) NOT NULL,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL
+            )
+        """))
 
     _ensure_sqlite_schema(engine)
 
@@ -132,9 +143,11 @@ def test_ensure_sqlite_schema_adds_missing_legacy_columns():
     request_cols = {c["name"] for c in inspector.get_columns("request_logs")}
     admin_control_cols = {c["name"] for c in inspector.get_columns("user_admin_controls")}
     audit_cols = {c["name"] for c in inspector.get_columns("admin_audit_logs")}
+    template_cols = {c["name"] for c in inspector.get_columns("document_templates")}
 
     assert {"user_id", "running_summary", "active_task_json"} <= conversation_cols
     assert "execution_log_json" in message_cols
     assert "user_id" in request_cols
     assert {"user_id", "status", "monthly_budget_usd", "notes"} <= admin_control_cols
     assert {"admin_user_id", "action", "target_user_id", "details_json"} <= audit_cols
+    assert "design_system_id" in template_cols

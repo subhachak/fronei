@@ -1056,7 +1056,11 @@ def build_document_artifact(
 
             plan_issues = []
             if agentdeck_plan is not None:
-                plan_issues = run_plan_checks(doc_plan_obj or agentdeck_plan)
+                try:
+                    plan_issues = run_plan_checks(doc_plan_obj or agentdeck_plan)
+                except Exception:
+                    logger.exception("AgentDeck deterministic plan checks failed; continuing to render")
+                    plan_issues = []
                 try:
                     content = _render_agentdeck_pptx(agentdeck_plan)
                 except Exception as exc:

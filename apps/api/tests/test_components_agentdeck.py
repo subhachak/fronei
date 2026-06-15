@@ -672,3 +672,34 @@ def test_generate_agentdeck_pptx_bytes_end_to_end():
     assert len(content) > 1000
     # PPTX files are zip archives.
     assert content[:2] == b"PK"
+
+
+@pytest.mark.skipif(not _agentdeck_renderer_available(), reason="agentdeck node renderer not installed")
+def test_agentdeck_renderer_retries_without_bad_brand_logo():
+    plan = PptxRenderPlan.build(
+        [
+            PptxSlidePlan(
+                slide_layout="CONTENT_1COL",
+                title="Uploaded template smoke test",
+                zones={
+                    "body": ZoneInstance(
+                        component_id="bullet_list",
+                        props={"items": [{"text": "Bad decorative logo data must not block the deck.", "level": 0}]},
+                    )
+                },
+            )
+        ],
+        theme="dark",
+    )
+    payload = plan.to_payload()
+    payload["design_system"]["meta"]["brand_logo"] = {
+        "content_type": "image/png",
+        "data_base64": "not-a-valid-image",
+        "width_in": 1.2,
+        "height_in": 0.6,
+    }
+
+    content = document_generator._render_agentdeck_pptx_one_shot(payload)
+
+    assert isinstance(content, bytes)
+    assert content[:2] == b"PK"

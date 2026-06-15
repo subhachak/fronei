@@ -52,6 +52,30 @@ async function renderPayload(payload) {
   if (!spec) {
     throw new Error("Missing 'design_system' in render plan payload");
   }
+  try {
+    return await _renderDeck(payload, spec);
+  } catch (err) {
+    // #198/#200: a malformed/unsupported brand_logo asset doesn't always
+    // throw at `addImage()` time -- pptxgenjs defers actual image decoding
+    // (size/type sniffing) to `pptx.write()`, which is *outside* the
+    // per-slide try/catch around `addBrandLogoMark`. That left brand decks
+    // with a bad logo asset failing the whole render (and, after falling
+    // back from the warm renderer to the one-shot subprocess, failing
+    // identically on retry -- "PowerPoint rendering failed" every time).
+    // If the spec carries a brand_logo, retry once with it stripped so the
+    // deck still renders; the logo is purely decorative.
+    if (spec.meta && spec.meta.brand_logo) {
+      process.stderr.write(
+        `Render failed with brand_logo present; retrying without it: ${err && err.stack ? err.stack : err}\n`
+      );
+      const specWithoutLogo = { ...spec, meta: { ...spec.meta, brand_logo: undefined } };
+      return _renderDeck(payload, specWithoutLogo);
+    }
+    throw err;
+  }
+}
+
+async function _renderDeck(payload, spec) {
   const theme = payload.theme === "light" ? "light" : "dark";
   const slidePlans = payload.slides || [];
 

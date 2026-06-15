@@ -31,6 +31,7 @@ import re
 
 from app.config import get_settings
 from app.schemas import RouteDecision
+from app.services.brand import BrandProfile, UserDocumentProfile
 from app.services.llm_gateway import LLMResult, invoke_llm
 
 from ..design_systems.registry import get_design_system
@@ -122,6 +123,34 @@ def _build_outline_user_message(prompt_text: str, extra_context: str | None) -> 
     if extra_context:
         return f"{prompt_text}\n\n{extra_context}"
     return prompt_text
+
+
+def _user_document_profile_context(profile: "UserDocumentProfile | None") -> str:
+    """Render a `UserDocumentProfile` (#156) as compact prompt context.
+
+    Returns "" when there is no signal worth injecting so callers can
+    cheaply concatenate this onto existing `extra_context` strings.
+    """
+    if profile is None:
+        return ""
+    lines: list[str] = []
+    if profile.preferred_tone:
+        lines.append(f"- preferred tone: {profile.preferred_tone}")
+    if profile.preferred_depth:
+        lines.append(f"- preferred depth: {profile.preferred_depth}")
+    if profile.preferred_slide_density:
+        lines.append(f"- preferred slide density: {profile.preferred_slide_density}")
+    if profile.industry_context:
+        lines.append(f"- industry context: {profile.industry_context}")
+    if profile.writing_style:
+        lines.append(f"- writing style: {profile.writing_style}")
+    if profile.common_audiences:
+        lines.append(f"- common audiences: {', '.join(profile.common_audiences)}")
+    if profile.past_rejected_patterns:
+        lines.append(f"- avoid (from past feedback): {', '.join(profile.past_rejected_patterns)}")
+    if not lines:
+        return ""
+    return "USER DOCUMENT PREFERENCES:\n" + "\n".join(lines)
 
 
 def _extract_json_candidate(content: str) -> str | None:
@@ -873,12 +902,15 @@ def generate_presentation_plan(
     *,
     prompt_text: str = "",
     theme: Theme = "dark",
+    user_document_profile: "UserDocumentProfile | None" = None,
 ) -> tuple[DocPlan, LLMResult]:
     payload = {
         "prompt": prompt_text,
         "narrative": narrative.model_dump(mode="json", exclude_none=True),
         "evidence_pack": (evidence_pack or EvidencePack()).model_dump(mode="json", exclude_none=True),
     }
+    if user_document_profile is not None:
+        payload["user_document_profile"] = user_document_profile.model_dump(mode="json", exclude_none=True)
     try:
         result = invoke_llm(
             json.dumps(payload, ensure_ascii=False),
@@ -953,11 +985,27 @@ def _fallback_design_plan(presentation_plan: DocPlan, *, quality_mode: str = "st
     )
 
 
+def _apply_brand_context(
+    plan: DesignPlan,
+    brand_profile: "BrandProfile | None",
+    user_document_profile: "UserDocumentProfile | None",
+) -> DesignPlan:
+    """Stamp #155/#156 context onto a `DesignPlan`'s Phase-4 stub fields."""
+    if brand_profile is not None:
+        plan.brand_profile_id = brand_profile.id
+        plan.brand_profile = brand_profile.model_dump(mode="json", exclude_none=True)
+    if user_document_profile is not None:
+        plan.user_document_profile = user_document_profile.model_dump(mode="json", exclude_none=True)
+    return plan
+
+
 def generate_design_plan(
     presentation_plan: DocPlan,
     route: RouteDecision,
     *,
     quality_mode: str = "standard",
+    brand_profile: "BrandProfile | None" = None,
+    user_document_profile: "UserDocumentProfile | None" = None,
 ) -> tuple[DesignPlan, LLMResult]:
     payload = {
         "presentation_plan": presentation_plan.model_dump(mode="json", exclude_none=True),
@@ -968,6 +1016,10 @@ def generate_design_plan(
         },
         "quality_mode": quality_mode,
     }
+    if brand_profile is not None:
+        payload["brand_profile"] = brand_profile.model_dump(mode="json", exclude_none=True)
+    if user_document_profile is not None:
+        payload["user_document_profile"] = user_document_profile.model_dump(mode="json", exclude_none=True)
     try:
         result = invoke_llm(
             json.dumps(payload, ensure_ascii=False),
@@ -977,7 +1029,12 @@ def generate_design_plan(
         )
     except Exception as exc:
         logger.warning("Design-planning LLM call failed, using fallback: %s", exc)
-        return _fallback_design_plan(presentation_plan, quality_mode=quality_mode), LLMResult(
+        fallback = _apply_brand_context(
+            _fallback_design_plan(presentation_plan, quality_mode=quality_mode),
+            brand_profile,
+            user_document_profile,
+        )
+        return fallback, LLMResult(
             answer="",
             model_used="fallback",
             latency_ms=0,
@@ -993,6 +1050,7 @@ def generate_design_plan(
         plan = _fallback_design_plan(presentation_plan, quality_mode=quality_mode)
     if not plan.slide_treatments:
         plan = _fallback_design_plan(presentation_plan, quality_mode=quality_mode)
+    plan = _apply_brand_context(plan, brand_profile, user_document_profile)
     return plan, result
 
 
@@ -1045,8 +1103,14 @@ def generate_agentdeck_v2_plan(
     extra_context: str | None = None,
     db: Any | None = None,
     quality_mode: str = "standard",
+    brand_profile: "BrandProfile | None" = None,
+    user_document_profile: "UserDocumentProfile | None" = None,
 ) -> tuple[DocPlan, DesignPlan, LLMResult]:
-    narrative, narrative_result = generate_narrative_plan(prompt_text, route, extra_context=extra_context)
+    udp_context = _user_document_profile_context(user_document_profile)
+    narrative_context = "\n\n".join(part for part in (extra_context, udp_context) if part)
+    narrative, narrative_result = generate_narrative_plan(
+        prompt_text, route, extra_context=narrative_context or None
+    )
     evidence_pack = EvidencePack()
     presentation, presentation_result = generate_presentation_plan(
         narrative,
@@ -1054,8 +1118,15 @@ def generate_agentdeck_v2_plan(
         route,
         prompt_text=prompt_text,
         theme=theme,
+        user_document_profile=user_document_profile,
     )
-    design, design_result = generate_design_plan(presentation, route, quality_mode=quality_mode)
+    design, design_result = generate_design_plan(
+        presentation,
+        route,
+        quality_mode=quality_mode,
+        brand_profile=brand_profile,
+        user_document_profile=user_document_profile,
+    )
 
     doc_plan, doc_result = generate_doc_plan(
         prompt_text,

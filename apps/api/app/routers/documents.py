@@ -48,7 +48,7 @@ from app.services.document_templates import (
     store_user_pptx_template,
 )
 from app.services.pptx_render_qa import run_pptx_render_qa
-from app.services.qa import run_plan_checks, run_render_checks
+from app.services.qa import QAIssue, repair_docplan_for_qa, run_plan_checks, run_render_checks
 from app.services.llm_gateway import invoke_llm
 from app.services.personal_context import build_context
 from app.services.planner import run_planner
@@ -952,6 +952,61 @@ def build_document_artifact(
                         render_qa = {"available": False, "issues": []}
                     render_qa["deterministic_issues"] = deterministic_issues
 
+            # AgentDeck v2 structural repair loop for DocPlan-based decks.
+            # Repairs the highest-level structured plan (titles/deks/blocks)
+            # before re-composing and re-rendering, instead of patching PPTX
+            # bytes or silently falling back to the legacy renderer.
+            repair_iterations = 0
+            if doc_plan_obj is not None and agentdeck_plan is not None and render_qa is not None:
+                current_doc_plan = doc_plan_obj
+                current_issues = [
+                    QAIssue.model_validate(issue)
+                    for issue in (render_qa.get("deterministic_issues") or [])
+                    if isinstance(issue, dict)
+                ]
+                for _ in range(2):
+                    if not current_issues:
+                        break
+                    repaired_doc_plan, changed = repair_docplan_for_qa(current_doc_plan, current_issues)
+                    if not changed:
+                        break
+                    try:
+                        repaired_render_plan = compose_docplan_to_pptx_render_plan(repaired_doc_plan, theme=agentdeck_theme)
+                        repaired_content = generate_agentdeck_pptx_bytes(repaired_render_plan)
+                        repaired_qa = None
+                        if get_settings().pptx_render_qa_enabled:
+                            repaired_qa = run_pptx_render_qa(repaired_content)
+                        repaired_plan_issues = run_plan_checks(repaired_doc_plan)
+                        repaired_deterministic = [issue.to_render_qa_issue() for issue in repaired_plan_issues]
+                        if repaired_qa is not None:
+                            repaired_deterministic.extend(
+                                issue.to_render_qa_issue() for issue in run_render_checks(repaired_qa)
+                            )
+                    except Exception:
+                        logger.exception("AgentDeck DocPlan repair-loop re-render failed")
+                        break
+                    repair_iterations += 1
+                    current_doc_plan = repaired_doc_plan
+                    agentdeck_plan = repaired_render_plan
+                    content = repaired_content
+                    render_qa = repaired_qa or {"available": False, "issues": []}
+                    if repaired_deterministic:
+                        render_qa["deterministic_issues"] = repaired_deterministic
+                        current_issues = [
+                            QAIssue.model_validate(issue)
+                            for issue in repaired_deterministic
+                            if isinstance(issue, dict)
+                        ]
+                    else:
+                        current_issues = []
+                        render_qa.pop("deterministic_issues", None)
+                        break
+                if repair_iterations:
+                    doc_plan_obj = current_doc_plan
+                    preview["markdown"] = _docplan_to_markdown(doc_plan_obj) or preview.get("markdown")
+                    render_qa = render_qa or {"available": False, "issues": []}
+                    render_qa["repair_iterations"] = repair_iterations
+
             # Repair loop: if render QA flags crowded slides and we have a
             # structured DeckPlan, apply small deterministic edits (drop a
             # bullet/row/phase) and re-render, re-checking each time. Stops
@@ -959,7 +1014,6 @@ def build_document_artifact(
             # small iteration cap is hit. Slide-number -> plan["slides"]
             # index mapping differs between renderers (see
             # repair_deck_plan_for_qa's slide_offset docstring).
-            repair_iterations = 0
             if (
                 deck_plan
                 and render_qa

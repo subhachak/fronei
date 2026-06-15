@@ -4,6 +4,8 @@ import logging
 import queue as _queue_module
 import re
 import threading as _threading
+import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as _FutureTimeoutError
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, HTTPException, Query
@@ -13,7 +15,7 @@ from fastapi.responses import StreamingResponse
 from app.auth import CurrentUser, CurrentUserIsAdmin
 from app.config import get_settings
 from app.db.models import (
-    Conversation, ConversationMessage, ConversationTurn, RequestLog, SessionLocal,
+    Conversation, ConversationMessage, ConversationTurn, DocumentTemplate, RequestLog, SessionLocal,
     get_effective_monthly_budget, get_monthly_spend, get_turn_runtime_config,
     get_twin_profile, is_user_pending, is_user_suspended, UserProfile,
 )
@@ -58,6 +60,40 @@ from app.services.rate_limit import check_rate_limit, rate_limiter
 router = APIRouter(prefix="/conversations", tags=["conversations"])
 
 logger = logging.getLogger(__name__)
+
+
+# ── Bounded execution for long synchronous pipeline work (#168) ───────────────
+# generate_document_output / build_document_artifact run a chain of LLM calls,
+# subprocess renders, and QA/repair loops with no internal deadline — a single
+# slow provider call or stuck repair loop can hang the worker thread (and thus
+# the whole turn) indefinitely. Python can't forcibly preempt a running thread,
+# so _run_with_timeout can't kill the underlying work, but it lets the *turn*
+# give up and report failure to the user/turn-state after a bounded wait,
+# instead of leaving the conversation stuck on "Drafting your document…"
+# forever. The abandoned thread is left to finish (or fail) in the background;
+# its result is simply discarded.
+_DOCUMENT_PIPELINE_EXECUTOR = ThreadPoolExecutor(max_workers=8, thread_name_prefix="doc-pipeline")
+
+
+class PipelineTimeout(Exception):
+    """Raised when a bounded pipeline step exceeds its allotted time."""
+
+
+def _run_with_timeout(fn, *args, timeout_seconds: float, **kwargs):
+    future = _DOCUMENT_PIPELINE_EXECUTOR.submit(fn, *args, **kwargs)
+    try:
+        return future.result(timeout=timeout_seconds)
+    except _FutureTimeoutError:
+        raise PipelineTimeout(
+            f"This is taking longer than expected (over {int(timeout_seconds // 60)} minutes) "
+            "and has been stopped. Please retry — a simpler request or a different "
+            "template/format may complete faster."
+        )
+
+
+def _document_pipeline_timeout_seconds(db) -> float:
+    config = get_turn_runtime_config(db)
+    return float(config.get("document_timeout_minutes", 120)) * 60.0
 
 
 # ── Error translation ─────────────────────────────────────────────────────────
@@ -1130,10 +1166,10 @@ def _load_profile_json_for_documents(db, user_id: str) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def _document_generation_profiles(db, user_id: str, plan) -> tuple[object | None, object | None]:
+def _document_generation_profiles(db, user_id: str, plan) -> tuple[object | None, str | None, object | None]:
     brief = dict(plan.document_brief or {})
     if brief.get("doc_type") != "presentation":
-        return None, user_document_profile_from_memory(user_id, _load_profile_json_for_documents(db, user_id))
+        return None, None, user_document_profile_from_memory(user_id, _load_profile_json_for_documents(db, user_id))
 
     user_profile = user_document_profile_from_memory(user_id, _load_profile_json_for_documents(db, user_id))
     template_id = brief.get("template_id")
@@ -1145,7 +1181,28 @@ def _document_generation_profiles(db, user_id: str, plan) -> tuple[object | None
         brand_profile = brand_profile_from_template_grammar(grammar, user_id=user_id)
     except Exception:
         logger.exception("Failed to build AgentDeck brand profile")
-    return brand_profile, user_profile
+
+    # #183: if the selected template is a user-uploaded template with a
+    # generated brand design_system (#181/#182), render with that design
+    # system instead of the default "agentdeck_v1".
+    design_system_id: str | None = None
+    if isinstance(template_id, str) and template_id:
+        try:
+            row = (
+                db.query(DocumentTemplate)
+                .filter(
+                    DocumentTemplate.user_id == user_id,
+                    DocumentTemplate.public_id == template_id,
+                    DocumentTemplate.is_active.is_(True),
+                )
+                .first()
+            )
+            if row is not None and row.design_system_id:
+                design_system_id = row.design_system_id
+        except Exception:
+            logger.exception("Failed to resolve brand design_system_id for template %s", template_id)
+
+    return brand_profile, design_system_id, user_profile
 
 
 def _document_failure_answer(document_preview: dict | None) -> str | None:
@@ -1199,11 +1256,52 @@ def chat_stream(req: ConvChatRequest, user_id: str = CurrentUser, is_admin: bool
                         if done_event:
                             yield done_event
                             return
+                    if existing_turn.status in ("failed", "cancelled"):
+                        yield _sse("error", {
+                            "message": existing_turn.error_message or "Turn did not complete successfully.",
+                        })
+                        return
+
+                    # #172: the turn is still active (pending/running). Rather
+                    # than emitting one informational log and ending the
+                    # stream with no done/error — which strands a
+                    # reconnecting client mid-"Drafting…" with nothing to
+                    # react to — poll until the turn reaches a terminal state
+                    # and emit the corresponding done/error event.
                     yield _pipeline_log(
                         "working",
                         f"Turn is already {existing_turn.status}; reconnecting to the conversation when it finishes.",
                         turn_id=existing_turn.public_id,
                     )
+                    poll_deadline = time.monotonic() + _document_pipeline_timeout_seconds(db) + 60
+                    while existing_turn.status in ("pending", "running") and time.monotonic() < poll_deadline:
+                        time.sleep(2)
+                        db.expire(existing_turn)
+                        refreshed = db.get(ConversationTurn, existing_turn.id)
+                        if refreshed is None:
+                            yield _sse("error", {"message": "Turn no longer exists."})
+                            return
+                        existing_turn = refreshed
+
+                    if existing_turn.status == "completed":
+                        done_event = _turn_completed_done_event(db, existing_turn)
+                        if done_event:
+                            yield done_event
+                            return
+                        yield _sse("error", {"message": "Turn completed but its result could not be recovered."})
+                        return
+                    if existing_turn.status in ("failed", "cancelled"):
+                        yield _sse("error", {
+                            "message": existing_turn.error_message or "Turn did not complete successfully.",
+                        })
+                        return
+
+                    # Still not terminal (e.g. stuck past the timeout, or
+                    # awaiting_confirmation, which can't be faithfully
+                    # replayed on a reconnect).
+                    yield _sse("error", {
+                        "message": "Still working on this in the background. Reload the page in a bit to check for results.",
+                    })
                     return
 
             if is_user_suspended(db, user_id):
@@ -1440,38 +1538,58 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                         if finalization_event:
                             yield finalization_event
                             return
-                        brand_profile, user_document_profile = _document_generation_profiles(db, user_id, plan)
+                        brand_profile, design_system_id, user_document_profile = _document_generation_profiles(db, user_id, plan)
 
-                        result, doc_body, chat_summary, doc_type = generate_document_output(
-                            plan, route, history, empty_wc, planner_ctx,
-                            doc_context, False, False,
-                            artifact_context=artifact_context,
-                            user_memory=user_memory,
-                            db=db,
-                            brand_profile=brand_profile,
-                            user_document_profile=user_document_profile,
-                        )
-                        log_doc_plan_usage(db, doc_type, doc_body)
-                        for chunk in [chat_summary[i:i + 80] for i in range(0, len(chat_summary), 80)]:
-                            yield _sse("token", {"text": chunk})
-                        final_answer = chat_summary
-                        result.estimated_cost_usd = (
-                            (result.estimated_cost_usd or 0.0)
-                            + followup_cost
-                            + plan.planner_cost_usd
-                        )
-                        title = (plan.document_brief or {}).get("title") or plan.intent
-                        template_id = (plan.document_brief or {}).get("template_id")
-                        template_path = resolve_template_path(db, user_id, template_id if isinstance(template_id, str) else None)
-                        document_preview = build_document_artifact(
-                            title or "Fronei document", doc_body, doc_type, fmt,
-                            template_id=template_id if isinstance(template_id, str) else None,
-                            template_path=str(template_path) if template_path else None,
-                            quality_mode=_document_quality_mode(plan),
-                        )
-                        if failure_answer := _document_failure_answer(document_preview):
-                            final_answer = failure_answer
-                        log_render_qa_failures(db, doc_type, doc_body, document_preview.get("render_qa"))
+                        try:
+                            result, doc_body, chat_summary, doc_type = _run_with_timeout(
+                                generate_document_output,
+                                plan, route, history, empty_wc, planner_ctx,
+                                doc_context, False, False,
+                                artifact_context=artifact_context,
+                                user_memory=user_memory,
+                                db=db,
+                                brand_profile=brand_profile,
+                                user_document_profile=user_document_profile,
+                                design_system=design_system_id,
+                                timeout_seconds=_document_pipeline_timeout_seconds(db),
+                            )
+                        except PipelineTimeout as exc:
+                            document_preview = {"generation_failure": {"user_message": str(exc)}}
+                            final_answer = _document_failure_answer(document_preview) or str(exc)
+                            for chunk in [final_answer[i:i + 80] for i in range(0, len(final_answer), 80)]:
+                                yield _sse("token", {"text": chunk})
+                            result.estimated_cost_usd = (
+                                (result.estimated_cost_usd or 0.0)
+                                + followup_cost
+                                + plan.planner_cost_usd
+                            )
+                        else:
+                            log_doc_plan_usage(db, doc_type, doc_body)
+                            for chunk in [chat_summary[i:i + 80] for i in range(0, len(chat_summary), 80)]:
+                                yield _sse("token", {"text": chunk})
+                            final_answer = chat_summary
+                            result.estimated_cost_usd = (
+                                (result.estimated_cost_usd or 0.0)
+                                + followup_cost
+                                + plan.planner_cost_usd
+                            )
+                            title = (plan.document_brief or {}).get("title") or plan.intent
+                            template_id = (plan.document_brief or {}).get("template_id")
+                            template_path = resolve_template_path(db, user_id, template_id if isinstance(template_id, str) else None)
+                            try:
+                                document_preview = _run_with_timeout(
+                                    build_document_artifact,
+                                    title or "Fronei document", doc_body, doc_type, fmt,
+                                    template_id=template_id if isinstance(template_id, str) else None,
+                                    template_path=str(template_path) if template_path else None,
+                                    quality_mode=_document_quality_mode(plan),
+                                    timeout_seconds=_document_pipeline_timeout_seconds(db),
+                                )
+                            except PipelineTimeout as exc:
+                                document_preview = {"generation_failure": {"user_message": str(exc)}}
+                            if failure_answer := _document_failure_answer(document_preview):
+                                final_answer = failure_answer
+                            log_render_qa_failures(db, doc_type, doc_body, document_preview.get("render_qa"))
                     else:
                         for chunk in [final_answer[i:i+80] for i in range(0, len(final_answer), 80)]:
                             yield _sse("token", {"text": chunk})
@@ -1642,38 +1760,58 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                     if finalization_event:
                         yield finalization_event
                         return
-                    brand_profile, user_document_profile = _document_generation_profiles(db, user_id, plan)
+                    brand_profile, design_system_id, user_document_profile = _document_generation_profiles(db, user_id, plan)
 
-                    result, doc_body, chat_summary, doc_type = generate_document_output(
-                        plan, route, history, empty_wc, planner_ctx,
-                        doc_context, False, False,
-                        artifact_context=artifact_context,
-                        user_memory=user_memory,
-                        db=db,
-                        brand_profile=brand_profile,
-                        user_document_profile=user_document_profile,
-                    )
-                    log_doc_plan_usage(db, doc_type, doc_body)
-                    for chunk in [chat_summary[i:i + 80] for i in range(0, len(chat_summary), 80)]:
-                        yield _sse("token", {"text": chunk})
-                    final_answer = chat_summary
-                    result.estimated_cost_usd = (
-                        (result.estimated_cost_usd or 0.0)
-                        + (research.result.estimated_cost_usd or 0.0)
-                        + plan.planner_cost_usd
-                    )
-                    title = (plan.document_brief or {}).get("title") or plan.intent
-                    template_id = (plan.document_brief or {}).get("template_id")
-                    template_path = resolve_template_path(db, user_id, template_id if isinstance(template_id, str) else None)
-                    document_preview = build_document_artifact(
-                        title or "Fronei document", doc_body, doc_type, fmt,
-                        template_id=template_id if isinstance(template_id, str) else None,
-                        template_path=str(template_path) if template_path else None,
-                        quality_mode=_document_quality_mode(plan),
-                    )
-                    if failure_answer := _document_failure_answer(document_preview):
-                        final_answer = failure_answer
-                    log_render_qa_failures(db, doc_type, doc_body, document_preview.get("render_qa"))
+                    try:
+                        result, doc_body, chat_summary, doc_type = _run_with_timeout(
+                            generate_document_output,
+                            plan, route, history, empty_wc, planner_ctx,
+                            doc_context, False, False,
+                            artifact_context=artifact_context,
+                            user_memory=user_memory,
+                            db=db,
+                            brand_profile=brand_profile,
+                            user_document_profile=user_document_profile,
+                            design_system=design_system_id,
+                            timeout_seconds=_document_pipeline_timeout_seconds(db),
+                        )
+                    except PipelineTimeout as exc:
+                        document_preview = {"generation_failure": {"user_message": str(exc)}}
+                        final_answer = _document_failure_answer(document_preview) or str(exc)
+                        for chunk in [final_answer[i:i + 80] for i in range(0, len(final_answer), 80)]:
+                            yield _sse("token", {"text": chunk})
+                        result.estimated_cost_usd = (
+                            (result.estimated_cost_usd or 0.0)
+                            + (research.result.estimated_cost_usd or 0.0)
+                            + plan.planner_cost_usd
+                        )
+                    else:
+                        log_doc_plan_usage(db, doc_type, doc_body)
+                        for chunk in [chat_summary[i:i + 80] for i in range(0, len(chat_summary), 80)]:
+                            yield _sse("token", {"text": chunk})
+                        final_answer = chat_summary
+                        result.estimated_cost_usd = (
+                            (result.estimated_cost_usd or 0.0)
+                            + (research.result.estimated_cost_usd or 0.0)
+                            + plan.planner_cost_usd
+                        )
+                        title = (plan.document_brief or {}).get("title") or plan.intent
+                        template_id = (plan.document_brief or {}).get("template_id")
+                        template_path = resolve_template_path(db, user_id, template_id if isinstance(template_id, str) else None)
+                        try:
+                            document_preview = _run_with_timeout(
+                                build_document_artifact,
+                                title or "Fronei document", doc_body, doc_type, fmt,
+                                template_id=template_id if isinstance(template_id, str) else None,
+                                template_path=str(template_path) if template_path else None,
+                                quality_mode=_document_quality_mode(plan),
+                                timeout_seconds=_document_pipeline_timeout_seconds(db),
+                            )
+                        except PipelineTimeout as exc:
+                            document_preview = {"generation_failure": {"user_message": str(exc)}}
+                        if failure_answer := _document_failure_answer(document_preview):
+                            final_answer = failure_answer
+                        log_render_qa_failures(db, doc_type, doc_body, document_preview.get("render_qa"))
                 elif should_refine(result.answer, output_mode, twin_profile):
                     yield _sse("refine_start", {})
                     refined_text = ""
@@ -1821,16 +1959,25 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                 yield _pipeline_log("working", "Drafting your document…")
                 fmt = _document_output_format(plan, gate)
                 _coerce_presentation_brief_for_pptx(plan, fmt)
-                brand_profile, user_document_profile = _document_generation_profiles(db, user_id, plan)
-                result, doc_body, chat_summary, doc_type = generate_document_output(
-                    plan, route, history, wc, planner_ctx,
-                    _document_context_for_generation(setup.doc_context, plan), req.deep_research, enable_native,
-                    artifact_context=_presentation_artifact_context(setup.artifact_context or "", db, user_id, plan),
-                    user_memory=user_memory,
-                    db=db,
-                    brand_profile=brand_profile,
-                    user_document_profile=user_document_profile,
-                )
+                brand_profile, design_system_id, user_document_profile = _document_generation_profiles(db, user_id, plan)
+                try:
+                    result, doc_body, chat_summary, doc_type = _run_with_timeout(
+                        generate_document_output,
+                        plan, route, history, wc, planner_ctx,
+                        _document_context_for_generation(setup.doc_context, plan), req.deep_research, enable_native,
+                        artifact_context=_presentation_artifact_context(setup.artifact_context or "", db, user_id, plan),
+                        user_memory=user_memory,
+                        db=db,
+                        brand_profile=brand_profile,
+                        user_document_profile=user_document_profile,
+                        design_system=design_system_id,
+                        timeout_seconds=_document_pipeline_timeout_seconds(db),
+                    )
+                except PipelineTimeout as exc:
+                    # Nothing has been committed yet for this turn, so a plain
+                    # error event is safe here.
+                    yield _sse("error", {"message": str(exc)})
+                    return
                 log_doc_plan_usage(db, doc_type, doc_body)
                 for chunk in [chat_summary[i:i + 80] for i in range(0, len(chat_summary), 80)]:
                     yield _sse("token", {"text": chunk})
@@ -1862,14 +2009,26 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                 title = (plan.document_brief or {}).get("title") or plan.intent
                 template_id = (plan.document_brief or {}).get("template_id")
                 template_path = resolve_template_path(db, user_id, template_id if isinstance(template_id, str) else None)
-                document_preview = build_document_artifact(
-                    title or "Fronei document", doc_body, doc_type, fmt,
-                    template_id=template_id if isinstance(template_id, str) else None,
-                    template_path=str(template_path) if template_path else None,
-                    quality_mode=_document_quality_mode(plan),
-                )
+                # #170: asst_msg (with the chat-facing summary) is already
+                # committed at this point. If the artifact build fails or
+                # times out, fall back to a generation_failure preview rather
+                # than letting the exception bubble up as a bare "error"
+                # event that would strand the saved message with no preview
+                # and a final_answer the client never receives.
+                try:
+                    document_preview = _run_with_timeout(
+                        build_document_artifact,
+                        title or "Fronei document", doc_body, doc_type, fmt,
+                        template_id=template_id if isinstance(template_id, str) else None,
+                        template_path=str(template_path) if template_path else None,
+                        quality_mode=_document_quality_mode(plan),
+                        timeout_seconds=_document_pipeline_timeout_seconds(db),
+                    )
+                except PipelineTimeout as exc:
+                    document_preview = {"generation_failure": {"user_message": str(exc)}}
                 if failure_answer := _document_failure_answer(document_preview):
                     final_answer = failure_answer
+                    asst_msg.content = final_answer
                 log_render_qa_failures(db, doc_type, doc_body, document_preview.get("render_qa"))
 
                 asst_msg.document_preview_json = json.dumps(document_preview) if document_preview else None

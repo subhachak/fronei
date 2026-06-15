@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import logging
 import re
 import secrets
@@ -14,6 +15,11 @@ from pptx.enum.shapes import MSO_SHAPE_TYPE
 
 from app.config import get_settings
 from app.db.models import DocumentTemplate
+from app.services.brand.brand_profile import brand_profile_from_template_grammar
+from app.services.design_systems.brand_generator import (
+    design_system_id_for_template,
+    write_brand_design_system,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -219,6 +225,56 @@ def _infer_slide_role(slide) -> str:
 _TEMPLATE_GRAMMAR_CACHE: dict[tuple[str, float, int], dict[str, object]] = {}
 
 
+MAX_LOGO_ASSET_BYTES = 400 * 1024
+_EMU_PER_INCH = 914400
+
+
+def _extract_logo_asset(prs: "Presentation") -> dict[str, object] | None:
+    """Best-effort extraction of a brand logo image from an uploaded PPTX
+    (#185), used to populate `BrandProfile.logo_assets`.
+
+    Scans the title slide (and first content slide as a fallback) for
+    picture shapes and picks the smallest-area picture above a minimum size
+    -- logos are usually small marks, whereas large pictures are typically
+    full-bleed photos/backgrounds. Returns a JSON-serializable dict with the
+    image embedded as base64, or `None` if nothing suitable is found.
+    """
+    candidates: list[tuple[float, dict[str, object]]] = []
+    for slide in list(prs.slides)[:2]:
+        for shape in slide.shapes:
+            if shape.shape_type != MSO_SHAPE_TYPE.PICTURE:
+                continue
+            try:
+                image = shape.image
+            except Exception:
+                continue
+            if not image.blob or len(image.blob) > MAX_LOGO_ASSET_BYTES:
+                continue
+            width_in = (shape.width or 0) / _EMU_PER_INCH
+            height_in = (shape.height or 0) / _EMU_PER_INCH
+            if width_in <= 0 or height_in <= 0:
+                continue
+            area = width_in * height_in
+            # Skip near-full-slide images (backgrounds/photos) -- a logo is
+            # a small mark, typically well under a quarter of the slide.
+            if area > 6.0:
+                continue
+            candidates.append((
+                area,
+                {
+                    "content_type": f"image/{image.ext}",
+                    "data_base64": base64.b64encode(image.blob).decode("ascii"),
+                    "width_in": round(width_in, 3),
+                    "height_in": round(height_in, 3),
+                },
+            ))
+    if not candidates:
+        return None
+    # Smallest qualifying picture is the most likely logo mark.
+    candidates.sort(key=lambda c: c[0])
+    return candidates[0][1]
+
+
 def template_grammar_for_path(path: Path) -> dict[str, object]:
     """Inspect a real PPTX template and return a compact design grammar.
 
@@ -357,6 +413,10 @@ def _template_option_from_row(row: DocumentTemplate, *, recommended: bool = Fals
         "recommended": recommended,
         "user_template": True,
         "design_mode": "template_following",
+        # #185: the brand design_system generated from this template's
+        # BrandProfile (#181/#184), if any -- lets the picker show a "Brand"
+        # badge and #183 resolves this id at generation time.
+        "design_system": row.design_system_id or None,
     }
 
 
@@ -424,7 +484,12 @@ def store_user_pptx_template(
         raise ValueError("Only .pptx templates are supported.")
 
     # Validate before writing permanently.
-    Presentation(BytesIO(data))
+    prs = Presentation(BytesIO(data))
+    logo_asset = None
+    try:
+        logo_asset = _extract_logo_asset(prs)
+    except Exception:
+        logger.exception("Failed to extract logo asset from uploaded template %s", filename)
 
     now = datetime.now(timezone.utc)
     public_id = secrets.token_hex(12)
@@ -452,6 +517,28 @@ def store_user_pptx_template(
     db.add(row)
     db.commit()
     db.refresh(row)
+
+    # #184: generate a first-class brand design_system from this template's
+    # grammar/colors/fonts (#181) and register it on the row so the document
+    # popup can select it (#183 resolves it at generation time). Best-effort:
+    # a failure here should not block the template upload itself.
+    try:
+        grammar = template_grammar_for_path(path)
+        brand_profile = brand_profile_from_template_grammar(
+            grammar, user_id=user_id, profile_id=f"template:{public_id}"
+        )
+        brand_profile.source_template_id = public_id
+        if logo_asset is not None:
+            brand_profile.logo_assets = [logo_asset]
+        design_system_id = design_system_id_for_template(user_id, public_id)
+        write_brand_design_system(brand_profile, design_system_id=design_system_id)
+        row.design_system_id = design_system_id
+        row.updated_at = datetime.now(timezone.utc)
+        db.commit()
+        db.refresh(row)
+    except Exception:
+        logger.exception("Failed to generate brand design_system for template %s", public_id)
+
     return row
 
 

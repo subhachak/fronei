@@ -270,6 +270,10 @@ class DocumentTemplate(Base):
     content_type: Mapped[str | None] = mapped_column(String(120), nullable=True)
     file_size: Mapped[int] = mapped_column(Integer, default=0)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # #182: id of a generated brand design_system (design_systems/<id>/spec.json)
+    # produced from this template's BrandProfile (#181). Null until generated,
+    # and null for built-in templates that don't get a brand variant.
+    design_system_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 

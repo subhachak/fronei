@@ -3217,6 +3217,7 @@ function DocumentFinalizationModal({
                       <span>{t.name}</span>
                       {t.recommended && <em>Recommended</em>}
                       {t.design_system === 'agentdeck_v1' && <em>v2</em>}
+                      {t.design_system && t.design_system.startsWith('brand_') && <em>Brand</em>}
                     </span>
                     {t.description && <span className="doc-plan-option-reason">{t.description}</span>}
                   </button>
@@ -5224,7 +5225,6 @@ export default function Home() {
               message: turn.error_message || 'This turn failed before it completed.',
               userMessage,
             })
-            if (turn.error_message) setError(turn.error_message)
           } else if (turn.status === 'cancelled') {
             setActiveTurnNotice({
               convId,
@@ -5261,7 +5261,19 @@ export default function Home() {
         // Keep polling; mobile/network recovery is best-effort.
       }
     }
-    if (pollingTurnRef.current === turnId) pollingTurnRef.current = null
+    // Polling exhausted (~4 minutes) without the turn reaching a terminal
+    // state. Don't leave the UI stuck on "Drafting your document…" forever —
+    // surface a notice so the user knows to reload/retry, but leave the
+    // turn itself alone since it may still complete server-side.
+    if (pollingTurnRef.current === turnId) {
+      pollingTurnRef.current = null
+      setActiveTurnNotice(prev => prev && prev.turnId === turnId
+        ? {
+            ...prev,
+            message: 'Still working on this in the background. It may take a while longer — reload the page to check for results.',
+          }
+        : prev)
+    }
   }
 
   function newConversation() {

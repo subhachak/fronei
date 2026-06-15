@@ -473,6 +473,7 @@ def generate_document_output(
     db: object | None = None,
     brand_profile: BrandProfile | None = None,
     user_document_profile: UserDocumentProfile | None = None,
+    design_system: str | None = None,
 ) -> tuple[LLMResult, str, str, str]:
     """Two-pass document generation: draft, then a revision pass that tightens
     against an anti-"AI slop" checklist (generic phrasing, redundancy, missing
@@ -533,6 +534,7 @@ def generate_document_output(
             quality_mode=quality_mode,
             brand_profile=brand_profile,
             user_document_profile=user_document_profile,
+            design_system=design_system or "agentdeck_v1",
         )
         body = doc_plan.model_dump_json()
         bullets = [

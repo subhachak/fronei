@@ -76,6 +76,34 @@ const ICON_CIRCLE_SIZES = {
   lg: { diameter: 0.9, icon: 0.5 },
 };
 
+// Maps semantic icon names (e.g. "info", "warning") to a glyph that reads
+// sensibly inside a small circle badge. Anything not in this map falls back
+// to its first character -- but "info"/"insight" must map to lowercase "i"
+// (the conventional info-icon glyph), not an uppercased "I", which a viewer
+// reads as a stray capital letter rather than an icon.
+const ICON_GLYPHS = {
+  info: "i",
+  insight: "i",
+  note: "i",
+  check: "✓",
+  success: "✓",
+  done: "✓",
+  warning: "!",
+  risk: "!",
+  danger: "!",
+  alert: "!",
+  cost: "$",
+  money: "$",
+  budget: "$",
+};
+
+function iconGlyph(icon) {
+  const key = String(icon || "info").trim().toLowerCase();
+  if (ICON_GLYPHS[key]) return ICON_GLYPHS[key];
+  const ch = key.slice(0, 1);
+  return ch === "i" ? "i" : ch.toUpperCase();
+}
+
 /** Icon-in-circle placeholder (renders a glyph/number, not a real icon asset). */
 function addIconCircle(slide, spec, theme, x, y, props) {
   const size = ICON_CIRCLE_SIZES[props.size || "md"];
@@ -84,7 +112,7 @@ function addIconCircle(slide, spec, theme, x, y, props) {
     fill: { color: color(spec, theme, "accent.primary") },
     line: { type: "none" },
   });
-  const label = props.number != null ? String(props.number) : (props.icon || "").slice(0, 1).toUpperCase();
+  const label = props.number != null ? String(props.number) : iconGlyph(props.icon);
   slide.addText(label, {
     x, y, w: size.diameter, h: size.diameter,
     align: "center",

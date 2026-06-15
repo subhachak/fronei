@@ -1,7 +1,7 @@
 """add document_preview_json to conversation messages
 
 Revision ID: b3c4d5e6f789
-Revises: a1b2c3d4e5f6
+Revises: c2d3e4f5a6b7
 Create Date: 2026-06-15 00:00:00.000000
 
 """
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 
 
 revision: str = 'b3c4d5e6f789'
-down_revision: Union[str, Sequence[str], None] = 'a1b2c3d4e5f6'
+down_revision: Union[str, Sequence[str], None] = 'c2d3e4f5a6b7'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

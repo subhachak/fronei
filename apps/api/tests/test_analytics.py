@@ -1,8 +1,10 @@
+import json
+
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy import inspect, text
 from sqlalchemy.orm import sessionmaker
-from app.db.models import Base, Conversation, ConversationMessage, RequestLog, UserAdminControl, _ensure_sqlite_schema
+from app.db.models import Base, Conversation, ConversationMessage, ConversationTurn, RequestLog, UserAdminControl, _ensure_sqlite_schema
 from datetime import datetime, timezone
 
 
@@ -151,3 +153,52 @@ def test_ensure_sqlite_schema_adds_missing_legacy_columns():
     assert {"user_id", "status", "monthly_budget_usd", "notes"} <= admin_control_cols
     assert {"admin_user_id", "action", "target_user_id", "details_json"} <= audit_cols
     assert "design_system_id" in template_cols
+
+
+def test_turn_profiler_payload_extracts_stage_bottlenecks(db):
+    from app.routers.admin import _turn_profiler_payload
+
+    conv = Conversation(user_id="u1", title="Profiler", profile="balanced", message_count=2)
+    db.add(conv)
+    db.flush()
+    msg = ConversationMessage(
+        conversation_id=conv.id,
+        role="assistant",
+        content="Done",
+        task_type="document",
+        complexity="high",
+        model_used="model-a",
+        latency_ms=1800,
+        prompt_tokens=100,
+        completion_tokens=50,
+        estimated_cost_usd=0.012,
+        execution_log_json=json.dumps({
+            "planner": {"model": "planner-a", "turn_type": "document", "action": "create"},
+            "worker": {"model": "model-a", "prompt_tokens": 100, "completion_tokens": 50},
+            "total_latency_ms": 1800,
+            "total_cost_usd": 0.012,
+            "stage_timings": [
+                {"stage": "planner", "latency_ms": 300, "meta": {"model": "planner-a"}},
+                {"stage": "artifact_build", "latency_ms": 1200, "meta": {"format": "pptx"}},
+            ],
+        }),
+    )
+    db.add(msg)
+    db.flush()
+    db.add(ConversationTurn(
+        user_id="u1",
+        conversation_id=conv.id,
+        assistant_message_id=msg.id,
+        turn_kind="document",
+        status="completed",
+        progress_json=json.dumps([{"stage": "artifact_build", "message": "Rendering"}]),
+    ))
+    db.commit()
+
+    payload = _turn_profiler_payload(db, since=None, limit=10)
+
+    assert payload["summary"]["turns"] == 1
+    assert payload["summary"]["p95_latency_ms"] == 1800
+    assert payload["stage_summary"][0]["stage"] == "artifact_build"
+    assert payload["slow_turns"][0]["bottleneck_stage"] == "artifact_build"
+    assert payload["slow_turns"][0]["unattributed_ms"] == 300

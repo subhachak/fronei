@@ -171,7 +171,7 @@ This audit is based on code-structure analysis, not live traces. Before committi
 
 Reviewed against the audit above. Diagnosis confirmed; three refinements adopted before build:
 
-1. **Fast-path is narrow, not broad.** Don't bypass the planner for "simple-looking" messages generally — only for a deterministic allow-list of obvious, low-risk continuations (`thanks`, `ok`, `continue`, `explain that`, `make it shorter`, and similarly short follow-ups with no new tool/document/research signal). Everything else still goes through `run_planner()`. The planner is the product's brain; this is a guardrail, not a general bypass.
+1. **Fast-path is narrow and agentically guarded, not broad.** Obvious low-risk continuations (`thanks`, `ok`, `continue`, `make it shorter`, etc.) can still use a deterministic zero-LLM shortcut, but new informational turns use a cheap LLM triage step before the full planner is skipped. The triage model may return `simple_direct` only for timeless, low-risk explanations that do not need current facts, tools, clarification, research, or document generation. Anything ambiguous, sensitive, current, comparative, recommendation-seeking, research/document-shaped, or failed/invalid triage output still goes through `run_planner()`. The planner remains the product's brain; triage is a fast guardrail.
 2. **Plan-confirmation degrades gracefully, not binary on/off.** High-confidence + low-risk plans skip the modal but still surface a quiet inline status chip ("Using web + creating PPTX") with cancel/adjust affordances — so the user retains control without the blocking round trip.
 3. **PPTX QA/judge depth is mode-gated, not just async.**
    - Draft: no render QA at all.
@@ -184,7 +184,7 @@ Reviewed against the audit above. Diagnosis confirmed; three refinements adopted
 | Step | What | Maps to audit | Notes |
 |---|---|---|---|
 | 1 | **Instrument** — per-stage timing spans into `ConversationTurn`/`exec_log_json` (planner, web context, worker, research sub-stages, AgentDeck sub-stages incl. compose/render/QA/repair/vision judge), exposed as p50/p95 in admin dashboard | §6 | Blocks nothing else from starting, but should land first/in parallel |
-| 2 | **Fast-path trivial chat** — deterministic pre-router allow-list ahead of `run_planner()` | T1.1 (narrowed) | First user-visible win |
+| 2 | **Fast-path trivial/simple chat** — deterministic continuation allow-list plus cheap agentic triage before `run_planner()` | T1.1 (narrowed) | First user-visible win without keyword-only vulnerability |
 | 3 | **Flip production defaults**: `pptx_render_qa_enabled=false`; vision judge restricted to `quality_mode="executive"`; standard repair cap 2→1; deep research max sources 16→10–12; no refinement pass on short answers | T1.4, T2.3 (partial) | Config-only, ship immediately |
 | 4 | **Documents/research as durable progressive jobs** — return a job/status card immediately; stream milestone updates (`Found 8 sources` → `Extracted 23 claims` → `Drafting synthesis` → `Building 10-slide deck` → `Rendering` → `Quality checking` → `Ready`) | T2.5, T2.3 | Biggest perceived-latency win; supersedes the generic spinner |
 | 5 | **Parallelize research crawling** — bounded-concurrency crawl within each question worker | T2.1 | Biggest real-latency research win |
@@ -358,3 +358,30 @@ Reviewed against the audit above. Diagnosis confirmed; three refinements adopted
 - Full backend suite: `338 passed, 4 skipped`.
 - Web `npx tsc --noEmit -p tsconfig.json` clean.
 - Backend `py_compile` clean for touched Python modules.
+
+### 2026-06-15 — Slice 8: unified pre-execution gate + agentic simple-turn triage
+
+**Shipped**
+
+- Corrected the planning-stage label from `Analysing your request…` to `Analyzing your request…` in both backend SSE messages and the frontend fallback label.
+- Made planner open questions a first-class pre-execution stop condition. If the planner is uncertain or needs details, the turn now emits `plan_proposed` before any web search, deep research, or document finalization can run.
+- Deferred web-context gathering until after plan confirmation whenever the planner/gate needs user input. This prevents Fronei from searching before the user has accepted or declined web/deep research.
+- Changed planner-inferred document output into a user-declinable recommendation. If the planner thinks a document is a better output, the pre-execution Plan modal now surfaces `Generate document` as a recommended toggle; the user can turn it off and continue as normal chat.
+- Preserved explicit document intent: if the user selected `+ → Document`, that is treated as already intentional and does not require a second "should this be a document?" confirmation. Template/format/detail finalization can still happen later, just before artifact generation.
+- Replaced the keyword-only simple explanation shortcut with a cheap agentic triage call (`gemini/gemini-2.5-flash`, 4s timeout). The triage step returns structured JSON with `simple_direct` or `planner_required`.
+- The full planner is skipped only when triage explicitly returns `simple_direct`. Tool/artifact-selected turns skip triage and go directly to the full planner. Triage failure, timeout, invalid JSON, or `planner_required` also falls back to the full planner.
+- Kept the deterministic zero-LLM continuation shortcut for very small obvious follow-ups (`thanks`, `ok`, `continue`, `make it shorter`, etc.) when no tool/document/research/attachment flags are active.
+
+**Behavioral contract now enforced**
+
+1. Most unambiguous evergreen chat turns answer quickly.
+2. Sensitive, vague, uncertain, current, research-shaped, or document-shaped turns route through the planner/gate.
+3. Clarifying questions, web search, and deep research decisions happen before execution.
+4. Document generation is an output decision later in the pipeline, not the first modal shown.
+5. Suggested document output is optional; explicit document output is respected.
+
+**Verified**
+
+- Focused backend tests: `38 passed`.
+- Full backend suite: `350 passed, 4 skipped`.
+- Web `npx tsc --noEmit -p tsconfig.json` clean.

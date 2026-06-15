@@ -477,10 +477,10 @@ def test_stream_research_mode_enriches_vague_followup_from_history(client, monke
     )
 
     assert response.status_code == 200
-    assert captured["query"] == plan.enriched_prompt
     events = _events(response.text)
     assert events[-1][0] == "job_started"
     turn = _wait_for_completed_turn(Session, events[-1][1]["turn_id"])
+    assert captured["query"] == plan.enriched_prompt
     done = json.loads(turn.result_json)
     assert done["execution_log"]["planner"]["enriched_prompt"] == plan.enriched_prompt
 

@@ -1,9 +1,25 @@
 FROM python:3.11-slim
 WORKDIR /app
+
+# Node.js is required by the AgentDeck PptxGenJS renderer (apps/api/pptx_render).
+# Without it, _agentdeck_renderer_available() is always False and
+# generate_agentdeck_pptx_bytes() raises "agentdeck renderer unavailable" for
+# every presentation request.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl ca-certificates gnupg \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY apps/api/pyproject.toml apps/api/uv.lock ./
 RUN pip install --no-cache-dir uv && uv sync --frozen --no-dev
 COPY apps/api/app ./app
 COPY apps/api/alembic.ini ./alembic.ini
 COPY apps/api/alembic ./alembic
+
+# AgentDeck PptxGenJS renderer + its node_modules (pptxgenjs)
+COPY apps/api/pptx_render ./pptx_render
+RUN cd pptx_render && npm install --omit=dev
+
 EXPOSE 8000
 CMD ["uv", "run", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

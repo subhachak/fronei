@@ -53,7 +53,7 @@ def test_build_document_artifact_reports_render_failure(monkeypatch):
     assert "PowerPoint rendering failed" in preview["generation_error"]
 
 
-def test_build_document_artifact_agentdeck_render_failure_uses_python_fallback(monkeypatch):
+def test_build_document_artifact_agentdeck_render_failure_returns_generation_failure(monkeypatch):
     doc_plan = DocPlan(
         title="AI Strategy Review",
         sections=[
@@ -83,10 +83,12 @@ def test_build_document_artifact_agentdeck_render_failure_uses_python_fallback(m
 
     preview = documents.build_document_artifact("", doc_plan.model_dump_json(), "presentation", "pptx")
 
-    assert preview["format"] == "pptx"
-    assert preview["requested_format"] == "pptx"
-    assert preview["pptx_base64"]
-    assert "generation_failure" not in preview
+    # Per #152: a renderer failure must surface as a DocumentGenerationFailure,
+    # not silently degrade to the legacy python-pptx fallback (which would
+    # reintroduce V1-era artifacts like risk_register mislabeling).
+    assert preview["format"] == documents.DOCUMENT_FAILURE_FORMAT
+    assert preview["generation_failure"]["stage"] == "renderer"
+    assert "agentdeck unavailable" in preview["generation_failure"]["debug_info"]
 
 
 def test_build_document_artifact_agentdeck_compose_failure_does_not_use_legacy_renderer(monkeypatch):

@@ -43,7 +43,6 @@ from app.services.document_generator import (
     compose_deck_plan_parallel,
     deck_plan_to_markdown,
     generate_agentdeck_pptx_bytes,
-    generate_agentdeck_pptx_bytes_fallback,
     generate_docx_bytes,
     generate_pptx_bytes,
     generate_xlsx_bytes,
@@ -919,11 +918,15 @@ def build_document_artifact(
         return failed
 
     def _render_agentdeck_pptx(agentdeck_plan) -> bytes:
-        try:
-            return generate_agentdeck_pptx_bytes(agentdeck_plan)
-        except Exception as exc:
-            logger.warning("AgentDeck JS renderer unavailable/failed; using python fallback: %s", exc)
-            return generate_agentdeck_pptx_bytes_fallback(agentdeck_plan)
+        # Per #152: renderer failures must surface as a DocumentGenerationFailure
+        # (see the "renderer" stage handling in build_document_artifact below),
+        # not silently degrade to the legacy python-pptx fallback, which re-runs
+        # V1's _select_slide_archetype heuristics on v2-composed content and
+        # reintroduces V1-era artifacts (risk_register mislabeling, placeholder
+        # "Confirm owner and mitigation plan" text, overlapping labels). Let the
+        # exception propagate to the caller's _generation_failure("renderer", ...)
+        # handling instead of masking it here.
+        return generate_agentdeck_pptx_bytes(agentdeck_plan)
 
     if fmt not in SUPPORTED_RENDER_FORMATS:
         preview["generation_error"] = f"{fmt} output is not supported yet; showing Markdown instead."

@@ -232,6 +232,7 @@ class MessageOut(BaseModel):
     execution_log: "ExecutionLog | None" = None
     research_run_id: int | None = None
     research: ResearchMeta | None = None
+    document_preview: dict[str, Any] | None = None
     created_at: str
 
 

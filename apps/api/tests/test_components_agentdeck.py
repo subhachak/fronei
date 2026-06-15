@@ -10,11 +10,15 @@ import pytest
 from pydantic import ValidationError
 
 from app.services.components import (
+    DEFAULT_COMPONENT_RUNTIME,
+    COMPONENT_REGISTRY,
     PptxRenderPlan,
     PptxSlidePlan,
     ZoneInstance,
     compose_pptx_render_plan,
 )
+from app.services.components.content_schemas import BulletListContent, TableContent
+from app.services.components.fit_contract import FIT_CONTRACTS
 from app.services.document_generator import (
     _agentdeck_renderer_available,
     generate_agentdeck_pptx_bytes,
@@ -77,6 +81,56 @@ def test_render_plan_build_resolves_design_system_and_serializes():
     assert payload["slides"][0]["hero_title"] == "Deck"
     # exclude_none: subtitle was set, but unset optional fields should be absent
     assert "section_title" not in payload["slides"][0]
+
+
+# ---------------------------------------------------------------------------
+# Component runtime / FitContract foundation (#139/#140)
+# ---------------------------------------------------------------------------
+
+
+def test_all_registered_components_have_fit_contracts():
+    assert set(COMPONENT_REGISTRY) == set(FIT_CONTRACTS)
+    assert all(component.fit_contract is FIT_CONTRACTS[component_id] for component_id, component in COMPONENT_REGISTRY.items())
+
+
+def test_default_runtime_validates_fit_and_estimates_density():
+    content = DEFAULT_COMPONENT_RUNTIME.normalize(
+        {"items": [{"text": "Point A"}, {"text": "Point B"}]},
+        BulletListContent,
+    )
+
+    result = DEFAULT_COMPONENT_RUNTIME.validate_fit(
+        content,
+        FIT_CONTRACTS["bullet_list"],
+        zone_width_in=3.0,
+        zone_height_in=2.0,
+    )
+
+    assert result.ok is True
+    assert 0 < result.density < 1
+    assert result.estimated_height_in is not None
+    assert result.issues == []
+
+
+def test_default_runtime_flags_item_and_height_overflow():
+    content = DEFAULT_COMPONENT_RUNTIME.normalize(
+        {
+            "headers": ["A", "B", "C", "D", "E", "F", "G"],
+            "rows": [["x", "y", "z", "w", "v", "u", "t"] for _ in range(10)],
+        },
+        TableContent,
+    )
+
+    result = DEFAULT_COMPONENT_RUNTIME.validate_fit(
+        content,
+        FIT_CONTRACTS["table"],
+        zone_width_in=3.0,
+        zone_height_in=1.2,
+    )
+
+    assert result.ok is False
+    assert any(issue.field == "rows" for issue in result.issues)
+    assert any(issue.field == "estimated_height_in" for issue in result.issues)
 
 
 # ---------------------------------------------------------------------------

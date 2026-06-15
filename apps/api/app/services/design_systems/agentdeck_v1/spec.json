@@ -6,102 +6,103 @@
     "slide_layout": "LAYOUT_WIDE",
     "slide_width_inches": 13.3,
     "slide_height_inches": 7.5,
-    "themes": ["dark", "light"],
+    "themes": [
+      "dark",
+      "light"
+    ],
     "description": "Token-based design system for AI-generated client presentation decks. All values are in PptxGenJS-compatible units (inches for layout, pt for type, hex strings without # prefix)."
   },
-
   "color_tokens": {
     "dark": {
       "comment": "Dark theme — primary bg near-black, surfaces layered upward",
       "bg": {
-        "canvas":    "0D0F14",
+        "canvas": "0D0F14",
         "surface_1": "151820",
         "surface_2": "1C2028",
         "surface_3": "242834",
-        "overlay":   "0D0F14CC"
+        "overlay": "0D0F14CC"
       },
       "accent": {
-        "primary":   "4F8EF7",
+        "primary": "4F8EF7",
         "primary_muted": "2D5BA8",
         "secondary": "38C9A4",
         "secondary_muted": "1A7A65",
-        "gold":      "E8A838",
-        "gold_muted":"8B6420",
-        "danger":    "E05555",
-        "danger_muted":"7A2222",
-        "success":   "3DC97A",
-        "success_muted":"1A6636"
+        "gold": "E8A838",
+        "gold_muted": "8B6420",
+        "danger": "E05555",
+        "danger_muted": "7A2222",
+        "success": "3DC97A",
+        "success_muted": "1A6636"
       },
       "text": {
-        "primary":   "F2F4F8",
+        "primary": "F2F4F8",
         "secondary": "9BA3B4",
-        "muted":     "5C6476",
+        "muted": "5C6476",
         "on_accent": "FFFFFF",
         "on_dark_surface": "D8DCE8"
       },
       "border": {
-        "subtle":    "1E2330",
-        "default":   "2A3040",
-        "strong":    "3C4560"
+        "subtle": "1E2330",
+        "default": "2A3040",
+        "strong": "3C4560"
       },
       "chart": {
-        "series_1":  "4F8EF7",
-        "series_2":  "38C9A4",
-        "series_3":  "E8A838",
-        "series_4":  "E05555",
-        "series_5":  "A974E8",
-        "grid":      "1E2330"
+        "series_1": "4F8EF7",
+        "series_2": "38C9A4",
+        "series_3": "E8A838",
+        "series_4": "E05555",
+        "series_5": "A974E8",
+        "grid": "1E2330"
       }
     },
     "light": {
       "comment": "Light theme — white canvas, subtle gray surfaces",
       "bg": {
-        "canvas":    "FFFFFF",
+        "canvas": "FFFFFF",
         "surface_1": "F4F6FA",
         "surface_2": "EAEDF4",
         "surface_3": "DDE2EE",
-        "overlay":   "FFFFFFCC"
+        "overlay": "FFFFFFCC"
       },
       "accent": {
-        "primary":   "1A5FC8",
+        "primary": "1A5FC8",
         "primary_muted": "D0E2FF",
         "secondary": "0D7377",
         "secondary_muted": "D0F0EA",
-        "gold":      "B87C0A",
-        "gold_muted":"FDF3E0",
-        "danger":    "C0392B",
-        "danger_muted":"FAEAEA",
-        "success":   "1A7F44",
-        "success_muted":"E6F4EA"
+        "gold": "B87C0A",
+        "gold_muted": "FDF3E0",
+        "danger": "C0392B",
+        "danger_muted": "FAEAEA",
+        "success": "1A7F44",
+        "success_muted": "E6F4EA"
       },
       "text": {
-        "primary":   "0F1520",
+        "primary": "0F1520",
         "secondary": "4A5468",
-        "muted":     "8A94A8",
+        "muted": "8A94A8",
         "on_accent": "FFFFFF",
         "on_light_surface": "2A3248"
       },
       "border": {
-        "subtle":    "E8ECF4",
-        "default":   "D0D6E8",
-        "strong":    "A8B2CC"
+        "subtle": "E8ECF4",
+        "default": "D0D6E8",
+        "strong": "A8B2CC"
       },
       "chart": {
-        "series_1":  "1A5FC8",
-        "series_2":  "0D7377",
-        "series_3":  "B87C0A",
-        "series_4":  "C0392B",
-        "series_5":  "7B42C8",
-        "grid":      "E8ECF4"
+        "series_1": "1A5FC8",
+        "series_2": "0D7377",
+        "series_3": "B87C0A",
+        "series_4": "C0392B",
+        "series_5": "7B42C8",
+        "grid": "E8ECF4"
       }
     }
   },
-
   "typography": {
     "fontFace": {
-      "heading":  "Cambria",
-      "body":     "Calibri",
-      "mono":     "Courier New",
+      "heading": "Cambria",
+      "body": "Calibri",
+      "mono": "Courier New",
       "fallback": "Arial"
     },
     "scale": {
@@ -180,35 +181,33 @@
       }
     }
   },
-
   "spacing": {
     "unit_inches": 0.08,
     "comment": "All spacing in inches. Grid unit = 0.08in ≈ 5.75px at 72dpi.",
     "tokens": {
-      "xs":  0.08,
-      "sm":  0.16,
-      "md":  0.24,
-      "lg":  0.4,
-      "xl":  0.6,
+      "xs": 0.08,
+      "sm": 0.16,
+      "md": 0.24,
+      "lg": 0.4,
+      "xl": 0.6,
       "2xl": 0.8,
       "3xl": 1.2
     },
     "slide_margins": {
-      "top":    0.5,
-      "right":  0.5,
+      "top": 0.5,
+      "right": 0.5,
       "bottom": 0.5,
-      "left":   0.5,
+      "left": 0.5,
       "content_top": 1.1,
       "comment": "content_top accounts for header bar height (1.0in) + gap (0.1in)"
     },
     "content_area": {
       "x_start": 0.5,
       "y_start": 1.1,
-      "width":   12.3,
-      "height":  6.0
+      "width": 12.3,
+      "height": 6.0
     }
   },
-
   "elevation": {
     "comment": "Shadow system for cards and floating elements (PptxGenJS shadow object)",
     "none": null,
@@ -218,7 +217,7 @@
       "blur": 8,
       "offset": 3,
       "angle": 45,
-      "opacity": 0.10
+      "opacity": 0.1
     },
     "card_hover": {
       "type": "outer",
@@ -237,60 +236,98 @@
       "opacity": 0.18
     }
   },
-
   "radius": {
     "comment": "rectRadius values for PptxGenJS ROUNDED_RECTANGLE. Always use makeShadow() factory to avoid object mutation bug.",
-    "none":   0,
-    "sm":     0.05,
-    "md":     0.08,
-    "lg":     0.12,
-    "pill":   0.25
+    "none": 0,
+    "sm": 0.05,
+    "md": 0.08,
+    "lg": 0.12,
+    "pill": 0.25
   },
-
   "grid": {
     "comment": "Column grid for content layout. All values in inches.",
     "columns": 12,
-    "gutter":  0.2,
-    "margin":  0.5,
+    "gutter": 0.2,
+    "margin": 0.5,
     "usable_width": 12.3,
     "col_width": 0.9083,
     "presets": {
-      "full":       { "cols": 12, "width": 12.3 },
-      "half":       { "cols": 6,  "width": 5.95 },
-      "third":      { "cols": 4,  "width": 3.9 },
-      "quarter":    { "cols": 3,  "width": 2.875 },
-      "two_thirds": { "cols": 8,  "width": 8.0 },
-      "one_third":  { "cols": 4,  "width": 3.9 },
-      "sidebar_L":  { "left": 4.0, "right": 7.9, "gutter": 0.4 },
-      "sidebar_R":  { "left": 7.9, "right": 4.0, "gutter": 0.4 }
+      "full": {
+        "cols": 12,
+        "width": 12.3
+      },
+      "half": {
+        "cols": 6,
+        "width": 5.95
+      },
+      "third": {
+        "cols": 4,
+        "width": 3.9
+      },
+      "quarter": {
+        "cols": 3,
+        "width": 2.875
+      },
+      "two_thirds": {
+        "cols": 8,
+        "width": 8.0
+      },
+      "one_third": {
+        "cols": 4,
+        "width": 3.9
+      },
+      "sidebar_L": {
+        "left": 4.0,
+        "right": 7.9,
+        "gutter": 0.4
+      },
+      "sidebar_R": {
+        "left": 7.9,
+        "right": 4.0,
+        "gutter": 0.4
+      }
     }
   },
-
   "components": {
     "header_bar": {
       "description": "Top navigation / section label bar, spans full slide width",
-      "x": 0, "y": 0, "w": 13.3, "h": 1.0,
+      "x": 0,
+      "y": 0,
+      "w": 13.3,
+      "h": 1.0,
       "shape": "RECTANGLE",
       "fill_token": "bg.canvas (dark) | accent.primary (dark accent) | text.primary (for dark contrast header)",
       "text": {
         "content": "SECTION_NUMBER  |  SECTION_TITLE",
-        "x_offset": 0.5, "y_center": 0.5,
+        "x_offset": 0.5,
+        "y_center": 0.5,
         "type_token": "label",
         "color_token": "text.on_accent",
         "charSpacing": 4
       },
       "variants": {
-        "dark_navy":   { "fill": "bg.canvas",    "text_color": "text.primary" },
-        "accent_blue": { "fill": "accent.primary","text_color": "text.on_accent" },
-        "surface":     { "fill": "bg.surface_1", "text_color": "text.secondary" }
+        "dark_navy": {
+          "fill": "bg.canvas",
+          "text_color": "text.primary"
+        },
+        "accent_blue": {
+          "fill": "accent.primary",
+          "text_color": "text.on_accent"
+        },
+        "surface": {
+          "fill": "bg.surface_1",
+          "text_color": "text.secondary"
+        }
       }
     },
-
     "card": {
       "description": "Generic content card — the primary building block",
       "shape": "ROUNDED_RECTANGLE",
       "radius_token": "radius.md",
-      "padding": { "x": 0.2, "y": 0.18 },
+      "padding": {
+        "x": 0.2,
+        "y": 0.18
+      },
       "elevation_token": "elevation.card",
       "variants": {
         "default": {
@@ -316,66 +353,156 @@
       },
       "color_card_variants": {
         "description": "Solid-color header cards — use for category differentiation",
-        "blue":    { "header_fill": "accent.primary",   "header_text": "text.on_accent", "body_fill": "bg.canvas" },
-        "teal":    { "header_fill": "accent.secondary", "header_text": "text.on_accent", "body_fill": "bg.canvas" },
-        "gold":    { "header_fill": "accent.gold",      "header_text": "text.on_accent", "body_fill": "bg.canvas" },
-        "danger":  { "header_fill": "accent.danger",    "header_text": "text.on_accent", "body_fill": "bg.canvas" },
-        "success": { "header_fill": "accent.success",   "header_text": "text.on_accent", "body_fill": "bg.canvas" },
-        "surface": { "header_fill": "bg.surface_3",     "header_text": "text.primary",   "body_fill": "bg.canvas" }
+        "blue": {
+          "header_fill": "accent.primary",
+          "header_text": "text.on_accent",
+          "body_fill": "bg.canvas"
+        },
+        "teal": {
+          "header_fill": "accent.secondary",
+          "header_text": "text.on_accent",
+          "body_fill": "bg.canvas"
+        },
+        "gold": {
+          "header_fill": "accent.gold",
+          "header_text": "text.on_accent",
+          "body_fill": "bg.canvas"
+        },
+        "danger": {
+          "header_fill": "accent.danger",
+          "header_text": "text.on_accent",
+          "body_fill": "bg.canvas"
+        },
+        "success": {
+          "header_fill": "accent.success",
+          "header_text": "text.on_accent",
+          "body_fill": "bg.canvas"
+        },
+        "surface": {
+          "header_fill": "bg.surface_3",
+          "header_text": "text.primary",
+          "body_fill": "bg.canvas"
+        }
       }
     },
-
     "stat_card": {
       "description": "KPI / metric display card",
       "layout": "vertical",
       "elements": [
-        { "slot": "icon",    "optional": true,  "size_in": 0.45, "position": "top-left" },
-        { "slot": "value",   "required": true,  "type_token": "stat",    "color_token": "text.primary" },
-        { "slot": "label",   "required": true,  "type_token": "body",    "color_token": "text.secondary" },
-        { "slot": "delta",   "optional": true,  "type_token": "body_sm", "color_token": "accent.success | accent.danger" },
-        { "slot": "caption", "optional": true,  "type_token": "body_sm", "color_token": "text.muted" }
+        {
+          "slot": "icon",
+          "optional": true,
+          "size_in": 0.45,
+          "position": "top-left"
+        },
+        {
+          "slot": "value",
+          "required": true,
+          "type_token": "stat",
+          "color_token": "text.primary"
+        },
+        {
+          "slot": "label",
+          "required": true,
+          "type_token": "body",
+          "color_token": "text.secondary"
+        },
+        {
+          "slot": "delta",
+          "optional": true,
+          "type_token": "body_sm",
+          "color_token": "accent.success | accent.danger"
+        },
+        {
+          "slot": "caption",
+          "optional": true,
+          "type_token": "body_sm",
+          "color_token": "text.muted"
+        }
       ],
       "min_width_in": 2.4,
       "min_height_in": 1.6
     },
-
     "badge": {
       "description": "Small status / category label — inline pill shape",
       "shape": "ROUNDED_RECTANGLE",
       "radius_token": "radius.pill",
       "type_token": "label",
-      "padding": { "x": 0.12, "y": 0.06 },
+      "padding": {
+        "x": 0.12,
+        "y": 0.06
+      },
       "variants": {
-        "default":  { "fill": "bg.surface_2",          "text": "text.secondary" },
-        "primary":  { "fill": "accent.primary_muted",  "text": "accent.primary" },
-        "success":  { "fill": "accent.success_muted",  "text": "accent.success" },
-        "danger":   { "fill": "accent.danger_muted",   "text": "accent.danger" },
-        "gold":     { "fill": "accent.gold_muted",     "text": "accent.gold" },
-        "solid_primary": { "fill": "accent.primary",   "text": "text.on_accent" },
-        "solid_danger":  { "fill": "accent.danger",    "text": "text.on_accent" },
-        "solid_success": { "fill": "accent.success",   "text": "text.on_accent" },
-        "solid_gold":    { "fill": "accent.gold",      "text": "text.on_accent" }
+        "default": {
+          "fill": "bg.surface_2",
+          "text": "text.secondary"
+        },
+        "primary": {
+          "fill": "accent.primary_muted",
+          "text": "accent.primary"
+        },
+        "success": {
+          "fill": "accent.success_muted",
+          "text": "accent.success"
+        },
+        "danger": {
+          "fill": "accent.danger_muted",
+          "text": "accent.danger"
+        },
+        "gold": {
+          "fill": "accent.gold_muted",
+          "text": "accent.gold"
+        },
+        "solid_primary": {
+          "fill": "accent.primary",
+          "text": "text.on_accent"
+        },
+        "solid_danger": {
+          "fill": "accent.danger",
+          "text": "text.on_accent"
+        },
+        "solid_success": {
+          "fill": "accent.success",
+          "text": "text.on_accent"
+        },
+        "solid_gold": {
+          "fill": "accent.gold",
+          "text": "text.on_accent"
+        }
       }
     },
-
     "divider": {
       "shape": "RECTANGLE",
       "height_in": 0.04,
       "variants": {
-        "subtle":  { "fill_token": "border.subtle" },
-        "default": { "fill_token": "border.default" },
-        "accent":  { "fill_token": "accent.gold" },
-        "primary": { "fill_token": "accent.primary" }
+        "subtle": {
+          "fill_token": "border.subtle"
+        },
+        "default": {
+          "fill_token": "border.default"
+        },
+        "accent": {
+          "fill_token": "accent.gold"
+        },
+        "primary": {
+          "fill_token": "accent.primary"
+        }
       }
     },
-
     "bullet_list": {
       "type_token": "body",
       "color_token": "text.primary",
       "bullet_style": "bullet: true (PptxGenJS built-in)",
       "indent_levels": {
-        "0": { "indent": 0,    "fontSize_pt": 11 },
-        "1": { "indent": 0.15,"fontSize_pt": 10.5, "color_token": "text.secondary" }
+        "0": {
+          "indent": 0,
+          "fontSize_pt": 11
+        },
+        "1": {
+          "indent": 0.15,
+          "fontSize_pt": 10.5,
+          "color_token": "text.secondary"
+        }
       },
       "item_spacing_pt": 4,
       "paraSpaceAfter_pt": 4,
@@ -386,7 +513,6 @@
         "text_x_offset": 0.5
       }
     },
-
     "table": {
       "description": "Data table for comparisons and structured data",
       "header_row": {
@@ -397,39 +523,69 @@
       },
       "body_row": {
         "even_fill_token": "bg.canvas",
-        "odd_fill_token":  "bg.surface_1",
-        "text_token":      "body",
-        "text_color_token":"text.primary",
+        "odd_fill_token": "bg.surface_1",
+        "text_token": "body",
+        "text_color_token": "text.primary",
         "height_in": 0.48
       },
       "cell_padding_in": 0.1,
-      "border": { "color_token": "border.subtle", "width_pt": 0 },
+      "border": {
+        "color_token": "border.subtle",
+        "width_pt": 0
+      },
       "semantic_cell_colors": {
-        "critical": { "text": "accent.danger",  "bold": true },
-        "warning":  { "text": "accent.gold",    "bold": false },
-        "positive": { "text": "accent.success", "bold": false },
-        "muted":    { "text": "text.muted",     "bold": false }
+        "critical": {
+          "text": "accent.danger",
+          "bold": true
+        },
+        "warning": {
+          "text": "accent.gold",
+          "bold": false
+        },
+        "positive": {
+          "text": "accent.success",
+          "bold": false
+        },
+        "muted": {
+          "text": "text.muted",
+          "bold": false
+        }
       }
     },
-
     "callout_bar": {
       "description": "Full-width insight / key takeaway banner at bottom of slide",
       "shape": "ROUNDED_RECTANGLE",
       "radius_token": "radius.md",
-      "x": 0.4, "h_in": 0.9,
+      "x": 0.4,
+      "h_in": 0.9,
       "width": 12.5,
       "padding_left_in": 0.6,
       "icon_size_in": 0.45,
       "text_x_offset": 1.3,
       "type_token": "body",
       "variants": {
-        "insight": { "fill_token": "accent.gold_muted",    "icon_color": "accent.gold",    "text_color": "text.primary" },
-        "info":    { "fill_token": "accent.primary_muted", "icon_color": "accent.primary", "text_color": "text.primary" },
-        "danger":  { "fill_token": "accent.danger_muted",  "icon_color": "accent.danger",  "text_color": "text.primary" },
-        "success": { "fill_token": "accent.success_muted", "icon_color": "accent.success", "text_color": "text.primary" }
+        "insight": {
+          "fill_token": "accent.gold_muted",
+          "icon_color": "accent.gold",
+          "text_color": "text.primary"
+        },
+        "info": {
+          "fill_token": "accent.primary_muted",
+          "icon_color": "accent.primary",
+          "text_color": "text.primary"
+        },
+        "danger": {
+          "fill_token": "accent.danger_muted",
+          "icon_color": "accent.danger",
+          "text_color": "text.primary"
+        },
+        "success": {
+          "fill_token": "accent.success_muted",
+          "icon_color": "accent.success",
+          "text_color": "text.primary"
+        }
       }
     },
-
     "progress_bar": {
       "description": "Horizontal progress / completion indicator",
       "track_shape": "ROUNDED_RECTANGLE",
@@ -441,29 +597,53 @@
       "label_type_token": "body_sm",
       "label_color_token": "text.secondary"
     },
-
     "icon_circle": {
       "description": "Icon inside a colored circle — used in numbered steps, feature lists",
       "shape": "OVAL",
       "sizes": {
-        "sm": { "diameter_in": 0.45, "icon_size_in": 0.25 },
-        "md": { "diameter_in": 0.65, "icon_size_in": 0.38 },
-        "lg": { "diameter_in": 0.9,  "icon_size_in": 0.5 }
+        "sm": {
+          "diameter_in": 0.45,
+          "icon_size_in": 0.25
+        },
+        "md": {
+          "diameter_in": 0.65,
+          "icon_size_in": 0.38
+        },
+        "lg": {
+          "diameter_in": 0.9,
+          "icon_size_in": 0.5
+        }
       }
     },
-
     "timeline_node": {
       "description": "Single step in a horizontal or vertical timeline",
       "elements": [
-        { "slot": "connector_line", "shape": "RECTANGLE", "fill_token": "border.default" },
-        { "slot": "node_circle",    "shape": "OVAL", "fill_token": "accent.primary" },
-        { "slot": "step_label",     "type_token": "label" },
-        { "slot": "title",          "type_token": "h3" },
-        { "slot": "body",           "type_token": "body_sm", "optional": true }
+        {
+          "slot": "connector_line",
+          "shape": "RECTANGLE",
+          "fill_token": "border.default"
+        },
+        {
+          "slot": "node_circle",
+          "shape": "OVAL",
+          "fill_token": "accent.primary"
+        },
+        {
+          "slot": "step_label",
+          "type_token": "label"
+        },
+        {
+          "slot": "title",
+          "type_token": "h3"
+        },
+        {
+          "slot": "body",
+          "type_token": "body_sm",
+          "optional": true
+        }
       ]
     }
   },
-
   "slide_layouts": {
     "description": "Named layout templates. Each layout defines zones with x, y, w, h in inches. Agent fills each zone with appropriate components.",
     "common_rules": [
@@ -473,142 +653,375 @@
       "Never place content below y=7.1 (leaves 0.4in bottom margin)",
       "Use makeShadow() factory for all shadow objects to prevent PptxGenJS mutation bug"
     ],
-
     "TITLE": {
       "name": "Title Slide",
       "usage": "Opening slide. No header bar.",
       "zones": {
         "left_panel": {
-          "x": 0, "y": 0, "w": 4.8, "h": 7.5,
+          "x": 0,
+          "y": 0,
+          "w": 4.8,
+          "h": 7.5,
           "fill_token": "accent.secondary",
-          "contains": ["brand_icon", "deck_type_label", "date_label", "confidentiality"]
+          "contains": [
+            "brand_icon",
+            "deck_type_label",
+            "date_label",
+            "confidentiality"
+          ]
         },
         "hero_title": {
-          "x": 5.2, "y": 0.7, "w": 7.8, "h": 3.6,
+          "x": 5.2,
+          "y": 0.7,
+          "w": 7.8,
+          "h": 3.6,
           "type_token": "display",
           "color_token": "text.primary"
         },
         "accent_rule": {
-          "x": 5.2, "y": 4.4, "w": 7.8, "h": 0.05,
+          "x": 5.2,
+          "y": 4.4,
+          "w": 7.8,
+          "h": 0.05,
           "fill_token": "accent.gold"
         },
         "subtitle": {
-          "x": 5.2, "y": 4.6, "w": 7.8, "h": 1.2,
+          "x": 5.2,
+          "y": 4.6,
+          "w": 7.8,
+          "h": 1.2,
           "type_token": "h2",
           "color_token": "text.secondary"
         },
         "presenter": {
-          "x": 5.2, "y": 6.8, "w": 7.8, "h": 0.4,
+          "x": 5.2,
+          "y": 6.8,
+          "w": 7.8,
+          "h": 0.4,
           "type_token": "body_sm",
           "color_token": "text.muted"
         }
       }
     },
-
     "SECTION_HEADER": {
       "name": "Section Header / Divider",
       "usage": "Between major deck sections",
       "zones": {
-        "bg_full": { "x": 0, "y": 0, "w": 13.3, "h": 7.5, "fill_token": "bg.canvas" },
-        "accent_stripe": { "x": 0, "y": 0, "w": 0.6, "h": 7.5, "fill_token": "accent.primary" },
-        "section_number": { "x": 1.0, "y": 2.8, "w": 1.5, "h": 1.0, "type_token": "display", "color_token": "accent.primary", "opacity": 0.15 },
-        "section_title": { "x": 1.0, "y": 3.0, "w": 8.0, "h": 1.5, "type_token": "display", "color_token": "text.primary" },
-        "section_subtitle": { "x": 1.0, "y": 4.6, "w": 8.0, "h": 0.8, "type_token": "h2", "color_token": "text.secondary" }
+        "bg_full": {
+          "x": 0,
+          "y": 0,
+          "w": 13.3,
+          "h": 7.5,
+          "fill_token": "bg.canvas"
+        },
+        "accent_stripe": {
+          "x": 0,
+          "y": 0,
+          "w": 0.6,
+          "h": 7.5,
+          "fill_token": "accent.primary"
+        },
+        "section_number": {
+          "x": 1.0,
+          "y": 2.8,
+          "w": 1.5,
+          "h": 1.0,
+          "type_token": "display",
+          "color_token": "accent.primary",
+          "opacity": 0.15
+        },
+        "section_title": {
+          "x": 1.0,
+          "y": 3.0,
+          "w": 8.0,
+          "h": 1.5,
+          "type_token": "display",
+          "color_token": "text.primary"
+        },
+        "section_subtitle": {
+          "x": 1.0,
+          "y": 4.6,
+          "w": 8.0,
+          "h": 0.8,
+          "type_token": "h2",
+          "color_token": "text.secondary"
+        }
       }
     },
-
     "CONTENT_1COL": {
       "name": "Single Column Content",
       "usage": "Full-width text, single large chart, or single wide table",
       "zones": {
-        "header_bar": { "x": 0, "y": 0, "w": 13.3, "h": 1.0 },
-        "slide_title": { "x": 0.5, "y": 1.1, "w": 12.3, "h": 0.6, "type_token": "h1" },
-        "body": { "x": 0.5, "y": 1.85, "w": 12.3, "h": 5.2 }
+        "header_bar": {
+          "x": 0,
+          "y": 0,
+          "w": 13.3,
+          "h": 1.0
+        },
+        "slide_title": {
+          "x": 0.5,
+          "y": 1.1,
+          "w": 12.3,
+          "h": 0.6,
+          "type_token": "h1"
+        },
+        "body": {
+          "x": 0.5,
+          "y": 1.85,
+          "w": 12.3,
+          "h": 5.2
+        }
       }
     },
-
     "CONTENT_2COL": {
       "name": "Two Column Content",
       "usage": "Side-by-side comparison, text + chart, text + diagram",
       "zones": {
-        "header_bar": { "x": 0, "y": 0, "w": 13.3, "h": 1.0 },
-        "slide_title": { "x": 0.5, "y": 1.1, "w": 12.3, "h": 0.6, "type_token": "h1" },
-        "col_left":  { "x": 0.5, "y": 1.85, "w": 5.95, "h": 5.2 },
-        "col_right": { "x": 6.85, "y": 1.85, "w": 5.95, "h": 5.2 }
+        "header_bar": {
+          "x": 0,
+          "y": 0,
+          "w": 13.3,
+          "h": 1.0
+        },
+        "slide_title": {
+          "x": 0.5,
+          "y": 1.1,
+          "w": 12.3,
+          "h": 0.6,
+          "type_token": "h1"
+        },
+        "col_left": {
+          "x": 0.5,
+          "y": 1.85,
+          "w": 5.95,
+          "h": 5.2
+        },
+        "col_right": {
+          "x": 6.85,
+          "y": 1.85,
+          "w": 5.95,
+          "h": 5.2
+        }
       }
     },
-
     "CONTENT_3COL": {
       "name": "Three Column Content",
       "usage": "Three parallel cards, comparison of three options, framework pillars",
       "zones": {
-        "header_bar": { "x": 0, "y": 0, "w": 13.3, "h": 1.0 },
-        "slide_title": { "x": 0.5, "y": 1.1, "w": 12.3, "h": 0.6, "type_token": "h1" },
-        "col_1": { "x": 0.5,  "y": 1.85, "w": 3.9, "h": 5.2 },
-        "col_2": { "x": 4.7,  "y": 1.85, "w": 3.9, "h": 5.2 },
-        "col_3": { "x": 8.9,  "y": 1.85, "w": 3.9, "h": 5.2 }
+        "header_bar": {
+          "x": 0,
+          "y": 0,
+          "w": 13.3,
+          "h": 1.0
+        },
+        "slide_title": {
+          "x": 0.5,
+          "y": 1.1,
+          "w": 12.3,
+          "h": 0.6,
+          "type_token": "h1"
+        },
+        "col_1": {
+          "x": 0.5,
+          "y": 1.85,
+          "w": 3.9,
+          "h": 5.2
+        },
+        "col_2": {
+          "x": 4.7,
+          "y": 1.85,
+          "w": 3.9,
+          "h": 5.2
+        },
+        "col_3": {
+          "x": 8.9,
+          "y": 1.85,
+          "w": 3.9,
+          "h": 5.2
+        }
       }
     },
-
     "CONTENT_4COL": {
       "name": "Four Column Content",
       "usage": "Four stat cards, four process steps",
       "zones": {
-        "header_bar": { "x": 0, "y": 0, "w": 13.3, "h": 1.0 },
-        "slide_title": { "x": 0.5, "y": 1.1, "w": 12.3, "h": 0.6, "type_token": "h1" },
-        "col_1": { "x": 0.4,  "y": 1.85, "w": 2.875, "h": 5.2 },
-        "col_2": { "x": 3.475,"y": 1.85, "w": 2.875, "h": 5.2 },
-        "col_3": { "x": 6.55, "y": 1.85, "w": 2.875, "h": 5.2 },
-        "col_4": { "x": 9.625,"y": 1.85, "w": 2.875, "h": 5.2 }
+        "header_bar": {
+          "x": 0,
+          "y": 0,
+          "w": 13.3,
+          "h": 1.0
+        },
+        "slide_title": {
+          "x": 0.5,
+          "y": 1.1,
+          "w": 12.3,
+          "h": 0.6,
+          "type_token": "h1"
+        },
+        "col_1": {
+          "x": 0.4,
+          "y": 1.85,
+          "w": 2.875,
+          "h": 5.2
+        },
+        "col_2": {
+          "x": 3.475,
+          "y": 1.85,
+          "w": 2.875,
+          "h": 5.2
+        },
+        "col_3": {
+          "x": 6.55,
+          "y": 1.85,
+          "w": 2.875,
+          "h": 5.2
+        },
+        "col_4": {
+          "x": 9.625,
+          "y": 1.85,
+          "w": 2.875,
+          "h": 5.2
+        }
       }
     },
-
     "CONTENT_HERO_STAT": {
       "name": "Hero Stat + Supporting Cards",
       "usage": "One dominant KPI with 3-4 supporting metrics below",
       "zones": {
-        "header_bar": { "x": 0, "y": 0, "w": 13.3, "h": 1.0 },
-        "slide_title": { "x": 0.5, "y": 1.1, "w": 12.3, "h": 0.6, "type_token": "h1" },
-        "hero": { "x": 0.5, "y": 1.85, "w": 12.3, "h": 2.4 },
-        "supporting_row": { "x": 0.5, "y": 4.45, "w": 12.3, "h": 2.6, "columns": 4, "gap": 0.2 }
+        "header_bar": {
+          "x": 0,
+          "y": 0,
+          "w": 13.3,
+          "h": 1.0
+        },
+        "slide_title": {
+          "x": 0.5,
+          "y": 1.1,
+          "w": 12.3,
+          "h": 0.6,
+          "type_token": "h1"
+        },
+        "hero": {
+          "x": 0.5,
+          "y": 1.85,
+          "w": 12.3,
+          "h": 2.4
+        },
+        "supporting_row": {
+          "x": 0.5,
+          "y": 4.45,
+          "w": 12.3,
+          "h": 2.6,
+          "columns": 4,
+          "gap": 0.2
+        }
       }
     },
-
     "CONTENT_TABLE_SIDEBAR": {
       "name": "Table + Sidebar",
       "usage": "Data table left, callout cards or commentary right",
       "zones": {
-        "header_bar": { "x": 0, "y": 0, "w": 13.3, "h": 1.0 },
-        "slide_title": { "x": 0.5, "y": 1.1, "w": 12.3, "h": 0.6, "type_token": "h1" },
-        "table": { "x": 0.5, "y": 1.85, "w": 9.0, "h": 5.2 },
-        "sidebar": { "x": 9.7, "y": 1.85, "w": 3.1, "h": 5.2 }
+        "header_bar": {
+          "x": 0,
+          "y": 0,
+          "w": 13.3,
+          "h": 1.0
+        },
+        "slide_title": {
+          "x": 0.5,
+          "y": 1.1,
+          "w": 12.3,
+          "h": 0.6,
+          "type_token": "h1"
+        },
+        "table": {
+          "x": 0.5,
+          "y": 1.85,
+          "w": 9.0,
+          "h": 5.2
+        },
+        "sidebar": {
+          "x": 9.7,
+          "y": 1.85,
+          "w": 3.1,
+          "h": 5.2
+        }
       }
     },
-
     "CONTENT_SPLIT_DECISIONS": {
       "name": "Split — Decisions + Action Plan",
       "usage": "Board decisions left, action items / timeline right",
       "zones": {
-        "header_bar": { "x": 0, "y": 0, "w": 13.3, "h": 1.0 },
-        "slide_title": { "x": 0.5, "y": 1.1, "w": 12.3, "h": 0.6, "type_token": "h1" },
-        "left_panel":  { "x": 0.5, "y": 1.85, "w": 6.0, "h": 5.2 },
-        "right_panel": { "x": 6.9, "y": 1.85, "w": 5.9, "h": 5.2 }
+        "header_bar": {
+          "x": 0,
+          "y": 0,
+          "w": 13.3,
+          "h": 1.0
+        },
+        "slide_title": {
+          "x": 0.5,
+          "y": 1.1,
+          "w": 12.3,
+          "h": 0.6,
+          "type_token": "h1"
+        },
+        "left_panel": {
+          "x": 0.5,
+          "y": 1.85,
+          "w": 6.0,
+          "h": 5.2
+        },
+        "right_panel": {
+          "x": 6.9,
+          "y": 1.85,
+          "w": 5.9,
+          "h": 5.2
+        }
       }
     },
-
     "CLOSING": {
       "name": "Closing / Thank You",
       "usage": "Final slide — mirrors title layout",
       "zones": {
-        "left_panel":   { "x": 0, "y": 0, "w": 5.0, "h": 7.5, "fill_token": "accent.secondary" },
-        "closing_text": { "x": 5.4, "y": 1.2, "w": 7.5, "h": 1.0, "type_token": "display", "color_token": "text.primary" },
-        "accent_rule":  { "x": 5.4, "y": 2.3, "w": 7.5, "h": 0.05, "fill_token": "accent.gold" },
-        "closing_body": { "x": 5.4, "y": 2.5, "w": 7.5, "h": 2.0, "type_token": "body", "color_token": "text.secondary" },
-        "presenter":    { "x": 5.4, "y": 5.6, "w": 7.5, "h": 1.0 }
+        "left_panel": {
+          "x": 0,
+          "y": 0,
+          "w": 5.0,
+          "h": 7.5,
+          "fill_token": "accent.secondary"
+        },
+        "closing_text": {
+          "x": 5.4,
+          "y": 1.2,
+          "w": 7.5,
+          "h": 1.0,
+          "type_token": "display",
+          "color_token": "text.primary"
+        },
+        "accent_rule": {
+          "x": 5.4,
+          "y": 2.3,
+          "w": 7.5,
+          "h": 0.05,
+          "fill_token": "accent.gold"
+        },
+        "closing_body": {
+          "x": 5.4,
+          "y": 2.5,
+          "w": 7.5,
+          "h": 2.0,
+          "type_token": "body",
+          "color_token": "text.secondary"
+        },
+        "presenter": {
+          "x": 5.4,
+          "y": 5.6,
+          "w": 7.5,
+          "h": 1.0
+        }
       }
     }
   },
-
   "generation_rules": {
     "description": "Rules the AI agent MUST follow when generating a deck using this system",
     "mandatory": [
@@ -629,11 +1042,11 @@
     ],
     "theme_switching": {
       "description": "How to resolve tokens for each theme at generation time",
-      "dark":  "Use color_tokens.dark.* for all fill, text, and border values",
+      "dark": "Use color_tokens.dark.* for all fill, text, and border values",
       "light": "Use color_tokens.light.* for all fill, text, and border values",
       "token_resolution_example": {
         "token": "accent.primary",
-        "dark":  "4F8EF7",
+        "dark": "4F8EF7",
         "light": "1A5FC8"
       }
     },
@@ -649,6 +1062,90 @@
       "chart_area_fill": "bg.canvas",
       "axis_label_color": "text.secondary",
       "grid_line_color": "chart.grid"
+    }
+  },
+  "token_pairs": {
+    "description": "Reusable semantic fill/text token groupings, resolved per-theme via color_tokens.{dark,light} through resolve_color()/resolve_token(). Generalizes the badge/callout_bar variants fill/text/icon pattern and the stat_card delta conditional color_token (accent.success | accent.danger) into named, theme-safe pairs so new components do not hardcode raw token paths.",
+    "default": {
+      "fill": "bg.surface_2",
+      "text": "text.secondary",
+      "solid_fill": "bg.surface_3",
+      "solid_text": "text.primary"
+    },
+    "primary": {
+      "fill": "accent.primary_muted",
+      "text": "accent.primary",
+      "solid_fill": "accent.primary",
+      "solid_text": "text.on_accent"
+    },
+    "secondary": {
+      "fill": "accent.secondary_muted",
+      "text": "accent.secondary",
+      "solid_fill": "accent.secondary",
+      "solid_text": "text.on_accent"
+    },
+    "gold": {
+      "fill": "accent.gold_muted",
+      "text": "accent.gold",
+      "solid_fill": "accent.gold",
+      "solid_text": "text.on_accent"
+    },
+    "success": {
+      "fill": "accent.success_muted",
+      "text": "accent.success",
+      "solid_fill": "accent.success",
+      "solid_text": "text.on_accent"
+    },
+    "danger": {
+      "fill": "accent.danger_muted",
+      "text": "accent.danger",
+      "solid_fill": "accent.danger",
+      "solid_text": "text.on_accent"
+    },
+    "conditional": {
+      "description": "Maps a semantic condition to a token_pairs key above. Used for slots whose color depends on data (e.g. stat_card.delta sign).",
+      "stat_delta": {
+        "positive": "success",
+        "negative": "danger",
+        "neutral": "default"
+      }
+    }
+  },
+  "qa_thresholds": {
+    "description": "Numeric thresholds consumed by plan_checks.py (pre-render structural QA) and render_checks.py (post-render visual QA) -- see #147. Theme-independent.",
+    "contrast": {
+      "min_ratio_normal_text": 4.5,
+      "min_ratio_large_text": 3.0,
+      "large_text_pt": 18
+    },
+    "min_font_pt": {
+      "body": 11,
+      "body_sm": 9,
+      "label": 8,
+      "stat_sm": 14
+    },
+    "max_chars": {
+      "title": 60,
+      "dek": 120,
+      "bullet_item": 110,
+      "card_title": 40,
+      "card_body": 160,
+      "callout": 140,
+      "stat_label": 30,
+      "stat_caption": 60,
+      "table_cell": 60
+    },
+    "max_items": {
+      "bullet_list": 6,
+      "card_grid": 4,
+      "stat_strip": 4,
+      "timeline": 6,
+      "table_rows": 8,
+      "decision_list": 4
+    },
+    "whitespace": {
+      "min_zone_fill_pct": 0.15,
+      "max_empty_zone_pct": 0.35
     }
   }
 }

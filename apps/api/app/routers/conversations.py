@@ -1100,6 +1100,16 @@ def _presentation_artifact_context(base_context: str, db, user_id: str, plan) ->
     return "\n\n".join(part for part in [base_context or "", design_context] if part)
 
 
+def _document_failure_answer(document_preview: dict | None) -> str | None:
+    failure = (document_preview or {}).get("generation_failure")
+    if not isinstance(failure, dict):
+        return None
+    message = str(failure.get("user_message") or "").strip()
+    if not message:
+        message = "Document generation failed. Please retry."
+    return f"{message} I kept the request state intact so you can retry generation."
+
+
 # ── Streaming endpoint ────────────────────────────────────────────────────────
 
 @router.post("/chat/stream", dependencies=[rate_limiter("chat", "rate_limit_chat_per_minute", 60)])
@@ -1407,6 +1417,8 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                             template_id=template_id if isinstance(template_id, str) else None,
                             template_path=str(template_path) if template_path else None,
                         )
+                        if failure_answer := _document_failure_answer(document_preview):
+                            final_answer = failure_answer
                         log_render_qa_failures(db, doc_type, doc_body, document_preview.get("render_qa"))
                     else:
                         for chunk in [final_answer[i:i+80] for i in range(0, len(final_answer), 80)]:
@@ -1601,6 +1613,8 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                         template_id=template_id if isinstance(template_id, str) else None,
                         template_path=str(template_path) if template_path else None,
                     )
+                    if failure_answer := _document_failure_answer(document_preview):
+                        final_answer = failure_answer
                     log_render_qa_failures(db, doc_type, doc_body, document_preview.get("render_qa"))
                 elif should_refine(result.answer, output_mode, twin_profile):
                     yield _sse("refine_start", {})
@@ -1791,6 +1805,8 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                     template_id=template_id if isinstance(template_id, str) else None,
                     template_path=str(template_path) if template_path else None,
                 )
+                if failure_answer := _document_failure_answer(document_preview):
+                    final_answer = failure_answer
                 log_render_qa_failures(db, doc_type, doc_body, document_preview.get("render_qa"))
 
                 yield _sse("done", {

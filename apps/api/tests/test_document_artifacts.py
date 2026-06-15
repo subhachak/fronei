@@ -2,6 +2,7 @@ import json
 
 from app.routers import documents
 from app.config import get_settings
+from app.services.components import ContentBlock, DocPlan, SectionPlan
 
 
 def test_build_document_artifact_generates_pptx_payload():
@@ -44,9 +45,72 @@ def test_build_document_artifact_reports_render_failure(monkeypatch):
         "pptx",
     )
 
-    assert preview["format"] == "markdown"
+    assert preview["format"] == "failed"
     assert preview["requested_format"] == "pptx"
+    assert preview["markdown"] == ""
+    assert preview["generation_failure"]["stage"] == "renderer"
+    assert preview["generation_failure"]["retryable"] is True
     assert "PowerPoint rendering failed" in preview["generation_error"]
+
+
+def test_build_document_artifact_agentdeck_render_failure_does_not_use_legacy_renderer(monkeypatch):
+    doc_plan = DocPlan(
+        title="AI Strategy Review",
+        sections=[
+            SectionPlan(
+                slide_layout="CONTENT_1COL",
+                section_title="Adoption is accelerating",
+                blocks=[
+                    ContentBlock(
+                        zone="body",
+                        component_id="bullet_list",
+                        data={"items": [{"text": "Unit A live", "level": 0}]},
+                    )
+                ],
+            ),
+        ],
+    )
+
+    def fail_agentdeck(*args, **kwargs):
+        raise RuntimeError("agentdeck unavailable")
+
+    def legacy_must_not_run(*args, **kwargs):
+        raise AssertionError("legacy renderer should not be called after AgentDeck failure")
+
+    monkeypatch.setattr(documents, "generate_agentdeck_pptx_bytes", fail_agentdeck)
+    monkeypatch.setattr(documents, "generate_pptx_bytes", legacy_must_not_run)
+
+    preview = documents.build_document_artifact("", doc_plan.model_dump_json(), "presentation", "pptx")
+
+    assert preview["format"] == "failed"
+    assert preview["requested_format"] == "pptx"
+    assert "pptx_base64" not in preview
+    assert preview["generation_failure"]["stage"] == "renderer"
+    assert "agentdeck unavailable" in preview["generation_failure"]["debug_info"]
+
+
+def test_build_document_artifact_agentdeck_compose_failure_does_not_use_legacy_renderer(monkeypatch):
+    doc_plan = DocPlan(
+        title="AI Strategy Review",
+        sections=[SectionPlan(slide_layout="CLOSING", closing_text="Approve Phase 2 funding")],
+    )
+
+    def fail_compose(*args, **kwargs):
+        raise RuntimeError("bad plan")
+
+    def legacy_must_not_run(*args, **kwargs):
+        raise AssertionError("legacy renderer should not be called after AgentDeck compose failure")
+
+    monkeypatch.setattr(documents, "compose_docplan_to_pptx_render_plan", fail_compose)
+    monkeypatch.setattr(documents, "generate_pptx_bytes", legacy_must_not_run)
+
+    preview = documents.build_document_artifact("", doc_plan.model_dump_json(), "presentation", "pptx")
+
+    assert preview["format"] == "failed"
+    assert preview["requested_format"] == "pptx"
+    assert "pptx_base64" not in preview
+    assert preview["generation_failure"]["stage"] == "composer"
+    assert "bad plan" in preview["generation_failure"]["debug_info"]
 
 
 def test_build_document_artifact_repairs_dense_slide_via_render_qa(monkeypatch):

@@ -28,6 +28,7 @@ from typing import Any
 
 import re
 
+from app.config import get_settings
 from app.schemas import RouteDecision
 from app.services.llm_gateway import LLMResult, invoke_llm
 
@@ -398,9 +399,11 @@ def generate_doc_plan(
     model_used = outline_result.model_used
 
     # ── Step 2: component/block selection ──────────────────────────────
-    from .usage_stats import load_usage_stats_map
+    usage_stats_map: dict[tuple[str, str, str, str], float] = {}
+    if get_settings().agentdeck_usage_stats_weighting_enabled:
+        from .usage_stats import load_usage_stats_map
 
-    usage_stats_map = load_usage_stats_map(db)
+        usage_stats_map = load_usage_stats_map(db)
 
     blocks_by_index: dict[int, dict[str, Any]] = {}
     blocks_message, content_indices = _build_blocks_user_message(outline, usage_stats_map=usage_stats_map)

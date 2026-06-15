@@ -1,6 +1,7 @@
 from .compose import compose_pptx_render_plan
 from .compose_docplan import compose_docplan_to_pptx_render_plan
 from .planner import generate_doc_plan
+from .quality_mode import DEFAULT_QUALITY_MODE, QualityMode
 from .registry import (
     COMPONENT_REGISTRY,
     ComponentDef,
@@ -26,12 +27,26 @@ from .selection import (
     rank_components,
     score_component,
 )
+from .runtime import (
+    DEFAULT_COMPONENT_RUNTIME,
+    ComponentRuntime,
+    DefaultComponentRuntime,
+    FitIssue,
+    FitResult,
+)
 from .usage_stats import load_usage_stats_map, log_doc_plan_usage, log_render_qa_failures
 
 __all__ = [
     "compose_pptx_render_plan",
     "compose_docplan_to_pptx_render_plan",
     "generate_doc_plan",
+    "DEFAULT_QUALITY_MODE",
+    "QualityMode",
+    "DEFAULT_COMPONENT_RUNTIME",
+    "ComponentRuntime",
+    "DefaultComponentRuntime",
+    "FitIssue",
+    "FitResult",
     "load_usage_stats_map",
     "log_doc_plan_usage",
     "log_render_qa_failures",

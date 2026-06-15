@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Literal, Optional
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 Theme = Literal["dark", "light"]
 
@@ -331,6 +331,130 @@ class GenerationRules(_Base):
 
 
 # ---------------------------------------------------------------------------
+# token_pairs (#136)
+# ---------------------------------------------------------------------------
+#
+# Reusable semantic fill/text token groupings, resolved per-theme via
+# color_tokens.{dark,light} through resolve_color()/resolve_token()
+# (design_systems/registry.py). Each value is a dotted token path string
+# (e.g. "accent.success_muted"), NOT a resolved hex color — resolution is
+# theme-aware and happens at render/QA time. This generalizes the
+# badge/callout_bar `variants` fill/text/icon pattern and the stat_card
+# `delta` conditional color_token ("accent.success | accent.danger") into
+# named pairs that stay correct under either theme.
+
+
+class TokenPair(_Base):
+    fill: str
+    text: str
+    solid_fill: Optional[str] = None
+    solid_text: Optional[str] = None
+
+
+class TokenPairConditional(_Base):
+    """Maps a semantic condition (e.g. stat_card delta sign) to a
+    `TokenPairs` key. `stat_delta` covers positive/negative/neutral deltas.
+    """
+
+    description: Optional[str] = None
+    stat_delta: dict[str, str] = Field(default_factory=dict)
+
+
+class TokenPairs(_Base):
+    """Wrapper for the `token_pairs` block.
+
+    Named pairs (`default`, `primary`, `success`, ...) land in `model_extra`
+    since the set of semantic names is open-ended; `conditional` is modeled
+    explicitly.
+    """
+
+    description: Optional[str] = None
+    conditional: Optional[TokenPairConditional] = None
+
+    def names(self) -> list[str]:
+        return sorted((self.model_extra or {}).keys())
+
+    def get(self, name: str) -> TokenPair:
+        extra = self.model_extra or {}
+        try:
+            raw = extra[name]
+        except KeyError as exc:
+            raise KeyError(f"Unknown token_pairs entry {name!r}. Valid: {self.names()}") from exc
+        return TokenPair.model_validate(raw)
+
+    def resolve_conditional(self, group: str, condition: str) -> TokenPair:
+        """e.g. resolve_conditional("stat_delta", "positive") -> TokenPair for 'success'."""
+        if self.conditional is None:
+            raise KeyError("No 'conditional' section in token_pairs")
+        mapping = getattr(self.conditional, group, None)
+        if not mapping:
+            raise KeyError(f"Unknown token_pairs.conditional group {group!r}")
+        try:
+            pair_name = mapping[condition]
+        except KeyError as exc:
+            raise KeyError(
+                f"Unknown condition {condition!r} for token_pairs.conditional.{group}"
+            ) from exc
+        return self.get(pair_name)
+
+
+# ---------------------------------------------------------------------------
+# qa_thresholds (#136)
+# ---------------------------------------------------------------------------
+#
+# Numeric thresholds consumed by plan_checks.py (pre-render structural QA)
+# and render_checks.py (post-render visual QA) — see #147. Theme-independent.
+
+
+class ContrastThresholds(_Base):
+    min_ratio_normal_text: float
+    min_ratio_large_text: float
+    large_text_pt: float
+
+
+class MinFontPtThresholds(_Base):
+    body: float
+    body_sm: float
+    label: float
+    stat_sm: float
+
+
+class MaxCharsThresholds(_Base):
+    title: int
+    dek: int
+    bullet_item: int
+    card_title: int
+    card_body: int
+    callout: int
+    stat_label: int
+    stat_caption: int
+    table_cell: int
+
+
+class MaxItemsThresholds(_Base):
+    bullet_list: int
+    card_grid: int
+    stat_strip: int
+    timeline: int
+    table_rows: int
+    decision_list: int
+
+
+class WhitespaceThresholds(_Base):
+    min_zone_fill_pct: float
+    max_empty_zone_pct: float
+
+
+class QAThresholds(_Base):
+    description: Optional[str] = None
+    contrast: ContrastThresholds
+    min_font_pt: MinFontPtThresholds
+    max_chars: MaxCharsThresholds
+    max_items: MaxItemsThresholds
+    whitespace: WhitespaceThresholds
+
+
+# ---------------------------------------------------------------------------
 # top-level spec
 # ---------------------------------------------------------------------------
 
@@ -346,6 +470,8 @@ class DesignSystemSpec(_Base):
     components: dict[str, dict]
     slide_layouts: SlideLayouts
     generation_rules: GenerationRules
+    token_pairs: TokenPairs
+    qa_thresholds: QAThresholds
 
     # -- convenience accessors -------------------------------------------------
 
@@ -365,3 +491,6 @@ class DesignSystemSpec(_Base):
             raise KeyError(
                 f"Unknown component {component_id!r}. Valid: {sorted(self.components)}"
             ) from exc
+
+    def token_pair(self, name: str) -> TokenPair:
+        return self.token_pairs.get(name)

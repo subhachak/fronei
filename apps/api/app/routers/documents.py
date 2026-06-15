@@ -863,6 +863,7 @@ def build_document_artifact(
     template_id: str | None = None,
     template_path: str | Path | None = None,
     quality_mode: str | None = None,
+    defer_render_qa: bool = False,
 ) -> dict:
     """Build a document_preview payload for a planner-driven document output.
 
@@ -926,6 +927,8 @@ def build_document_artifact(
         )
 
     def _run_render_qa(content_bytes: bytes) -> dict | None:
+        if defer_render_qa and requested_format == "pptx" and resolved_quality_mode == "executive":
+            return None
         if resolved_quality_mode == "draft":
             return None
         if resolved_quality_mode != "executive" and not get_settings().pptx_render_qa_enabled:
@@ -1231,6 +1234,13 @@ def build_document_artifact(
             if render_qa is not None:
                 _strip_qa_images(render_qa)
                 preview["render_qa"] = render_qa
+            elif defer_render_qa and resolved_quality_mode == "executive":
+                preview["render_qa"] = {
+                    "available": False,
+                    "status": "queued",
+                    "reason": "Executive render QA is running in the background.",
+                    "issues": [],
+                }
         except Exception as exc:
             logger.exception("Failed to render PPTX artifact")
             return _generation_failure(

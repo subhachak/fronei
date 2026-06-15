@@ -5363,7 +5363,7 @@ export default function Home() {
   async function pollActiveTurn(convId: string, turnId: string) {
     if (pollingTurnRef.current === turnId) return
     pollingTurnRef.current = turnId
-    for (let attempt = 0; attempt < 80; attempt++) {
+    for (let attempt = 0; attempt < 240; attempt++) {
       if (pollingTurnRef.current !== turnId) return
       if (typeof navigator !== 'undefined' && !navigator.onLine) {
         await new Promise<void>(resolve => {
@@ -5438,7 +5438,7 @@ export default function Home() {
         // Keep polling; mobile/network recovery is best-effort.
       }
     }
-    // Polling exhausted (~4 minutes) without the turn reaching a terminal
+    // Polling exhausted (~12 minutes) without the turn reaching a terminal
     // state. Don't leave the UI stuck on "Drafting your document…" forever —
     // surface a notice so the user knows to reload/retry, but leave the
     // turn itself alone since it may still complete server-side.
@@ -5447,7 +5447,7 @@ export default function Home() {
       setActiveTurnNotice(prev => prev && prev.turnId === turnId
         ? {
             ...prev,
-            message: 'Still working on this in the background. It may take a while longer — reload the page to check for results.',
+            message: 'Still working in the background. This is taking longer than usual — reload the page later to check for results.',
           }
         : prev)
     }
@@ -5999,6 +5999,7 @@ export default function Home() {
     let startTurnType: string | null = null
     let startAction: string | null = null
     let currentTurnId: string | null = null
+    let detachedJob = false
 
     try {
       if (!res.body) throw new Error('Empty response body')
@@ -6044,6 +6045,39 @@ export default function Home() {
             }
             setLiveSteps([])
             setLoading(false)
+
+          } else if (eventType === 'job_started') {
+            detachedJob = true
+            const convId = (startConvId ?? data.conversation_id) as string
+            const turnId = data.turn_id as string
+            const message = (data.message as string) || 'Fronei is working in the background…'
+            currentTurnId = turnId
+            setActiveConvId(convId)
+            setConvUrlParam(convId)
+            setActiveTurnId(turnId)
+            setActiveTurnNotice({
+              convId,
+              turnId,
+              status: (data.status as string) || 'running',
+              message,
+              userMessage: sent,
+            })
+            setMessages(prev => prev.map(m => m.id === tempAsstId ? {
+              ...m,
+              content: message,
+              pipeline_trace: traceStepsRef.current.length > 0
+                ? traceStepsRef.current
+                : [{
+                    stage: 'working' as PipelineStage,
+                    message,
+                    ts: Date.now(),
+                  }],
+            } : m))
+            setLoading(false)
+            setStreaming(false)
+            setRefining(false)
+            setArtifactGenerating(false)
+            void pollActiveTurn(convId, turnId)
 
           } else if (eventType === 'pipeline_log') {
             const step: PipelineStep = {
@@ -6299,10 +6333,12 @@ export default function Home() {
       setRefining(false)
       setArtifactGenerating(false)
       setIsExtracting(false)
-      setLiveSteps([])
-      setSubCompletions(new Map())
-      setLiveAssistantId(null)
-      setActiveTurnId(null)
+      if (!detachedJob) {
+        setLiveSteps([])
+        setSubCompletions(new Map())
+        setLiveAssistantId(null)
+        setActiveTurnId(null)
+      }
     }
   }
 

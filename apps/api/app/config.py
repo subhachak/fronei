@@ -90,6 +90,9 @@ class Settings(BaseSettings):
     agentdeck_vision_judge_enabled: bool = True
     agentdeck_vision_judge_model: str = "gemini/gemini-2.5-flash"
     agentdeck_vision_judge_max_slides: int = 12
+    # Reuse a persistent Node/PptxGenJS process for AgentDeck rendering.
+    # Falls back to one-shot subprocess rendering if the warm process fails.
+    agentdeck_warm_renderer_enabled: bool = True
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

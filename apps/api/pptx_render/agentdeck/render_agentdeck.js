@@ -43,11 +43,14 @@ async function main() {
     return;
   }
 
+  const buffer = await renderPayload(payload);
+  process.stdout.write(buffer);
+}
+
+async function renderPayload(payload) {
   const spec = payload.design_system;
   if (!spec) {
-    process.stderr.write("Missing 'design_system' in render plan payload\n");
-    process.exit(1);
-    return;
+    throw new Error("Missing 'design_system' in render plan payload");
   }
   const theme = payload.theme === "light" ? "light" : "dark";
   const slidePlans = payload.slides || [];
@@ -81,8 +84,7 @@ async function main() {
   }
 
   const buffer = await pptx.write({ outputType: "nodebuffer" });
-  const repaired = await _fixShapeXmlForPowerPointCompat(buffer);
-  process.stdout.write(repaired);
+  return _fixShapeXmlForPowerPointCompat(buffer);
 }
 
 /**
@@ -149,7 +151,11 @@ async function _fixShapeXmlForPowerPointCompat(buffer) {
   return zip.generateAsync({ type: "nodebuffer" });
 }
 
-main().catch((err) => {
-  process.stderr.write(`${err && err.stack ? err.stack : err}\n`);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((err) => {
+    process.stderr.write(`${err && err.stack ? err.stack : err}\n`);
+    process.exit(1);
+  });
+}
+
+module.exports = { renderPayload };

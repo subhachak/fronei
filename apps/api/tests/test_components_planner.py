@@ -281,6 +281,65 @@ def test_generate_doc_plan_happy_path(monkeypatch):
     assert result.fallback_errors == []
 
 
+def test_generate_doc_plan_parallelizes_block_selection_per_content_slide(monkeypatch):
+    outline_json = json.dumps({
+        "title": "AI Strategy Review",
+        "theme": "dark",
+        "sections": [
+            {
+                "slide_layout": "CONTENT_1COL",
+                "section_title": "Adoption is accelerating",
+                "content_brief": "Summarize adoption momentum.",
+                "content_tags": ["narrative"],
+            },
+            {
+                "slide_layout": "CONTENT_1COL",
+                "section_title": "Governance needs a clearer owner",
+                "content_brief": "Summarize governance ownership.",
+                "content_tags": ["governance"],
+            },
+        ],
+    })
+
+    block_payloads: list[dict] = []
+
+    def _fake_invoke_llm(payload, *args, **kwargs):
+        if not block_payloads:
+            block_payloads.append({"outline": True})
+            return _llm_result(outline_json)
+        data = json.loads(payload)
+        block_payloads.append(data)
+        slide = data["slides"][0]
+        idx = int(slide["index"])
+        return _llm_result(json.dumps({
+            "sections": [
+                {
+                    "index": idx,
+                    "blocks": [
+                        {
+                            "zone": "body",
+                            "component_id": "bullet_list",
+                            "data": {"items": [{"text": f"Slide {idx} point", "level": 0}]},
+                        }
+                    ],
+                }
+            ]
+        }))
+
+    monkeypatch.setattr("app.services.components.planner.invoke_llm", _fake_invoke_llm)
+
+    doc_plan, _result = generate_doc_plan("Summarize adoption and governance", _route())
+
+    slide_payloads = [p for p in block_payloads if "slides" in p]
+    assert len(slide_payloads) == 2
+    assert all(len(p["slides"]) == 1 for p in slide_payloads)
+    assert {p["slides"][0]["index"] for p in slide_payloads} == {0, 1}
+    assert [s.blocks[0].data["items"][0]["text"] for s in doc_plan.sections] == [
+        "Slide 0 point",
+        "Slide 1 point",
+    ]
+
+
 def test_agentdeck_usage_stats_weighting_defaults_off():
     assert get_settings().agentdeck_usage_stats_weighting_enabled is False
 

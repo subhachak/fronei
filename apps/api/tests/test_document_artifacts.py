@@ -251,6 +251,45 @@ def test_build_document_artifact_executive_quality_runs_vision_judge(monkeypatch
     assert "images" not in preview["render_qa"]
 
 
+def test_build_document_artifact_deferred_executive_qa_returns_queued_status(monkeypatch):
+    doc_plan = DocPlan(
+        title="AI Strategy Review",
+        sections=[
+            SectionPlan(
+                slide_layout="CONTENT_1COL",
+                section_title="Adoption is accelerating",
+                dek="Early teams are already moving from experimentation to production.",
+                blocks=[
+                    ContentBlock(
+                        zone="body",
+                        component_id="bullet_list",
+                        data={"items": [{"text": "Unit A live", "level": 0}]},
+                    )
+                ],
+            ),
+        ],
+    )
+
+    def fake_run_qa(*args, **kwargs):
+        raise AssertionError("render QA should be deferred")
+
+    monkeypatch.setattr(documents, "run_pptx_render_qa", fake_run_qa)
+
+    preview = documents.build_document_artifact(
+        "",
+        doc_plan.model_dump_json(),
+        "presentation",
+        "pptx",
+        quality_mode="executive",
+        defer_render_qa=True,
+    )
+
+    assert preview["format"] == "pptx"
+    assert preview["pptx_base64"]
+    assert preview["render_qa"]["status"] == "queued"
+    assert preview["render_qa"]["available"] is False
+
+
 def test_build_document_artifact_standard_quality_skips_vision_judge(monkeypatch):
     doc_plan = DocPlan(
         title="AI Strategy Review",

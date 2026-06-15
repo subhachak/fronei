@@ -31,6 +31,7 @@ from app.services.components import (
 from app.services.components.content_schemas import BulletListContent, TableContent
 from app.services.components.fit_contract import FIT_CONTRACTS
 from app.services.qa import run_plan_checks, run_render_checks
+from app.services import document_generator
 from app.services.document_generator import (
     _agentdeck_renderer_available,
     generate_agentdeck_pptx_bytes,
@@ -630,6 +631,29 @@ def test_compose_output_is_a_valid_render_plan_for_both_themes():
 # ---------------------------------------------------------------------------
 # End-to-end agentdeck rendering (#118)
 # ---------------------------------------------------------------------------
+
+
+def test_generate_agentdeck_pptx_bytes_prefers_warm_renderer(monkeypatch):
+    plan = PptxRenderPlan.build(
+        [PptxSlidePlan(slide_layout="TITLE", hero_title="Deck")],
+        theme="dark",
+    )
+    calls: list[dict] = []
+
+    monkeypatch.setattr(document_generator, "_agentdeck_renderer_available", lambda: True)
+    monkeypatch.setattr(
+        document_generator._WARM_AGENTDECK_RENDERER,
+        "render",
+        lambda payload: calls.append(payload) or b"warm-pptx",
+    )
+    monkeypatch.setattr(
+        document_generator,
+        "_render_agentdeck_pptx_one_shot",
+        lambda _payload: (_ for _ in ()).throw(AssertionError("one-shot renderer should not run")),
+    )
+
+    assert generate_agentdeck_pptx_bytes(plan) == b"warm-pptx"
+    assert calls and calls[0]["slides"][0]["slide_layout"] == "TITLE"
 
 
 @pytest.mark.skipif(not _agentdeck_renderer_available(), reason="agentdeck node renderer not installed")

@@ -1064,6 +1064,58 @@ def _document_finalization_confirmed(req: ConvChatRequest) -> bool:
     return bool(req.confirmed_plan.document_brief or req.confirmed_plan.document_format)
 
 
+def _apply_document_generation_defaults(db, user_id: str, plan) -> None:
+    """Fill deterministic document defaults when a high-confidence plan can run
+    without showing the late document-details modal.
+
+    The planner remains the source of intent; this only resolves mechanical
+    choices that the modal would otherwise have supplied, especially template
+    selection for presentations.
+    """
+    brief = dict(plan.document_brief or {})
+    if brief.get("doc_type") != "presentation":
+        plan.document_brief = brief
+        return
+
+    if not plan.document_format_recommendation:
+        plan.document_format_recommendation = "pptx"
+    if "pptx" not in (plan.document_format_options or []):
+        plan.document_format_options = ["pptx", *(plan.document_format_options or [])]
+
+    if not isinstance(brief.get("template_id"), str) or not brief.get("template_id"):
+        templates = list_document_templates("presentation", brief, db=db, user_id=user_id)
+        recommended = next((t for t in templates if t.get("recommended")), None)
+        selected = recommended or (templates[0] if templates else None)
+        if selected and selected.get("id"):
+            brief["template_id"] = str(selected["id"])
+            if not brief.get("theme"):
+                is_brand = bool(selected.get("user_template")) or str(selected.get("design_system") or "").startswith("brand_")
+                brief["theme"] = "light" if is_brand else "dark"
+    plan.document_brief = brief
+
+
+def _should_show_document_finalization(plan) -> bool:
+    if plan.plan_confidence != "high" or plan.open_questions:
+        return True
+    brief = dict(plan.document_brief or {})
+    doc_type = brief.get("doc_type")
+    if not doc_type:
+        return True
+    if doc_type == "presentation":
+        return False
+    return not bool(plan.document_format_recommendation or plan.document_format_options)
+
+
+def _should_propose_plan_before_execution(gate) -> bool:
+    """Return True when the planner needs user input before any capability runs.
+
+    Capability confirmations (web/deep research) and clarifying questions are
+    both pre-execution decisions. Document finalization happens later, after
+    research/web/context gathering has either completed or been declined.
+    """
+    return gate.mode == "confirm" or bool(gate.open_questions)
+
+
 def _document_finalization_payload(db, user_id: str, conv: Conversation, user_msg: ConversationMessage, plan, gate) -> dict:
     doc_cap = gate.capabilities["document"]
     extra = doc_cap.extra or {}
@@ -1121,6 +1173,9 @@ def _maybe_propose_document_finalization(db, user_id: str, conv: Conversation, u
     if not (plan.wants_document_output and gate.capabilities["document"].enabled):
         return None
     if _document_finalization_confirmed(req):
+        return None
+    _apply_document_generation_defaults(db, user_id, plan)
+    if not _should_show_document_finalization(plan):
         return None
     user_msg.plan_json = json.dumps(plan_to_dict(plan))
     conv.updated_at = datetime.now(timezone.utc)
@@ -1562,8 +1617,11 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                 # Once the user has confirmed (req.confirmed_plan set), skip
                 # straight to execution.
                 if req.confirmed_plan is None:
-                    pre_gate = plan_gate.evaluate(plan)
-                    if pre_gate.mode == "confirm":
+                    pre_gate = plan_gate.evaluate(
+                        plan,
+                        explicit_document_request=bool(req.document_requested),
+                    )
+                    if _should_propose_plan_before_execution(pre_gate):
                         user_msg.plan_json = json.dumps(plan_to_dict(plan))
                         conv.updated_at = datetime.now(timezone.utc)
                         db.commit()
@@ -1643,7 +1701,10 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                     final_answer = result.answer
                     route = followup.route
 
-                    gate = plan_gate.evaluate(plan)
+                    gate = plan_gate.evaluate(
+                        plan,
+                        explicit_document_request=bool(req.document_requested or req.confirmed_plan),
+                    )
                     document_preview = None
                     defer_render_qa = False
                     quality_mode = "standard"
@@ -1898,7 +1959,10 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                 # If the confirmed plan also wants a document, feed the research
                 # findings into the document generator instead of just streaming
                 # the research answer as chat text.
-                gate = plan_gate.evaluate(plan)
+                gate = plan_gate.evaluate(
+                    plan,
+                    explicit_document_request=bool(req.document_requested or req.confirmed_plan),
+                )
                 document_preview = None
                 defer_render_qa = False
                 quality_mode = "standard"
@@ -2128,8 +2192,11 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
             # one bundled confirmation popup before execution starts. If the user
             # has already confirmed (confirmed is not None — either inline or via
             # execute-plan), we skip straight to execution regardless of gate mode.
-            gate = plan_gate.evaluate(plan)
-            if gate.mode == "confirm" and confirmed is None:
+            gate = plan_gate.evaluate(
+                plan,
+                explicit_document_request=bool(req.document_requested or confirmed),
+            )
+            if _should_propose_plan_before_execution(gate) and confirmed is None:
                 user_msg.plan_json = json.dumps(plan_to_dict(plan))
                 conv.updated_at = datetime.now(timezone.utc)
                 db.commit()

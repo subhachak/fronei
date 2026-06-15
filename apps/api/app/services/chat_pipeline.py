@@ -30,6 +30,7 @@ from app.services.web_context import WebContextResult, gather_web_context
 from app.services.document_generator import parse_deck_plan
 from app.services.brand import BrandProfile, UserDocumentProfile
 from app.services.components.quality_mode import normalize_quality_mode
+from app.services import plan_gate
 
 _TRIVIAL_FAST_PATH_EXACT = {
     "thanks",
@@ -430,15 +431,34 @@ def build_pipeline_setup(
         stage_timings.append(_timing("planner", started, model=plan.planner_model, action=plan.action))
     plan = apply_confirmed_plan(plan, confirmed_plan)
     use_web = (req.web_search or plan.needs_web_search) and plan.action != "answer_directly"
-    started = time.perf_counter()
-    wc = gather_web_context(plan.search_query or req.message, use_web or req.deep_research)
-    stage_timings.append(_timing(
-        "web_context",
-        started,
-        enabled=use_web or req.deep_research,
-        provider=wc.provider,
-        sources_count=wc.sources_count,
-    ))
+    pre_gate = plan_gate.evaluate(
+        plan,
+        explicit_document_request=bool(req.document_requested),
+    )
+    wait_for_user = confirmed_plan is None and (pre_gate.mode == "confirm" or bool(pre_gate.open_questions))
+    if wait_for_user:
+        wc = WebContextResult(
+            context=None,
+            status="Deferred until plan confirmation.",
+            provider="",
+            sources_count=0,
+            search_query=(plan.search_query or req.message) if use_web or req.deep_research else None,
+        )
+        stage_timings.append(StageTiming(
+            stage="web_context",
+            latency_ms=0,
+            meta={"enabled": use_web or req.deep_research, "deferred": True},
+        ))
+    else:
+        started = time.perf_counter()
+        wc = gather_web_context(plan.search_query or req.message, use_web or req.deep_research)
+        stage_timings.append(_timing(
+            "web_context",
+            started,
+            enabled=use_web or req.deep_research,
+            provider=wc.provider,
+            sources_count=wc.sources_count,
+        ))
 
     started = time.perf_counter()
     route = choose_route(

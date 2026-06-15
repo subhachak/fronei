@@ -97,6 +97,25 @@ def test_build_pipeline_setup_does_not_skip_planner_when_tools_selected(mock_web
     mock_planner.assert_called_once()
 
 
+@patch("app.services.chat_pipeline.run_planner")
+@patch("app.services.chat_pipeline.gather_web_context")
+def test_build_pipeline_setup_defers_web_context_until_plan_confirmed(mock_web, mock_planner):
+    plan = passthrough("Look up current vendor pricing")
+    plan.needs_web_search = True
+    plan.web_search_criticality = "material"
+    plan.search_query = "current vendor pricing"
+    plan.plan_confidence = "medium"
+    mock_planner.return_value = plan
+    req = _make_req("Look up current vendor pricing")
+
+    setup = build_pipeline_setup(req, _make_conv(), [], _make_settings())
+
+    mock_web.assert_not_called()
+    assert setup.wc.status == "Deferred until plan confirmation."
+    assert setup.stage_timings[1].stage == "web_context"
+    assert setup.stage_timings[1].meta["deferred"] is True
+
+
 def test_plan_gate_auto_runs_high_confidence_non_sensitive_research():
     plan = passthrough("Research current market trends")
     plan.recommend_deep_research = True
@@ -120,3 +139,33 @@ def test_plan_gate_still_confirms_sensitive_research():
     gate = plan_gate.evaluate(plan)
 
     assert gate.mode == "confirm"
+
+
+def test_plan_gate_confirms_planner_suggested_document_output():
+    plan = passthrough("Summarize this as a client-ready deck")
+    plan.wants_document_output = True
+    plan.document_brief = {"doc_type": "presentation", "title": "Client Ready Deck"}
+    plan.document_format_options = ["pptx"]
+    plan.document_format_recommendation = "pptx"
+    plan.plan_confidence = "high"
+
+    gate = plan_gate.evaluate(plan)
+
+    assert gate.mode == "confirm"
+    assert gate.capabilities["document"].enabled is True
+    assert gate.capabilities["document"].recommended is True
+
+
+def test_plan_gate_does_not_confirm_explicit_document_request_again():
+    plan = passthrough("Summarize this as a client-ready deck")
+    plan.wants_document_output = True
+    plan.document_brief = {"doc_type": "presentation", "title": "Client Ready Deck"}
+    plan.document_format_options = ["pptx"]
+    plan.document_format_recommendation = "pptx"
+    plan.plan_confidence = "high"
+
+    gate = plan_gate.evaluate(plan, explicit_document_request=True)
+
+    assert gate.mode == "auto"
+    assert gate.capabilities["document"].enabled is True
+    assert gate.capabilities["document"].recommended is False

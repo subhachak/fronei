@@ -55,7 +55,7 @@ class PlanGateResult:
 _EMPTY_BRIEF_VALUES = (None, "", [])
 
 
-def evaluate(plan: Plan) -> PlanGateResult:
+def evaluate(plan: Plan, *, explicit_document_request: bool = False) -> PlanGateResult:
     policy = load_policy()
     open_questions = list(plan.open_questions or [])
     gate_reasons: list[str] = []
@@ -118,11 +118,12 @@ def evaluate(plan: Plan) -> PlanGateResult:
         format_options = ["markdown"]
     max_silent_formats = doc_cfg.get("max_silent_format_options", 1)
 
-    # Document-specific choices now happen at the late artifact-finalization
-    # gate, just before generation. The initial plan popup should stay focused
-    # on whether to use capabilities like web/deep research, not on type,
-    # format, or template details that are better chosen after context gathering.
-    doc_gates = False
+    # If the planner infers that a document may be a better output, surface
+    # that as a recommendation the user can decline before execution. If the
+    # user explicitly selected Document in the composer, the capability itself
+    # is already confirmed; type/template details can still be handled later
+    # by the artifact-finalization gate.
+    doc_gates = bool(plan.wants_document_output) and not explicit_document_request
     if doc_gates:
         gate_reasons.append("document")
         # Note: we deliberately do NOT add synthetic open_questions for

@@ -64,10 +64,22 @@ def evaluate(plan: Plan) -> PlanGateResult:
     web_cfg = policy.get("web_search", {})
     criticality = plan.web_search_criticality or web_cfg.get("default_criticality", "material")
     low_risk_high_confidence = plan.plan_confidence == "high" and not plan.open_questions
+
+    # Sensitive risk factors (medical/legal/financial guidance, etc.) must
+    # still confirm even when the plan is otherwise high-confidence/low-risk
+    # -- this applies to *both* the web-search gate and the deep-research
+    # gate, not just the latter. (#199: "FDA guidance on AI diagnostic
+    # devices" was skipping confirmation because only research_gates checked
+    # sensitive_research.)
+    research_cfg = policy.get("deep_research", {})
+    risk_factors = list(plan.research_risk_factors or [])
+    suggested_mode_risk_factors = set(research_cfg.get("suggested_mode_risk_factors", []))
+    sensitive_research = bool(suggested_mode_risk_factors.intersection(risk_factors))
+
     web_gates = (
         bool(plan.needs_web_search)
         and criticality in web_cfg.get("gating_criticalities", ["material"])
-        and not low_risk_high_confidence
+        and not (low_risk_high_confidence and not sensitive_research)
     )
     web_state = CapabilityState(
         enabled=bool(plan.needs_web_search),
@@ -81,10 +93,6 @@ def evaluate(plan: Plan) -> PlanGateResult:
         gate_reasons.append("web_search")
 
     # ── Deep research ────────────────────────────────────────────────────
-    research_cfg = policy.get("deep_research", {})
-    risk_factors = list(plan.research_risk_factors or [])
-    suggested_mode_risk_factors = set(research_cfg.get("suggested_mode_risk_factors", []))
-    sensitive_research = bool(suggested_mode_risk_factors.intersection(risk_factors))
     research_gates = (
         bool(plan.recommend_deep_research)
         and bool(research_cfg.get("always_gate", True))

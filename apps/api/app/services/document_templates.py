@@ -25,7 +25,7 @@ BUILTIN_PPTX_TEMPLATES: dict[str, dict[str, str]] = {
     "fronei-default": {
         "id": "fronei-default",
         "name": "AgentDeck v2",
-        "description": "Fronei's default AgentDeck v2 design system. Choose dark or light in the setup step.",
+        "description": "Fronei's default design system, with dark and light variants.",
         "design_system": "agentdeck_v1",
     },
     # Legacy built-ins remain resolvable for older saved briefs and tests, but

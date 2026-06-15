@@ -3204,37 +3204,38 @@ function DocumentFinalizationModal({
           </div>
           <div className="doc-brief-field">
             <span>Design system</span>
-            {docType === 'presentation' && (
-              <div className="doc-format-row" role="group" aria-label="AgentDeck theme">
-                {(['dark', 'light'] as const).map(t => (
-                  <button
-                    key={t}
-                    type="button"
-                    className={`doc-format-pill${agentDeckTheme === t ? ' active' : ''}`}
-                    onClick={() => setAgentDeckTheme(t)}
-                    aria-pressed={agentDeckTheme === t}
-                  >
-                    {t === 'dark' ? 'AgentDeck dark' : 'AgentDeck light'}
-                  </button>
-                ))}
-              </div>
-            )}
             <div className="doc-plan-section">
               {templates.map(t => (
-                <button
-                  key={t.id}
-                  type="button"
-                  className={`doc-plan-option${templateId === t.id ? ' active' : ''}`}
-                  onClick={() => setTemplateId(t.id)}
-                >
-                  <span className="doc-plan-option-main">
-                    <i className="ti ti-template" aria-hidden="true" />
-                    <span>{t.name}</span>
-                    {t.recommended && <em>Recommended</em>}
-                    {t.design_system === 'agentdeck_v1' && <em>v2</em>}
-                  </span>
-                  {t.description && <span className="doc-plan-option-reason">{t.description}</span>}
-                </button>
+                <div key={t.id}>
+                  <button
+                    type="button"
+                    className={`doc-plan-option${templateId === t.id ? ' active' : ''}`}
+                    onClick={() => setTemplateId(t.id)}
+                  >
+                    <span className="doc-plan-option-main">
+                      <i className="ti ti-template" aria-hidden="true" />
+                      <span>{t.name}</span>
+                      {t.recommended && <em>Recommended</em>}
+                      {t.design_system === 'agentdeck_v1' && <em>v2</em>}
+                    </span>
+                    {t.description && <span className="doc-plan-option-reason">{t.description}</span>}
+                  </button>
+                  {docType === 'presentation' && templateId === t.id && t.design_system === 'agentdeck_v1' && (
+                    <div className="doc-format-row" role="group" aria-label="AgentDeck theme">
+                      {(['dark', 'light'] as const).map(theme => (
+                        <button
+                          key={theme}
+                          type="button"
+                          className={`doc-format-pill${agentDeckTheme === theme ? ' active' : ''}`}
+                          onClick={() => setAgentDeckTheme(theme)}
+                          aria-pressed={agentDeckTheme === theme}
+                        >
+                          {theme === 'dark' ? 'Dark' : 'Light'}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
               ))}
             </div>
             <div className="doc-template-upload-row">

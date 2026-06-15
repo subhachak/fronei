@@ -2370,6 +2370,11 @@ function SettingsView({
   const [templatesLoaded, setTemplatesLoaded] = useState(false)
   const [templatesError, setTemplatesError] = useState('')
   const [templateActionStatus, setTemplateActionStatus] = useState('')
+  const [renamingTemplateId, setRenamingTemplateId] = useState<string | null>(null)
+  const [renameValue, setRenameValue] = useState('')
+  const replaceInputRef = useRef<HTMLInputElement | null>(null)
+  const uploadInputRef = useRef<HTMLInputElement | null>(null)
+  const [replaceTargetId, setReplaceTargetId] = useState<string | null>(null)
   const activeGuidePage = USER_GUIDE_PAGES.find(page => page.id === guidePage) ?? USER_GUIDE_PAGES[0]
   const profile = personalProfile?.profile ?? {}
   const profileOverrides = isRecord(profile.overrides) ? profile.overrides : {}
@@ -2441,6 +2446,95 @@ function SettingsView({
       setTemplateActionStatus('Template deleted.')
     } catch (e) {
       setTemplatesError(e instanceof Error ? e.message : 'Template delete failed')
+      setTemplateActionStatus('')
+    }
+  }
+
+  function startRenameTemplate(template: DocumentTemplateOption) {
+    setRenamingTemplateId(template.id)
+    setRenameValue(template.name)
+  }
+
+  async function commitRenameTemplate(template: DocumentTemplateOption) {
+    const next = renameValue.trim()
+    if (!next || next === template.name) {
+      setRenamingTemplateId(null)
+      return
+    }
+    setTemplateActionStatus('Renaming template...')
+    setTemplatesError('')
+    try {
+      const form = new FormData()
+      form.append('name', next)
+      const res = await apiFetch(`/documents/templates/${encodeURIComponent(template.id)}`, { method: 'PATCH', body: form })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: 'Rename failed' }))
+        throw new Error((err as { detail?: string }).detail || 'Rename failed')
+      }
+      const updated = await res.json() as DocumentTemplateOption
+      setTemplates(prev => prev.map(t => (t.id === template.id ? { ...t, ...updated } : t)))
+      setTemplateActionStatus('Template renamed.')
+    } catch (e) {
+      setTemplatesError(e instanceof Error ? e.message : 'Template rename failed')
+      setTemplateActionStatus('')
+    } finally {
+      setRenamingTemplateId(null)
+    }
+  }
+
+  function startReplaceTemplate(template: DocumentTemplateOption) {
+    setReplaceTargetId(template.id)
+    replaceInputRef.current?.click()
+  }
+
+  async function replaceTemplateFile(file: File | null) {
+    const targetId = replaceTargetId
+    setReplaceTargetId(null)
+    if (!file || !targetId) return
+    if (!file.name.toLowerCase().endsWith('.pptx')) {
+      setTemplatesError('Replacement file must be a .pptx PowerPoint file.')
+      return
+    }
+    setTemplateActionStatus('Uploading replacement...')
+    setTemplatesError('')
+    try {
+      const form = new FormData()
+      form.append('file', file)
+      const res = await apiFetch(`/documents/templates/${encodeURIComponent(targetId)}/replace`, { method: 'POST', body: form })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: 'Replace failed' }))
+        throw new Error((err as { detail?: string }).detail || 'Replace failed')
+      }
+      const updated = await res.json() as DocumentTemplateOption
+      setTemplates(prev => prev.map(t => (t.id === targetId ? { ...t, ...updated } : t)))
+      setTemplateActionStatus('Template replaced with new version.')
+    } catch (e) {
+      setTemplatesError(e instanceof Error ? e.message : 'Template replace failed')
+      setTemplateActionStatus('')
+    }
+  }
+
+  async function uploadNewTemplate(file: File | null) {
+    if (!file) return
+    if (!file.name.toLowerCase().endsWith('.pptx')) {
+      setTemplatesError('Template file must be a .pptx PowerPoint file.')
+      return
+    }
+    setTemplateActionStatus('Uploading template...')
+    setTemplatesError('')
+    try {
+      const form = new FormData()
+      form.append('file', file)
+      const res = await apiFetch('/documents/templates', { method: 'POST', body: form })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: 'Upload failed' }))
+        throw new Error((err as { detail?: string }).detail || 'Upload failed')
+      }
+      const uploaded = await res.json() as DocumentTemplateOption
+      setTemplates(prev => [uploaded, ...prev])
+      setTemplateActionStatus('Template uploaded.')
+    } catch (e) {
+      setTemplatesError(e instanceof Error ? e.message : 'Template upload failed')
       setTemplateActionStatus('')
     }
   }
@@ -2709,11 +2803,37 @@ function SettingsView({
                     <strong>Presentation templates</strong>
                     <span>Manage uploaded PowerPoint templates used when Fronei generates client-ready decks.</span>
                   </div>
-                  <button className="toggle-chip" onClick={() => loadTemplates()} type="button">
-                    <i className="ti ti-refresh" aria-hidden="true" />
-                    Refresh
-                  </button>
+                  <div className="settings-card-actions" style={{ display: 'flex', gap: '8px' }}>
+                    <button className="toggle-chip" onClick={() => uploadInputRef.current?.click()} type="button">
+                      <i className="ti ti-upload" aria-hidden="true" />
+                      Upload template
+                    </button>
+                    <button className="toggle-chip" onClick={() => loadTemplates()} type="button">
+                      <i className="ti ti-refresh" aria-hidden="true" />
+                      Refresh
+                    </button>
+                  </div>
                 </div>
+                <input
+                  ref={uploadInputRef}
+                  type="file"
+                  accept=".pptx"
+                  style={{ display: 'none' }}
+                  onChange={e => {
+                    void uploadNewTemplate(e.target.files?.[0] ?? null)
+                    e.target.value = ''
+                  }}
+                />
+                <input
+                  ref={replaceInputRef}
+                  type="file"
+                  accept=".pptx"
+                  style={{ display: 'none' }}
+                  onChange={e => {
+                    void replaceTemplateFile(e.target.files?.[0] ?? null)
+                    e.target.value = ''
+                  }}
+                />
                 {templatesError && <div className="error-bar" role="alert">{templatesError}</div>}
                 {!templatesLoaded && <span className="settings-muted">Loading...</span>}
                 {templatesLoaded && templates.length === 0 && (
@@ -2727,7 +2847,21 @@ function SettingsView({
                       </div>
                       <div className="template-settings-main">
                         <div className="template-settings-title">
-                          <strong>{template.name}</strong>
+                          {renamingTemplateId === template.id ? (
+                            <input
+                              className="inline-rename-input"
+                              autoFocus
+                              value={renameValue}
+                              onChange={e => setRenameValue(e.target.value)}
+                              onBlur={() => commitRenameTemplate(template)}
+                              onKeyDown={e => {
+                                if (e.key === 'Enter') commitRenameTemplate(template)
+                                if (e.key === 'Escape') setRenamingTemplateId(null)
+                              }}
+                            />
+                          ) : (
+                            <strong>{template.name}</strong>
+                          )}
                           {template.recommended && <span className="exec-pill">Recommended</span>}
                           {template.user_template ? <span className="exec-pill">Uploaded</span> : <span className="exec-pill">Built-in</span>}
                         </div>
@@ -2740,15 +2874,35 @@ function SettingsView({
                       </div>
                       <div className="memory-actions">
                         {template.user_template ? (
-                          <button
-                            className="conv-action-btn danger"
-                            onClick={() => deleteTemplate(template)}
-                            type="button"
-                            aria-label={`Delete ${template.name}`}
-                            title="Delete template"
-                          >
-                            <i className="ti ti-trash" />
-                          </button>
+                          <>
+                            <button
+                              className="conv-action-btn"
+                              onClick={() => startRenameTemplate(template)}
+                              type="button"
+                              aria-label={`Rename ${template.name}`}
+                              title="Rename template"
+                            >
+                              <i className="ti ti-pencil" />
+                            </button>
+                            <button
+                              className="conv-action-btn"
+                              onClick={() => startReplaceTemplate(template)}
+                              type="button"
+                              aria-label={`Replace ${template.name}`}
+                              title="Replace with new version"
+                            >
+                              <i className="ti ti-replace" />
+                            </button>
+                            <button
+                              className="conv-action-btn danger"
+                              onClick={() => deleteTemplate(template)}
+                              type="button"
+                              aria-label={`Delete ${template.name}`}
+                              title="Delete template"
+                            >
+                              <i className="ti ti-trash" />
+                            </button>
+                          </>
                         ) : (
                           <span className="settings-muted">Managed by Fronei</span>
                         )}

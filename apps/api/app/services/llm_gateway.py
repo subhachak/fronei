@@ -176,6 +176,17 @@ def _is_gemini(model: str) -> bool:
     return model.startswith("gemini/")
 
 
+# Models that reject a `temperature` param outright (litellm's drop_params
+# doesn't catch these because its static model map doesn't recognize these
+# model strings as unsupported). Anthropic's opus-4.x line errors with
+# "temperature is deprecated for this model" if temperature is sent at all.
+_NO_TEMPERATURE_PREFIXES: tuple[str, ...] = ("claude-opus-4",)
+
+
+def _supports_temperature(model: str) -> bool:
+    return not model.startswith(_NO_TEMPERATURE_PREFIXES)
+
+
 def _extract_usage(response) -> tuple[int | None, int | None, float | None]:
     usage = getattr(response, "usage", None)
     prompt_tokens = getattr(usage, "prompt_tokens", None) if usage else None
@@ -231,9 +242,10 @@ def _call_model(
     kwargs: dict = {
         "model": model,
         "messages": msgs,
-        "temperature": 0.2,
         "max_tokens": max_tokens,
     }
+    if _supports_temperature(model):
+        kwargs["temperature"] = 0.2
     if _is_gemini(model) and enable_native_search:
         kwargs["tools"] = _GEMINI_SEARCH_TOOL
 
@@ -286,9 +298,11 @@ def _iter_with_stall_timeout(iterable, timeout_s: float) -> Generator:
 
 def _stream_call(model: str, msgs: list[dict], max_tokens: int, enable_native_search: bool):
     """completion() with stream=True, with Gemini grounding fallback."""
-    kwargs: dict = {"model": model, "messages": msgs, "temperature": 0.2,
+    kwargs: dict = {"model": model, "messages": msgs,
                     "max_tokens": max_tokens, "stream": True,
                     "timeout": STREAM_REQUEST_TIMEOUT_S}
+    if _supports_temperature(model):
+        kwargs["temperature"] = 0.2
     if _is_gemini(model) and enable_native_search:
         kwargs["tools"] = _GEMINI_SEARCH_TOOL
     try:
@@ -465,12 +479,14 @@ def synthesize_answers(
     for model in models_to_try:
         provider = provider_for_model(model)
         try:
-            response = completion(
-                model=model,
-                messages=msgs,
-                temperature=0.2,
-                max_tokens=DEEP_RESEARCH_MAX_COMPLETION_TOKENS,
-            )
+            synth_kwargs: dict = {
+                "model": model,
+                "messages": msgs,
+                "max_tokens": DEEP_RESEARCH_MAX_COMPLETION_TOKENS,
+            }
+            if _supports_temperature(model):
+                synth_kwargs["temperature"] = 0.2
+            response = completion(**synth_kwargs)
         except Exception as exc:
             errors.append(f"{model}: {exc}")
             record_provider_failure(provider)

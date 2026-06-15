@@ -123,6 +123,12 @@ def _msg_out(m: ConversationMessage, db=None, user_id: str | None = None) -> Mes
     research = None
     if db is not None and user_id and m.research_run_id:
         research = research_meta_for_run_id(db, m.research_run_id, user_id)
+    document_preview = None
+    if m.document_preview_json:
+        try:
+            document_preview = json.loads(m.document_preview_json)
+        except (json.JSONDecodeError, ValueError):
+            document_preview = None
     return MessageOut(
         id=m.id, role=m.role, content=m.content,
         task_type=m.task_type, complexity=m.complexity, model_used=m.model_used,
@@ -131,6 +137,7 @@ def _msg_out(m: ConversationMessage, db=None, user_id: str | None = None) -> Mes
         execution_log=execution_log,
         research_run_id=m.research_run_id,
         research=research,
+        document_preview=document_preview,
         created_at=_fmt(m.created_at),
     )
 
@@ -901,7 +908,7 @@ def _turn_completed_done_event(db, turn: ConversationTurn) -> str | None:
         "route": route.model_dump(),
         "was_refined": False,
         "research_run_id": msg.research_run_id,
-        "document_preview": None,
+        "document_preview": json.loads(msg.document_preview_json) if msg.document_preview_json else None,
     })
 
 
@@ -1515,6 +1522,7 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                         estimated_cost_usd=result.estimated_cost_usd,
                         execution_log_json=exec_log.model_dump_json(),
                         research_run_id=existing_run_id,
+                        document_preview_json=json.dumps(document_preview) if document_preview else None,
                     )
                     db.add(asst_msg)
                     _maybe_update_title(conv, plan.intent or research_query)
@@ -1727,6 +1735,7 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                     estimated_cost_usd=result.estimated_cost_usd,
                     execution_log_json=exec_log.model_dump_json(),
                     research_run_id=research.run.id,
+                    document_preview_json=json.dumps(document_preview) if document_preview else None,
                 )
                 plan.action = f"research_{research_mode}"
                 rules_entry = _update_conversation_state(conv, plan, final_answer)
@@ -1862,6 +1871,9 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                 if failure_answer := _document_failure_answer(document_preview):
                     final_answer = failure_answer
                 log_render_qa_failures(db, doc_type, doc_body, document_preview.get("render_qa"))
+
+                asst_msg.document_preview_json = json.dumps(document_preview) if document_preview else None
+                db.commit()
 
                 yield _sse("done", {
                     "message_id": asst_msg.id,

@@ -19,6 +19,8 @@ from dataclasses import dataclass
 
 from litellm import completion, completion_cost
 
+from app.services.llm_gateway import _supports_temperature
+
 from app.config import get_settings
 from app.services.prompts import PLANNER_SYSTEM_PROMPT
 
@@ -354,12 +356,14 @@ def run_planner(
 
     for model in models_to_try:
         try:
-            response = completion(
-                model=model,
-                messages=msgs,
-                temperature=0.1,
-                max_tokens=1024,
-            )
+            planner_kwargs: dict = {
+                "model": model,
+                "messages": msgs,
+                "max_tokens": 1024,
+            }
+            if _supports_temperature(model):
+                planner_kwargs["temperature"] = 0.1
+            response = completion(**planner_kwargs)
             raw = response.choices[0].message.content or ""
             used_model = model
             try:

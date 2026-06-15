@@ -603,6 +603,36 @@ type GeneratedDocument = {
 
 type DocumentOutputFormat = 'docx' | 'markdown' | 'xlsx' | 'pptx'
 
+// Backend sends document_preview as a snake_case dict (or null). Map it to the
+// camelCase GeneratedDocument shape the UI expects.
+function mapDocumentPreview(raw: any): GeneratedDocument | null | undefined {
+  if (!raw) return raw === null ? null : undefined
+  return {
+    title:      raw.title,
+    docType:    raw.doc_type,
+    markdown:   raw.markdown,
+    filename:   raw.filename,
+    docxBase64: raw.docx_base64,
+    xlsxBase64: raw.xlsx_base64,
+    pptxBase64: raw.pptx_base64,
+    format:     raw.format,
+    requestedFormat: raw.requested_format,
+    generationError: raw.generation_error,
+    generationFailure: raw.generation_failure,
+    outputFormats: raw.output_formats,
+  } as GeneratedDocument
+}
+
+// Apply document_preview snake_case->camelCase mapping to every message in a
+// conversation-detail payload (used when (re)hydrating from GET /conversations/{id}).
+function mapMessagesDocumentPreview<T extends { document_preview?: any }>(messages: T[]): T[] {
+  return messages.map(m =>
+    m.document_preview !== undefined
+      ? { ...m, document_preview: mapDocumentPreview(m.document_preview) }
+      : m
+  )
+}
+
 type ConversationDetail = ConversationSummary & { messages: MessageOut[]; active_turn?: ConversationTurn | null }
 
 type WritingSample = {
@@ -5117,10 +5147,11 @@ export default function Home() {
       const activeUserMessage = activeTurn?.user_message_id
         ? detail.messages.find(m => m.id === activeTurn.user_message_id)?.content
         : undefined
+      const hydratedMessages = mapMessagesDocumentPreview(detail.messages)
       setMessages(
         activeTurn && ['pending', 'running'].includes(activeTurn.status)
           ? [
-              ...detail.messages,
+              ...hydratedMessages,
               {
                 id: activeAssistantId,
                 role: 'assistant' as const,
@@ -5133,7 +5164,7 @@ export default function Home() {
                 })),
               },
             ]
-          : detail.messages
+          : hydratedMessages
       )
       if (activeTurn && ['pending', 'running'].includes(activeTurn.status)) {
         setLiveAssistantId(activeAssistantId)
@@ -5177,7 +5208,7 @@ export default function Home() {
         const turn: ConversationTurn = await apiFetch(`/conversations/${convId}/turns/${turnId}`).then(r => r.json())
         if (turn.status === 'completed' || turn.status === 'failed' || turn.status === 'cancelled' || turn.status === 'awaiting_confirmation') {
           const detail: ConversationDetail = await apiFetch(`/conversations/${convId}`).then(r => r.json())
-          setMessages(detail.messages)
+          setMessages(mapMessagesDocumentPreview(detail.messages))
           setLiveAssistantId(null)
           setActiveTurnId(null)
           pollingTurnRef.current = null
@@ -6030,7 +6061,7 @@ export default function Home() {
             const last = detail.messages[detail.messages.length - 1]
             const newAssistantCount = detail.messages.filter(m => m.role === 'assistant' && m.id > 0).length
             if (last && last.role === 'assistant' && last.content && newAssistantCount > originalAssistantCount) {
-              setMessages(detail.messages)
+              setMessages(mapMessagesDocumentPreview(detail.messages))
               if (wasNew) {
                 const list: ConversationSummary[] = await apiFetch('/conversations').then(r => r.json())
                 setConversations(list)

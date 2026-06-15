@@ -151,6 +151,7 @@ class ConversationMessage(Base):
     execution_log_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     research_run_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     plan_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    document_preview_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     conversation: Mapped["Conversation"] = relationship("Conversation", back_populates="messages")
@@ -623,6 +624,8 @@ def _ensure_sqlite_schema(bind) -> None:
         statements.append("ALTER TABLE conversation_messages ADD COLUMN execution_log_json TEXT")
     if has_table("conversation_messages") and not has_column("conversation_messages", "research_run_id"):
         statements.append("ALTER TABLE conversation_messages ADD COLUMN research_run_id INTEGER")
+    if has_table("conversation_messages") and not has_column("conversation_messages", "document_preview_json"):
+        statements.append("ALTER TABLE conversation_messages ADD COLUMN document_preview_json TEXT")
 
     research_table_sql = {
         "research_runs": """

@@ -100,9 +100,10 @@ def _can_use_trivial_fast_path(req: ConvChatRequest, history: list[dict]) -> boo
     ):
         return False
     text = " ".join(req.message.strip().lower().split())
+    text_key = text.strip(" \t\r\n.!?")
     if not text or len(text) > 80 or not history:
         return False
-    if text in _TRIVIAL_FAST_PATH_EXACT:
+    if text_key in _TRIVIAL_FAST_PATH_EXACT:
         return True
     return any(text.startswith(prefix) for prefix in _TRIVIAL_FAST_PATH_PREFIXES)
 

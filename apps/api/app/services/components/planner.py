@@ -36,6 +36,13 @@ from app.services.llm_gateway import LLMResult, invoke_llm
 
 from ..design_systems.registry import get_design_system
 from .design_plan import DesignPlan, RepairConstraint, SlideDesignTreatment
+from .quality_mode import (
+    DEFAULT_QUALITY_MODE,
+    QualityMode,
+    brand_strictness_for_quality,
+    density_target_for_quality,
+    normalize_quality_mode,
+)
 from .registry import get_component
 from .render_plan import (
     SLIDE_LAYOUTS,
@@ -959,7 +966,14 @@ def _component_choices_for_layout(slide_layout: str) -> dict[str, list[str]]:
     return choices
 
 
-def _fallback_design_plan(presentation_plan: DocPlan, *, quality_mode: str = "standard") -> DesignPlan:
+def _fallback_design_plan(
+    presentation_plan: DocPlan,
+    *,
+    quality_mode: QualityMode | str = DEFAULT_QUALITY_MODE,
+) -> DesignPlan:
+    mode = normalize_quality_mode(quality_mode)
+    density_target = density_target_for_quality(mode)
+    brand_strictness = brand_strictness_for_quality(mode)
     treatments: list[SlideDesignTreatment] = []
     for section in presentation_plan.sections:
         treatments.append(
@@ -968,7 +982,7 @@ def _fallback_design_plan(presentation_plan: DocPlan, *, quality_mode: str = "st
                 visual_role=_visual_role_for_section(section),
                 layout_id=section.slide_layout,
                 component_choices=_component_choices_for_layout(section.slide_layout),
-                density_target="balanced",
+                density_target=density_target,
                 repair_constraints=[
                     RepairConstraint(type="preserve_message"),
                     RepairConstraint(type="may_reduce_copy"),
@@ -978,9 +992,12 @@ def _fallback_design_plan(presentation_plan: DocPlan, *, quality_mode: str = "st
     return DesignPlan(
         design_system=presentation_plan.design_system,
         theme=presentation_plan.theme,
-        quality_mode=quality_mode,
-        visual_direction="Executive-ready AgentDeck layout using semantic tokens and sparse hierarchy.",
-        density_strategy="balanced",
+        quality_mode=mode,
+        visual_direction=(
+            "Executive-ready AgentDeck layout using semantic tokens and sparse hierarchy. "
+            f"Brand strictness: {brand_strictness}."
+        ),
+        density_strategy=density_target,
         slide_treatments=treatments,
     )
 
@@ -1003,10 +1020,11 @@ def generate_design_plan(
     presentation_plan: DocPlan,
     route: RouteDecision,
     *,
-    quality_mode: str = "standard",
+    quality_mode: QualityMode | str = DEFAULT_QUALITY_MODE,
     brand_profile: "BrandProfile | None" = None,
     user_document_profile: "UserDocumentProfile | None" = None,
 ) -> tuple[DesignPlan, LLMResult]:
+    mode = normalize_quality_mode(quality_mode)
     payload = {
         "presentation_plan": presentation_plan.model_dump(mode="json", exclude_none=True),
         "design_system": "agentdeck_v1",
@@ -1014,7 +1032,9 @@ def generate_design_plan(
             section.slide_id or f"slide-{i + 1}": _component_choices_for_layout(section.slide_layout)
             for i, section in enumerate(presentation_plan.sections)
         },
-        "quality_mode": quality_mode,
+        "quality_mode": mode,
+        "density_target": density_target_for_quality(mode),
+        "brand_strictness": brand_strictness_for_quality(mode),
     }
     if brand_profile is not None:
         payload["brand_profile"] = brand_profile.model_dump(mode="json", exclude_none=True)
@@ -1030,7 +1050,7 @@ def generate_design_plan(
     except Exception as exc:
         logger.warning("Design-planning LLM call failed, using fallback: %s", exc)
         fallback = _apply_brand_context(
-            _fallback_design_plan(presentation_plan, quality_mode=quality_mode),
+            _fallback_design_plan(presentation_plan, quality_mode=mode),
             brand_profile,
             user_document_profile,
         )
@@ -1047,9 +1067,10 @@ def generate_design_plan(
     try:
         plan = DesignPlan.model_validate(data)
     except Exception:
-        plan = _fallback_design_plan(presentation_plan, quality_mode=quality_mode)
+        plan = _fallback_design_plan(presentation_plan, quality_mode=mode)
     if not plan.slide_treatments:
-        plan = _fallback_design_plan(presentation_plan, quality_mode=quality_mode)
+        plan = _fallback_design_plan(presentation_plan, quality_mode=mode)
+    plan.quality_mode = mode
     plan = _apply_brand_context(plan, brand_profile, user_document_profile)
     return plan, result
 
@@ -1102,10 +1123,11 @@ def generate_agentdeck_v2_plan(
     theme: Theme = "dark",
     extra_context: str | None = None,
     db: Any | None = None,
-    quality_mode: str = "standard",
+    quality_mode: QualityMode | str = DEFAULT_QUALITY_MODE,
     brand_profile: "BrandProfile | None" = None,
     user_document_profile: "UserDocumentProfile | None" = None,
 ) -> tuple[DocPlan, DesignPlan, LLMResult]:
+    mode = normalize_quality_mode(quality_mode)
     udp_context = _user_document_profile_context(user_document_profile)
     narrative_context = "\n\n".join(part for part in (extra_context, udp_context) if part)
     narrative, narrative_result = generate_narrative_plan(
@@ -1123,7 +1145,7 @@ def generate_agentdeck_v2_plan(
     design, design_result = generate_design_plan(
         presentation,
         route,
-        quality_mode=quality_mode,
+        quality_mode=mode,
         brand_profile=brand_profile,
         user_document_profile=user_document_profile,
     )

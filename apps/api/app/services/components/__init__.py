@@ -15,7 +15,15 @@ from .planner import (
     generate_narrative_plan,
     generate_presentation_plan,
 )
-from .quality_mode import DEFAULT_QUALITY_MODE, QualityMode
+from .quality_mode import (
+    DEFAULT_QUALITY_MODE,
+    QualityMode,
+    brand_strictness_for_quality,
+    deck_judge_thresholds,
+    density_target_for_quality,
+    normalize_quality_mode,
+    repair_iteration_cap,
+)
 from .registry import (
     COMPONENT_REGISTRY,
     ComponentDef,
@@ -74,6 +82,11 @@ __all__ = [
     "generate_presentation_plan",
     "DEFAULT_QUALITY_MODE",
     "QualityMode",
+    "brand_strictness_for_quality",
+    "deck_judge_thresholds",
+    "density_target_for_quality",
+    "normalize_quality_mode",
+    "repair_iteration_cap",
     "DEFAULT_COMPONENT_RUNTIME",
     "ComponentRuntime",
     "DefaultComponentRuntime",

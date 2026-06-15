@@ -62,3 +62,33 @@ def test_deck_judge_scores_deck_and_recommends_repairs():
     assert result.status in {"pass", "warn"}
     assert result.storyline_score > 0
     assert result.design_score == 1.0
+
+
+def test_deck_judge_thresholds_follow_quality_mode():
+    doc_plan = DocPlan(
+        title="Deck",
+        sections=[
+            SectionPlan(
+                slide_id="s1",
+                slide_layout="CONTENT_1COL",
+                section_title="Decision",
+                purpose="decision",
+                message="Approve the plan.",
+                blocks=[
+                    ContentBlock(
+                        block_id="b1",
+                        zone="body",
+                        component_id="bullet_list",
+                        data={"items": [{"text": "Authorize Phase 1"}]},
+                    )
+                ],
+            )
+        ],
+    )
+    slide_result = judge_slide(slide_id="s1", slide_number=2, issues=[])
+
+    draft = judge_deck(doc_plan=doc_plan, slide_results=[slide_result], quality_mode="draft")
+    executive = judge_deck(doc_plan=doc_plan, slide_results=[slide_result], quality_mode="executive")
+
+    assert draft.status == "pass"
+    assert executive.status == "warn"

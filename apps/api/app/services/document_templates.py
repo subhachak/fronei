@@ -24,9 +24,12 @@ MAX_TEMPLATE_UPLOAD_BYTES = 25 * 1024 * 1024
 BUILTIN_PPTX_TEMPLATES: dict[str, dict[str, str]] = {
     "fronei-default": {
         "id": "fronei-default",
-        "name": "Fronei Editorial",
-        "description": "Premium warm editorial strategy styling for template-free client decks.",
+        "name": "AgentDeck v2",
+        "description": "Fronei's default AgentDeck v2 design system. Choose dark or light in the setup step.",
+        "design_system": "agentdeck_v1",
     },
+    # Legacy built-ins remain resolvable for older saved briefs and tests, but
+    # new presentation setup no longer lists or recommends them.
     "warm-editorial": {
         "id": "warm-editorial",
         "name": "Warm editorial",
@@ -358,14 +361,6 @@ def _template_option_from_row(row: DocumentTemplate, *, recommended: bool = Fals
 
 
 def recommend_template_id(brief: dict | None) -> str:
-    brief = brief or {}
-    text = " ".join(str(brief.get(k) or "") for k in ("doc_type", "title", "audience", "tone", "length")).lower()
-    if "architecture" in text or "technical" in text or "engineering" in text or "platform" in text:
-        return "data-product-os"
-    if "board" in text or "steering" in text or "executive" in text or "client" in text:
-        return "executive-navy"
-    if (brief or {}).get("doc_type") == "presentation":
-        return "clean-light"
     return "fronei-default"
 
 
@@ -397,14 +392,7 @@ def list_document_templates(
         )
         templates.extend(_template_option_from_row(row) for row in user_rows)
 
-    for template_id in (
-        "fronei-default",
-        "warm-editorial",
-        "modern-tech",
-        "executive-navy",
-        "data-product-os",
-        "clean-light",
-    ):
+    for template_id in ("fronei-default",):
         item = BUILTIN_PPTX_TEMPLATES[template_id].copy()
         if template_id != "fronei-default" and not resolve_pptx_template_path(template_id):
             continue

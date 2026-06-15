@@ -496,6 +496,7 @@ type DocumentTemplateOption = {
   recommended?: boolean
   user_template?: boolean
   design_mode?: string
+  design_system?: string
 }
 
 type DocumentFinalizationProposal = {
@@ -3019,6 +3020,7 @@ function DocumentFinalizationModal({
   const [audience, setAudience] = useState(String(brief.audience || ''))
   const [tone, setTone] = useState(String(brief.tone || ''))
   const [length, setLength] = useState(String(brief.length || ''))
+  const [agentDeckTheme, setAgentDeckTheme] = useState<'dark' | 'light'>(brief.theme === 'light' ? 'light' : 'dark')
   const initialFormatChoices = documentFormatChoicesForType(String(brief.doc_type || 'executive_report'), proposal)
   const [format, setFormat] = useState<DocumentOutputFormat>(initialFormatChoices.recommendation)
   const initialTemplates = proposal.templates?.length ? proposal.templates : [{
@@ -3046,6 +3048,33 @@ function DocumentFinalizationModal({
       return proposal.supported_formats.includes(current) ? current : formatChoices.recommendation
     })
   }, [docType, formatChoices.recommendation, proposal.supported_formats])
+
+  // Re-fetch the template list whenever the document type changes, since
+  // proposal.templates was only computed for the originally-proposed doc_type
+  // (e.g. switching from a report to "presentation" should surface the full
+  // AgentDeck v2 template set, not the single freehand fallback).
+  const initialDocType = String(brief.doc_type || 'executive_report')
+  useEffect(() => {
+    if (docType === initialDocType) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const res = await apiFetch(`/documents/templates?doc_type=${encodeURIComponent(docType)}`)
+        if (!res.ok || cancelled) return
+        const data = await res.json()
+        const fetched = (data.templates as DocumentTemplateOption[]) ?? []
+        if (!fetched.length || cancelled) return
+        setTemplates(fetched)
+        setTemplateId(current => {
+          if (fetched.some(t => t.id === current)) return current
+          return fetched.find(t => t.recommended)?.id || fetched[0].id
+        })
+      } catch {
+        // keep existing templates on failure
+      }
+    })()
+    return () => { cancelled = true }
+  }, [docType, initialDocType, apiFetch])
 
   async function uploadTemplate(file: File | null) {
     if (!file) return
@@ -3144,7 +3173,22 @@ function DocumentFinalizationModal({
             </div>
           </div>
           <div className="doc-brief-field">
-            <span>Template</span>
+            <span>Design system</span>
+            {docType === 'presentation' && (
+              <div className="doc-format-row" role="group" aria-label="AgentDeck theme">
+                {(['dark', 'light'] as const).map(t => (
+                  <button
+                    key={t}
+                    type="button"
+                    className={`doc-format-pill${agentDeckTheme === t ? ' active' : ''}`}
+                    onClick={() => setAgentDeckTheme(t)}
+                    aria-pressed={agentDeckTheme === t}
+                  >
+                    {t === 'dark' ? 'AgentDeck dark' : 'AgentDeck light'}
+                  </button>
+                ))}
+              </div>
+            )}
             <div className="doc-plan-section">
               {templates.map(t => (
                 <button
@@ -3157,6 +3201,7 @@ function DocumentFinalizationModal({
                     <i className="ti ti-template" aria-hidden="true" />
                     <span>{t.name}</span>
                     {t.recommended && <em>Recommended</em>}
+                    {t.design_system === 'agentdeck_v1' && <em>v2</em>}
                   </span>
                   {t.description && <span className="doc-plan-option-reason">{t.description}</span>}
                 </button>
@@ -3216,6 +3261,7 @@ function DocumentFinalizationModal({
                 tone: tone.trim() || undefined,
                 length: length.trim() || undefined,
                 template_id: templateId,
+                theme: docType === 'presentation' ? agentDeckTheme : undefined,
               },
             })}
           >

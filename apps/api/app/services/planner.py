@@ -146,7 +146,7 @@ def _build_plan(data: dict, message: str, model: str, latency_ms: int, cost: flo
         field: (raw_brief.get(field) or None)
         for field in (
             "doc_type", "title", "audience", "tone", "length", "quality_mode",
-            "template_id", "_source_context", "_source_research_run_id",
+            "template_id", "theme", "_source_context", "_source_research_run_id",
         )
     } if isinstance(raw_brief, dict) else {}
     if document_brief.get("doc_type") not in _VALID_DOC_TYPES:
@@ -266,7 +266,7 @@ def apply_confirmed_plan(plan: Plan, confirmed: dict | None) -> Plan:
     if confirmed.get("document_brief"):
         brief = dict(plan.document_brief or {})
         for k, v in confirmed["document_brief"].items():
-            if k in ("doc_type", "title", "audience", "tone", "length", "quality_mode", "template_id") and v:
+            if k in ("doc_type", "title", "audience", "tone", "length", "quality_mode", "template_id", "theme") and v:
                 brief[k] = v
         plan.document_brief = brief
     return plan

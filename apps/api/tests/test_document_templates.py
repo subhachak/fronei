@@ -53,7 +53,8 @@ def test_user_template_upload_list_and_delete(monkeypatch, tmp_path):
             templates = listing.json()["templates"]
             assert templates[0]["id"] == uploaded["id"]
             assert templates[0]["recommended"] is True
-            assert any(t["id"] == "clean-light" for t in templates)
+            assert any(t["id"] == "fronei-default" and t.get("design_system") == "agentdeck_v1" for t in templates)
+            assert not any(t["id"] == "clean-light" for t in templates)
 
             with Session() as db:
                 row = db.query(DocumentTemplate).filter(DocumentTemplate.public_id == uploaded["id"]).one()

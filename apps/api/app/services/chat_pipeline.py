@@ -485,6 +485,7 @@ def generate_document_output(
     brief = plan.document_brief or {}
     doc_type = brief.get("doc_type") or "executive_report"
     quality_mode = normalize_quality_mode(brief.get("quality_mode"))
+    presentation_theme = "light" if brief.get("theme") == "light" else "dark"
     parts = [DOCUMENT_SYSTEM_PROMPT, DOC_TYPE_PROMPTS.get(doc_type, DOC_TYPE_PROMPTS["executive_report"])]
 
     preferences = []
@@ -498,6 +499,7 @@ def generate_document_output(
         preferences.append(f"- Suggested title: {brief['title']}")
     if doc_type == "presentation":
         preferences.append(f"- Quality mode: {quality_mode}")
+        preferences.append(f"- AgentDeck theme: {presentation_theme}")
     if preferences:
         parts.append("User-selected document brief:\n" + "\n".join(preferences))
 
@@ -525,6 +527,7 @@ def generate_document_output(
         doc_plan, _design_plan, plan_result = generate_agentdeck_v2_plan(
             plan.enriched_prompt,
             route,
+            theme=presentation_theme,
             extra_context=extra_context,
             db=db,
             quality_mode=quality_mode,

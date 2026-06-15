@@ -10,6 +10,30 @@ class Base(DeclarativeBase):
     pass
 
 
+def _strip_postgres_nul(value: str) -> str:
+    """PostgreSQL rejects NUL bytes in text/varchar values.
+
+    Web pages, PDFs, and model outputs can occasionally carry `\x00` through
+    otherwise-valid Unicode strings. SQLite accepts those values, so local
+    tests may pass while production fails at commit time with:
+    "A string literal cannot contain NUL (0x00) characters."
+    Strip them at the ORM boundary for every textual column.
+    """
+    return value.replace("\x00", "") if "\x00" in value else value
+
+
+@event.listens_for(Base, "before_insert", propagate=True)
+@event.listens_for(Base, "before_update", propagate=True)
+def _sanitize_text_columns(_mapper, _connection, target) -> None:
+    for attr in target.__mapper__.column_attrs:
+        column = attr.columns[0]
+        if not isinstance(column.type, (String, Text)):
+            continue
+        value = getattr(target, attr.key, None)
+        if isinstance(value, str) and "\x00" in value:
+            setattr(target, attr.key, _strip_postgres_nul(value))
+
+
 class User(Base):
     __tablename__ = "users"
 

@@ -53,7 +53,7 @@ def test_build_document_artifact_reports_render_failure(monkeypatch):
     assert "PowerPoint rendering failed" in preview["generation_error"]
 
 
-def test_build_document_artifact_agentdeck_render_failure_does_not_use_legacy_renderer(monkeypatch):
+def test_build_document_artifact_agentdeck_render_failure_uses_python_fallback(monkeypatch):
     doc_plan = DocPlan(
         title="AI Strategy Review",
         sections=[
@@ -83,11 +83,10 @@ def test_build_document_artifact_agentdeck_render_failure_does_not_use_legacy_re
 
     preview = documents.build_document_artifact("", doc_plan.model_dump_json(), "presentation", "pptx")
 
-    assert preview["format"] == "failed"
+    assert preview["format"] == "pptx"
     assert preview["requested_format"] == "pptx"
-    assert "pptx_base64" not in preview
-    assert preview["generation_failure"]["stage"] == "renderer"
-    assert "agentdeck unavailable" in preview["generation_failure"]["debug_info"]
+    assert preview["pptx_base64"]
+    assert "generation_failure" not in preview
 
 
 def test_build_document_artifact_agentdeck_compose_failure_does_not_use_legacy_renderer(monkeypatch):

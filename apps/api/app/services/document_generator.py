@@ -3083,7 +3083,7 @@ def _pptx_add_fallback_design_ticks(slide) -> None:
     difference.
     """
     theme = _pptx_theme()
-    for idx in range(8):
+    for idx in range(12):
         tick = slide.shapes.add_shape(
             MSO_SHAPE.RECTANGLE,
             PptxInches(9.05 + idx * 0.28),
@@ -3291,6 +3291,180 @@ def _pptx_render_structured_fallback(slide, spec: dict) -> bool:
         rendered = True
 
     return rendered
+
+
+def _agentdeck_assignment_instances(assignment) -> list[ZoneInstance]:
+    if assignment is None:
+        return []
+    return assignment if isinstance(assignment, list) else [assignment]
+
+
+def _agentdeck_bullet_text(item) -> str:
+    if isinstance(item, dict):
+        return str(item.get("text") or item.get("title") or item.get("body") or "").strip()
+    return str(item or "").strip()
+
+
+def _agentdeck_card_to_column(card: dict) -> dict:
+    bullets = []
+    for item in card.get("bullets") or []:
+        text = _agentdeck_bullet_text(item)
+        if text:
+            bullets.append(text)
+    if card.get("body"):
+        bullets.append(str(card["body"]))
+    badge = card.get("badge") if isinstance(card.get("badge"), dict) else {}
+    return {
+        "heading": str(card.get("title") or badge.get("text") or "Item"),
+        "bullets": bullets,
+    }
+
+
+def _legacy_slide_from_agentdeck_slide(slide: PptxSlidePlan) -> dict | None:
+    layout = slide.slide_layout
+    if layout == "TITLE":
+        return None
+    if layout == "SECTION_HEADER":
+        return {
+            "layout": "section",
+            "title": slide.section_title or slide.title or "Section",
+            "subtitle": slide.section_subtitle or "",
+            "speaker_notes": slide.notes or "",
+        }
+    if layout == "CLOSING":
+        bullets = [b for b in (slide.closing_text, slide.closing_body) if b]
+        return {
+            "layout": "recommendation",
+            "title": slide.closing_text or "Decision",
+            "bullets": bullets,
+            "speaker_notes": slide.notes or "",
+        }
+
+    legacy: dict = {
+        "layout": "bullets",
+        "title": slide.title or (slide.header_bar or {}).get("section_title") or "Untitled",
+        "subtitle": slide.subtitle or "",
+        "bullets": [],
+        "columns": [],
+        "stats": [],
+        "phases": [],
+        "decisions": [],
+        "speaker_notes": slide.notes or "",
+    }
+    if slide.callout:
+        legacy["callout"] = slide.callout
+
+    for assignment in (slide.zones or {}).values():
+        for inst in _agentdeck_assignment_instances(assignment):
+            props = inst.props or {}
+            component_id = inst.component_id
+            if component_id == "bullet_list":
+                if props.get("title") and not legacy["title"]:
+                    legacy["title"] = props["title"]
+                legacy["bullets"].extend(
+                    text for item in props.get("items") or []
+                    if (text := _agentdeck_bullet_text(item))
+                )
+            elif component_id == "table":
+                rows = []
+                headers = [str(h) for h in props.get("headers") or []]
+                if headers:
+                    rows.append(headers)
+                for row in props.get("rows") or []:
+                    rows.append([
+                        str(cell.get("text") if isinstance(cell, dict) else cell)
+                        for cell in row
+                    ])
+                if rows:
+                    legacy["layout"] = "table"
+                    legacy["table"] = rows
+            elif component_id == "stat_card":
+                legacy["stats"].append({
+                    "value": str(props.get("value") or ""),
+                    "label": str(props.get("label") or ""),
+                    "source": str(props.get("caption") or props.get("delta") or ""),
+                })
+            elif component_id == "stat_strip":
+                for stat in props.get("stats") or []:
+                    legacy["stats"].append({
+                        "value": str(stat.get("value") or ""),
+                        "label": str(stat.get("label") or ""),
+                        "source": str(stat.get("caption") or stat.get("delta") or ""),
+                    })
+            elif component_id == "decision_list":
+                if props.get("title"):
+                    legacy["columns"].append({"heading": props["title"], "bullets": []})
+                for card in props.get("cards") or []:
+                    title = str(card.get("title") or "Decision")
+                    body = str(card.get("body") or "")
+                    legacy["decisions"].append({"label": title, "text": body})
+                    legacy["columns"].append(_agentdeck_card_to_column(card))
+            elif component_id == "card":
+                legacy["columns"].append(_agentdeck_card_to_column(props))
+            elif component_id == "timeline":
+                for node in props.get("nodes") or []:
+                    legacy["phases"].append({
+                        "label": str(node.get("step_label") or ""),
+                        "title": str(node.get("title") or ""),
+                        "description": str(node.get("body") or ""),
+                    })
+            elif component_id == "timeline_node":
+                legacy["phases"].append({
+                    "label": str(props.get("step_label") or ""),
+                    "title": str(props.get("title") or ""),
+                    "description": str(props.get("body") or ""),
+                })
+            elif component_id == "callout_bar":
+                legacy["callout"] = {"label": "Insight", "text": str(props.get("text") or "")}
+            elif component_id == "progress_bar":
+                legacy.setdefault("bars", []).append({
+                    "label": str(props.get("label") or "Progress"),
+                    "value": float(props.get("value") or 0) * 100,
+                    "display": f"{float(props.get('value') or 0) * 100:.0f}%",
+                })
+            elif component_id == "badge":
+                if props.get("text"):
+                    legacy["bullets"].append(str(props["text"]))
+
+    if legacy["decisions"]:
+        legacy["layout"] = "decision_ask_panel"
+    elif legacy["phases"]:
+        legacy["layout"] = "timeline"
+    elif legacy["stats"] and slide.slide_layout == "CONTENT_HERO_STAT":
+        legacy["layout"] = "stat_cards"
+    elif legacy.get("table"):
+        legacy["layout"] = "table"
+    elif len(legacy["columns"]) >= 2:
+        legacy["layout"] = "comparison"
+    elif legacy["stats"]:
+        legacy["layout"] = "stat_cards"
+
+    return legacy
+
+
+def generate_agentdeck_pptx_bytes_fallback(plan: "PptxRenderPlan") -> bytes:
+    """Render AgentDeck plans without Node/PptxGenJS.
+
+    This is an environment fallback, not the primary renderer. It preserves
+    real PPTX output for CI/lightweight deploys by translating PptxRenderPlan
+    into the legacy DeckPlan shape consumed by the python-pptx renderer.
+    """
+    title_slide = next((s for s in plan.slides if s.slide_layout == "TITLE"), None)
+    deck_plan = {
+        "title": (title_slide.hero_title if title_slide else None) or "Fronei deck",
+        "subtitle": (title_slide.subtitle if title_slide else None) or "",
+        "theme": plan.theme,
+        "slides": [],
+    }
+    for slide in plan.slides:
+        legacy = _legacy_slide_from_agentdeck_slide(slide)
+        if legacy is not None:
+            deck_plan["slides"].append(legacy)
+    return _generate_pptx_bytes_python_pptx(
+        str(deck_plan["title"]),
+        json.dumps(deck_plan),
+        str(deck_plan.get("subtitle") or ""),
+    )
 
 
 def _pptx_render_deck_plan(prs: Presentation, plan: dict, fallback_title: str, subtitle: str | None) -> None:

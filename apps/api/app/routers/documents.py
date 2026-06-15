@@ -43,6 +43,7 @@ from app.services.document_generator import (
     compose_deck_plan_parallel,
     deck_plan_to_markdown,
     generate_agentdeck_pptx_bytes,
+    generate_agentdeck_pptx_bytes_fallback,
     generate_docx_bytes,
     generate_pptx_bytes,
     generate_xlsx_bytes,
@@ -917,6 +918,13 @@ def build_document_artifact(
         })
         return failed
 
+    def _render_agentdeck_pptx(agentdeck_plan) -> bytes:
+        try:
+            return generate_agentdeck_pptx_bytes(agentdeck_plan)
+        except Exception as exc:
+            logger.warning("AgentDeck JS renderer unavailable/failed; using python fallback: %s", exc)
+            return generate_agentdeck_pptx_bytes_fallback(agentdeck_plan)
+
     if fmt not in SUPPORTED_RENDER_FORMATS:
         preview["generation_error"] = f"{fmt} output is not supported yet; showing Markdown instead."
         return preview
@@ -978,7 +986,7 @@ def build_document_artifact(
             if agentdeck_plan is not None:
                 plan_issues = run_plan_checks(doc_plan_obj or agentdeck_plan)
                 try:
-                    content = generate_agentdeck_pptx_bytes(agentdeck_plan)
+                    content = _render_agentdeck_pptx(agentdeck_plan)
                 except Exception as exc:
                     logger.exception("agentdeck pptx render failed")
                     return _generation_failure(
@@ -1024,7 +1032,7 @@ def build_document_artifact(
                         break
                     try:
                         repaired_render_plan = compose_docplan_to_pptx_render_plan(repaired_doc_plan, theme=agentdeck_theme)
-                        repaired_content = generate_agentdeck_pptx_bytes(repaired_render_plan)
+                        repaired_content = _render_agentdeck_pptx(repaired_render_plan)
                         repaired_qa = _run_render_qa(repaired_content)
                         repaired_plan_issues = run_plan_checks(repaired_doc_plan)
                         repaired_deterministic = [issue.to_render_qa_issue() for issue in repaired_plan_issues]
@@ -1069,7 +1077,7 @@ def build_document_artifact(
                         break
                     try:
                         repaired_render_plan = compose_docplan_to_pptx_render_plan(repaired_doc_plan, theme=agentdeck_theme)
-                        repaired_content = generate_agentdeck_pptx_bytes(repaired_render_plan)
+                        repaired_content = _render_agentdeck_pptx(repaired_render_plan)
                         repaired_qa = _run_render_qa(repaired_content) or {"available": False, "issues": []}
                         repaired_plan_issues = run_plan_checks(repaired_doc_plan)
                         repaired_deterministic = [issue.to_render_qa_issue() for issue in repaired_plan_issues]
@@ -1118,7 +1126,7 @@ def build_document_artifact(
                     try:
                         if agentdeck_plan is not None:
                             repaired_render_plan = compose_pptx_render_plan(repaired_plan, theme=agentdeck_theme)
-                            repaired_content = generate_agentdeck_pptx_bytes(repaired_render_plan)
+                            repaired_content = _render_agentdeck_pptx(repaired_render_plan)
                         else:
                             repaired_content = generate_pptx_bytes(
                                 title,

@@ -423,6 +423,7 @@ def generate_doc_plan(
     theme: Theme = "dark",
     extra_context: str | None = None,
     db: Any | None = None,
+    design_system: str = "agentdeck_v1",
 ) -> tuple[DocPlan, LLMResult]:
     """Run the two-step structured-output planner and return a validated
     `DocPlan` plus the combined `LLMResult` (for cost/latency accounting).
@@ -499,7 +500,7 @@ def generate_doc_plan(
 
     doc_plan = DocPlan(
         doc_type="presentation",
-        design_system="agentdeck_v1",
+        design_system=design_system,
         theme=outline.get("theme", theme),
         title=outline["title"],
         subtitle=outline.get("subtitle"),
@@ -832,7 +833,9 @@ def _storybeat_to_section(beat: StoryBeat, index: int) -> SectionPlan:
     )
 
 
-def _minimal_presentation_plan(narrative: NarrativePlan, *, theme: Theme = "dark") -> DocPlan:
+def _minimal_presentation_plan(
+    narrative: NarrativePlan, *, theme: Theme = "dark", design_system: str = "agentdeck_v1"
+) -> DocPlan:
     sections = [_storybeat_to_section(beat, i) for i, beat in enumerate(narrative.storyline)]
     if not sections:
         sections = [SectionPlan(slide_layout="CLOSING", closing_text="Thank You", purpose="closing")]
@@ -840,6 +843,7 @@ def _minimal_presentation_plan(narrative: NarrativePlan, *, theme: Theme = "dark
         title=narrative.title,
         subtitle=narrative.audience,
         theme=theme,
+        design_system=design_system,
         sections=sections,
     )
 
@@ -861,7 +865,9 @@ def _evidence_refs(raw: Any) -> list[EvidenceRef]:
     return refs
 
 
-def _coerce_presentation_plan(data: dict[str, Any], narrative: NarrativePlan, *, theme: Theme = "dark") -> DocPlan:
+def _coerce_presentation_plan(
+    data: dict[str, Any], narrative: NarrativePlan, *, theme: Theme = "dark", design_system: str = "agentdeck_v1"
+) -> DocPlan:
     outline = _coerce_outline(data)
     sections: list[SectionPlan] = []
     raw_sections = [raw for raw in (data.get("sections") or []) if isinstance(raw, dict)]
@@ -893,11 +899,12 @@ def _coerce_presentation_plan(data: dict[str, Any], narrative: NarrativePlan, *,
         except Exception as exc:
             logger.info("Dropping invalid slide-planning section %s: %s", i, exc)
     if not sections:
-        return _minimal_presentation_plan(narrative, theme=theme)
+        return _minimal_presentation_plan(narrative, theme=theme, design_system=design_system)
     return DocPlan(
         title=outline.get("title") or narrative.title,
         subtitle=outline.get("subtitle") or narrative.audience,
         theme=outline.get("theme") if outline.get("theme") in ("dark", "light") else theme,
+        design_system=design_system,
         sections=sections,
     )
 
@@ -909,6 +916,7 @@ def generate_presentation_plan(
     *,
     prompt_text: str = "",
     theme: Theme = "dark",
+    design_system: str = "agentdeck_v1",
     user_document_profile: "UserDocumentProfile | None" = None,
 ) -> tuple[DocPlan, LLMResult]:
     payload = {
@@ -927,7 +935,7 @@ def generate_presentation_plan(
         )
     except Exception as exc:
         logger.warning("Slide-planning LLM call failed, using fallback: %s", exc)
-        return _minimal_presentation_plan(narrative, theme=theme), LLMResult(
+        return _minimal_presentation_plan(narrative, theme=theme, design_system=design_system), LLMResult(
             answer="",
             model_used="fallback",
             latency_ms=0,
@@ -937,7 +945,7 @@ def generate_presentation_plan(
             fallback_errors=[str(exc)],
         )
     data = _parse_json_object(result.answer) or {}
-    return _coerce_presentation_plan(data, narrative, theme=theme), result
+    return _coerce_presentation_plan(data, narrative, theme=theme, design_system=design_system), result
 
 
 def _visual_role_for_section(section: SectionPlan) -> str:
@@ -1027,7 +1035,7 @@ def generate_design_plan(
     mode = normalize_quality_mode(quality_mode)
     payload = {
         "presentation_plan": presentation_plan.model_dump(mode="json", exclude_none=True),
-        "design_system": "agentdeck_v1",
+        "design_system": presentation_plan.design_system,
         "available_components": {
             section.slide_id or f"slide-{i + 1}": _component_choices_for_layout(section.slide_layout)
             for i, section in enumerate(presentation_plan.sections)
@@ -1126,6 +1134,7 @@ def generate_agentdeck_v2_plan(
     quality_mode: QualityMode | str = DEFAULT_QUALITY_MODE,
     brand_profile: "BrandProfile | None" = None,
     user_document_profile: "UserDocumentProfile | None" = None,
+    design_system: str = "agentdeck_v1",
 ) -> tuple[DocPlan, DesignPlan, LLMResult]:
     mode = normalize_quality_mode(quality_mode)
     udp_context = _user_document_profile_context(user_document_profile)
@@ -1140,6 +1149,7 @@ def generate_agentdeck_v2_plan(
         route,
         prompt_text=prompt_text,
         theme=theme,
+        design_system=design_system,
         user_document_profile=user_document_profile,
     )
     design, design_result = generate_design_plan(
@@ -1163,6 +1173,7 @@ def generate_agentdeck_v2_plan(
             ensure_ascii=False,
         ),
         db=db,
+        design_system=design_system,
     )
     doc_plan = _overlay_presentation_intent(doc_plan, presentation)
     combined = _combine_llm_results(

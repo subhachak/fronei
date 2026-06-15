@@ -2162,7 +2162,44 @@ async function main() {
 
   const buffer = await pptx.write({ outputType: "nodebuffer" });
   const colored = await _applyAccentBulletColors(buffer);
-  process.stdout.write(colored);
+  const repaired = await _fixShapeXmlForPowerPointCompat(colored);
+  process.stdout.write(repaired);
+}
+
+/**
+ * pptxgenjs omits <p:txBody> on shapes added without a `text` option (plain
+ * decorative rectangles/dividers/bars), and omits <a:effectLst/> from
+ * <p:bg><p:bgPr>. Per ECMA-376 both elements are optional in the schema, but
+ * PowerPoint's own validator flags their absence as a "problem with content"
+ * on first open and offers to "Repair" the file -- silently rewriting every
+ * <p:sp> to add an empty txBody and every <p:bgPr> to add effectLst. That
+ * repair prompt fires on 100% of generated decks (any slide with a
+ * non-text decorative shape). Pre-empt it here by inserting the same empty
+ * elements PowerPoint would add, so the file opens cleanly without a repair
+ * dialog.
+ */
+async function _fixShapeXmlForPowerPointCompat(buffer) {
+  const JSZip = require("jszip");
+  const zip = await JSZip.loadAsync(buffer);
+  const EMPTY_TX_BODY =
+    '<p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:endParaRPr lang="en-US"/></a:p></p:txBody>';
+
+  const slideFiles = Object.keys(zip.files).filter((name) => /^ppt\/slides\/slide\d+\.xml$/.test(name));
+  for (const name of slideFiles) {
+    let xml = await zip.file(name).async("string");
+
+    // Insert an empty txBody on any <p:sp> that has none (i.e. ends
+    // </p:spPr></p:sp> with nothing in between).
+    xml = xml.split("</p:spPr></p:sp>").join(`</p:spPr>${EMPTY_TX_BODY}</p:sp>`);
+
+    // Insert <a:effectLst/> into any <p:bgPr> that doesn't already have one.
+    xml = xml.replace(/<p:bgPr>([\s\S]*?)<\/p:bgPr>/g, (match, inner) =>
+      inner.includes("effectLst") ? match : `<p:bgPr>${inner}<a:effectLst/></p:bgPr>`
+    );
+
+    zip.file(name, xml);
+  }
+  return zip.generateAsync({ type: "nodebuffer" });
 }
 
 /**

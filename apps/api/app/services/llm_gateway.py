@@ -23,6 +23,15 @@ DEEP_RESEARCH_MAX_COMPLETION_TOKENS = 16384
 # Hard caps so a stalled provider connection can't hang the SSE stream forever.
 STREAM_REQUEST_TIMEOUT_S = 120   # overall time allowed for the HTTP call to complete
 STREAM_CHUNK_TIMEOUT_S = 45      # max gap allowed between successive chunks
+
+# Hard cap for non-streaming completion() calls (invoke_llm/_call_model,
+# synthesize_answers, etc.). Without this, a stalled provider connection on a
+# structured-output call (e.g. the AgentDeck v2 planner) can hang indefinitely
+# -- the only backstop is the multi-hour document-pipeline timeout, leaving a
+# turn idle with zero progress for many minutes. 180s is generous enough for
+# large structured JSON completions (MAX_COMPLETION_TOKENS=8192) while still
+# bounding the wait so the model-fallback chain in invoke_llm can kick in.
+NON_STREAM_REQUEST_TIMEOUT_S = 180
 # Keep only recent turns — older context is now covered by the running_summary
 # injected via planner_context, so sending 20+ raw messages is wasteful.
 MAX_HISTORY_MESSAGES = 8
@@ -243,6 +252,7 @@ def _call_model(
         "model": model,
         "messages": msgs,
         "max_tokens": max_tokens,
+        "timeout": NON_STREAM_REQUEST_TIMEOUT_S,
     }
     if _supports_temperature(model):
         kwargs["temperature"] = 0.2
@@ -483,6 +493,7 @@ def synthesize_answers(
                 "model": model,
                 "messages": msgs,
                 "max_tokens": DEEP_RESEARCH_MAX_COMPLETION_TOKENS,
+                "timeout": NON_STREAM_REQUEST_TIMEOUT_S,
             }
             if _supports_temperature(model):
                 synth_kwargs["temperature"] = 0.2

@@ -542,6 +542,105 @@ def store_user_pptx_template(
     return row
 
 
+def rename_user_template(db, user_id: str, template_id: str, name: str) -> DocumentTemplate | None:
+    row = (
+        db.query(DocumentTemplate)
+        .filter(
+            DocumentTemplate.user_id == user_id,
+            DocumentTemplate.public_id == template_id,
+            DocumentTemplate.is_active == True,  # noqa: E712
+        )
+        .first()
+    )
+    if not row:
+        return None
+    safe = _safe_name(name)
+    if not safe:
+        raise ValueError("Template name cannot be empty.")
+    row.name = safe
+    row.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def replace_user_pptx_template(
+    db,
+    user_id: str,
+    template_id: str,
+    *,
+    filename: str,
+    content_type: str | None,
+    data: bytes,
+) -> DocumentTemplate | None:
+    """Re-upload the PPTX content for an existing template row, keeping the
+    same `public_id`/identity (so any saved references to it stay valid),
+    while replacing the stored file and regenerating the brand design_system
+    (#184) from the new content's grammar/colors/fonts/logo.
+    """
+    if not data:
+        raise ValueError("Template file is empty.")
+    if len(data) > MAX_TEMPLATE_UPLOAD_BYTES:
+        raise ValueError("Template file is too large.")
+    if not (filename or "").lower().endswith(".pptx"):
+        raise ValueError("Only .pptx templates are supported.")
+
+    row = (
+        db.query(DocumentTemplate)
+        .filter(
+            DocumentTemplate.user_id == user_id,
+            DocumentTemplate.public_id == template_id,
+            DocumentTemplate.is_active == True,  # noqa: E712
+        )
+        .first()
+    )
+    if not row:
+        return None
+
+    # Validate before overwriting the existing file.
+    prs = Presentation(BytesIO(data))
+    logo_asset = None
+    try:
+        logo_asset = _extract_logo_asset(prs)
+    except Exception:
+        logger.exception("Failed to extract logo asset from replacement template %s", template_id)
+
+    path = template_path_for_row(row)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("wb") as f:
+        f.write(data)
+
+    now = datetime.now(timezone.utc)
+    row.original_filename = filename[:255]
+    row.content_type = (content_type or "")[:120] or None
+    row.file_size = len(data)
+    row.updated_at = now
+    db.commit()
+    db.refresh(row)
+
+    # template_grammar_for_path is cached by (path, mtime, size), so the new
+    # mtime/size from the overwrite above naturally bypasses the stale cache
+    # entry for the old content.
+    try:
+        grammar = template_grammar_for_path(path)
+        brand_profile = brand_profile_from_template_grammar(
+            grammar, user_id=user_id, profile_id=f"template:{row.public_id}"
+        )
+        brand_profile.source_template_id = row.public_id
+        if logo_asset is not None:
+            brand_profile.logo_assets = [logo_asset]
+        design_system_id = design_system_id_for_template(user_id, row.public_id)
+        write_brand_design_system(brand_profile, design_system_id=design_system_id)
+        row.design_system_id = design_system_id
+        row.updated_at = datetime.now(timezone.utc)
+        db.commit()
+        db.refresh(row)
+    except Exception:
+        logger.exception("Failed to regenerate brand design_system for replaced template %s", row.public_id)
+
+    return row
+
+
 def archive_user_template(db, user_id: str, template_id: str) -> bool:
     row = (
         db.query(DocumentTemplate)

@@ -52,6 +52,8 @@ from app.services.document_generator import (
 from app.services.document_templates import (
     archive_user_template,
     list_document_templates,
+    rename_user_template,
+    replace_user_pptx_template,
     store_user_pptx_template,
 )
 from app.services.pptx_render_qa import run_pptx_render_qa
@@ -459,6 +461,68 @@ async def upload_template(
             "description": row.description or f"Uploaded from {row.original_filename or 'PowerPoint template'}",
             "recommended": True,
             "user_template": True,
+        }
+    finally:
+        db.close()
+
+
+@router.patch("/templates/{template_id}")
+async def rename_template(
+    template_id: str,
+    name: str = Form(...),
+    user_id: str = CurrentUser,
+) -> dict:
+    db = SessionLocal()
+    try:
+        try:
+            row = rename_user_template(db, user_id, template_id, name)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+        if not row:
+            raise HTTPException(status_code=404, detail="Template not found")
+        return {
+            "id": row.public_id,
+            "name": row.name,
+            "description": row.description or f"Uploaded from {row.original_filename or 'PowerPoint template'}",
+            "recommended": True,
+            "user_template": True,
+            "design_mode": "template_following",
+            "design_system": row.design_system_id or None,
+        }
+    finally:
+        db.close()
+
+
+@router.post("/templates/{template_id}/replace")
+async def replace_template(
+    template_id: str,
+    file: UploadFile = File(...),
+    user_id: str = CurrentUser,
+) -> dict:
+    content = await file.read()
+    db = SessionLocal()
+    try:
+        try:
+            row = replace_user_pptx_template(
+                db,
+                user_id,
+                template_id,
+                filename=file.filename or "template.pptx",
+                content_type=file.content_type,
+                data=content,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+        if not row:
+            raise HTTPException(status_code=404, detail="Template not found")
+        return {
+            "id": row.public_id,
+            "name": row.name,
+            "description": row.description or f"Uploaded from {row.original_filename or 'PowerPoint template'}",
+            "recommended": True,
+            "user_template": True,
+            "design_mode": "template_following",
+            "design_system": row.design_system_id or None,
         }
     finally:
         db.close()

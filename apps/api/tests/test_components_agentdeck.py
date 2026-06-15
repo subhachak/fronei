@@ -235,6 +235,45 @@ def test_docplan_composer_attaches_fit_validation_notes():
     assert "Fit validation:" in (render_plan.slides[1].notes or "")
 
 
+def test_docplan_composer_repairs_section_with_block_invalid_for_layout():
+    """A `SectionPlan` whose `blocks` validated fine on their own but whose
+    (zone, component_id) combo is invalid for `PptxSlidePlan`/`ZoneInstance`
+    on this `slide_layout` must not raise out of the composer (#192) — the
+    offending block should be dropped and the slide degraded instead.
+    """
+    section = SectionPlan(
+        slide_layout="CONTENT_1COL",
+        section_title="Decision Time",
+        blocks=[
+            ContentBlock(
+                block_id="b1",
+                zone="body",
+                component_id="bullet_list",
+                data={"items": [{"text": "Authorize Phase 1"}]},
+            )
+        ],
+    )
+    # Bypass PresentationSlidePlan's own `_validate_blocks_against_layout` to
+    # simulate a block whose component isn't applicable to CONTENT_1COL's
+    # "body" zone (e.g. `decision_list`, which is only valid for
+    # CONTENT_SPLIT_DECISIONS) slipping through into the composer.
+    bad_block = ContentBlock(
+        block_id="b2",
+        zone="body",
+        component_id="decision_list",
+        data={"cards": []},
+    )
+    plan = DocPlan(title="Deck", sections=[section])
+    object.__setattr__(plan.sections[0], "blocks", [bad_block])
+
+    render_plan = compose_docplan_to_pptx_render_plan(plan)
+
+    slide = render_plan.slides[1]
+    assert slide.slide_layout == "CONTENT_1COL"
+    assert slide.zones == {}
+    assert "composition error" in (slide.notes or "")
+
+
 def test_plan_checks_report_dangling_punctuation_and_fit_overflow():
     plan = DocPlan(
         title="Deck",

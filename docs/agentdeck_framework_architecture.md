@@ -193,10 +193,48 @@ Because layers 1–2 (`DocPlan`, component library, design-system registry) are 
 
 ---
 
-## 9. Open Decisions for You
+## 8.5 Integration with the Current Chat Pipeline
 
-1. **Legacy themes**: retire entirely, or keep as `legacy_v1` design system for backward compatibility with existing generated decks?
-2. **Phase 1 scope**: do you want Phase 1 done before any new feature work, or run it in parallel with continued ad hoc fixes on the current system (I'd recommend freezing ad hoc fixes once Phase 1 starts — dual-maintaining both is the trap that got us here)?
-3. **Component migration fidelity**: Phase 1 wrapping of existing archetypes — should I prioritize the ones used in your most recent real decks (risk_register, operating_model, architecture, recommendation, stat_cards) first, or do a full inventory of all ~15 before starting?
+Today's flow (per codebase trace):
 
-I can start on Phase 1 (design-system registry + component wrapping + golden-file harness) as soon as you confirm direction on these three.
+```
+conversations.py (chat endpoint)
+  → planner.py: Plan{wants_document_output, document_brief}  (high-level only:
+     doc_type/title/audience/tone/length — no slide content)
+  → chat_pipeline.py: generate_document_output()
+     - draft LLM pass writes DeckPlan JSON directly as free text
+     - revision LLM pass tightens it
+     - parse_deck_plan(body) validates
+  → documents.py: build_document_artifact()
+     - parse_deck_plan → compose_deck_plan_parallel → generate_pptx_bytes
+     - QA/repair loop (run_pptx_render_qa / repair_deck_plan_for_qa)
+  → base64 pptx returned as document_preview
+```
+
+The new framework slots in as a **drop-in replacement for the two LLM passes inside `generate_document_output`**, without changing the chat endpoint's contract (`conversations.py` still gets back `(result, doc_body, chat_summary, doc_type)` and calls `build_document_artifact` the same way):
+
+| Current | Replacement |
+|---|---|
+| `planner.py` `Plan.document_brief` (doc_type/title/audience/tone/length) | Unchanged — still the first-pass intent classifier. Add `design_system` + `theme` fields (default `agentdeck_v1`/`light`), inferable from brief or user preference. |
+| `generate_document_output()` draft pass — LLM freeform DeckPlan JSON | Replaced by **Planner step 1+2** (§4): structured-output calls producing `DocPlan` (section/slide_layout selection, then component selection per zone), constrained by Pydantic schema + the component-library registry (§3). Same LLM, same call site, different system prompt + structured output target. |
+| `generate_document_output()` revision pass | Becomes the **Composer** (§5): `DocPlan` → `PptxRenderPlan`, resolving design-system tokens and component versions. This is largely deterministic/code, not an LLM pass — cuts one LLM round trip. |
+| `parse_deck_plan(body)` in `document_generator.py` | Becomes `PptxRenderPlan.model_validate(...)` — same validation role, new schema. |
+| `compose_deck_plan_parallel` / `_js_slide_from_deck_spec` | Replaced by the Composer's zone-resolution logic (§5) — same file (`document_generator.py`), new internals. |
+| `generate_pptx_bytes` → `render.js` | `render.js` dispatch rewritten per §5 (component_id-driven, not archetype-inferred-from-title). |
+| `run_pptx_render_qa` / `repair_deck_plan_for_qa` in `build_document_artifact` (`documents.py`) | Extended into the QA gate (§6): same hook point, now also logs `usage_stats` for the learning loop and runs golden-file diff in CI (not per-request). |
+
+**Net effect on the chat experience**: unchanged surface (user asks for a deck in chat, gets a pptx preview back); what changes is everything between "user request" and "pptx bytes" — one fewer LLM pass, schema-validated at every hop, theme fixed to `agentdeck_v1` dark/light.
+
+**Backward compatibility**: existing decks generated under the 5 old themes remain renderable (old `render.js` archetype functions kept as `legacy_v1` design system per §9.1) — only *new* generations route through the new pipeline. `generate_document_output` can feature-flag between old/new path during Phase 2/3 rollout.
+
+---
+
+## 9. Decisions
+
+1. **Legacy themes: retired, clean break.** Per your steer ("if legacy is too much drag, start from scratch"), the old 5-theme system (warm-editorial, modern-tech, executive-navy, data-product-os, clean-light) and its ~15 archetype renderers in `render.js` are **not carried forward as a `legacy_v1` design system**. New pipeline = `agentdeck_v1` (dark/light) only, from day one. This removes §8.5's "backward compatibility" row and the feature-flag — `generate_document_output`/`build_document_artifact` cut over directly. Any decks already generated under the old themes remain as static files (already-rendered .pptx); they're just not regenerable through the new code path. This significantly de-scopes Phase 1: no need to wrap/port 15 old archetypes — only build the ~9-10 components actually defined in `AgentDeck_DS_Spec.json.components` (header_bar, card + color variants, stat_card, badge, divider, bullet_list, table, callout_bar, progress_bar, icon_circle, timeline_node) against the 8 `slide_layouts`.
+
+2. **Phase 1 done before new feature work**, ad hoc fixes on the current system frozen once Phase 1 starts.
+
+3. **Component scope for Phase 1**: build directly from `AgentDeck_DS_Spec.json.components` (the ~10 components listed above) rather than porting old archetypes — these already have explicit token bindings, variants, and slot definitions, so they're closer to "build new" than "migrate."
+
+**Next**: start Phase 1 — `design_systems/agentdeck_v1/` (spec + Pydantic schema), `ComponentDef` registry + render functions for the spec's ~10 components, golden-file harness across component × slide_layout × theme.

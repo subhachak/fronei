@@ -26,4 +26,4 @@ def test_should_refine_skips_short_response():
 
 
 def test_should_refine_approves_long_response_with_profile():
-    assert should_refine("word " * 55, "client_ready", _profile()) is True
+    assert should_refine("word " * 125, "client_ready", _profile()) is True

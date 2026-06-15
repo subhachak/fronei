@@ -12,6 +12,7 @@ import json
 import logging
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 from litellm import completion, completion_cost
@@ -90,11 +91,28 @@ def judge_rendered_slides(
     issues: list[QAIssue] = []
 
     section_by_slide = {idx + 2: section for idx, section in enumerate(doc_plan.sections)}
-    for image in images[: max(1, settings.agentdeck_vision_judge_max_slides)]:
+    selected_images = images[: max(1, settings.agentdeck_vision_judge_max_slides)]
+
+    def _judge_one(position: int, image: dict) -> tuple[int, int, Any, dict]:
         slide_number = int(image.get("slide") or 0)
         section = section_by_slide.get(slide_number)
         context = _slide_context(section)
         payload = _call_vision_model(model, image, context)
+        return position, slide_number, section, payload
+
+    results: list[tuple[int, int, Any, dict]] = []
+    with ThreadPoolExecutor(max_workers=min(4, max(1, len(selected_images)))) as pool:
+        futures = {
+            pool.submit(_judge_one, position, image): position
+            for position, image in enumerate(selected_images)
+        }
+        for future in as_completed(futures):
+            try:
+                results.append(future.result())
+            except Exception:
+                logger.exception("AgentDeck vision judge failed for slide image")
+
+    for _position, slide_number, section, payload in sorted(results, key=lambda item: item[0]):
         slide_results.append({"slide": slide_number, **payload})
         for raw_issue in payload.get("issues") or []:
             issue = _issue_from_payload(raw_issue, slide_number, section.slide_id if section else None)

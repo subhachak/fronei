@@ -754,11 +754,11 @@ def test_research_eval_fixture_cases_have_expected_triage_signals():
 # ---------------------------------------------------------------------------
 
 def test_tiered_budgets_increase_from_deep_to_expert():
-    assert _hard_max_sources("deep") == 16
+    assert _hard_max_sources("deep") == 12
     assert _hard_max_sources("expert") == 28
     assert _max_iterations("deep") == 3
     assert _max_iterations("expert") == 4
-    assert _planned_questions_cap("deep") == 5
+    assert _planned_questions_cap("deep") == 4
     assert _planned_questions_cap("expert") == 6
 
 

@@ -676,9 +676,11 @@ type WorkerLog = {
   completion_tokens: number | null; cost_usd: number | null
   sub_queries_count: number; sub_query_logs: SubQueryLog[]
 }
+type StageTiming = { stage: string; latency_ms: number; meta?: Record<string, unknown> }
 type ExecutionLog = {
   planner: PlannerLog; web_context: WebContextLog
   worker: WorkerLog; total_cost_usd: number; total_latency_ms: number
+  stage_timings?: StageTiming[]
 }
 
 type ExecPanelData = {
@@ -4035,6 +4037,27 @@ function DashboardView({
                     <span>Recent errors <strong>{ops.recent_errors?.length ?? 0}</strong></span>
                   </div>
                 </div>
+
+                <div className="settings-card">
+                  <strong>Latency hotspots</strong>
+                  {ops.stage_latency?.length ? (
+                    <div className="admin-table-wrap">
+                      <table className="admin-table">
+                        <thead><tr><th>Stage</th><th>p50</th><th>p95</th><th>Runs</th></tr></thead>
+                        <tbody>
+                          {ops.stage_latency.slice(0, 8).map((s: any) => (
+                            <tr key={s.stage}>
+                              <td className="mono">{s.stage}</td>
+                              <td>{s.p50_ms >= 1000 ? `${(s.p50_ms / 1000).toFixed(1)}s` : `${s.p50_ms}ms`}</td>
+                              <td>{s.p95_ms >= 1000 ? `${(s.p95_ms / 1000).toFixed(1)}s` : `${s.p95_ms}ms`}</td>
+                              <td>{s.count}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : <span className="settings-muted">No stage timing data yet. New turns will start populating this table.</span>}
+                </div>
               </div>
             )}
 
@@ -5895,6 +5918,21 @@ export default function Home() {
       }
       setIsExtracting(false)
       setLoading(true)
+    }
+
+    if (!bubblePreCreated) {
+      setLiveAssistantId(tempAsstId)
+      setMessages(prev => [
+        ...prev,
+        { id: tempAsstId, role: 'assistant' as const, content: '', created_at: new Date().toISOString() },
+      ])
+      setPipelineTs(Date.now())
+      setLiveSteps([{
+        stage:   'planning' as PipelineStage,
+        message: 'Thinking…',
+        ts:      Date.now(),
+      }])
+      bubblePreCreated = true
     }
 
     try {

@@ -12,7 +12,7 @@ from app.db.models import TwinProfile
 from app.services.llm_gateway import LLMResult, _stream_models
 
 _REFINEMENT_MODEL = "claude-haiku-4-5-20251001"
-_MIN_WORDS_TO_REFINE = 50
+_MIN_WORDS_TO_REFINE = 120
 _MAX_INPUT_CHARS = 12000
 
 _MODE_ADDENDUM: dict[str, str] = {

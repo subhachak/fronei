@@ -580,7 +580,7 @@ def test_quality_mode_policy_helpers_normalize_and_cap():
     assert normalize_quality_mode("executive") == "executive"
     assert normalize_quality_mode(" rough ") == "standard"
     assert repair_iteration_cap("draft") == 0
-    assert repair_iteration_cap("standard") == 2
+    assert repair_iteration_cap("standard") == 1
     assert repair_iteration_cap("executive") == 5
 
 

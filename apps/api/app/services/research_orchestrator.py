@@ -42,11 +42,9 @@ from app.services.research_evidence import (
 from app.services.router import choose_route
 from app.services.web_context import (
     WebSource,
-    brave_search,
     crawl_url,
-    ddg_search,
     find_urls,
-    tavily_search,
+    search_web_sources,
 )
 
 MAX_ITERATIONS         = 3     # up to 3 gap-filling passes (deep default; see _max_iterations)
@@ -59,7 +57,7 @@ HARD_MAX_SOURCES       = 40    # emergency brake — never exceed (legacy defaul
 TIERED_BUDGETS = {
     "quick":   {"max_threads": 1, "rounds_per_thread": 1, "max_sources": 3,  "planned_questions": 1, "verifier": "none"},
     "focused": {"max_threads": 3, "rounds_per_thread": 2, "max_sources": 8,  "planned_questions": 3, "verifier": "conditional"},
-    "deep":    {"max_threads": 5, "rounds_per_thread": 3, "max_sources": 16, "planned_questions": 5, "verifier": "conditional"},
+    "deep":    {"max_threads": 4, "rounds_per_thread": 3, "max_sources": 12, "planned_questions": 4, "verifier": "conditional"},
     "expert":  {"max_threads": 6, "rounds_per_thread": 4, "max_sources": 28, "planned_questions": 6, "verifier": "always"},
 }
 
@@ -94,6 +92,7 @@ CLAIM_EXTRACTOR_MODEL = "claude-haiku-4-5-20251001"
 MAX_CLAIM_EXTRACT_WORKERS = get_settings().max_claim_extract_workers
 MAX_QUESTION_WORKERS = get_settings().max_question_workers
 MAX_CANDIDATES_PER_QUESTION = 8
+MAX_CRAWL_WORKERS_PER_QUESTION = 4
 
 
 @dataclass
@@ -960,25 +959,26 @@ def _query_variants(
 
 
 def _search(query: str, recency: str | None = None) -> tuple[str, list[WebSource]]:
-    sources = tavily_search(query, recency)
-    if sources:
-        return "Tavily", sources
-    sources = brave_search(query, recency)
-    if sources:
-        return "Brave", sources
-    sources = ddg_search(query, recency)
-    return ("DuckDuckGo" if sources else "", sources)
+    return search_web_sources(query, recency)
 
 
 def _collect_sources(query: str, direct_urls: Iterable[str], progress: Progress) -> list[tuple[str, WebSource]]:
     collected: list[tuple[str, WebSource]] = []
     seen: set[str] = set()
-    for url in direct_urls:
-        source = crawl_url(url)
-        if source and source.url not in seen:
-            seen.add(source.url)
-            collected.append(("URL", source))
-            progress("source_read", f"Read direct URL: {source_title(source)}", {"url": source.url})
+    urls = list(dict.fromkeys(direct_urls))
+    if not urls:
+        return collected
+    with ThreadPoolExecutor(max_workers=min(MAX_CRAWL_WORKERS_PER_QUESTION, len(urls))) as pool:
+        futures = [pool.submit(crawl_url, url) for url in urls]
+        for future in as_completed(futures):
+            try:
+                source = future.result()
+            except Exception:
+                continue
+            if source and source.url not in seen:
+                seen.add(source.url)
+                collected.append(("URL", source))
+                progress("source_read", f"Read direct URL: {source_title(source)}", {"url": source.url})
     return collected
 
 
@@ -1103,16 +1103,27 @@ def _run_question_source_worker(
 
     raw_candidates.sort(key=lambda item: item[0], reverse=True)
     candidates: list[tuple[str, WebSource, int | None]] = []
-    for _quality, provider, source, qid in raw_candidates[:MAX_CANDIDATES_PER_QUESTION]:
+    top_candidates = raw_candidates[:MAX_CANDIDATES_PER_QUESTION]
+    for _quality, _provider, source, _qid in top_candidates:
         if progress:
             progress("reading", f"Reading {source_title(source)[:80]}…", {
                 "question_id": question_id,
                 "url": source.url,
             })
-        crawled = crawl_url(source.url)
-        if crawled and len(crawled.content) > len(source.content):
-            source = crawled
-        candidates.append((provider, source, qid))
+    with ThreadPoolExecutor(max_workers=min(MAX_CRAWL_WORKERS_PER_QUESTION, max(1, len(top_candidates)))) as pool:
+        futures = {
+            pool.submit(crawl_url, source.url): (provider, source, qid)
+            for _quality, provider, source, qid in top_candidates
+        }
+        for future in as_completed(futures):
+            provider, source, qid = futures[future]
+            try:
+                crawled = future.result()
+            except Exception:
+                crawled = None
+            if crawled and len(crawled.content) > len(source.content):
+                source = crawled
+            candidates.append((provider, source, qid))
 
     return QuestionWorkerResult(question_id=question_id, candidates=candidates)
 

@@ -62,12 +62,21 @@ async function main() {
     const slide = pptx.addSlide();
     try {
       renderSlide(slide, spec, theme, slidePlan);
-      addBrandLogoMark(slide, spec, slidePlan);
     } catch (err) {
       process.stderr.write(
         `Error rendering slide (slide_layout=${slidePlan && slidePlan.slide_layout}): ${err.stack || err}\n`
       );
       throw err;
+    }
+    // #198: a malformed/unsupported brand_logo asset must not crash the
+    // whole deck render -- the logo mark is purely decorative, so skip it
+    // and keep going on error.
+    try {
+      addBrandLogoMark(slide, spec, slidePlan);
+    } catch (err) {
+      process.stderr.write(
+        `Skipping brand logo mark (slide_layout=${slidePlan && slidePlan.slide_layout}): ${err.stack || err}\n`
+      );
     }
   }
 

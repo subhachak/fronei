@@ -1,6 +1,7 @@
 import pytest
 from unittest.mock import MagicMock, patch
 from app.services.chat_pipeline import build_pipeline_setup, run_pipeline
+from app.services import plan_gate
 from app.services.planner import passthrough
 
 
@@ -20,7 +21,13 @@ def _make_req(message="Hello", profile=None, force_model=None,
     req.force_model = force_model
     req.web_search = web_search
     req.deep_research = deep_research
+    req.research_mode = "quick"
+    req.document_requested = False
+    req.artifact_type = None
+    req.attached_documents = []
+    req.confirmed_plan = None
     req.conversation_id = conversation_id
+    req.force_model = force_model
     return req
 
 
@@ -59,3 +66,57 @@ def test_run_pipeline_returns_result(mock_llm, mock_web, mock_planner):
     pr = run_pipeline(_make_req("What is 2+2?"), _make_conv(), [], _make_settings())
     assert pr.result.answer == "4"
     assert pr.exec_log is not None
+
+
+@patch("app.services.chat_pipeline.run_planner")
+@patch("app.services.chat_pipeline.gather_web_context")
+def test_build_pipeline_setup_skips_planner_for_trivial_followup(mock_web, mock_planner):
+    mock_web.return_value = MagicMock(context=None, status="ok", provider="",
+                                      sources_count=0, search_query=None)
+    history = [{"role": "assistant", "content": "Previous answer"}]
+
+    setup = build_pipeline_setup(_make_req("thanks"), _make_conv(), history, _make_settings())
+
+    mock_planner.assert_not_called()
+    assert setup.plan.action == "answer_directly"
+    assert setup.plan.turn_type == "follow_up"
+    assert setup.stage_timings[0].stage == "planner_fast_path"
+
+
+@patch("app.services.chat_pipeline.run_planner")
+@patch("app.services.chat_pipeline.gather_web_context")
+def test_build_pipeline_setup_does_not_skip_planner_when_tools_selected(mock_web, mock_planner):
+    mock_planner.return_value = passthrough("thanks")
+    mock_web.return_value = MagicMock(context=None, status="ok", provider="",
+                                      sources_count=0, search_query=None)
+    history = [{"role": "assistant", "content": "Previous answer"}]
+    req = _make_req("thanks", web_search=True)
+
+    build_pipeline_setup(req, _make_conv(), history, _make_settings())
+
+    mock_planner.assert_called_once()
+
+
+def test_plan_gate_auto_runs_high_confidence_non_sensitive_research():
+    plan = passthrough("Research current market trends")
+    plan.recommend_deep_research = True
+    plan.research_confidence = "high"
+    plan.plan_confidence = "high"
+    plan.research_risk_factors = []
+
+    gate = plan_gate.evaluate(plan)
+
+    assert gate.mode == "auto"
+    assert gate.capabilities["deep_research"].enabled is True
+
+
+def test_plan_gate_still_confirms_sensitive_research():
+    plan = passthrough("Research H4 EAD processing times")
+    plan.recommend_deep_research = True
+    plan.research_confidence = "high"
+    plan.plan_confidence = "high"
+    plan.research_risk_factors = ["legal_regulatory"]
+
+    gate = plan_gate.evaluate(plan)
+
+    assert gate.mode == "confirm"

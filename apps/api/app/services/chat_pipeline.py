@@ -11,6 +11,7 @@ build_exec_log()    — constructs ExecutionLog from a completed execution
 Internal helpers (prefixed _) are importable for the streaming path in conversations.py.
 """
 import json
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Callable
@@ -19,16 +20,70 @@ from app.config import Settings, get_settings
 from app.db.models import Conversation
 from app.schemas import (
     ConvChatRequest, ExecutionLog, PlannerLog, PlannerSubQuery,
-    RouteDecision, SubQueryLog, WebContextLog, WorkerLog,
+    RouteDecision, StageTiming, SubQueryLog, WebContextLog, WorkerLog,
 )
 from app.services.llm_gateway import LLMResult, invoke_llm, synthesize_answers
-from app.services.planner import Plan, apply_confirmed_plan, run_planner
+from app.services.planner import Plan, apply_confirmed_plan, passthrough, run_planner
 from app.services.prompts import ARTIFACT_PROMPTS
 from app.services.router import choose_route
 from app.services.web_context import WebContextResult, gather_web_context
 from app.services.document_generator import parse_deck_plan
 from app.services.brand import BrandProfile, UserDocumentProfile
 from app.services.components.quality_mode import normalize_quality_mode
+
+_TRIVIAL_FAST_PATH_EXACT = {
+    "thanks",
+    "thank you",
+    "thx",
+    "ok",
+    "okay",
+    "k",
+    "yes",
+    "yep",
+    "no",
+    "nope",
+    "continue",
+    "go on",
+    "go ahead",
+    "proceed",
+    "do it",
+}
+_TRIVIAL_FAST_PATH_PREFIXES = (
+    "explain that",
+    "explain this",
+    "make it shorter",
+    "make that shorter",
+    "summarize that",
+    "summarise that",
+    "rewrite that",
+    "try again",
+)
+
+
+def _can_use_trivial_fast_path(req: ConvChatRequest, history: list[dict]) -> bool:
+    """Narrow planner bypass for obvious, low-risk continuations.
+
+    This intentionally covers only tiny acknowledgement/continuation/edit
+    turns with no tools selected. The planner remains the default brain for
+    anything that could imply web, research, document generation, attachments,
+    or a new task.
+    """
+    if (
+        req.deep_research
+        or req.research_mode != "quick"
+        or req.web_search
+        or req.document_requested
+        or req.artifact_type
+        or req.attached_documents
+        or req.confirmed_plan is not None
+    ):
+        return False
+    text = " ".join(req.message.strip().lower().split())
+    if not text or len(text) > 80 or not history:
+        return False
+    if text in _TRIVIAL_FAST_PATH_EXACT:
+        return True
+    return any(text.startswith(prefix) for prefix in _TRIVIAL_FAST_PATH_PREFIXES)
 
 
 def _build_doc_context(docs: list) -> str:
@@ -82,6 +137,15 @@ class PipelineSetup:
     profile: str
     doc_context: str = ""
     artifact_context: str = ""
+    stage_timings: list[StageTiming] | None = None
+
+
+def _timing(stage: str, started: float, **meta) -> StageTiming:
+    return StageTiming(
+        stage=stage,
+        latency_ms=int((time.perf_counter() - started) * 1000),
+        meta={k: v for k, v in meta.items() if v is not None},
+    )
 
 
 # ── Helpers (moved from conversations.py) ────────────────────────────────────
@@ -271,6 +335,7 @@ def build_exec_log(
     sq_logs: list[SubQueryLog],
     use_web: bool,
     deep_research: bool,
+    stage_timings: list[StageTiming] | None = None,
 ) -> ExecutionLog:
     """Build ExecutionLog from a completed execution (before planner-cost rollup)."""
     return ExecutionLog(
@@ -308,6 +373,11 @@ def build_exec_log(
         ),
         total_cost_usd=(result.estimated_cost_usd or 0.0) + plan.planner_cost_usd,
         total_latency_ms=plan.planner_latency_ms + result.latency_ms,
+        stage_timings=stage_timings or [
+            StageTiming(stage="planner", latency_ms=plan.planner_latency_ms, meta={"model": plan.planner_model}),
+            StageTiming(stage="web_context", latency_ms=0, meta={"enabled": use_web or deep_research, "provider": wc.provider}),
+            StageTiming(stage="worker", latency_ms=result.latency_ms, meta={"model": result.model_used}),
+        ],
     )
 
 
@@ -334,18 +404,43 @@ def build_pipeline_setup(
 
     doc_context: str = _build_doc_context(req.attached_documents)
     artifact_context: str = ARTIFACT_PROMPTS.get(req.artifact_type or "", "")
+    stage_timings: list[StageTiming] = []
 
+    if plan is None and _can_use_trivial_fast_path(req, history):
+        plan = passthrough(req.message)
+        plan.turn_type = "follow_up"
+        plan.action = "answer_directly"
+        plan.task_type = "summarization"
+        plan.complexity = "low"
+        plan.plan_confidence = "high"
+        plan.context_summary = "Fast-path trivial continuation; planner LLM skipped."
+        stage_timings.append(StageTiming(
+            stage="planner_fast_path",
+            latency_ms=0,
+            meta={"reason": "trivial_continuation"},
+        ))
     if plan is None:
+        started = time.perf_counter()
         plan = run_planner(
             req.message, history, settings.planner_model,
             running_summary=running_summary, active_task=active_task,
             user_memory=user_memory, doc_context=doc_context,
             user_hints={"deep_research": req.deep_research, "document": req.document_requested},
         )
+        stage_timings.append(_timing("planner", started, model=plan.planner_model, action=plan.action))
     plan = apply_confirmed_plan(plan, confirmed_plan)
     use_web = (req.web_search or plan.needs_web_search) and plan.action != "answer_directly"
+    started = time.perf_counter()
     wc = gather_web_context(plan.search_query or req.message, use_web or req.deep_research)
+    stage_timings.append(_timing(
+        "web_context",
+        started,
+        enabled=use_web or req.deep_research,
+        provider=wc.provider,
+        sources_count=wc.sources_count,
+    ))
 
+    started = time.perf_counter()
     route = choose_route(
         req.message, profile, req.force_model, req.deep_research,
         web_search=use_web,
@@ -353,6 +448,7 @@ def build_pipeline_setup(
         complexity_override="low" if plan.action == "answer_directly" else plan.complexity,
         preferred_model=plan.preferred_model,
     )
+    stage_timings.append(_timing("route_selection", started, model=route.primary_model, task_type=route.task_type))
     if use_web or req.deep_research:
         route.reason = f"{route.reason} {wc.status}"
     if plan.planner_model != "none":
@@ -369,6 +465,7 @@ def build_pipeline_setup(
         profile=profile,
         doc_context=doc_context,
         artifact_context=artifact_context,
+        stage_timings=stage_timings,
     )
 
 
@@ -619,7 +716,10 @@ def run_pipeline(
         doc_context=setup.doc_context,
         artifact_context=setup.artifact_context,
     )
+    stage_timings = list(setup.stage_timings or [])
+    stage_timings.append(StageTiming(stage="worker", latency_ms=result.latency_ms, meta={"model": result.model_used}))
     exec_log = build_exec_log(setup.plan, setup.wc, result, sq_logs,
-                              setup.enable_native, req.deep_research)
+                              setup.enable_native, req.deep_research,
+                              stage_timings=stage_timings)
     return PipelineResult(result=result, sq_logs=sq_logs, exec_log=exec_log,
                           plan=setup.plan, route=setup.route, wc=setup.wc)

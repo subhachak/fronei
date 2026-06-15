@@ -1,5 +1,6 @@
 from app.services.components import ContentBlock, DesignPlan, DocPlan, EvidencePack, NarrativePlan, SectionPlan
 from app.services.qa import QAIssue, judge_deck, judge_slide
+from app.services.qa import vision_judge
 
 
 def test_slide_judge_passes_when_no_issues():
@@ -92,3 +93,46 @@ def test_deck_judge_thresholds_follow_quality_mode():
 
     assert draft.status == "pass"
     assert executive.status == "warn"
+
+
+def test_vision_judge_runs_slide_calls_in_parallel_and_preserves_order(monkeypatch):
+    doc_plan = DocPlan(
+        title="Deck",
+        sections=[
+            SectionPlan(slide_id="s1", slide_layout="CONTENT_1COL", section_title="One"),
+            SectionPlan(slide_id="s2", slide_layout="CONTENT_1COL", section_title="Two"),
+            SectionPlan(slide_id="s3", slide_layout="CONTENT_1COL", section_title="Three"),
+        ],
+    )
+
+    calls: list[int] = []
+
+    def fake_call(_model, image, _context):
+        slide = int(image["slide"])
+        calls.append(slide)
+        return {
+            "status": "pass",
+            "score": 0.9,
+            "summary": f"slide {slide}",
+            "issues": [],
+            "_usage": {"prompt_tokens": 1, "completion_tokens": 1, "cost": 0.001},
+        }
+
+    monkeypatch.setattr(vision_judge, "_call_vision_model", fake_call)
+
+    issues, slide_results, result = vision_judge.judge_rendered_slides(
+        doc_plan=doc_plan,
+        render_qa={
+            "images": [
+                {"slide": 3, "mime_type": "image/png", "base64": "three"},
+                {"slide": 1, "mime_type": "image/png", "base64": "one"},
+                {"slide": 2, "mime_type": "image/png", "base64": "two"},
+            ]
+        },
+    )
+
+    assert issues == []
+    assert sorted(calls) == [1, 2, 3]
+    assert [item["slide"] for item in slide_results] == [3, 1, 2]
+    assert result.prompt_tokens == 3
+    assert result.completion_tokens == 3

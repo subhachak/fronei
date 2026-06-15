@@ -22,7 +22,7 @@ from app.db.models import (
 from app.schemas import (
     ConvChatRequest, ConvChatResponse, ExecutePlanRequest,
     ConversationDetail, ConversationSummary, ConversationTurnOut, ConversationUpdate, MessageOut,
-    ExecutionLog, OutputMode, PlannerLog, RouteDecision, SubQueryLog, WebContextLog, WorkerLog,
+    ExecutionLog, OutputMode, PlannerLog, RouteDecision, StageTiming, SubQueryLog, WebContextLog, WorkerLog,
 )
 from app.services.llm_gateway import LLMResult, stream_llm, stream_synthesis
 from app.services.refinement import should_refine, stream_refinement
@@ -94,6 +94,14 @@ def _run_with_timeout(fn, *args, timeout_seconds: float, **kwargs):
 def _document_pipeline_timeout_seconds(db) -> float:
     config = get_turn_runtime_config(db)
     return float(config.get("document_timeout_minutes", 120)) * 60.0
+
+
+def _stage_timing(stage: str, started: float, **meta) -> StageTiming:
+    return StageTiming(
+        stage=stage,
+        latency_ms=int((time.perf_counter() - started) * 1000),
+        meta={k: v for k, v in meta.items() if v is not None},
+    )
 
 
 # ── Error translation ─────────────────────────────────────────────────────────
@@ -1488,6 +1496,7 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                             f_db.close()
                             followup_q.put(None)
 
+                    followup_started = time.perf_counter()
                     ft = _threading.Thread(target=_run_followup_worker, daemon=True)
                     ft.start()
 
@@ -1565,6 +1574,7 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                             )
                         else:
                             log_doc_plan_usage(db, doc_type, doc_body)
+                            yield _pipeline_log("working", "Document plan ready — preparing preview…", doc_type=doc_type, format=fmt)
                             for chunk in [chat_summary[i:i + 80] for i in range(0, len(chat_summary), 80)]:
                                 yield _sse("token", {"text": chunk})
                             final_answer = chat_summary
@@ -1577,6 +1587,7 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                             template_id = (plan.document_brief or {}).get("template_id")
                             template_path = resolve_template_path(db, user_id, template_id if isinstance(template_id, str) else None)
                             try:
+                                yield _pipeline_log("working", f"Rendering {fmt.upper()} artifact…", doc_type=doc_type, format=fmt)
                                 document_preview = _run_with_timeout(
                                     build_document_artifact,
                                     title or "Fronei document", doc_body, doc_type, fmt,
@@ -1625,6 +1636,11 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                         ),
                         total_cost_usd=result.estimated_cost_usd or 0.0,
                         total_latency_ms=result.latency_ms + plan.planner_latency_ms,
+                        stage_timings=[
+                            StageTiming(stage="planner", latency_ms=plan.planner_latency_ms, meta={"model": plan.planner_model}),
+                            _stage_timing("research_followup", followup_started, sources=len(followup.source_logs)),
+                            StageTiming(stage="worker", latency_ms=result.latency_ms, meta={"model": result.model_used, "kind": "research_followup"}),
+                        ],
                     )
 
                     plan.action = "research_followup"
@@ -1706,6 +1722,7 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                         research_db.close()
                         progress_q.put(None)
 
+                research_started = time.perf_counter()
                 t = _threading.Thread(target=_run_research_worker, daemon=True)
                 t.start()
 
@@ -1787,6 +1804,7 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                         )
                     else:
                         log_doc_plan_usage(db, doc_type, doc_body)
+                        yield _pipeline_log("working", "Document plan ready — preparing preview…", doc_type=doc_type, format=fmt)
                         for chunk in [chat_summary[i:i + 80] for i in range(0, len(chat_summary), 80)]:
                             yield _sse("token", {"text": chunk})
                         final_answer = chat_summary
@@ -1799,6 +1817,7 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                         template_id = (plan.document_brief or {}).get("template_id")
                         template_path = resolve_template_path(db, user_id, template_id if isinstance(template_id, str) else None)
                         try:
+                            yield _pipeline_log("working", f"Rendering {fmt.upper()} artifact…", doc_type=doc_type, format=fmt)
                             document_preview = _run_with_timeout(
                                 build_document_artifact,
                                 title or "Fronei document", doc_body, doc_type, fmt,
@@ -1863,6 +1882,11 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                     ),
                     total_cost_usd=result.estimated_cost_usd or 0.0,
                     total_latency_ms=result.latency_ms + plan.planner_latency_ms,
+                    stage_timings=[
+                        StageTiming(stage="planner", latency_ms=plan.planner_latency_ms, meta={"model": plan.planner_model}),
+                        _stage_timing("research_pipeline", research_started, mode=research_mode, sources=len(research.source_logs)),
+                        StageTiming(stage="worker", latency_ms=result.latency_ms, meta={"model": result.model_used, "kind": "research"}),
+                    ],
                 )
 
                 asst_msg = ConversationMessage(
@@ -1960,7 +1984,9 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                 fmt = _document_output_format(plan, gate)
                 _coerce_presentation_brief_for_pptx(plan, fmt)
                 brand_profile, design_system_id, user_document_profile = _document_generation_profiles(db, user_id, plan)
+                stage_timings = list(setup.stage_timings or [])
                 try:
+                    started = time.perf_counter()
                     result, doc_body, chat_summary, doc_type = _run_with_timeout(
                         generate_document_output,
                         plan, route, history, wc, planner_ctx,
@@ -1973,18 +1999,24 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                         design_system=design_system_id,
                         timeout_seconds=_document_pipeline_timeout_seconds(db),
                     )
+                    stage_timings.append(_stage_timing("document_generation", started, doc_type=doc_type, format=fmt))
                 except PipelineTimeout as exc:
                     # Nothing has been committed yet for this turn, so a plain
                     # error event is safe here.
                     yield _sse("error", {"message": str(exc)})
                     return
                 log_doc_plan_usage(db, doc_type, doc_body)
+                yield _pipeline_log("working", "Document plan ready — preparing preview…", doc_type=doc_type, format=fmt)
                 for chunk in [chat_summary[i:i + 80] for i in range(0, len(chat_summary), 80)]:
                     yield _sse("token", {"text": chunk})
 
                 final_answer = chat_summary
                 sq_logs: list[SubQueryLog] = []
-                exec_log = build_exec_log(plan, wc, result, sq_logs, enable_native, req.deep_research)
+                stage_timings.append(StageTiming(stage="worker", latency_ms=result.latency_ms, meta={"model": result.model_used, "kind": "document"}))
+                exec_log = build_exec_log(
+                    plan, wc, result, sq_logs, enable_native, req.deep_research,
+                    stage_timings=stage_timings,
+                )
                 result.estimated_cost_usd = (result.estimated_cost_usd or 0.0) + plan.planner_cost_usd
 
                 asst_msg = ConversationMessage(
@@ -2016,6 +2048,8 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                 # event that would strand the saved message with no preview
                 # and a final_answer the client never receives.
                 try:
+                    yield _pipeline_log("working", f"Rendering {fmt.upper()} artifact…", doc_type=doc_type, format=fmt)
+                    started = time.perf_counter()
                     document_preview = _run_with_timeout(
                         build_document_artifact,
                         title or "Fronei document", doc_body, doc_type, fmt,
@@ -2024,13 +2058,22 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                         quality_mode=_document_quality_mode(plan),
                         timeout_seconds=_document_pipeline_timeout_seconds(db),
                     )
+                    stage_timings.append(_stage_timing(
+                        "artifact_build",
+                        started,
+                        doc_type=doc_type,
+                        format=document_preview.get("format") if isinstance(document_preview, dict) else fmt,
+                    ))
                 except PipelineTimeout as exc:
                     document_preview = {"generation_failure": {"user_message": str(exc)}}
+                    stage_timings.append(_stage_timing("artifact_build_timeout", started, doc_type=doc_type, format=fmt))
                 if failure_answer := _document_failure_answer(document_preview):
                     final_answer = failure_answer
                     asst_msg.content = final_answer
                 log_render_qa_failures(db, doc_type, doc_body, document_preview.get("render_qa"))
 
+                exec_log.stage_timings = stage_timings
+                asst_msg.execution_log_json = exec_log.model_dump_json()
                 asst_msg.document_preview_json = json.dumps(document_preview) if document_preview else None
                 db.commit()
 
@@ -2190,7 +2233,12 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                     pass
 
             # ── Build exec log + persist ──────────────────────────────────────
-            exec_log = build_exec_log(plan, wc, result, sq_logs, setup.enable_native, req.deep_research)
+            stage_timings = list(setup.stage_timings or [])
+            stage_timings.append(StageTiming(stage="worker", latency_ms=result.latency_ms, meta={"model": result.model_used}))
+            exec_log = build_exec_log(
+                plan, wc, result, sq_logs, setup.enable_native, req.deep_research,
+                stage_timings=stage_timings,
+            )
             result.estimated_cost_usd = (result.estimated_cost_usd or 0.0) + plan.planner_cost_usd
 
             asst_msg = ConversationMessage(

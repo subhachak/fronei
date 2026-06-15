@@ -63,7 +63,12 @@ def evaluate(plan: Plan) -> PlanGateResult:
     # ── Web search ───────────────────────────────────────────────────────
     web_cfg = policy.get("web_search", {})
     criticality = plan.web_search_criticality or web_cfg.get("default_criticality", "material")
-    web_gates = bool(plan.needs_web_search) and criticality in web_cfg.get("gating_criticalities", ["material"])
+    low_risk_high_confidence = plan.plan_confidence == "high" and not plan.open_questions
+    web_gates = (
+        bool(plan.needs_web_search)
+        and criticality in web_cfg.get("gating_criticalities", ["material"])
+        and not low_risk_high_confidence
+    )
     web_state = CapabilityState(
         enabled=bool(plan.needs_web_search),
         recommended=web_gates,
@@ -77,9 +82,14 @@ def evaluate(plan: Plan) -> PlanGateResult:
 
     # ── Deep research ────────────────────────────────────────────────────
     research_cfg = policy.get("deep_research", {})
-    research_gates = bool(plan.recommend_deep_research) and bool(research_cfg.get("always_gate", True))
     risk_factors = list(plan.research_risk_factors or [])
     suggested_mode_risk_factors = set(research_cfg.get("suggested_mode_risk_factors", []))
+    sensitive_research = bool(suggested_mode_risk_factors.intersection(risk_factors))
+    research_gates = (
+        bool(plan.recommend_deep_research)
+        and bool(research_cfg.get("always_gate", True))
+        and not (low_risk_high_confidence and not sensitive_research)
+    )
     suggested_mode = "expert" if suggested_mode_risk_factors.intersection(risk_factors) else "deep"
     research_state = CapabilityState(
         enabled=bool(plan.recommend_deep_research),

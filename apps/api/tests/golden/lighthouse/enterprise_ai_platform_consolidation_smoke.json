@@ -1,0 +1,12 @@
+{
+  "id": "enterprise_ai_platform_consolidation_steering_committee",
+  "phase": "phase_3_smoke",
+  "prompt": "Create a board-ready steering committee presentation on consolidating fragmented enterprise AI/ML tooling onto a single preferred platform. Audience: CIO, CTO, CFO, CISO, and business unit leaders. The deck should explain the current fragmentation cost, compare buy vs build, recommend a managed enterprise platform with federated ownership, show a phased migration roadmap, identify risks, and close with the specific decisions required.",
+  "expected_doc_type": "presentation",
+  "expected_theme": "dark",
+  "acceptance_notes": [
+    "Phase 3 smoke fixture only: validates planner/judge contracts can be exercised on a realistic executive-deck brief.",
+    "Phase 4 promotes this to a strict lighthouse gate with rendered slide thumbnails, judge scores, and repair-loop assertions.",
+    "Deck should include a clear storyline, decision-oriented recommendation, roadmap, risks, and executive ask."
+  ]
+}

@@ -24,7 +24,8 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+import typing
+from typing import Any, Optional
 
 import re
 
@@ -33,12 +34,19 @@ from app.schemas import RouteDecision
 from app.services.llm_gateway import LLMResult, invoke_llm
 
 from ..design_systems.registry import get_design_system
+from .design_plan import DesignPlan, RepairConstraint, SlideDesignTreatment
 from .registry import get_component
 from .render_plan import (
     SLIDE_LAYOUTS,
     ContentBlock,
     DocPlan,
+    EvidencePack,
+    EvidenceNeed,
+    EvidenceRef,
+    NarrativePlan,
     SectionPlan,
+    SlidePurpose,
+    StoryBeat,
     Theme,
     _GENERIC_CONTENT_LAYOUTS,
 )
@@ -48,6 +56,17 @@ logger = logging.getLogger(__name__)
 
 _MAX_CANDIDATES_PER_ZONE = 3
 _DEDICATED_LAYOUTS = {"TITLE", "SECTION_HEADER", "CLOSING"}
+_SLIDE_PURPOSES: tuple[str, ...] = typing.get_args(SlidePurpose)
+_EVIDENCE_PRIORITIES = ("low", "medium", "high")
+_GENERIC_BY_PURPOSE: dict[str, str] = {
+    "context": "CONTENT_1COL",
+    "analysis": "CONTENT_2COL",
+    "comparison": "CONTENT_TABLE_SIDEBAR",
+    "recommendation": "CONTENT_SPLIT_DECISIONS",
+    "decision": "CONTENT_SPLIT_DECISIONS",
+    "roadmap": "CONTENT_1COL",
+    "evidence": "CONTENT_TABLE_SIDEBAR",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -461,3 +480,600 @@ def generate_doc_plan(
         fallback_errors=fallback_errors,
     )
     return doc_plan, combined_result
+
+
+# ---------------------------------------------------------------------------
+# Narrative planning (Phase 3, #141) — first of the 4-step v2 pipeline.
+#
+# `generate_narrative_plan` is additive: it does not replace
+# `generate_doc_plan` (which remains the active path until #143's
+# `generate_agentdeck_v2_plan()` is wired up and proven). It produces a
+# `NarrativePlan` — thesis, audience, and a `storyline` of `StoryBeat`s —
+# that #142's slide-planning step consumes to populate each
+# `PresentationSlidePlan.purpose`/`audience_question`/`message`/`evidence`.
+#
+# Per v2 §20.3, the "Story Editor" sharpening pass is folded into this step:
+# the prompt asks the model to both draft and self-critique the storyline in
+# one structured-output call rather than as a separate task.
+# ---------------------------------------------------------------------------
+
+NARRATIVE_SYSTEM_PROMPT = """You are Fronei's presentation narrative planner, step 1 of a 4-step pipeline (\
+narrative -> slides -> design -> render). Given the user's request (and any document/web context provided), \
+produce the deck's underlying argument BEFORE any slide layout or visuals are chosen. Output ONLY a JSON object \
+— no Markdown, no commentary.
+
+Schema:
+{
+  "title": "Deck title",
+  "audience": "Who this deck is for (role/seniority), if inferrable (optional)",
+  "objective": "What the audience should believe or do after seeing this deck (one sentence)",
+  "executive_summary": "2-3 sentence summary of the overall argument/thesis (optional)",
+  "storyline": [ <beat>, ... ]
+}
+
+Each <beat> is one step in the deck's argument (roughly, but not exactly, one beat per slide — some beats may \
+span multiple slides later):
+{
+  "id": "beat-1",
+  "title": "Short label for this beat (e.g. 'The Problem', 'Why Now', 'Our Recommendation')",
+  "message": "The single point this beat makes — a complete sentence, specific and assertion-style, not a topic \
+label.",
+  "purpose": one of "title" | "section" | "context" | "analysis" | "comparison" | "recommendation" | "decision" \
+| "roadmap" | "evidence" | "closing",
+  "audience_question": "The question this beat answers from the audience's point of view (optional, but include \
+for analysis/recommendation/decision beats — e.g. 'Why should we act now?')",
+  "evidence_needs": [ <evidence_need>, ... ]
+}
+
+Each <evidence_need> describes a fact/figure/citation this beat's message depends on (omit if the beat is purely \
+framing, e.g. a section divider):
+{
+  "id": "ev-1",
+  "question": "What fact or data point would substantiate this beat's message?",
+  "claim_type": "e.g. 'market_size', 'cost_savings', 'benchmark', 'timeline', 'risk' (optional)",
+  "preferred_source_role": "e.g. 'industry_report', 'internal_data', 'case_study' (optional)",
+  "priority": "low" | "medium" | "high"
+}
+
+Build a coherent argument with a clear spine: open with context/problem, build through analysis/evidence/\
+comparison, land on a recommendation/decision, and close with next steps. Aim for 5-10 beats. Self-check before \
+responding: does each beat's `message` follow logically from the previous beat, and does the storyline overall \
+support `objective`? Tighten any beat whose message is vague or redundant with another beat.
+
+Do not invent facts, figures, or names not present in the user's request/context — `evidence_needs` should \
+describe what evidence is *needed*, not assert unverified facts as the `message` itself.
+"""
+
+
+def _coerce_evidence_need(raw: dict[str, Any], fallback_id: str) -> EvidenceNeed | None:
+    question = str(raw.get("question") or "").strip()
+    if not question:
+        return None
+    priority = raw.get("priority")
+    if priority not in _EVIDENCE_PRIORITIES:
+        priority = "medium"
+    kwargs: dict[str, Any] = {
+        "id": str(raw.get("id") or fallback_id).strip() or fallback_id,
+        "question": question,
+        "priority": priority,
+    }
+    for key in ("claim_type", "preferred_source_role"):
+        val = raw.get(key)
+        if val:
+            kwargs[key] = str(val).strip()
+    try:
+        return EvidenceNeed(**kwargs)
+    except Exception:
+        return None
+
+
+def _coerce_story_beat(raw: dict[str, Any], index: int) -> StoryBeat | None:
+    if not isinstance(raw, dict):
+        return None
+    title = str(raw.get("title") or "").strip()
+    message = str(raw.get("message") or "").strip()
+    if not title or not message:
+        return None
+    beat_id = str(raw.get("id") or f"beat-{index + 1}").strip() or f"beat-{index + 1}"
+    purpose = raw.get("purpose")
+    if purpose not in _SLIDE_PURPOSES:
+        purpose = "analysis"
+    kwargs: dict[str, Any] = {
+        "id": beat_id,
+        "title": title,
+        "message": message,
+        "purpose": purpose,
+    }
+    audience_question = raw.get("audience_question")
+    if audience_question:
+        kwargs["audience_question"] = str(audience_question).strip()
+
+    evidence_needs: list[EvidenceNeed] = []
+    for j, need_raw in enumerate(raw.get("evidence_needs") or []):
+        if not isinstance(need_raw, dict):
+            continue
+        need = _coerce_evidence_need(need_raw, f"{beat_id}-ev-{j + 1}")
+        if need is not None:
+            evidence_needs.append(need)
+    kwargs["evidence_needs"] = evidence_needs
+
+    try:
+        return StoryBeat(**kwargs)
+    except Exception as exc:
+        logger.info("Dropping invalid story beat %r: %s", beat_id, exc)
+        return None
+
+
+def _coerce_narrative_plan(data: dict[str, Any], *, fallback_title: str) -> NarrativePlan:
+    title = str(data.get("title") or "").strip() or fallback_title
+    audience = data.get("audience")
+    objective = data.get("objective")
+    executive_summary = data.get("executive_summary")
+
+    storyline: list[StoryBeat] = []
+    for i, raw in enumerate(data.get("storyline") or []):
+        beat = _coerce_story_beat(raw, i)
+        if beat is not None:
+            storyline.append(beat)
+
+    return NarrativePlan(
+        title=title,
+        audience=str(audience).strip() if audience else None,
+        objective=str(objective).strip() if objective else None,
+        executive_summary=str(executive_summary).strip() if executive_summary else None,
+        storyline=storyline,
+    )
+
+
+def _minimal_narrative_plan(fallback_title: str) -> NarrativePlan:
+    return NarrativePlan(
+        title=fallback_title,
+        storyline=[
+            StoryBeat(id="beat-1", title="Overview", message=fallback_title, purpose="context"),
+            StoryBeat(id="beat-2", title="Recommendation", message="Recommended next steps.", purpose="recommendation"),
+            StoryBeat(id="beat-3", title="Close", message="Thank you.", purpose="closing"),
+        ],
+    )
+
+
+def generate_narrative_plan(
+    prompt_text: str,
+    route: RouteDecision,
+    *,
+    extra_context: str | None = None,
+) -> tuple[NarrativePlan, LLMResult]:
+    """Run the narrative-planning LLM step and return a validated
+    `NarrativePlan` plus its `LLMResult` (for cost/latency accounting).
+
+    Always returns a valid `NarrativePlan`, even if the LLM call fails or
+    returns unparseable/invalid JSON — failures degrade to a minimal
+    3-beat storyline (context -> recommendation -> close) derived from the
+    prompt text, mirroring `generate_doc_plan`'s fallback philosophy.
+
+    This is purely additive (#141): it is not called by `generate_doc_plan`
+    or wired into the existing pipeline. #142/#143 (Phase 3) consume it to
+    build `generate_agentdeck_v2_plan()`.
+    """
+    fallback_title = (prompt_text or "Untitled Deck").strip().splitlines()[0][:120] or "Untitled Deck"
+
+    try:
+        result = invoke_llm(
+            _build_outline_user_message(prompt_text, extra_context),
+            route,
+            deep_research=False,
+            artifact_context=NARRATIVE_SYSTEM_PROMPT,
+        )
+    except Exception as exc:
+        logger.warning("Narrative-planning LLM call failed, using minimal fallback: %s", exc)
+        return _minimal_narrative_plan(fallback_title), LLMResult(
+            answer="",
+            model_used="fallback",
+            latency_ms=0,
+            prompt_tokens=None,
+            completion_tokens=None,
+            estimated_cost_usd=None,
+            fallback_errors=[str(exc)],
+        )
+
+    data = _parse_json_object(result.answer) or {}
+    try:
+        plan = _coerce_narrative_plan(data, fallback_title=fallback_title)
+    except Exception as exc:
+        logger.warning("NarrativePlan validation failed, using minimal fallback: %s", exc)
+        plan = _minimal_narrative_plan(fallback_title)
+
+    if not plan.storyline:
+        plan = _minimal_narrative_plan(fallback_title) if not plan.title else NarrativePlan(
+            title=plan.title,
+            audience=plan.audience,
+            objective=plan.objective,
+            executive_summary=plan.executive_summary,
+            storyline=_minimal_narrative_plan(fallback_title).storyline,
+        )
+
+    return plan, result
+
+# ---------------------------------------------------------------------------
+# Slide planning + Designer stage (Phase 3, #142/#157/#143)
+# ---------------------------------------------------------------------------
+
+SLIDE_PLANNING_SYSTEM_PROMPT = """You are Fronei's presentation slide planner, step 2 of a 4-step AgentDeck v2 \
+pipeline. Convert a narrative plan into a slide-level presentation plan. Output ONLY a JSON object.
+
+Schema:
+{
+  "title": "Deck title",
+  "subtitle": "Optional subtitle",
+  "theme": "dark|light",
+  "sections": [
+    {
+      "slide_id": "stable-id",
+      "slide_layout": "SECTION_HEADER|CONTENT_1COL|CONTENT_2COL|CONTENT_3COL|CONTENT_4COL|CONTENT_HERO_STAT|CONTENT_TABLE_SIDEBAR|CONTENT_SPLIT_DECISIONS|CLOSING",
+      "section_title": "Assertion-style slide title",
+      "dek": "One-sentence subtitle/dek under the slide title",
+      "purpose": "context|analysis|comparison|recommendation|decision|roadmap|evidence|closing",
+      "audience_question": "Question this slide answers",
+      "message": "Single sentence takeaway",
+      "content_brief": "What content/data should be rendered here",
+      "content_tags": ["narrative", "comparison", "decision"],
+      "notes": "Optional speaker-note guidance",
+      "evidence": [{"evidence_id": "e1", "confidence": "high"}]
+    }
+  ]
+}
+
+Rules:
+- Use the narrative beats as the storyline spine. One beat usually becomes one slide.
+- Use SECTION_HEADER sparingly; use CLOSING for the final ask/next step.
+- Every content slide must have a `dek`, `message`, and `audience_question`.
+- Do not create component blocks. The next step binds components.
+"""
+
+DESIGN_SYSTEM_PROMPT = """You are Fronei's presentation designer, step 3 of AgentDeck v2. Given a presentation \
+plan and the available design-system layouts/components, choose the visual treatment for each slide. Output ONLY \
+a JSON object.
+
+Schema:
+{
+  "design_system": "agentdeck_v1",
+  "theme": "dark|light",
+  "visual_direction": "Short design direction",
+  "density_strategy": "sparse|balanced|dense",
+  "slide_treatments": [
+    {
+      "slide_id": "matching slide_id",
+      "visual_role": "hero|section_divider|analysis|comparison|evidence|decision|roadmap|closing",
+      "layout_id": "slide layout id",
+      "component_choices": {"zone": ["component_id", "..."]},
+      "hierarchy_notes": "What should dominate visually",
+      "density_target": "sparse|balanced|dense",
+      "repair_constraints": [{"type": "preserve_message", "note": "optional"}]
+    }
+  ]
+}
+
+Rules:
+- Choose component ids that are valid for the layout/zone.
+- Prefer fewer, stronger visual moves over dense generic cards.
+- Preserve the slide message and any evidence references during future repairs.
+"""
+
+
+def _storybeat_to_section(beat: StoryBeat, index: int) -> SectionPlan:
+    purpose = beat.purpose
+    if purpose == "section":
+        return SectionPlan(
+            slide_id=beat.id,
+            slide_layout="SECTION_HEADER",
+            section_number=f"{index + 1:02d}",
+            section_title=beat.title,
+            section_subtitle=beat.message,
+            purpose="section",
+            message=beat.message,
+            audience_question=beat.audience_question,
+        )
+    if purpose == "closing":
+        return SectionPlan(
+            slide_id=beat.id,
+            slide_layout="CLOSING",
+            closing_text=beat.message,
+            closing_body=beat.audience_question,
+            purpose="closing",
+            message=beat.message,
+            audience_question=beat.audience_question,
+        )
+
+    layout = _GENERIC_BY_PURPOSE.get(purpose, "CONTENT_1COL")
+    return SectionPlan(
+        slide_id=beat.id,
+        slide_layout=layout,
+        section_title=beat.message or beat.title,
+        dek=beat.audience_question or beat.title,
+        purpose=purpose,
+        audience_question=beat.audience_question,
+        message=beat.message,
+        notes=beat.title,
+    )
+
+
+def _minimal_presentation_plan(narrative: NarrativePlan, *, theme: Theme = "dark") -> DocPlan:
+    sections = [_storybeat_to_section(beat, i) for i, beat in enumerate(narrative.storyline)]
+    if not sections:
+        sections = [SectionPlan(slide_layout="CLOSING", closing_text="Thank You", purpose="closing")]
+    return DocPlan(
+        title=narrative.title,
+        subtitle=narrative.audience,
+        theme=theme,
+        sections=sections,
+    )
+
+
+def _evidence_refs(raw: Any) -> list[EvidenceRef]:
+    refs: list[EvidenceRef] = []
+    if not isinstance(raw, list):
+        return refs
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        evidence_id = str(item.get("evidence_id") or "").strip()
+        if not evidence_id:
+            continue
+        confidence = item.get("confidence")
+        if confidence not in ("low", "medium", "high"):
+            confidence = None
+        refs.append(EvidenceRef(evidence_id=evidence_id, note=item.get("note"), confidence=confidence))
+    return refs
+
+
+def _coerce_presentation_plan(data: dict[str, Any], narrative: NarrativePlan, *, theme: Theme = "dark") -> DocPlan:
+    outline = _coerce_outline(data)
+    sections: list[SectionPlan] = []
+    raw_sections = [raw for raw in (data.get("sections") or []) if isinstance(raw, dict)]
+    for i, coerced in enumerate(outline.get("sections") or []):
+        raw = raw_sections[i] if i < len(raw_sections) else coerced
+        layout = coerced.get("slide_layout")
+        beat = narrative.storyline[min(i, len(narrative.storyline) - 1)] if narrative.storyline else None
+        kwargs: dict[str, Any] = {
+            "slide_id": str(raw.get("slide_id") or (beat.id if beat else f"slide-{i + 1}")),
+            "slide_layout": layout,
+            "dek": str(raw.get("dek") or raw.get("subtitle") or (beat.audience_question if beat else "") or "").strip() or None,
+            "purpose": raw.get("purpose") if raw.get("purpose") in _SLIDE_PURPOSES else (beat.purpose if beat else "analysis"),
+            "audience_question": raw.get("audience_question") or (beat.audience_question if beat else None),
+            "message": raw.get("message") or (beat.message if beat else None),
+            "evidence": _evidence_refs(raw.get("evidence")),
+            "notes": raw.get("notes"),
+        }
+        for key in (
+            "section_title", "section_number", "section_subtitle", "hero_title", "subtitle",
+            "presenter", "deck_type_label", "date_label", "confidentiality",
+            "closing_text", "closing_body",
+        ):
+            if coerced.get(key) or raw.get(key):
+                kwargs[key] = coerced.get(key) or raw.get(key)
+        if layout in _GENERIC_CONTENT_LAYOUTS and not kwargs.get("section_title"):
+            kwargs["section_title"] = kwargs.get("message") or (beat.message if beat else "Overview")
+        try:
+            sections.append(SectionPlan(**kwargs))
+        except Exception as exc:
+            logger.info("Dropping invalid slide-planning section %s: %s", i, exc)
+    if not sections:
+        return _minimal_presentation_plan(narrative, theme=theme)
+    return DocPlan(
+        title=outline.get("title") or narrative.title,
+        subtitle=outline.get("subtitle") or narrative.audience,
+        theme=outline.get("theme") if outline.get("theme") in ("dark", "light") else theme,
+        sections=sections,
+    )
+
+
+def generate_presentation_plan(
+    narrative: NarrativePlan,
+    evidence_pack: EvidencePack | None,
+    route: RouteDecision,
+    *,
+    prompt_text: str = "",
+    theme: Theme = "dark",
+) -> tuple[DocPlan, LLMResult]:
+    payload = {
+        "prompt": prompt_text,
+        "narrative": narrative.model_dump(mode="json", exclude_none=True),
+        "evidence_pack": (evidence_pack or EvidencePack()).model_dump(mode="json", exclude_none=True),
+    }
+    try:
+        result = invoke_llm(
+            json.dumps(payload, ensure_ascii=False),
+            route,
+            deep_research=False,
+            artifact_context=SLIDE_PLANNING_SYSTEM_PROMPT,
+        )
+    except Exception as exc:
+        logger.warning("Slide-planning LLM call failed, using fallback: %s", exc)
+        return _minimal_presentation_plan(narrative, theme=theme), LLMResult(
+            answer="",
+            model_used="fallback",
+            latency_ms=0,
+            prompt_tokens=None,
+            completion_tokens=None,
+            estimated_cost_usd=None,
+            fallback_errors=[str(exc)],
+        )
+    data = _parse_json_object(result.answer) or {}
+    return _coerce_presentation_plan(data, narrative, theme=theme), result
+
+
+def _visual_role_for_section(section: SectionPlan) -> str:
+    if section.slide_layout == "SECTION_HEADER":
+        return "section_divider"
+    if section.slide_layout == "CLOSING":
+        return "closing"
+    if section.purpose in {"recommendation", "decision"}:
+        return "decision"
+    if section.purpose == "roadmap":
+        return "roadmap"
+    if section.purpose == "evidence":
+        return "evidence"
+    if section.purpose == "comparison":
+        return "comparison"
+    return "analysis"
+
+
+def _component_choices_for_layout(slide_layout: str) -> dict[str, list[str]]:
+    if slide_layout not in _GENERIC_CONTENT_LAYOUTS:
+        return {}
+    choices: dict[str, list[str]] = {}
+    for zone in _layout_zones(slide_layout):
+        ranked = rank_components(slide_layout, [])[:_MAX_CANDIDATES_PER_ZONE]
+        choices[zone] = [component.id for component in ranked]
+    return choices
+
+
+def _fallback_design_plan(presentation_plan: DocPlan, *, quality_mode: str = "standard") -> DesignPlan:
+    treatments: list[SlideDesignTreatment] = []
+    for section in presentation_plan.sections:
+        treatments.append(
+            SlideDesignTreatment(
+                slide_id=section.slide_id,
+                visual_role=_visual_role_for_section(section),
+                layout_id=section.slide_layout,
+                component_choices=_component_choices_for_layout(section.slide_layout),
+                density_target="balanced",
+                repair_constraints=[
+                    RepairConstraint(type="preserve_message"),
+                    RepairConstraint(type="may_reduce_copy"),
+                ],
+            )
+        )
+    return DesignPlan(
+        design_system=presentation_plan.design_system,
+        theme=presentation_plan.theme,
+        quality_mode=quality_mode,
+        visual_direction="Executive-ready AgentDeck layout using semantic tokens and sparse hierarchy.",
+        density_strategy="balanced",
+        slide_treatments=treatments,
+    )
+
+
+def generate_design_plan(
+    presentation_plan: DocPlan,
+    route: RouteDecision,
+    *,
+    quality_mode: str = "standard",
+) -> tuple[DesignPlan, LLMResult]:
+    payload = {
+        "presentation_plan": presentation_plan.model_dump(mode="json", exclude_none=True),
+        "design_system": "agentdeck_v1",
+        "available_components": {
+            section.slide_id or f"slide-{i + 1}": _component_choices_for_layout(section.slide_layout)
+            for i, section in enumerate(presentation_plan.sections)
+        },
+        "quality_mode": quality_mode,
+    }
+    try:
+        result = invoke_llm(
+            json.dumps(payload, ensure_ascii=False),
+            route,
+            deep_research=False,
+            artifact_context=DESIGN_SYSTEM_PROMPT,
+        )
+    except Exception as exc:
+        logger.warning("Design-planning LLM call failed, using fallback: %s", exc)
+        return _fallback_design_plan(presentation_plan, quality_mode=quality_mode), LLMResult(
+            answer="",
+            model_used="fallback",
+            latency_ms=0,
+            prompt_tokens=None,
+            completion_tokens=None,
+            estimated_cost_usd=None,
+            fallback_errors=[str(exc)],
+        )
+    data = _parse_json_object(result.answer) or {}
+    try:
+        plan = DesignPlan.model_validate(data)
+    except Exception:
+        plan = _fallback_design_plan(presentation_plan, quality_mode=quality_mode)
+    if not plan.slide_treatments:
+        plan = _fallback_design_plan(presentation_plan, quality_mode=quality_mode)
+    return plan, result
+
+
+def _combine_llm_results(results: list[LLMResult], *, answer: str = "") -> LLMResult:
+    model_used = next((r.model_used for r in reversed(results) if r.model_used), "unknown")
+    fallback_errors: list[str] = []
+    prompt_tokens = 0
+    completion_tokens = 0
+    cost = 0.0
+    latency = 0
+    any_prompt = any(r.prompt_tokens is not None for r in results)
+    any_completion = any(r.completion_tokens is not None for r in results)
+    any_cost = any(r.estimated_cost_usd is not None for r in results)
+    for result in results:
+        fallback_errors.extend(result.fallback_errors)
+        prompt_tokens += result.prompt_tokens or 0
+        completion_tokens += result.completion_tokens or 0
+        cost += result.estimated_cost_usd or 0.0
+        latency += result.latency_ms
+    return LLMResult(
+        answer=answer,
+        model_used=model_used,
+        latency_ms=latency,
+        prompt_tokens=prompt_tokens if any_prompt else None,
+        completion_tokens=completion_tokens if any_completion else None,
+        estimated_cost_usd=cost if any_cost else None,
+        fallback_errors=fallback_errors,
+    )
+
+
+def _overlay_presentation_intent(doc_plan: DocPlan, presentation_plan: DocPlan) -> DocPlan:
+    for i, section in enumerate(doc_plan.sections):
+        if i >= len(presentation_plan.sections):
+            continue
+        source = presentation_plan.sections[i]
+        section.slide_id = section.slide_id or source.slide_id
+        section.dek = section.dek or source.dek
+        section.purpose = source.purpose
+        section.audience_question = source.audience_question
+        section.message = source.message
+        section.evidence = source.evidence
+    return doc_plan
+
+
+def generate_agentdeck_v2_plan(
+    prompt_text: str,
+    route: RouteDecision,
+    *,
+    theme: Theme = "dark",
+    extra_context: str | None = None,
+    db: Any | None = None,
+    quality_mode: str = "standard",
+) -> tuple[DocPlan, DesignPlan, LLMResult]:
+    narrative, narrative_result = generate_narrative_plan(prompt_text, route, extra_context=extra_context)
+    evidence_pack = EvidencePack()
+    presentation, presentation_result = generate_presentation_plan(
+        narrative,
+        evidence_pack,
+        route,
+        prompt_text=prompt_text,
+        theme=theme,
+    )
+    design, design_result = generate_design_plan(presentation, route, quality_mode=quality_mode)
+
+    doc_plan, doc_result = generate_doc_plan(
+        prompt_text,
+        route,
+        theme=presentation.theme,
+        extra_context=json.dumps(
+            {
+                "narrative": narrative.model_dump(mode="json", exclude_none=True),
+                "presentation_plan": presentation.model_dump(mode="json", exclude_none=True),
+                "design_plan": design.model_dump(mode="json", exclude_none=True),
+            },
+            ensure_ascii=False,
+        ),
+        db=db,
+    )
+    doc_plan = _overlay_presentation_intent(doc_plan, presentation)
+    combined = _combine_llm_results(
+        [narrative_result, presentation_result, design_result, doc_result],
+        answer=doc_plan.model_dump_json(),
+    )
+    return doc_plan, design, combined

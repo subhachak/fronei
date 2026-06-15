@@ -28,6 +28,18 @@ from .quality_mode import QualityMode
 from .registry import get_component
 
 Theme = Literal["dark", "light"]
+SlidePurpose = Literal[
+    "title",
+    "section",
+    "context",
+    "analysis",
+    "comparison",
+    "recommendation",
+    "decision",
+    "roadmap",
+    "evidence",
+    "closing",
+]
 
 # Keys of spec.json.slide_layouts (excluding the `description`/`common_rules`
 # metadata keys handled by SlideLayouts).
@@ -173,7 +185,58 @@ class PptxRenderPlan(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# DocPlan (§4) — format-agnostic planner output, Phase 3 target.
+# AgentDeck v2 narrative/evidence/presentation contracts (§2.2/2.3)
+# ---------------------------------------------------------------------------
+
+
+class EvidenceNeed(BaseModel):
+    id: str
+    question: str
+    claim_type: Optional[str] = None
+    preferred_source_role: Optional[str] = None
+    priority: Literal["low", "medium", "high"] = "medium"
+
+
+class StoryBeat(BaseModel):
+    id: str
+    title: str
+    message: str
+    purpose: SlidePurpose = "analysis"
+    audience_question: Optional[str] = None
+    evidence_needs: list[EvidenceNeed] = Field(default_factory=list)
+
+
+class NarrativePlan(BaseModel):
+    title: str
+    audience: Optional[str] = None
+    objective: Optional[str] = None
+    storyline: list[StoryBeat] = Field(default_factory=list)
+    executive_summary: Optional[str] = None
+
+
+class EvidenceItem(BaseModel):
+    id: str
+    title: str
+    source_url: Optional[str] = None
+    source_name: Optional[str] = None
+    source_role: Optional[str] = None
+    claim_type: Optional[str] = None
+    date_label: Optional[str] = None
+    snippet: Optional[str] = None
+
+
+class EvidenceRef(BaseModel):
+    evidence_id: str
+    note: Optional[str] = None
+    confidence: Optional[Literal["low", "medium", "high"]] = None
+
+
+class EvidencePack(BaseModel):
+    items: list[EvidenceItem] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# PresentationPlan (§2.3) — format-agnostic planner output.
 # ---------------------------------------------------------------------------
 
 
@@ -196,6 +259,7 @@ class ContentBlock(BaseModel):
     schema for a zone's data should pick a different `component_id`.
     """
 
+    block_id: Optional[str] = None
     zone: str
     component_id: str
     component_version: str = "1.0.0"
@@ -221,7 +285,7 @@ class ContentBlock(BaseModel):
         return self
 
 
-class SectionPlan(BaseModel):
+class PresentationSlidePlan(BaseModel):
     """One slide. Mirrors `PptxSlidePlan`'s field set (§5) but is
     format-agnostic: `blocks` (zone -> ContentBlock) replaces `zones`
     (zone -> ZoneInstance) as the planner-facing representation — the
@@ -229,6 +293,12 @@ class SectionPlan(BaseModel):
     """
 
     slide_layout: SlideLayoutName
+    slide_id: Optional[str] = None
+    dek: Optional[str] = None
+    purpose: SlidePurpose = "analysis"
+    audience_question: Optional[str] = None
+    message: Optional[str] = None
+    evidence: list[EvidenceRef] = Field(default_factory=list)
 
     # generic content layouts (CONTENT_*COL, CONTENT_HERO_STAT,
     # CONTENT_TABLE_SIDEBAR, CONTENT_SPLIT_DECISIONS)
@@ -257,7 +327,7 @@ class SectionPlan(BaseModel):
     notes: Optional[str] = None
 
     @model_validator(mode="after")
-    def _validate_blocks_against_layout(self) -> "SectionPlan":
+    def _validate_blocks_against_layout(self) -> "PresentationSlidePlan":
         if self.slide_layout not in _GENERIC_CONTENT_LAYOUTS:
             if self.blocks:
                 raise ValueError(
@@ -289,7 +359,7 @@ class SectionPlan(BaseModel):
         return self
 
 
-class DocPlan(BaseModel):
+class PresentationPlan(BaseModel):
     """Format-agnostic planner output (§4). The structured-output planner
     (#122) produces this; the composer (#123) maps it to `PptxRenderPlan`.
     """
@@ -299,4 +369,10 @@ class DocPlan(BaseModel):
     theme: Theme = "dark"
     title: str
     subtitle: Optional[str] = None
-    sections: list[SectionPlan] = Field(default_factory=list)
+    sections: list[PresentationSlidePlan] = Field(default_factory=list)
+
+
+# Backward-compatible names used by the existing pipeline/tests. Phase 2 keeps
+# these aliases so callers can migrate to the v2 names gradually.
+SectionPlan = PresentationSlidePlan
+DocPlan = PresentationPlan

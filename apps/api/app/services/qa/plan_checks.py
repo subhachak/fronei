@@ -9,7 +9,7 @@ from typing import Any
 from app.services.components import DocPlan, PptxRenderPlan
 from app.services.components.fit_validation import validate_component_fit
 from app.services.components.registry import get_component
-from app.services.design_systems.registry import get_design_system
+from app.services.design_systems.registry import DEFAULT_DESIGN_SYSTEM, get_design_system
 
 from .types import QAIssue
 
@@ -24,7 +24,10 @@ def run_plan_checks(plan: DocPlan | PptxRenderPlan) -> list[QAIssue]:
 
 def _check_doc_plan(plan: DocPlan) -> list[QAIssue]:
     issues: list[QAIssue] = []
-    spec = get_design_system(plan.design_system)
+    try:
+        spec = get_design_system(plan.design_system)
+    except KeyError:
+        spec = get_design_system(DEFAULT_DESIGN_SYSTEM)
     for idx, section in enumerate(plan.sections, start=2):
         title = section.section_title or section.hero_title or section.closing_text
         _check_text_field(issues, title, "title", idx, section.slide_id)

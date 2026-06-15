@@ -567,11 +567,14 @@ def _ensure_sqlite_schema(bind) -> None:
                 content_type VARCHAR(120),
                 file_size INTEGER DEFAULT 0,
                 is_active BOOLEAN DEFAULT 1,
+                design_system_id VARCHAR(128),
                 created_at DATETIME NOT NULL,
                 updated_at DATETIME NOT NULL
             )
         """)
     if has_table("document_templates"):
+        if not has_column("document_templates", "design_system_id"):
+            statements.append("ALTER TABLE document_templates ADD COLUMN design_system_id VARCHAR(128)")
         statements.append("CREATE UNIQUE INDEX IF NOT EXISTS ix_document_templates_public_id ON document_templates (public_id)")
         statements.append("CREATE INDEX IF NOT EXISTS ix_document_templates_user_id ON document_templates (user_id)")
 

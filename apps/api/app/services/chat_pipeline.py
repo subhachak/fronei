@@ -27,6 +27,7 @@ from app.services.prompts import ARTIFACT_PROMPTS
 from app.services.router import choose_route
 from app.services.web_context import WebContextResult, gather_web_context
 from app.services.document_generator import parse_deck_plan
+from app.services.components.quality_mode import normalize_quality_mode
 
 
 def _build_doc_context(docs: list) -> str:
@@ -480,6 +481,7 @@ def generate_document_output(
 
     brief = plan.document_brief or {}
     doc_type = brief.get("doc_type") or "executive_report"
+    quality_mode = normalize_quality_mode(brief.get("quality_mode"))
     parts = [DOCUMENT_SYSTEM_PROMPT, DOC_TYPE_PROMPTS.get(doc_type, DOC_TYPE_PROMPTS["executive_report"])]
 
     preferences = []
@@ -491,6 +493,8 @@ def generate_document_output(
         preferences.append(f"- Length/depth: {brief['length']}")
     if brief.get("title"):
         preferences.append(f"- Suggested title: {brief['title']}")
+    if doc_type == "presentation":
+        preferences.append(f"- Quality mode: {quality_mode}")
     if preferences:
         parts.append("User-selected document brief:\n" + "\n".join(preferences))
 
@@ -504,7 +508,7 @@ def generate_document_output(
     # selection) produces a validated `DocPlan`, serialized as the
     # `document_body` for downstream `build_document_artifact` (#124).
     if doc_type == "presentation":
-        from app.services.components import generate_doc_plan
+        from app.services.components import generate_agentdeck_v2_plan
 
         extra_parts = list(preferences)
         if personalization:
@@ -515,8 +519,12 @@ def generate_document_output(
             extra_parts.append("WEB CONTEXT:\n" + wc.context)
         extra_context = "\n\n".join(extra_parts) or None
 
-        doc_plan, plan_result = generate_doc_plan(
-            plan.enriched_prompt, route, extra_context=extra_context, db=db,
+        doc_plan, _design_plan, plan_result = generate_agentdeck_v2_plan(
+            plan.enriched_prompt,
+            route,
+            extra_context=extra_context,
+            db=db,
+            quality_mode=quality_mode,
         )
         body = doc_plan.model_dump_json()
         bullets = [

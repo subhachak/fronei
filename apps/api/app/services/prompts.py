@@ -69,7 +69,8 @@ Output ONLY valid JSON — no markdown fences, no explanation, no extra text. Us
     "title": null,
     "audience": null,
     "tone": null,
-    "length": null
+    "length": null,
+    "quality_mode": "draft|standard|executive|null"
   },
   "document_format_options": [],
   "document_format_recommendation": null,
@@ -146,6 +147,10 @@ document_brief — only meaningful when wants_document_output is true. Infer eac
   audience  — who will read this (e.g. "Client", "Executive", "Internal team"), or null.
   tone      — e.g. "Formal", "Concise", "Persuasive", "Technical", or null.
   length    — e.g. "Short", "Standard", "Detailed", "One page", or null.
+  quality_mode — for presentation/deck outputs only: draft for quick/internal rough cuts, standard for \
+    normal polished deliverables, executive for board/client-ready decks where QA and repair should be strict. \
+    Use executive when the user says board-ready, client-ready, senior stakeholders, CEO/CFO/CTO, steering \
+    committee, or similar; use draft only when they explicitly ask for rough/quick/first pass; otherwise standard.
 
 document_format_options — only when wants_document_output is true: every output format plausible for \
   this content, from ["markdown", "docx", "pptx", "pdf", "xlsx"]. Most documents are just \

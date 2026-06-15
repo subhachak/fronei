@@ -31,6 +31,8 @@ from app.services.components import (
     generate_design_plan,
     generate_doc_plan,
     generate_presentation_plan,
+    normalize_quality_mode,
+    repair_iteration_cap,
 )
 from app.services.components import NarrativePlan, generate_narrative_plan
 from app.services.components.planner import (
@@ -572,6 +574,26 @@ def test_generate_design_plan_fallback_has_treatments(monkeypatch):
     assert len(design.slide_treatments) == len(presentation.sections)
     assert design.slide_treatments[0].component_choices
     assert result.fallback_errors
+
+
+def test_quality_mode_policy_helpers_normalize_and_cap():
+    assert normalize_quality_mode("executive") == "executive"
+    assert normalize_quality_mode(" rough ") == "standard"
+    assert repair_iteration_cap("draft") == 0
+    assert repair_iteration_cap("standard") == 2
+    assert repair_iteration_cap("executive") == 5
+
+
+def test_generate_design_plan_fallback_uses_quality_mode(monkeypatch):
+    monkeypatch.setattr("app.services.components.planner.invoke_llm", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("down")))
+    presentation = _minimal_presentation_plan(_narrative())
+
+    design, _result = generate_design_plan(presentation, _route(), quality_mode="executive")
+
+    assert design.quality_mode == "executive"
+    assert design.density_strategy == "sparse"
+    assert all(t.density_target == "sparse" for t in design.slide_treatments)
+    assert "strict" in design.visual_direction
 
 
 def test_fallback_design_plan_matches_presentation_sections():

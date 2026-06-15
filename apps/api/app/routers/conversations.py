@@ -37,7 +37,7 @@ from app.services.chat_pipeline import (
     _run_sub_queries, _conversation_state, _build_worker_context, _build_doc_context,
 )
 from app.routers.documents import build_document_artifact
-from app.services.components import log_doc_plan_usage, log_render_qa_failures
+from app.services.components import log_doc_plan_usage, log_render_qa_failures, normalize_quality_mode
 from app.services import plan_gate
 from app.services.document_templates import (
     list_document_templates,
@@ -1074,6 +1074,10 @@ def _document_output_format(plan, gate) -> str:
     return "markdown"
 
 
+def _document_quality_mode(plan) -> str:
+    return normalize_quality_mode((plan.document_brief or {}).get("quality_mode"))
+
+
 def _coerce_presentation_brief_for_pptx(plan, fmt: str) -> None:
     if fmt != "pptx":
         return
@@ -1416,6 +1420,7 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                             title or "Fronei document", doc_body, doc_type, fmt,
                             template_id=template_id if isinstance(template_id, str) else None,
                             template_path=str(template_path) if template_path else None,
+                            quality_mode=_document_quality_mode(plan),
                         )
                         if failure_answer := _document_failure_answer(document_preview):
                             final_answer = failure_answer
@@ -1612,6 +1617,7 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                         title or "Fronei document", doc_body, doc_type, fmt,
                         template_id=template_id if isinstance(template_id, str) else None,
                         template_path=str(template_path) if template_path else None,
+                        quality_mode=_document_quality_mode(plan),
                     )
                     if failure_answer := _document_failure_answer(document_preview):
                         final_answer = failure_answer
@@ -1804,6 +1810,7 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                     title or "Fronei document", doc_body, doc_type, fmt,
                     template_id=template_id if isinstance(template_id, str) else None,
                     template_path=str(template_path) if template_path else None,
+                    quality_mode=_document_quality_mode(plan),
                 )
                 if failure_answer := _document_failure_answer(document_preview):
                     final_answer = failure_answer

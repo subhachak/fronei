@@ -7,6 +7,12 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from app.services.components import DesignPlan, DocPlan, EvidencePack, NarrativePlan
+from app.services.components.quality_mode import (
+    DEFAULT_QUALITY_MODE,
+    QualityMode,
+    deck_judge_thresholds,
+    normalize_quality_mode,
+)
 
 from .slide_judge import SlideJudgeResult
 from .types import QAIssue
@@ -31,7 +37,10 @@ def judge_deck(
     narrative_plan: NarrativePlan | None = None,
     evidence_pack: EvidencePack | None = None,
     design_plan: DesignPlan | None = None,
+    quality_mode: QualityMode | str = DEFAULT_QUALITY_MODE,
 ) -> DeckJudgeResult:
+    mode = normalize_quality_mode(quality_mode)
+    fail_below, warn_below = deck_judge_thresholds(mode)
     issues: list[QAIssue] = []
     for slide in slide_results:
         issues.extend(slide.issues)
@@ -42,9 +51,9 @@ def judge_deck(
     slide_score = _avg([slide.score for slide in slide_results], default=1.0)
     executive_readiness = _avg([storyline_score, design_score, evidence_score, slide_score])
     status = "pass"
-    if any(slide.status == "fail" for slide in slide_results) or executive_readiness < 0.65:
+    if any(slide.status == "fail" for slide in slide_results) or executive_readiness < fail_below:
         status = "fail"
-    elif any(slide.status == "warn" for slide in slide_results) or executive_readiness < 0.82:
+    elif any(slide.status == "warn" for slide in slide_results) or executive_readiness < warn_below:
         status = "warn"
 
     repairs = _recommended_repairs(slide_results, storyline_score, design_score, evidence_score)

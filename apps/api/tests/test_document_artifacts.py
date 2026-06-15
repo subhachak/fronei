@@ -161,6 +161,45 @@ def test_build_document_artifact_repairs_dense_slide_via_render_qa(monkeypatch):
     assert "Trimmed for slide density: Bullet number 6" in preview["markdown"]
 
 
+def test_build_document_artifact_draft_quality_skips_repair_loop(monkeypatch):
+    assert get_settings().pptx_render_qa_enabled is True
+
+    deck_plan = json.dumps({
+        "title": "Client AI Strategy",
+        "slides": [
+            {
+                "layout": "bullets",
+                "title": "Roadmap",
+                "bullets": [
+                    "Bullet number 1 with some supporting detail",
+                    "Bullet number 2 with some supporting detail",
+                    "Bullet number 3 with some supporting detail",
+                    "Bullet number 4 with some supporting detail",
+                    "Bullet number 5 with some supporting detail",
+                    "Bullet number 6 with some supporting detail",
+                ],
+            },
+        ],
+    })
+
+    def fake_run_qa(content, *args, **kwargs):
+        return {
+            "available": True,
+            "slide_count": 2,
+            "issues": [{"slide": 2, "type": "dense_text", "detail": "too much text"}],
+        }
+
+    monkeypatch.setattr(documents, "run_pptx_render_qa", fake_run_qa)
+
+    preview = documents.build_document_artifact("", deck_plan, "presentation", "pptx", quality_mode="draft")
+
+    assert preview["format"] == "pptx"
+    assert preview["quality_mode"] == "draft"
+    assert preview["render_qa"]["issues"]
+    assert "repair_iterations" not in preview["render_qa"]
+    assert "- Bullet number 6" in preview["markdown"]
+
+
 def test_build_document_artifact_uses_readable_preview_for_deck_plan_json():
     deck_plan = json.dumps({
         "title": "Client AI Strategy",

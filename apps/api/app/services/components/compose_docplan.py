@@ -12,10 +12,16 @@ leading TITLE slide (matching `compose_pptx_render_plan`'s convention so
 
 from __future__ import annotations
 
+from ..design_systems.registry import get_design_system
+from .fit_validation import format_fit_issues, validate_component_fit
 from .render_plan import DocPlan, PptxRenderPlan, PptxSlidePlan, SectionPlan, Theme, ZoneInstance
+from .registry import get_component
 
 
 def _section_to_slide(section: SectionPlan) -> PptxSlidePlan:
+    spec = get_design_system("agentdeck_v1")
+    layout = spec.slide_layout(section.slide_layout)
+    fit_results = []
     zones = {
         block.zone: ZoneInstance(
             component_id=block.component_id,
@@ -25,6 +31,21 @@ def _section_to_slide(section: SectionPlan) -> PptxSlidePlan:
         )
         for block in section.blocks
     }
+    for block in section.blocks:
+        fit_results.append(
+            validate_component_fit(
+                slide_layout=section.slide_layout,
+                layout=layout,
+                zone=block.zone,
+                component=get_component(block.component_id),
+                props=block.data,
+            )
+        )
+    fit_issue_lines = format_fit_issues(fit_results)
+    notes = section.notes
+    if fit_issue_lines:
+        fit_note = "Fit validation:\n" + "\n".join(f"- {line}" for line in fit_issue_lines)
+        notes = f"{notes}\n\n{fit_note}" if notes else fit_note
 
     # `SectionPlan.section_title` is double-duty: for generic content layouts
     # it's the slide's `title`; for SECTION_HEADER it's the section heading
@@ -49,7 +70,7 @@ def _section_to_slide(section: SectionPlan) -> PptxSlidePlan:
         section_subtitle=section.section_subtitle,
         closing_text=section.closing_text,
         closing_body=section.closing_body,
-        notes=section.notes,
+        notes=notes,
     )
 
 

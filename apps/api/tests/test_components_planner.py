@@ -22,12 +22,28 @@ from app.schemas import RouteDecision
 from app.services.llm_gateway import LLMResult
 from app.services.components import (
     ContentBlock,
+    DesignPlan,
     DocPlan,
+    EvidencePack,
     SectionPlan,
     compose_docplan_to_pptx_render_plan,
+    generate_agentdeck_v2_plan,
+    generate_design_plan,
     generate_doc_plan,
+    generate_presentation_plan,
 )
-from app.services.components.planner import _coerce_outline, _extract_json_candidate
+from app.services.components import NarrativePlan, generate_narrative_plan
+from app.services.components.planner import (
+    _coerce_evidence_need,
+    _coerce_narrative_plan,
+    _coerce_outline,
+    _coerce_presentation_plan,
+    _coerce_story_beat,
+    _fallback_design_plan,
+    _extract_json_candidate,
+    _minimal_narrative_plan,
+    _minimal_presentation_plan,
+)
 from app.services.components.selection import rank_components
 
 
@@ -330,6 +346,300 @@ def test_generate_doc_plan_invalid_block_falls_back_gracefully(monkeypatch):
     # The invalid block is dropped; either empty blocks or a fallback bullet_list remains valid.
     for block in section.blocks:
         assert block.component_id  # round-tripped through validation successfully
+
+
+# ---------------------------------------------------------------------------
+# generate_narrative_plan (#141)
+# ---------------------------------------------------------------------------
+
+
+def test_coerce_evidence_need_defaults_priority_when_invalid():
+    need = _coerce_evidence_need(
+        {"id": "e1", "question": "What is the market size?", "priority": "urgent"},
+        fallback_id="e-fallback",
+    )
+    assert need is not None
+    assert need.id == "e1"
+    assert need.priority == "medium"
+
+
+def test_coerce_evidence_need_drops_empty_question():
+    assert _coerce_evidence_need({"id": "e1", "question": "   "}, fallback_id="e-fallback") is None
+
+
+def test_coerce_story_beat_defaults_id_and_purpose():
+    beat = _coerce_story_beat(
+        {"title": "Context", "message": "Setting the stage", "purpose": "not_a_real_purpose"},
+        index=0,
+    )
+    assert beat is not None
+    assert beat.id == "beat-1"
+    assert beat.purpose == "analysis"
+
+
+def test_coerce_story_beat_drops_missing_title_or_message():
+    assert _coerce_story_beat({"title": "Only Title"}, index=0) is None
+    assert _coerce_story_beat({"message": "Only Message"}, index=0) is None
+    assert _coerce_story_beat({"title": "", "message": "x"}, index=0) is None
+
+
+def test_coerce_narrative_plan_filters_invalid_beats_and_keeps_valid():
+    raw = {
+        "title": "Q3 Strategy",
+        "audience": "Execs",
+        "objective": "Decide on rollout",
+        "executive_summary": "Summary here",
+        "storyline": [
+            {
+                "id": "b1",
+                "title": "Context",
+                "message": "Setting the stage",
+                "purpose": "context",
+                "evidence_needs": [{"id": "e1", "question": "What is market size?", "priority": "high"}],
+            },
+            {"title": "Bad purpose", "message": "msg", "purpose": "not_a_purpose"},
+            {"title": "", "message": "should be dropped"},
+            {"message": "no title - dropped"},
+        ],
+    }
+    plan = _coerce_narrative_plan(raw, fallback_title="fallback")
+    assert plan.title == "Q3 Strategy"
+    assert plan.audience == "Execs"
+    assert len(plan.storyline) == 2
+    assert plan.storyline[0].evidence_needs[0].priority == "high"
+    assert plan.storyline[1].id == "beat-2"
+    assert plan.storyline[1].purpose == "analysis"
+
+
+def test_coerce_narrative_plan_empty_input_falls_back_to_title():
+    plan = _coerce_narrative_plan({}, fallback_title="Fallback Title")
+    assert plan.title == "Fallback Title"
+    assert plan.storyline == []
+
+
+def test_minimal_narrative_plan_has_three_beat_spine():
+    plan = _minimal_narrative_plan("Test Deck")
+    assert plan.title == "Test Deck"
+    assert [beat.purpose for beat in plan.storyline] == ["context", "recommendation", "closing"]
+
+
+def test_generate_narrative_plan_total_failure_falls_back(monkeypatch):
+    def _fake_invoke_llm(*args, **kwargs):
+        raise RuntimeError("LLM unavailable")
+
+    monkeypatch.setattr("app.services.components.planner.invoke_llm", _fake_invoke_llm)
+
+    plan, result = generate_narrative_plan("Quarterly business review for the board", _route())
+    assert isinstance(plan, NarrativePlan)
+    assert plan.title
+    assert len(plan.storyline) == 3
+    assert result.fallback_errors
+
+
+def test_generate_narrative_plan_unparseable_json_falls_back(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.components.planner.invoke_llm",
+        lambda *a, **k: _llm_result("not json at all"),
+    )
+
+    plan, _ = generate_narrative_plan("Quarterly business review for the board", _route())
+    assert isinstance(plan, NarrativePlan)
+    assert len(plan.storyline) == 3
+
+
+def test_generate_narrative_plan_happy_path(monkeypatch):
+    narrative_json = json.dumps({
+        "title": "AI Adoption Strategy",
+        "audience": "Executive Steering Committee",
+        "objective": "Approve Phase 2 investment",
+        "executive_summary": "Adoption is ahead of plan; recommend doubling down.",
+        "storyline": [
+            {
+                "id": "context",
+                "title": "Where We Stand",
+                "message": "Adoption has accelerated across three business units.",
+                "purpose": "context",
+            },
+            {
+                "id": "evidence",
+                "title": "What the Data Shows",
+                "message": "Unit A throughput is up 35% quarter over quarter.",
+                "purpose": "evidence",
+                "evidence_needs": [
+                    {"id": "ev1", "question": "What is Unit A's throughput trend?", "priority": "high"},
+                ],
+            },
+            {
+                "id": "decision",
+                "title": "The Ask",
+                "message": "Approve funding for Phase 2 rollout.",
+                "purpose": "decision",
+            },
+        ],
+    })
+
+    monkeypatch.setattr(
+        "app.services.components.planner.invoke_llm",
+        lambda *a, **k: _llm_result(narrative_json),
+    )
+
+    plan, result = generate_narrative_plan("Summarize our AI adoption progress", _route())
+    assert plan.title == "AI Adoption Strategy"
+    assert plan.audience == "Executive Steering Committee"
+    assert len(plan.storyline) == 3
+    assert plan.storyline[1].evidence_needs[0].question.startswith("What is Unit A's")
+    assert result.fallback_errors == []
+
+
+# ---------------------------------------------------------------------------
+# AgentDeck v2 planner additions (#142/#157/#143)
+# ---------------------------------------------------------------------------
+
+
+def _narrative() -> NarrativePlan:
+    return NarrativePlan(
+        title="AI Platform Consolidation",
+        audience="Steering Committee",
+        storyline=[
+            {
+                "id": "context",
+                "title": "Context",
+                "message": "Fragmented AI tooling is slowing delivery.",
+                "purpose": "context",
+                "audience_question": "Why change now?",
+            },
+            {
+                "id": "decision",
+                "title": "Decision",
+                "message": "Approve the consolidated platform path.",
+                "purpose": "decision",
+                "audience_question": "What should we approve?",
+            },
+        ],
+    )
+
+
+def test_minimal_presentation_plan_maps_story_beats_to_slides():
+    plan = _minimal_presentation_plan(_narrative(), theme="dark")
+    assert plan.title == "AI Platform Consolidation"
+    assert [section.slide_id for section in plan.sections] == ["context", "decision"]
+    assert plan.sections[0].slide_layout == "CONTENT_1COL"
+    assert plan.sections[1].slide_layout == "CONTENT_SPLIT_DECISIONS"
+
+
+def test_coerce_presentation_plan_preserves_v2_fields():
+    raw = {
+        "title": "AI Platform Consolidation",
+        "sections": [
+            {
+                "slide_id": "s1",
+                "slide_layout": "CONTENT_1COL",
+                "section_title": "Fragmentation slows delivery",
+                "dek": "Multiple tools create duplicate governance.",
+                "purpose": "analysis",
+                "audience_question": "Where is the drag?",
+                "message": "The current landscape creates avoidable cycle time.",
+                "evidence": [{"evidence_id": "e1", "confidence": "high"}],
+            }
+        ],
+    }
+    plan = _coerce_presentation_plan(raw, _narrative(), theme="dark")
+    assert plan.sections[0].slide_id == "s1"
+    assert plan.sections[0].dek == "Multiple tools create duplicate governance."
+    assert plan.sections[0].evidence[0].evidence_id == "e1"
+
+
+def test_generate_presentation_plan_falls_back_on_llm_failure(monkeypatch):
+    monkeypatch.setattr("app.services.components.planner.invoke_llm", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("down")))
+    plan, result = generate_presentation_plan(_narrative(), EvidencePack(), _route())
+    assert isinstance(plan, DocPlan)
+    assert len(plan.sections) == 2
+    assert result.fallback_errors
+
+
+def test_generate_design_plan_fallback_has_treatments(monkeypatch):
+    monkeypatch.setattr("app.services.components.planner.invoke_llm", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("down")))
+    presentation = _minimal_presentation_plan(_narrative())
+    design, result = generate_design_plan(presentation, _route())
+    assert isinstance(design, DesignPlan)
+    assert len(design.slide_treatments) == len(presentation.sections)
+    assert design.slide_treatments[0].component_choices
+    assert result.fallback_errors
+
+
+def test_fallback_design_plan_matches_presentation_sections():
+    presentation = _minimal_presentation_plan(_narrative())
+    design = _fallback_design_plan(presentation)
+    assert [t.slide_id for t in design.slide_treatments] == [s.slide_id for s in presentation.sections]
+
+
+def test_generate_agentdeck_v2_plan_additive_wrapper(monkeypatch):
+    responses = [
+        json.dumps(_narrative().model_dump(mode="json")),
+        json.dumps({
+            "title": "AI Platform Consolidation",
+            "sections": [
+                {
+                    "slide_id": "context",
+                    "slide_layout": "CONTENT_1COL",
+                    "section_title": "Fragmentation slows delivery",
+                    "dek": "Multiple tools create duplicate governance.",
+                    "purpose": "analysis",
+                    "audience_question": "Where is the drag?",
+                    "message": "The current landscape creates avoidable cycle time.",
+                }
+            ],
+        }),
+        json.dumps({
+            "design_system": "agentdeck_v1",
+            "theme": "dark",
+            "slide_treatments": [
+                {
+                    "slide_id": "context",
+                    "visual_role": "analysis",
+                    "layout_id": "CONTENT_1COL",
+                    "component_choices": {"body": ["bullet_list"]},
+                }
+            ],
+        }),
+        json.dumps({
+            "title": "AI Platform Consolidation",
+            "sections": [
+                {
+                    "slide_layout": "CONTENT_1COL",
+                    "section_title": "Fragmentation slows delivery",
+                    "content_brief": "Explain why duplicate tooling slows delivery.",
+                    "content_tags": ["narrative"],
+                }
+            ],
+        }),
+        json.dumps({
+            "sections": [
+                {
+                    "index": 0,
+                    "blocks": [
+                        {
+                            "zone": "body",
+                            "component_id": "bullet_list",
+                            "data": {"items": [{"text": "Duplicate tools create duplicate reviews."}]},
+                        }
+                    ],
+                }
+            ]
+        }),
+    ]
+
+    def _fake_invoke_llm(*args, **kwargs):
+        return _llm_result(responses.pop(0))
+
+    monkeypatch.setattr("app.services.components.planner.invoke_llm", _fake_invoke_llm)
+
+    doc_plan, design_plan, result = generate_agentdeck_v2_plan("Build a steering committee deck", _route())
+    assert doc_plan.sections[0].slide_id == "context"
+    assert doc_plan.sections[0].dek == "Multiple tools create duplicate governance."
+    assert doc_plan.sections[0].blocks[0].component_id == "bullet_list"
+    assert design_plan.slide_treatments[0].slide_id == "context"
+    assert result.fallback_errors == []
 
 
 # ---------------------------------------------------------------------------

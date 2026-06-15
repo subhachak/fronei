@@ -12,13 +12,25 @@ from pydantic import ValidationError
 from app.services.components import (
     DEFAULT_COMPONENT_RUNTIME,
     COMPONENT_REGISTRY,
+    ContentBlock,
+    DesignPlan,
+    DocPlan,
+    EvidencePack,
+    NarrativePlan,
+    PresentationPlan,
+    PresentationSlidePlan,
     PptxRenderPlan,
     PptxSlidePlan,
+    SectionPlan,
+    SlideDesignTreatment,
+    StoryBeat,
     ZoneInstance,
+    compose_docplan_to_pptx_render_plan,
     compose_pptx_render_plan,
 )
 from app.services.components.content_schemas import BulletListContent, TableContent
 from app.services.components.fit_contract import FIT_CONTRACTS
+from app.services.qa import run_plan_checks, run_render_checks
 from app.services.document_generator import (
     _agentdeck_renderer_available,
     generate_agentdeck_pptx_bytes,
@@ -83,6 +95,69 @@ def test_render_plan_build_resolves_design_system_and_serializes():
     assert "section_title" not in payload["slides"][0]
 
 
+def test_v2_plan_aliases_preserve_docplan_compatibility():
+    assert DocPlan is PresentationPlan
+    assert SectionPlan is PresentationSlidePlan
+
+    plan = DocPlan(
+        title="Board Brief",
+        sections=[
+            SectionPlan(
+                slide_id="s1",
+                purpose="decision",
+                audience_question="What decision is needed?",
+                message="Approve the platform direction.",
+                slide_layout="CONTENT_1COL",
+                section_title="Decision",
+                dek="Approve the operating model.",
+                evidence=[{"evidence_id": "e1", "confidence": "high"}],
+                blocks=[
+                    ContentBlock(
+                        block_id="b1",
+                        zone="body",
+                        component_id="bullet_list",
+                        data={"items": [{"text": "Authorize Phase 1"}]},
+                    )
+                ],
+            )
+        ],
+    )
+
+    assert isinstance(plan, PresentationPlan)
+    assert plan.sections[0].blocks[0].block_id == "b1"
+    assert plan.sections[0].evidence[0].evidence_id == "e1"
+
+
+def test_v2_narrative_evidence_and_design_plan_stubs_validate():
+    narrative = NarrativePlan(
+        title="AI Platform",
+        storyline=[
+            StoryBeat(
+                id="beat-1",
+                title="Why now",
+                message="Fragmented tools are slowing delivery.",
+                evidence_needs=[{"id": "need-1", "question": "What is the cost impact?"}],
+            )
+        ],
+    )
+    evidence = EvidencePack(items=[{"id": "e1", "title": "Internal cost model"}])
+    design = DesignPlan(
+        slide_treatments=[
+            SlideDesignTreatment(
+                slide_id="s1",
+                visual_role="decision",
+                layout_id="CONTENT_SPLIT_DECISIONS",
+                component_choices={"left_panel": ["decision_list"], "right_panel": ["decision_list"]},
+                repair_constraints=[{"type": "preserve_message"}],
+            )
+        ]
+    )
+
+    assert narrative.storyline[0].evidence_needs[0].id == "need-1"
+    assert evidence.items[0].id == "e1"
+    assert design.slide_treatments[0].repair_constraints[0].type == "preserve_message"
+
+
 # ---------------------------------------------------------------------------
 # Component runtime / FitContract foundation (#139/#140)
 # ---------------------------------------------------------------------------
@@ -131,6 +206,77 @@ def test_default_runtime_flags_item_and_height_overflow():
     assert result.ok is False
     assert any(issue.field == "rows" for issue in result.issues)
     assert any(issue.field == "estimated_height_in" for issue in result.issues)
+
+
+def test_docplan_composer_attaches_fit_validation_notes():
+    plan = DocPlan(
+        title="Deck",
+        sections=[
+            SectionPlan(
+                slide_layout="CONTENT_TABLE_SIDEBAR",
+                section_title="Overloaded Table",
+                blocks=[
+                    ContentBlock(
+                        block_id="table-1",
+                        zone="table",
+                        component_id="table",
+                        data={
+                            "headers": ["A", "B"],
+                            "rows": [["1", "2"] for _ in range(10)],
+                        },
+                    )
+                ],
+            )
+        ],
+    )
+
+    render_plan = compose_docplan_to_pptx_render_plan(plan)
+
+    assert "Fit validation:" in (render_plan.slides[1].notes or "")
+
+
+def test_plan_checks_report_dangling_punctuation_and_fit_overflow():
+    plan = DocPlan(
+        title="Deck",
+        sections=[
+            SectionPlan(
+                slide_id="s1",
+                slide_layout="CONTENT_TABLE_SIDEBAR",
+                section_title="Financial impact —",
+                blocks=[
+                    ContentBlock(
+                        block_id="table-1",
+                        zone="table",
+                        component_id="table",
+                        data={
+                            "headers": ["Metric", "Metric"],
+                            "rows": [["a", "b"] for _ in range(10)],
+                        },
+                    )
+                ],
+            )
+        ],
+    )
+
+    issue_types = {issue.type for issue in run_plan_checks(plan)}
+
+    assert "dangling_punctuation" in issue_types
+    assert "duplicate_label" in issue_types
+    assert "too_many_items" in issue_types
+
+
+def test_render_checks_normalize_existing_render_qa_and_whitespace_signal():
+    issues = run_render_checks(
+        {
+            "available": True,
+            "issues": [{"slide": 2, "type": "dense_text", "detail": "Too much text"}],
+            "metrics": [{"slide": 3, "char_count": 120, "ink_ratio": 0.01}],
+        }
+    )
+
+    issue_types = {issue.type for issue in issues}
+    assert "dense_text" in issue_types
+    assert "excessive_whitespace" in issue_types
 
 
 # ---------------------------------------------------------------------------

@@ -48,6 +48,7 @@ from app.services.document_templates import (
     store_user_pptx_template,
 )
 from app.services.pptx_render_qa import run_pptx_render_qa
+from app.services.qa import run_plan_checks, run_render_checks
 from app.services.llm_gateway import invoke_llm
 from app.services.personal_context import build_context
 from app.services.planner import run_planner
@@ -916,7 +917,9 @@ def build_document_artifact(
                         exc,
                     )
 
+            plan_issues = []
             if agentdeck_plan is not None:
+                plan_issues = run_plan_checks(doc_plan_obj or agentdeck_plan)
                 try:
                     content = generate_agentdeck_pptx_bytes(agentdeck_plan)
                 except Exception as exc:
@@ -940,6 +943,14 @@ def build_document_artifact(
                     render_qa = run_pptx_render_qa(content)
                 except Exception:
                     logger.exception("PPTX render QA failed")
+            if agentdeck_plan is not None:
+                deterministic_issues = [issue.to_render_qa_issue() for issue in plan_issues]
+                if render_qa is not None:
+                    deterministic_issues.extend(issue.to_render_qa_issue() for issue in run_render_checks(render_qa))
+                if deterministic_issues:
+                    if render_qa is None:
+                        render_qa = {"available": False, "issues": []}
+                    render_qa["deterministic_issues"] = deterministic_issues
 
             # Repair loop: if render QA flags crowded slides and we have a
             # structured DeckPlan, apply small deterministic edits (drop a

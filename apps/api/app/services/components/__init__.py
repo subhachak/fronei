@@ -1,6 +1,20 @@
 from .compose import compose_pptx_render_plan
 from .compose_docplan import compose_docplan_to_pptx_render_plan
-from .planner import generate_doc_plan
+from .design_plan import (
+    DensityTarget,
+    DesignPlan,
+    RepairConstraint,
+    RepairConstraintType,
+    SlideDesignTreatment,
+    VisualRole,
+)
+from .planner import (
+    generate_agentdeck_v2_plan,
+    generate_design_plan,
+    generate_doc_plan,
+    generate_narrative_plan,
+    generate_presentation_plan,
+)
 from .quality_mode import DEFAULT_QUALITY_MODE, QualityMode
 from .registry import (
     COMPONENT_REGISTRY,
@@ -14,9 +28,18 @@ from .render_plan import (
     SLIDE_LAYOUTS,
     ContentBlock,
     DocPlan,
+    EvidenceItem,
+    EvidenceNeed,
+    EvidencePack,
+    EvidenceRef,
+    NarrativePlan,
+    PresentationPlan,
+    PresentationSlidePlan,
     PptxRenderPlan,
     PptxSlidePlan,
     SectionPlan,
+    SlidePurpose,
+    StoryBeat,
     Theme,
     ZoneInstance,
 )
@@ -39,7 +62,16 @@ from .usage_stats import load_usage_stats_map, log_doc_plan_usage, log_render_qa
 __all__ = [
     "compose_pptx_render_plan",
     "compose_docplan_to_pptx_render_plan",
+    "DensityTarget",
+    "DesignPlan",
+    "RepairConstraint",
+    "RepairConstraintType",
+    "SlideDesignTreatment",
+    "VisualRole",
+    "generate_agentdeck_v2_plan",
+    "generate_design_plan",
     "generate_doc_plan",
+    "generate_presentation_plan",
     "DEFAULT_QUALITY_MODE",
     "QualityMode",
     "DEFAULT_COMPONENT_RUNTIME",
@@ -59,9 +91,18 @@ __all__ = [
     "SLIDE_LAYOUTS",
     "ContentBlock",
     "DocPlan",
+    "EvidenceItem",
+    "EvidenceNeed",
+    "EvidencePack",
+    "EvidenceRef",
+    "NarrativePlan",
+    "PresentationPlan",
+    "PresentationSlidePlan",
     "PptxRenderPlan",
     "PptxSlidePlan",
     "SectionPlan",
+    "SlidePurpose",
+    "StoryBeat",
     "Theme",
     "ZoneInstance",
     "best_component_for_zone",

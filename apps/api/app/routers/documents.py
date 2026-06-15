@@ -31,9 +31,11 @@ from app.services.document_extractor import (
     ExtractionError,
     extract_text,
 )
+from app.services.components import DocPlan, compose_docplan_to_pptx_render_plan, compose_pptx_render_plan
 from app.services.document_generator import (
     compose_deck_plan_parallel,
     deck_plan_to_markdown,
+    generate_agentdeck_pptx_bytes,
     generate_docx_bytes,
     generate_pptx_bytes,
     generate_xlsx_bytes,
@@ -174,6 +176,16 @@ Expected structure:
 - Closing and signature placeholder
 Use polished, professional letter language without stock phrases ("I hope this finds you well," "please don't \
 hesitate to reach out") unless the user's tone preference calls for them.""",
+    # NOTE (Phase 3, #125): the primary chat-driven presentation path
+    # (`generate_document_output` in chat_pipeline.py) bypasses this prompt
+    # entirely as of #122/#124 — it calls `generate_doc_plan()`, a two-step
+    # structured-output planner that produces a validated `DocPlan` directly,
+    # serialized as `document_body`. This entry remains in use only by the
+    # legacy `/documents/generate/from-prompt/docx` endpoint when
+    # `req.doc_type == "presentation"`, which still drives a single
+    # `invoke_llm()` call expecting legacy DeckPlan JSON. `build_document_artifact`
+    # continues to support that legacy DeckPlan JSON via `parse_deck_plan` as a
+    # fallback when the body does not parse as a `DocPlan` (see #124).
     "presentation": """Document type: presentation
 Write the document body as valid DeckPlan JSON only. Do not output Markdown for the body.
 
@@ -181,7 +193,8 @@ DeckPlan schema:
 {
   "title": "Deck title",
   "subtitle": "Audience, client, or context",
-  "theme": "warm-editorial | modern-tech | executive-navy | data-product-os | clean-light (optional)",
+  "theme": "dark | light (optional, default: dark — AgentDeck design system; dark suits board/executive decks, \
+light suits print-style handouts)",
   "slides": [
     {
       "layout": "section | cover | bullets | executive_summary | comparison | architecture | table | \
@@ -249,26 +262,22 @@ and takeaways.
 - `cover`: optional opening slide for the deck's title/positioning statement when it needs more presence than \
 the default title slide (renders like `section`).
 - For board, steering committee, investment, executive technology, AI platform, AI governance, consolidation, \
-modernization, or transformation decks, prefer `"theme": "modern-tech"` and use this component-rich story spine \
-when it fits the prompt: `cover_metric_strip` -> `current_state_estate_map` -> `impact_scorecard_bars` -> \
-`option_score_matrix` -> `platform_operating_model_hub` -> `roadmap_phase_cards` -> `risk_control_rows` -> \
-`decision_ask_panel`. These layouts are designed for decision-quality PPTs; do not substitute generic `bullets` \
-slides when one of these proof objects fits.
-- `cover_metric_strip`: executive cover with 2-3 metric cards. Use `stats`, a decisive `subtitle`, and one \
-bottom-line bullet/callout.
-- `current_state_estate_map`: current fragmented estate / business-unit map. Use `units` with `name`, 2-3 \
-`tools`, and a short `note`; optional bullets summarize what the fragmentation creates.
-- `impact_scorecard_bars`: business impact / cost exposure slide. Use `stats` plus `bars` with numeric `value` \
-and human-readable `display`.
-- `option_score_matrix`: build/buy/hybrid or vendor-option decision slide. Use `options` with `scores` \
-(`cost`, `control`, `adoption` as 1-3) and mark the recommendation.
-- `platform_operating_model_hub`: target-state platform or operating-model diagram. Use `platform.name`, \
-`domains`, and `capabilities`.
-- `roadmap_phase_cards`: phase-by-phase migration path. Use `phases` exactly like `timeline`.
-- `risk_control_rows`: board-ready risk/control strip. Use `columns` where each heading is the risk and first \
-bullet or `mitigation` is the control response.
-- `decision_ask_panel`: final approval slide. Use `stats` for the primary ask and `decisions` for explicit \
-approvals needed.
+modernization, or transformation decks, build a component-rich story spine using the proof-object fields below — \
+`stats`, `table`, `phases`, `columns`, `decisions` — rather than prose-only `bullets` slides. Each of these fields \
+maps to a dedicated AgentDeck visual (stat cards, table+sidebar, timeline, comparison cards, decision panel), so \
+prefer them whenever the underlying content fits.
+- `cover_metric_strip` / `stat_cards`: executive metric slide. Use 1-4 `stats` entries (first one becomes the \
+hero stat), a decisive `subtitle`, and optionally a `callout` to interpret the numbers.
+- `roadmap_phase_cards` / `timeline`: phase-by-phase migration path. Use `phases` (3-6 entries, each with \
+`label`, `title`, `description`).
+- `risk_control_rows` / `comparison`: board-ready comparison or risk/control strip. Use `columns` (2-3 entries, \
+each with `heading` and `bullets`); for risk slides put the risk in `heading` and the mitigation as a bullet.
+- `decision_ask_panel`: final approval slide. Use `decisions` (label + text per approval needed); optionally \
+pair with `stats` on a preceding slide for the supporting numbers (a single slide renders either decisions or \
+stats as its primary visual, not both).
+- Note: `units`, `options`, `bars`, `platform`, and `chart` are not yet rendered by the AgentDeck component \
+library — do not rely on them to carry content. Fold any data you'd put there into `bullets`, `table`, or `stats` \
+instead so it actually appears on the slide.
 - `executive_summary`: first content slide for executive_report/proposal decks. `bullets[0]` is the single \
 "so what" headline (one sentence, the bottom line); remaining bullets are supporting points.
 - `recommendation`: use for the decision/ask slide. `bullets[0]` is the recommendation itself (rendered in an \
@@ -282,11 +291,9 @@ or `bullets` describing components/data flow — a diagram placeholder is render
 capability, or design-principle slides.
 - `risk_matrix`: provide a `table` with headers `["Risk", "Likelihood", "Impact", "Owner"]` (or similar risk \
 register columns).
-- `financial_model`: provide a `chart` (preferred — renders as a native chart) and/or a `table` of figures \
-(e.g. cost/benefit, ROI, budget by line item, revenue projection). `chart.categories` are the x-axis labels \
-(e.g. years/quarters) and each `series` entry is a numeric line/bar with a name. Use `type: "line"` for trends \
-over time, `"bar"` for comparisons across categories, `"pie"` for composition/share. All `series.values` must be \
-plain numbers (no currency symbols, commas, or percent signs).
+- `financial_model`: provide a `table` of figures (e.g. cost/benefit, ROI, budget by line item, revenue \
+projection) — this renders as a table with sidebar commentary. `chart` may be included for context but is not \
+currently rendered, so always provide the equivalent figures as a `table` as well.
 - `stat_cards`: market-context / "by the numbers" slides. Provide up to 4 `stats` entries, each with a short \
 `value` (e.g. "$4.2M", "37%", "3.5x" — keep to ~16 chars) and a `label` describing what it measures. Optionally \
 add a `callout` (`label` + `text`) below the cards to interpret what the numbers mean for the stakeholder — this \
@@ -639,6 +646,62 @@ def _title_from_markdown(content: str) -> str | None:
     return None
 
 
+def _docplan_to_markdown(doc_plan: DocPlan) -> str:
+    """Render a `DocPlan` (Phase 3 structured planner output) as a readable
+    Markdown outline for the chat-facing preview. This is a display-only
+    summary — the PPTX itself is rendered from `doc_plan` directly via
+    `compose_docplan_to_pptx_render_plan`."""
+    lines: list[str] = [f"# {doc_plan.title}"]
+    if doc_plan.subtitle:
+        lines.append(f"*{doc_plan.subtitle}*")
+    for section in doc_plan.sections:
+        if section.slide_layout == "SECTION_HEADER":
+            heading = " — ".join(p for p in (section.section_number, section.section_title) if p)
+            lines.append(f"\n## {heading or 'Section'}")
+            if section.section_subtitle:
+                lines.append(section.section_subtitle)
+            continue
+        if section.slide_layout in ("TITLE", "CLOSING"):
+            heading = section.hero_title or section.closing_text or ""
+            lines.append(f"\n## {heading}")
+            sub = section.subtitle or section.closing_body
+            if sub:
+                lines.append(sub)
+            continue
+        lines.append(f"\n## {section.section_title or ''}")
+        for block in section.blocks:
+            data = block.data
+            if block.component_id == "bullet_list":
+                for item in data.get("items", []):
+                    lines.append(f"{'  ' * int(item.get('level', 0))}- {item.get('text', '')}")
+            elif block.component_id == "table":
+                headers = data.get("headers", [])
+                if headers:
+                    lines.append("| " + " | ".join(headers) + " |")
+                    lines.append("|" + "|".join(["---"] * len(headers)) + "|")
+                for row in data.get("rows", []):
+                    cells = [c.get("text", c) if isinstance(c, dict) else str(c) for c in row]
+                    lines.append("| " + " | ".join(str(c) for c in cells) + " |")
+            elif block.component_id in ("stat_card",):
+                lines.append(f"- **{data.get('value', '')}** {data.get('label', '')}")
+            elif block.component_id == "stat_strip":
+                for s in data.get("stats", []):
+                    lines.append(f"- **{s.get('value', '')}** {s.get('label', '')}")
+            elif block.component_id == "timeline":
+                for node in data.get("nodes", []):
+                    lines.append(f"- {node.get('step_label', '')}: {node.get('title', '')}")
+            elif block.component_id == "decision_list":
+                for card in data.get("cards", []):
+                    lines.append(f"- {card.get('title', '')}")
+            elif "text" in data:
+                lines.append(f"- {data['text']}")
+        if section.callout and section.callout.get("text"):
+            lines.append(f"\n> {section.callout['text']}")
+        if section.notes:
+            lines.append(f"\n_Speaker notes: {section.notes}_")
+    return "\n".join(lines)
+
+
 def _classify_doc_type(prompt: str) -> str:
     text = prompt.lower()
     if any(term in text for term in ["meeting notes", "minutes", "meeting recap", "attendees", "agenda"]):
@@ -732,16 +795,37 @@ def build_document_artifact(
     Unsupported or failed binary renders fall back to Markdown, but the payload
     carries an explicit generation_error so the UI can be honest with users.
     """
-    deck_plan = parse_deck_plan(body_markdown) if doc_type == "presentation" else None
+    # Phase 3 (#124): "presentation" docs from `generate_document_output` are
+    # now `DocPlan` JSON (the structured planner's output, #122) rather than
+    # the legacy free-text DeckPlan JSON. Try that first; fall back to the
+    # legacy `parse_deck_plan` path for older/incompatible bodies.
+    doc_plan_obj: DocPlan | None = None
+    deck_plan: dict | None = None
+    if doc_type == "presentation":
+        try:
+            raw = json.loads(body_markdown)
+        except (TypeError, ValueError):
+            raw = None
+        if isinstance(raw, dict) and "sections" in raw:
+            try:
+                doc_plan_obj = DocPlan.model_validate(raw)
+            except Exception:
+                doc_plan_obj = None
+        if doc_plan_obj is None:
+            deck_plan = parse_deck_plan(body_markdown)
     composition: dict | None = None
     if deck_plan:
         deck_plan, composition = compose_deck_plan_parallel(deck_plan)
         body_markdown = json.dumps(deck_plan)
-    title = (deck_plan or {}).get("title") or title or _title_from_markdown(body_markdown) or "Fronei document"
+    if doc_plan_obj is not None:
+        title = doc_plan_obj.title or title or "Fronei document"
+        display_markdown = _docplan_to_markdown(doc_plan_obj)
+    else:
+        title = (deck_plan or {}).get("title") or title or _title_from_markdown(body_markdown) or "Fronei document"
+        display_markdown = deck_plan_to_markdown(json.dumps(deck_plan)) if deck_plan else None
     requested_format = fmt if fmt in SUPPORTED_RENDER_FORMATS else "markdown"
     if fmt in SUPPORTED_RENDER_FORMATS and doc_type == "presentation" and requested_format == "markdown":
         requested_format = "pptx"
-    display_markdown = deck_plan_to_markdown(json.dumps(deck_plan)) if deck_plan else None
     preview: dict = {
         "title": title,
         "doc_type": doc_type,
@@ -777,13 +861,48 @@ def build_document_artifact(
             preview["generation_error"] = f"Excel rendering failed: {exc}"
     elif requested_format == "pptx":
         try:
-            content = generate_pptx_bytes(
-                title,
-                body_markdown,
-                "Generated by Fronei",
-                template_id=template_id,
-                template_path=template_path,
-            )
+            # AgentDeck v1 cutover (architecture doc §9 decision 1): for
+            # "presentation" docs with a structured DeckPlan, bridge-compose
+            # to PptxRenderPlan and render via render_agentdeck.js. Any
+            # composer/render failure falls back to the legacy python-pptx /
+            # pptxgenjs template renderer rather than failing the request.
+            agentdeck_plan = None
+            agentdeck_theme = "dark"
+            if doc_type == "presentation" and doc_plan_obj is not None:
+                agentdeck_theme = "light" if doc_plan_obj.theme == "light" else "dark"
+                try:
+                    agentdeck_plan = compose_docplan_to_pptx_render_plan(doc_plan_obj, theme=agentdeck_theme)
+                except Exception:
+                    logger.exception("agentdeck DocPlan composer failed; falling back to legacy pptx renderer")
+            elif doc_type == "presentation" and deck_plan:
+                raw_theme = str(deck_plan.get("theme") or "").lower()
+                agentdeck_theme = "light" if "light" in raw_theme else "dark"
+                try:
+                    agentdeck_plan = compose_pptx_render_plan(deck_plan, theme=agentdeck_theme)
+                except Exception:
+                    logger.exception("agentdeck composer failed; falling back to legacy pptx renderer")
+
+            if agentdeck_plan is not None:
+                try:
+                    content = generate_agentdeck_pptx_bytes(agentdeck_plan)
+                except Exception:
+                    logger.exception("agentdeck pptx render failed; falling back to legacy pptx renderer")
+                    agentdeck_plan = None
+                    content = generate_pptx_bytes(
+                        title,
+                        body_markdown,
+                        "Generated by Fronei",
+                        template_id=template_id,
+                        template_path=template_path,
+                    )
+            else:
+                content = generate_pptx_bytes(
+                    title,
+                    body_markdown,
+                    "Generated by Fronei",
+                    template_id=template_id,
+                    template_path=template_path,
+                )
             render_qa: dict | None = None
             if get_settings().pptx_render_qa_enabled:
                 try:
@@ -795,7 +914,9 @@ def build_document_artifact(
             # structured DeckPlan, apply small deterministic edits (drop a
             # bullet/row/phase) and re-render, re-checking each time. Stops
             # as soon as issues clear, no further repair is possible, or a
-            # small iteration cap is hit.
+            # small iteration cap is hit. Slide-number -> plan["slides"]
+            # index mapping differs between renderers (see
+            # repair_deck_plan_for_qa's slide_offset docstring).
             repair_iterations = 0
             if (
                 deck_plan
@@ -803,19 +924,28 @@ def build_document_artifact(
                 and render_qa.get("available")
                 and any(i.get("type") in {"dense_text", "dense_ink", "tiny_text_risk"} for i in render_qa.get("issues") or [])
             ):
+                # Both renderers render a TITLE slide first (legacy
+                # synthesizes it; agentdeck's composer prepends one from
+                # deck_plan["title"]/["subtitle"]), so plan["slides"][i]
+                # renders as slide i+2 either way.
+                slide_offset = 2
                 current_plan = deck_plan
                 for _ in range(2):
-                    repaired_plan, changed = repair_deck_plan_for_qa(current_plan, render_qa["issues"])
+                    repaired_plan, changed = repair_deck_plan_for_qa(current_plan, render_qa["issues"], slide_offset=slide_offset)
                     if not changed:
                         break
                     try:
-                        repaired_content = generate_pptx_bytes(
-                            title,
-                            json.dumps(repaired_plan),
-                            "Generated by Fronei",
-                            template_id=template_id,
-                            template_path=template_path,
-                        )
+                        if agentdeck_plan is not None:
+                            repaired_render_plan = compose_pptx_render_plan(repaired_plan, theme=agentdeck_theme)
+                            repaired_content = generate_agentdeck_pptx_bytes(repaired_render_plan)
+                        else:
+                            repaired_content = generate_pptx_bytes(
+                                title,
+                                json.dumps(repaired_plan),
+                                "Generated by Fronei",
+                                template_id=template_id,
+                                template_path=template_path,
+                            )
                         repaired_qa = run_pptx_render_qa(repaired_content)
                     except Exception:
                         logger.exception("PPTX repair-loop re-render failed")
@@ -824,6 +954,8 @@ def build_document_artifact(
                     current_plan = repaired_plan
                     content = repaired_content
                     render_qa = repaired_qa
+                    if agentdeck_plan is not None:
+                        agentdeck_plan = repaired_render_plan
                     if not any(
                         i.get("type") in {"dense_text", "dense_ink", "tiny_text_risk"}
                         for i in (repaired_qa.get("issues") or [])

@@ -407,6 +407,27 @@ class ResearchFinding(Base):
     created_at:    Mapped[datetime]   = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
+class ComponentUsageStat(Base):
+    """Aggregated render/QA outcomes for a (component, slide_layout, design_system,
+    theme) combination (Phase 3, #127). Populated by the generation pipeline
+    (#128) and render-QA feedback (#129), and consumed at registry-load time
+    to weight `selection.rank_components` (#130).
+    """
+
+    __tablename__ = "component_usage_stats"
+
+    id:             Mapped[int]      = mapped_column(Integer, primary_key=True, autoincrement=True)
+    component_id:   Mapped[str]      = mapped_column(String(64), nullable=False, index=True)
+    slide_layout:   Mapped[str]      = mapped_column(String(64), nullable=False, index=True)
+    design_system:  Mapped[str]      = mapped_column(String(64), nullable=False, default="agentdeck_v1")
+    theme:          Mapped[str]      = mapped_column(String(16), nullable=False, default="dark")
+    success_count:  Mapped[int]      = mapped_column(Integer, default=0)
+    failure_count:  Mapped[int]      = mapped_column(Integer, default=0)
+    last_used_at:   Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at:     Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at:     Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
 def build_engine():
     settings = get_settings()
     if settings.database_url.startswith("sqlite"):
@@ -728,6 +749,29 @@ def _ensure_sqlite_schema(bind) -> None:
         ]:
             if not has_column("research_questions", column):
                 statements.append(f"ALTER TABLE research_questions ADD COLUMN {column} {ddl}")
+
+    if not has_table("component_usage_stats"):
+        statements.append("""
+            CREATE TABLE component_usage_stats (
+                id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                component_id VARCHAR(64) NOT NULL,
+                slide_layout VARCHAR(64) NOT NULL,
+                design_system VARCHAR(64) NOT NULL DEFAULT 'agentdeck_v1',
+                theme VARCHAR(16) NOT NULL DEFAULT 'dark',
+                success_count INTEGER DEFAULT 0,
+                failure_count INTEGER DEFAULT 0,
+                last_used_at DATETIME,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL
+            )
+        """)
+    if has_table("component_usage_stats"):
+        statements.append("CREATE INDEX IF NOT EXISTS ix_component_usage_stats_component_id ON component_usage_stats (component_id)")
+        statements.append("CREATE INDEX IF NOT EXISTS ix_component_usage_stats_slide_layout ON component_usage_stats (slide_layout)")
+        statements.append(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ix_component_usage_stats_key "
+            "ON component_usage_stats (component_id, slide_layout, design_system, theme)"
+        )
 
     if has_table("conversation_turns"):
         for column in ["result_json", "lifecycle_json"]:

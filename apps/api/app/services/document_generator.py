@@ -32,6 +32,7 @@ from pptx.oxml.ns import qn as pptx_qn
 from pptx.util import Inches as PptxInches, Pt as PptxPt
 
 from app.config import get_settings
+from app.services.components import PptxRenderPlan, PptxSlidePlan, ZoneInstance
 from app.services.document_templates import resolve_pptx_template_path
 from app.services.presentation_design_system import (
     FIT_CONTRACTS,
@@ -50,6 +51,7 @@ logger = logging.getLogger(__name__)
 # which can read that template's layouts/placeholders directly.
 PPTX_RENDER_DIR = Path(__file__).resolve().parents[2] / "pptx_render"
 PPTX_RENDER_JS = PPTX_RENDER_DIR / "render.js"
+PPTX_RENDER_AGENTDECK_JS = PPTX_RENDER_DIR / "agentdeck" / "render_agentdeck.js"
 PPTX_RENDER_TIMEOUT_SECONDS = 60
 
 
@@ -2300,14 +2302,19 @@ def _derive_fallback_payload_fields(slide: dict) -> bool:
     return changed
 
 
-def repair_deck_plan_for_qa(plan: dict, issues: list[dict]) -> tuple[dict, bool]:
+def repair_deck_plan_for_qa(plan: dict, issues: list[dict], *, slide_offset: int = 2) -> tuple[dict, bool]:
     """Apply small, deterministic edits to `plan` aimed at resolving render-QA
     issues (`dense_text`, `dense_ink`, `tiny_text_risk` — visually crowded or
     unreadably compressed slides).
 
-    Render-QA slide numbers are 1-based across the *rendered* deck, where
-    slide 1 is always the title slide (not present in `plan["slides"]`).
-    So `plan["slides"][i]` corresponds to rendered slide `i + 2`.
+    Render-QA slide numbers are 1-based across the *rendered* deck.
+    `slide_offset` controls the mapping from rendered slide number to
+    `plan["slides"]` index (`idx = slide_num - slide_offset`). Both the
+    legacy renderer and the agentdeck composer (`compose_pptx_render_plan`)
+    render a TITLE slide first — synthesized from `plan["title"]`/
+    `plan["subtitle"]` and not present in `plan["slides"]` — so
+    `plan["slides"][i]` renders as slide `i + 2` for either renderer, hence
+    the default `slide_offset=2`.
 
     Returns `(plan, changed)` where `changed` is False once no further
     deterministic repair could be made (callers should stop looping).
@@ -2323,7 +2330,7 @@ def repair_deck_plan_for_qa(plan: dict, issues: list[dict]) -> tuple[dict, bool]
     }
 
     for slide_num in crowded_slide_nums:
-        idx = slide_num - 2
+        idx = slide_num - slide_offset
         if idx < 0 or idx >= len(slides):
             continue
         slide = slides[idx]
@@ -3406,6 +3413,36 @@ def _render_pptx_via_pptxgenjs(payload: dict) -> bytes:
     result = subprocess.run(
         ["node", str(PPTX_RENDER_JS)],
         input=json.dumps(payload).encode("utf-8"),
+        capture_output=True,
+        timeout=PPTX_RENDER_TIMEOUT_SECONDS,
+        check=True,
+    )
+    return result.stdout
+
+
+def _agentdeck_renderer_available() -> bool:
+    if not PPTX_RENDER_AGENTDECK_JS.exists() or shutil.which("node") is None:
+        return False
+    pptxgenjs_dir = PPTX_RENDER_DIR / "node_modules" / "pptxgenjs"
+    return pptxgenjs_dir.is_dir()
+
+
+def generate_agentdeck_pptx_bytes(plan: "PptxRenderPlan") -> bytes:
+    """Render a validated `PptxRenderPlan` (agentdeck_v1) via
+    `pptx_render/agentdeck/render_agentdeck.js`.
+
+    Raises `RuntimeError` if the agentdeck renderer isn't available (missing
+    node/pptxgenjs), and `subprocess.CalledProcessError`/`TimeoutExpired` if
+    the render itself fails — callers decide whether/how to fall back.
+    """
+    if not _agentdeck_renderer_available():
+        raise RuntimeError(
+            f"agentdeck renderer unavailable: {PPTX_RENDER_AGENTDECK_JS} "
+            "missing or pptxgenjs not installed under pptx_render/node_modules"
+        )
+    result = subprocess.run(
+        ["node", str(PPTX_RENDER_AGENTDECK_JS)],
+        input=json.dumps(plan.to_payload()).encode("utf-8"),
         capture_output=True,
         timeout=PPTX_RENDER_TIMEOUT_SECONDS,
         check=True,

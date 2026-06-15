@@ -468,6 +468,7 @@ def generate_document_output(
     enable_native_search: bool,
     artifact_context: str = "",
     user_memory: str = "",
+    db: object | None = None,
 ) -> tuple[LLMResult, str, str, str]:
     """Two-pass document generation: draft, then a revision pass that tightens
     against an anti-"AI slop" checklist (generic phrasing, redundancy, missing
@@ -496,6 +497,40 @@ def generate_document_output(
     personalization = _personalization_block(user_memory, brief)
     if personalization:
         parts.append(personalization)
+
+    # ── Presentations: structured DocPlan planner (Phase 3, #122) ──────────
+    # Bypasses the draft+revision DeckPlan-JSON passes below entirely: a
+    # two-step structured-output planner (layout selection, then component
+    # selection) produces a validated `DocPlan`, serialized as the
+    # `document_body` for downstream `build_document_artifact` (#124).
+    if doc_type == "presentation":
+        from app.services.components import generate_doc_plan
+
+        extra_parts = list(preferences)
+        if personalization:
+            extra_parts.append(personalization)
+        if doc_context:
+            extra_parts.append("ATTACHED CONTEXT:\n" + doc_context)
+        if enable_native_search and wc.context:
+            extra_parts.append("WEB CONTEXT:\n" + wc.context)
+        extra_context = "\n\n".join(extra_parts) or None
+
+        doc_plan, plan_result = generate_doc_plan(
+            plan.enriched_prompt, route, extra_context=extra_context, db=db,
+        )
+        body = doc_plan.model_dump_json()
+        bullets = [
+            f"- {label}"
+            for section in doc_plan.sections
+            if (label := (
+                section.section_title or section.hero_title
+                or section.closing_text or section.section_subtitle
+            ))
+        ]
+        summary = "Here's your presentation — see the attached preview."
+        if bullets:
+            summary += "\n\n" + "\n".join(bullets[:8])
+        return plan_result, body, summary, doc_type
 
     if artifact_context:
         parts.append(artifact_context)

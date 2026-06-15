@@ -37,6 +37,7 @@ from app.services.chat_pipeline import (
     _run_sub_queries, _conversation_state, _build_worker_context, _build_doc_context,
 )
 from app.routers.documents import build_document_artifact
+from app.services.components import log_doc_plan_usage, log_render_qa_failures
 from app.services import plan_gate
 from app.services.document_templates import (
     list_document_templates,
@@ -1387,7 +1388,9 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                             doc_context, False, False,
                             artifact_context=artifact_context,
                             user_memory=user_memory,
+                            db=db,
                         )
+                        log_doc_plan_usage(db, doc_type, doc_body)
                         for chunk in [chat_summary[i:i + 80] for i in range(0, len(chat_summary), 80)]:
                             yield _sse("token", {"text": chunk})
                         final_answer = chat_summary
@@ -1404,6 +1407,7 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                             template_id=template_id if isinstance(template_id, str) else None,
                             template_path=str(template_path) if template_path else None,
                         )
+                        log_render_qa_failures(db, doc_type, doc_body, document_preview.get("render_qa"))
                     else:
                         for chunk in [final_answer[i:i+80] for i in range(0, len(final_answer), 80)]:
                             yield _sse("token", {"text": chunk})
@@ -1580,6 +1584,7 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                         artifact_context=artifact_context,
                         user_memory=user_memory,
                     )
+                    log_doc_plan_usage(db, doc_type, doc_body)
                     for chunk in [chat_summary[i:i + 80] for i in range(0, len(chat_summary), 80)]:
                         yield _sse("token", {"text": chunk})
                     final_answer = chat_summary
@@ -1596,6 +1601,7 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                         template_id=template_id if isinstance(template_id, str) else None,
                         template_path=str(template_path) if template_path else None,
                     )
+                    log_render_qa_failures(db, doc_type, doc_body, document_preview.get("render_qa"))
                 elif should_refine(result.answer, output_mode, twin_profile):
                     yield _sse("refine_start", {})
                     refined_text = ""
@@ -1747,7 +1753,9 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                     _document_context_for_generation(setup.doc_context, plan), req.deep_research, enable_native,
                     artifact_context=_presentation_artifact_context(setup.artifact_context or "", db, user_id, plan),
                     user_memory=user_memory,
+                    db=db,
                 )
+                log_doc_plan_usage(db, doc_type, doc_body)
                 for chunk in [chat_summary[i:i + 80] for i in range(0, len(chat_summary), 80)]:
                     yield _sse("token", {"text": chunk})
 
@@ -1783,6 +1791,7 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                     template_id=template_id if isinstance(template_id, str) else None,
                     template_path=str(template_path) if template_path else None,
                 )
+                log_render_qa_failures(db, doc_type, doc_body, document_preview.get("render_qa"))
 
                 yield _sse("done", {
                     "message_id": asst_msg.id,

@@ -1,0 +1,57 @@
+from .compose import compose_pptx_render_plan
+from .compose_docplan import compose_docplan_to_pptx_render_plan
+from .planner import generate_doc_plan
+from .registry import (
+    COMPONENT_REGISTRY,
+    ComponentDef,
+    LayoutPrimitive,
+    components_for_layout,
+    get_component,
+    list_components,
+)
+from .render_plan import (
+    SLIDE_LAYOUTS,
+    ContentBlock,
+    DocPlan,
+    PptxRenderPlan,
+    PptxSlidePlan,
+    SectionPlan,
+    Theme,
+    ZoneInstance,
+)
+from .selection import (
+    best_component_for_zone,
+    candidates_for_zone,
+    is_valid_component_for_zone,
+    rank_components,
+    score_component,
+)
+from .usage_stats import load_usage_stats_map, log_doc_plan_usage, log_render_qa_failures
+
+__all__ = [
+    "compose_pptx_render_plan",
+    "compose_docplan_to_pptx_render_plan",
+    "generate_doc_plan",
+    "load_usage_stats_map",
+    "log_doc_plan_usage",
+    "log_render_qa_failures",
+    "COMPONENT_REGISTRY",
+    "ComponentDef",
+    "LayoutPrimitive",
+    "components_for_layout",
+    "get_component",
+    "list_components",
+    "SLIDE_LAYOUTS",
+    "ContentBlock",
+    "DocPlan",
+    "PptxRenderPlan",
+    "PptxSlidePlan",
+    "SectionPlan",
+    "Theme",
+    "ZoneInstance",
+    "best_component_for_zone",
+    "candidates_for_zone",
+    "is_valid_component_for_zone",
+    "rank_components",
+    "score_component",
+]

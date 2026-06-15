@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import logging
 import typing
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Optional
 
 import re
@@ -465,28 +466,53 @@ def generate_doc_plan(
     blocks_message, content_indices = _build_blocks_user_message(outline, usage_stats_map=usage_stats_map)
     if content_indices:
         try:
-            blocks_result = invoke_llm(
-                blocks_message,
-                route,
-                deep_research=False,
-                artifact_context=BLOCKS_SYSTEM_PROMPT,
-            )
-            total_prompt_tokens += blocks_result.prompt_tokens or 0
-            total_completion_tokens += blocks_result.completion_tokens or 0
-            total_cost += blocks_result.estimated_cost_usd or 0.0
-            total_latency += blocks_result.latency_ms
-            fallback_errors += blocks_result.fallback_errors
-            model_used = blocks_result.model_used
+            block_results: list[LLMResult] = []
+            if len(content_indices) <= 1:
+                block_results = [invoke_llm(
+                    blocks_message,
+                    route,
+                    deep_research=False,
+                    artifact_context=BLOCKS_SYSTEM_PROMPT,
+                )]
+            else:
+                blocks_payload = json.loads(blocks_message)
+                slide_payloads = blocks_payload.get("slides") or []
 
-            blocks_data = _parse_json_object(blocks_result.answer) or {}
-            for raw in blocks_data.get("sections") or []:
-                if not isinstance(raw, dict):
-                    continue
-                try:
-                    idx = int(raw.get("index"))
-                except (TypeError, ValueError):
-                    continue
-                blocks_by_index[idx] = raw
+                def _run_slide_blocks(slide_payload: dict[str, Any]) -> LLMResult:
+                    message = json.dumps(
+                        {"deck_title": outline["title"], "slides": [slide_payload]},
+                        ensure_ascii=False,
+                    )
+                    return invoke_llm(
+                        message,
+                        route,
+                        deep_research=False,
+                        artifact_context=BLOCKS_SYSTEM_PROMPT,
+                    )
+
+                max_workers = min(len(slide_payloads), max(1, get_settings().max_document_workers))
+                with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                    futures = [pool.submit(_run_slide_blocks, slide) for slide in slide_payloads]
+                    for future in as_completed(futures):
+                        block_results.append(future.result())
+
+            for blocks_result in block_results:
+                blocks_data = _parse_json_object(blocks_result.answer) or {}
+                for raw in blocks_data.get("sections") or []:
+                    if not isinstance(raw, dict):
+                        continue
+                    try:
+                        idx = int(raw.get("index"))
+                    except (TypeError, ValueError):
+                        continue
+                    blocks_by_index[idx] = raw
+
+                total_prompt_tokens += blocks_result.prompt_tokens or 0
+                total_completion_tokens += blocks_result.completion_tokens or 0
+                total_cost += blocks_result.estimated_cost_usd or 0.0
+                total_latency += blocks_result.latency_ms
+                fallback_errors += blocks_result.fallback_errors
+                model_used = blocks_result.model_used
         except Exception as exc:
             logger.warning("Block-selection LLM call failed, using fallback blocks: %s", exc)
 

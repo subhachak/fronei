@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import copy
+import base64
 import json
 import logging
 import re
+import select
 import shutil
 import subprocess
+import threading
+import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
 from io import BytesIO
@@ -52,6 +56,7 @@ logger = logging.getLogger(__name__)
 PPTX_RENDER_DIR = Path(__file__).resolve().parents[2] / "pptx_render"
 PPTX_RENDER_JS = PPTX_RENDER_DIR / "render.js"
 PPTX_RENDER_AGENTDECK_JS = PPTX_RENDER_DIR / "agentdeck" / "render_agentdeck.js"
+PPTX_RENDER_AGENTDECK_SERVER_JS = PPTX_RENDER_DIR / "agentdeck" / "render_agentdeck_server.js"
 PPTX_RENDER_TIMEOUT_SECONDS = 60
 
 
@@ -3878,6 +3883,93 @@ def _agentdeck_renderer_available() -> bool:
     return pptxgenjs_dir.is_dir()
 
 
+class _WarmAgentDeckRenderer:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._proc: subprocess.Popen | None = None
+
+    def render(self, payload: dict) -> bytes:
+        if not PPTX_RENDER_AGENTDECK_SERVER_JS.exists():
+            raise RuntimeError("warm agentdeck renderer server script missing")
+        with self._lock:
+            proc = self._ensure_process()
+            request_id = uuid.uuid4().hex
+            line = json.dumps({"id": request_id, "payload": payload}, separators=(",", ":")) + "\n"
+            assert proc.stdin is not None
+            assert proc.stdout is not None
+            try:
+                proc.stdin.write(line)
+                proc.stdin.flush()
+            except Exception:
+                self._stop_process()
+                raise
+            if not self._wait_for_stdout(proc):
+                self._stop_process()
+                raise subprocess.TimeoutExpired(
+                    ["node", str(PPTX_RENDER_AGENTDECK_SERVER_JS)],
+                    PPTX_RENDER_TIMEOUT_SECONDS,
+                )
+            response_line = proc.stdout.readline()
+            if not response_line:
+                self._stop_process()
+                raise RuntimeError("warm agentdeck renderer exited without a response")
+            try:
+                response = json.loads(response_line)
+            except (TypeError, ValueError) as exc:
+                self._stop_process()
+                raise RuntimeError(f"invalid warm renderer response: {response_line[:200]}") from exc
+            if response.get("id") != request_id:
+                self._stop_process()
+                raise RuntimeError("warm renderer response id mismatch")
+            if not response.get("ok"):
+                raise RuntimeError(str(response.get("error") or "warm agentdeck renderer failed"))
+            return base64.b64decode(response["pptx_base64"])
+
+    def _ensure_process(self) -> subprocess.Popen:
+        if self._proc is not None and self._proc.poll() is None:
+            return self._proc
+        self._proc = subprocess.Popen(
+            ["node", str(PPTX_RENDER_AGENTDECK_SERVER_JS)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            bufsize=1,
+        )
+        return self._proc
+
+    def _wait_for_stdout(self, proc: subprocess.Popen) -> bool:
+        if proc.stdout is None:
+            return False
+        ready, _, _ = select.select([proc.stdout], [], [], PPTX_RENDER_TIMEOUT_SECONDS)
+        return bool(ready)
+
+    def _stop_process(self) -> None:
+        proc = self._proc
+        self._proc = None
+        if proc is None or proc.poll() is not None:
+            return
+        proc.kill()
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            pass
+
+
+_WARM_AGENTDECK_RENDERER = _WarmAgentDeckRenderer()
+
+
+def _render_agentdeck_pptx_one_shot(payload: dict) -> bytes:
+    result = subprocess.run(
+        ["node", str(PPTX_RENDER_AGENTDECK_JS)],
+        input=json.dumps(payload).encode("utf-8"),
+        capture_output=True,
+        timeout=PPTX_RENDER_TIMEOUT_SECONDS,
+        check=True,
+    )
+    return result.stdout
+
+
 def generate_agentdeck_pptx_bytes(plan: "PptxRenderPlan") -> bytes:
     """Render a validated `PptxRenderPlan` (agentdeck_v1) via
     `pptx_render/agentdeck/render_agentdeck.js`.
@@ -3891,14 +3983,13 @@ def generate_agentdeck_pptx_bytes(plan: "PptxRenderPlan") -> bytes:
             f"agentdeck renderer unavailable: {PPTX_RENDER_AGENTDECK_JS} "
             "missing or pptxgenjs not installed under pptx_render/node_modules"
         )
-    result = subprocess.run(
-        ["node", str(PPTX_RENDER_AGENTDECK_JS)],
-        input=json.dumps(plan.to_payload()).encode("utf-8"),
-        capture_output=True,
-        timeout=PPTX_RENDER_TIMEOUT_SECONDS,
-        check=True,
-    )
-    return result.stdout
+    payload = plan.to_payload()
+    if get_settings().agentdeck_warm_renderer_enabled:
+        try:
+            return _WARM_AGENTDECK_RENDERER.render(payload)
+        except Exception:
+            logger.exception("Warm AgentDeck renderer failed; falling back to one-shot subprocess")
+    return _render_agentdeck_pptx_one_shot(payload)
 
 
 def generate_pptx_bytes(

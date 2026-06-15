@@ -49,6 +49,35 @@ def _events(body: str) -> list[tuple[str, dict]]:
     return parsed
 
 
+def _wait_for_completed_turn(Session, turn_id: str, timeout: float = 2.0) -> ConversationTurn:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        with Session() as db:
+            turn = db.query(ConversationTurn).filter(ConversationTurn.public_id == turn_id).first()
+            if turn and turn.status == "completed":
+                return turn
+        time.sleep(0.02)
+    with Session() as db:
+        turn = db.query(ConversationTurn).filter(ConversationTurn.public_id == turn_id).first()
+        assert turn is not None
+        assert turn.status == "completed"
+        return turn
+
+
+def _latest_assistant_message(Session, conv_id: str) -> ConversationMessage:
+    with Session() as db:
+        conv = db.query(Conversation).filter(Conversation.public_id == conv_id).first()
+        assert conv is not None
+        msg = (
+            db.query(ConversationMessage)
+            .filter(ConversationMessage.conversation_id == conv.id, ConversationMessage.role == "assistant")
+            .order_by(ConversationMessage.id.desc())
+            .first()
+        )
+        assert msg is not None
+        return msg
+
+
 def test_durable_stream_worker_continues_after_client_iterator_closes():
     finished = threading.Event()
     emitted: list[str] = []
@@ -323,7 +352,7 @@ def test_stream_starts_before_route_and_reports_pipeline_logs(client, monkeypatc
 
 
 def test_stream_research_mode_uses_research_pipeline(client, monkeypatch):
-    c, _Session = client
+    c, Session = client
     route = RouteDecision(
         task_type="research",
         complexity="high",
@@ -366,12 +395,14 @@ def test_stream_research_mode_uses_research_pipeline(client, monkeypatch):
     assert response.status_code == 200
     events = _events(response.text)
     logs = [data for event, data in events if event == "pipeline_log"]
-    assert [log["stage"] for log in logs] == ["planning", "planning", "routing", "searching", "synthesising"]
-    assert logs[1]["message"].startswith(("Planner selected:", "Planner unavailable"))
-    assert events[-1][0] == "done"
-    assert events[-1][1]["research"]["run_id"] == 7
-    assert events[-1][1]["research_run_id"] == 7
-    assert events[-1][1]["route"]["task_type"] == "research"
+    assert [log["stage"] for log in logs] == ["working"]
+    assert events[-1][0] == "job_started"
+
+    turn = _wait_for_completed_turn(Session, events[-1][1]["turn_id"])
+    done = json.loads(turn.result_json)
+    assert done["research"]["run_id"] == 7
+    assert done["research_run_id"] == 7
+    assert done["route"]["task_type"] == "research"
 
 
 def test_stream_research_mode_enriches_vague_followup_from_history(client, monkeypatch):
@@ -448,7 +479,9 @@ def test_stream_research_mode_enriches_vague_followup_from_history(client, monke
     assert response.status_code == 200
     assert captured["query"] == plan.enriched_prompt
     events = _events(response.text)
-    done = events[-1][1]
+    assert events[-1][0] == "job_started"
+    turn = _wait_for_completed_turn(Session, events[-1][1]["turn_id"])
+    done = json.loads(turn.result_json)
     assert done["execution_log"]["planner"]["enriched_prompt"] == plan.enriched_prompt
 
 
@@ -693,14 +726,14 @@ def test_execute_plan_with_research_and_document_confirmed_generates_document(cl
     assert response.status_code == 200
     events = _events(response.text)
 
-    # Research pipeline progress is still shown (the Request C fix).
+    # Research/document turns now detach into a durable progressive job.
     logs = [data for event, data in events if event == "pipeline_log"]
-    assert "searching" in [log["stage"] for log in logs]
-    assert "synthesising" in [log["stage"] for log in logs]
+    assert [log["stage"] for log in logs] == ["working"]
+    assert events[-1][0] == "job_started"
 
     # Document branch ran and produced a preview.
-    assert events[-1][0] == "done"
-    done = events[-1][1]
+    turn = _wait_for_completed_turn(Session, events[-1][1]["turn_id"])
+    done = json.loads(turn.result_json)
     assert done["document_preview"] is not None
     assert done["document_preview"]["doc_type"] == "solution_comparison"
     assert done["answer"] == "- Overview\n- Recommendation"
@@ -819,7 +852,9 @@ def test_execute_plan_research_followup_with_document_confirmed_generates_docume
 
     assert response.status_code == 200
     events = _events(response.text)
-    done = events[-1][1]
+    assert events[-1][0] == "job_started"
+    turn = _wait_for_completed_turn(Session, events[-1][1]["turn_id"])
+    done = json.loads(turn.result_json)
 
     assert done["research_run_id"] == 77
     assert done["document_preview"] is not None
@@ -1292,7 +1327,9 @@ def test_execute_plan_confirmed_expert_mode_bypasses_followup_fast_path(client, 
 
     assert response.status_code == 200
     events = _events(response.text)
-    done = events[-1][1]
+    assert events[-1][0] == "job_started"
+    turn = _wait_for_completed_turn(Session, events[-1][1]["turn_id"])
+    done = json.loads(turn.result_json)
 
     assert followup_calls == []
     assert done["research_run_id"] == 99

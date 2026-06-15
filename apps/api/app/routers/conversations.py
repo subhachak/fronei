@@ -677,6 +677,25 @@ def _turn_kind_for_request(req: ConvChatRequest) -> str:
     return "quick"
 
 
+def _should_detach_progressive_job(req: ConvChatRequest) -> bool:
+    """Return true when the client should switch to turn polling immediately."""
+    if req.deep_research or req.research_mode in {"deep", "expert"}:
+        return True
+    # Initial document turns may still need the metadata/template finalization
+    # popup. Detach only after that confirmation has happened.
+    return bool(req.document_requested and req.confirmed_plan is not None)
+
+
+def _job_started_payload(conv: Conversation, turn: ConversationTurn, message: str) -> dict:
+    return {
+        "conversation_id": conv.public_id,
+        "turn_id": turn.public_id,
+        "status": turn.status,
+        "turn_kind": turn.turn_kind or "quick",
+        "message": message,
+    }
+
+
 # In-memory registry of turn public_ids whose cancellation has been requested.
 # Checked on every streamed event (including tokens) without touching the DB;
 # avoids a db.refresh() round-trip per token. Cancel endpoints populate this,
@@ -956,20 +975,25 @@ def _turn_completed_done_event(db, turn: ConversationTurn) -> str | None:
     })
 
 
-def _durable_event_iterator(worker, on_client_disconnect=None):
+def _durable_event_iterator(worker, on_client_disconnect=None, detach_on_event=None):
     """Return an SSE iterator while `worker` runs independently in a thread."""
     q: _queue_module.Queue = _queue_module.Queue()
+    detached = _threading.Event()
 
     def _worker() -> None:
         try:
             for event in worker():
-                q.put(event)
+                if not detached.is_set():
+                    q.put(event)
         except HTTPException as exc:
-            q.put(_sse("error", {"message": exc.detail}))
+            if not detached.is_set():
+                q.put(_sse("error", {"message": exc.detail}))
         except Exception as exc:
-            q.put(_sse("error", {"message": _friendly_error(exc)}))
+            if not detached.is_set():
+                q.put(_sse("error", {"message": _friendly_error(exc)}))
         finally:
-            q.put(None)
+            if not detached.is_set():
+                q.put(None)
 
     _threading.Thread(target=_worker, daemon=True).start()
 
@@ -980,6 +1004,9 @@ def _durable_event_iterator(worker, on_client_disconnect=None):
                 if item is None:
                     break
                 yield item
+                if detach_on_event and detach_on_event(item):
+                    detached.set()
+                    break
         except GeneratorExit:
             # Client went away; the worker owns persistence and should continue.
             if on_client_disconnect:
@@ -989,13 +1016,22 @@ def _durable_event_iterator(worker, on_client_disconnect=None):
     return _events()
 
 
-def _run_durable_stream(worker, on_client_disconnect=None) -> StreamingResponse:
+def _run_durable_stream(worker, on_client_disconnect=None, detach_on_event=None) -> StreamingResponse:
     """Run a streaming turn independently of the client SSE connection."""
     return StreamingResponse(
-        _durable_event_iterator(worker, on_client_disconnect=on_client_disconnect),
+        _durable_event_iterator(
+            worker,
+            on_client_disconnect=on_client_disconnect,
+            detach_on_event=detach_on_event,
+        ),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+def _detach_after_job_started(payload: str) -> bool:
+    parsed = _parse_sse_event(payload)
+    return bool(parsed and parsed[0] == "job_started")
 
 
 def _pipeline_log(stage: str, message: str, **kwargs) -> str:
@@ -1131,6 +1167,68 @@ def _document_output_format(plan, gate) -> str:
 
 def _document_quality_mode(plan) -> str:
     return normalize_quality_mode((plan.document_brief or {}).get("quality_mode"))
+
+
+def _should_defer_artifact_qa(fmt: str, quality_mode: str) -> bool:
+    return fmt == "pptx" and normalize_quality_mode(quality_mode) == "executive"
+
+
+def _schedule_document_preview_polish(
+    *,
+    message_id: int,
+    doc_type: str,
+    title: str,
+    doc_body: str,
+    fmt: str,
+    template_id: str | None,
+    template_path: str | None,
+    quality_mode: str,
+) -> None:
+    if not _should_defer_artifact_qa(fmt, quality_mode):
+        return
+
+    def _worker() -> None:
+        started = time.perf_counter()
+        db = SessionLocal()
+        try:
+            polished_preview = build_document_artifact(
+                title or "Fronei document",
+                doc_body,
+                doc_type,
+                fmt,
+                template_id=template_id,
+                template_path=template_path,
+                quality_mode=quality_mode,
+                defer_render_qa=False,
+            )
+            msg = db.get(ConversationMessage, message_id)
+            if msg is None:
+                return
+            if _document_failure_answer(polished_preview):
+                return
+            msg.document_preview_json = json.dumps(polished_preview)
+            try:
+                exec_log = ExecutionLog.model_validate_json(msg.execution_log_json or "{}")
+                timings = list(exec_log.stage_timings or [])
+                timings.append(_stage_timing(
+                    "artifact_polish",
+                    started,
+                    doc_type=doc_type,
+                    format=polished_preview.get("format") if isinstance(polished_preview, dict) else fmt,
+                    quality_mode=quality_mode,
+                ))
+                exec_log.stage_timings = timings
+                msg.execution_log_json = exec_log.model_dump_json()
+            except Exception:
+                logger.exception("Failed to append document polish timing")
+            log_render_qa_failures(db, doc_type, doc_body, polished_preview.get("render_qa"))
+            db.commit()
+        except Exception:
+            logger.exception("Background document polish failed")
+        finally:
+            db.close()
+
+    _DOCUMENT_PIPELINE_EXECUTOR.submit(_worker)
 
 
 def _coerce_presentation_brief_for_pptx(plan, fmt: str) -> None:
@@ -1350,6 +1448,22 @@ def chat_stream(req: ConvChatRequest, user_id: str = CurrentUser, is_admin: bool
             _append_turn_lifecycle(turn, "created", {"kind": turn.turn_kind})
             db.commit()
 
+            if _should_detach_progressive_job(req):
+                message = (
+                    "Fronei is researching in the background…"
+                    if turn.turn_kind == "research"
+                    else "Fronei is generating your document in the background…"
+                )
+                payload = _sse_with_extra(
+                    _pipeline_log("working", message, turn_kind=turn.turn_kind),
+                    {"turn_id": turn.public_id},
+                )
+                _record_turn_event(db, turn, payload)
+                yield payload
+                payload = _sse("job_started", _job_started_payload(conv, turn, message))
+                _record_turn_event(db, turn, payload)
+                yield payload
+
             for payload in _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memory, profile, user_msg):
                 parsed_event = _parse_sse_event(payload)
                 is_token = bool(parsed_event) and parsed_event[0] == "token"
@@ -1377,6 +1491,7 @@ def chat_stream(req: ConvChatRequest, user_id: str = CurrentUser, is_admin: bool
     return _run_durable_stream(
         run_turn_worker,
         on_client_disconnect=lambda: _record_turn_lifecycle_by_public_id(turn_public_id["id"], "client_disconnected"),
+        detach_on_event=_detach_after_job_started,
     )
 
 
@@ -1520,6 +1635,14 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
 
                     gate = plan_gate.evaluate(plan)
                     document_preview = None
+                    defer_render_qa = False
+                    quality_mode = "standard"
+                    title = plan.intent or "Fronei document"
+                    doc_body = ""
+                    doc_type = str((plan.document_brief or {}).get("doc_type") or "presentation")
+                    fmt = "markdown"
+                    template_id = None
+                    template_path = None
                     if plan.wants_document_output and gate.capabilities["document"].enabled:
                         yield _pipeline_log("working", "Drafting your document from research findings…")
                         fmt = _document_output_format(plan, gate)
@@ -1586,6 +1709,8 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                             title = (plan.document_brief or {}).get("title") or plan.intent
                             template_id = (plan.document_brief or {}).get("template_id")
                             template_path = resolve_template_path(db, user_id, template_id if isinstance(template_id, str) else None)
+                            quality_mode = _document_quality_mode(plan)
+                            defer_render_qa = _should_defer_artifact_qa(fmt, quality_mode)
                             try:
                                 yield _pipeline_log("working", f"Rendering {fmt.upper()} artifact…", doc_type=doc_type, format=fmt)
                                 document_preview = _run_with_timeout(
@@ -1593,14 +1718,16 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                                     title or "Fronei document", doc_body, doc_type, fmt,
                                     template_id=template_id if isinstance(template_id, str) else None,
                                     template_path=str(template_path) if template_path else None,
-                                    quality_mode=_document_quality_mode(plan),
+                                    quality_mode=quality_mode,
+                                    defer_render_qa=defer_render_qa,
                                     timeout_seconds=_document_pipeline_timeout_seconds(db),
                                 )
                             except PipelineTimeout as exc:
                                 document_preview = {"generation_failure": {"user_message": str(exc)}}
                             if failure_answer := _document_failure_answer(document_preview):
                                 final_answer = failure_answer
-                            log_render_qa_failures(db, doc_type, doc_body, document_preview.get("render_qa"))
+                            if not defer_render_qa:
+                                log_render_qa_failures(db, doc_type, doc_body, document_preview.get("render_qa"))
                     else:
                         for chunk in [final_answer[i:i+80] for i in range(0, len(final_answer), 80)]:
                             yield _sse("token", {"text": chunk})
@@ -1664,6 +1791,18 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                     conv.updated_at = datetime.now(timezone.utc)
                     db.commit()
                     db.refresh(asst_msg)
+
+                    if document_preview and defer_render_qa and not _document_failure_answer(document_preview):
+                        _schedule_document_preview_polish(
+                            message_id=asst_msg.id,
+                            doc_type=doc_type,
+                            title=title or "Fronei document",
+                            doc_body=doc_body,
+                            fmt=fmt,
+                            template_id=template_id if isinstance(template_id, str) else None,
+                            template_path=str(template_path) if template_path else None,
+                            quality_mode=quality_mode,
+                        )
 
                     memory_writer.schedule(conv.id, plan.turn_type, plan.intent or req.message, final_answer, rules_entry)
                     memory_extractor.schedule(user_id, conv.id, req.message, final_answer)
@@ -1751,6 +1890,14 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                 # the research answer as chat text.
                 gate = plan_gate.evaluate(plan)
                 document_preview = None
+                defer_render_qa = False
+                quality_mode = "standard"
+                title = plan.intent or "Fronei document"
+                doc_body = ""
+                doc_type = str((plan.document_brief or {}).get("doc_type") or "presentation")
+                fmt = "markdown"
+                template_id = None
+                template_path = None
                 if plan.wants_document_output and gate.capabilities["document"].enabled:
                     yield _pipeline_log("working", "Drafting your document from research findings…")
                     fmt = _document_output_format(plan, gate)
@@ -1816,6 +1963,8 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                         title = (plan.document_brief or {}).get("title") or plan.intent
                         template_id = (plan.document_brief or {}).get("template_id")
                         template_path = resolve_template_path(db, user_id, template_id if isinstance(template_id, str) else None)
+                        quality_mode = _document_quality_mode(plan)
+                        defer_render_qa = _should_defer_artifact_qa(fmt, quality_mode)
                         try:
                             yield _pipeline_log("working", f"Rendering {fmt.upper()} artifact…", doc_type=doc_type, format=fmt)
                             document_preview = _run_with_timeout(
@@ -1823,14 +1972,16 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                                 title or "Fronei document", doc_body, doc_type, fmt,
                                 template_id=template_id if isinstance(template_id, str) else None,
                                 template_path=str(template_path) if template_path else None,
-                                quality_mode=_document_quality_mode(plan),
+                                quality_mode=quality_mode,
+                                defer_render_qa=defer_render_qa,
                                 timeout_seconds=_document_pipeline_timeout_seconds(db),
                             )
                         except PipelineTimeout as exc:
                             document_preview = {"generation_failure": {"user_message": str(exc)}}
                         if failure_answer := _document_failure_answer(document_preview):
                             final_answer = failure_answer
-                        log_render_qa_failures(db, doc_type, doc_body, document_preview.get("render_qa"))
+                        if not defer_render_qa:
+                            log_render_qa_failures(db, doc_type, doc_body, document_preview.get("render_qa"))
                 elif should_refine(result.answer, output_mode, twin_profile):
                     yield _sse("refine_start", {})
                     refined_text = ""
@@ -1907,6 +2058,18 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                 conv.updated_at = datetime.now(timezone.utc)
                 db.commit()
                 db.refresh(asst_msg)
+
+                if document_preview and defer_render_qa and not _document_failure_answer(document_preview):
+                    _schedule_document_preview_polish(
+                        message_id=asst_msg.id,
+                        doc_type=doc_type,
+                        title=title or "Fronei document",
+                        doc_body=doc_body,
+                        fmt=fmt,
+                        template_id=template_id if isinstance(template_id, str) else None,
+                        template_path=str(template_path) if template_path else None,
+                        quality_mode=quality_mode,
+                    )
 
                 memory_writer.schedule(conv.id, plan.turn_type, plan.intent or req.message, final_answer, rules_entry)
                 memory_extractor.schedule(user_id, conv.id, req.message, final_answer)
@@ -2041,6 +2204,8 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                 title = (plan.document_brief or {}).get("title") or plan.intent
                 template_id = (plan.document_brief or {}).get("template_id")
                 template_path = resolve_template_path(db, user_id, template_id if isinstance(template_id, str) else None)
+                quality_mode = _document_quality_mode(plan)
+                defer_render_qa = _should_defer_artifact_qa(fmt, quality_mode)
                 # #170: asst_msg (with the chat-facing summary) is already
                 # committed at this point. If the artifact build fails or
                 # times out, fall back to a generation_failure preview rather
@@ -2055,7 +2220,8 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                         title or "Fronei document", doc_body, doc_type, fmt,
                         template_id=template_id if isinstance(template_id, str) else None,
                         template_path=str(template_path) if template_path else None,
-                        quality_mode=_document_quality_mode(plan),
+                        quality_mode=quality_mode,
+                        defer_render_qa=defer_render_qa,
                         timeout_seconds=_document_pipeline_timeout_seconds(db),
                     )
                     stage_timings.append(_stage_timing(
@@ -2070,12 +2236,25 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                 if failure_answer := _document_failure_answer(document_preview):
                     final_answer = failure_answer
                     asst_msg.content = final_answer
-                log_render_qa_failures(db, doc_type, doc_body, document_preview.get("render_qa"))
+                if not defer_render_qa:
+                    log_render_qa_failures(db, doc_type, doc_body, document_preview.get("render_qa"))
 
                 exec_log.stage_timings = stage_timings
                 asst_msg.execution_log_json = exec_log.model_dump_json()
                 asst_msg.document_preview_json = json.dumps(document_preview) if document_preview else None
                 db.commit()
+
+                if document_preview and defer_render_qa and not _document_failure_answer(document_preview):
+                    _schedule_document_preview_polish(
+                        message_id=asst_msg.id,
+                        doc_type=doc_type,
+                        title=title or "Fronei document",
+                        doc_body=doc_body,
+                        fmt=fmt,
+                        template_id=template_id if isinstance(template_id, str) else None,
+                        template_path=str(template_path) if template_path else None,
+                        quality_mode=quality_mode,
+                    )
 
                 yield _sse("done", {
                     "message_id": asst_msg.id,
@@ -2405,6 +2584,22 @@ def execute_plan(
             _append_turn_lifecycle(turn, "created", {"kind": turn.turn_kind, "source": "execute_plan"})
             db.commit()
 
+            if _should_detach_progressive_job(req):
+                message = (
+                    "Fronei is researching in the background…"
+                    if turn.turn_kind == "research"
+                    else "Fronei is generating your document in the background…"
+                )
+                payload = _sse_with_extra(
+                    _pipeline_log("working", message, turn_kind=turn.turn_kind),
+                    {"turn_id": turn.public_id},
+                )
+                _record_turn_event(db, turn, payload)
+                yield payload
+                payload = _sse("job_started", _job_started_payload(conv, turn, message))
+                _record_turn_event(db, turn, payload)
+                yield payload
+
             for payload in _stream_turn(
                     db, conv, req, user_id, is_admin, settings, history, user_memory, profile, user_msg,
                     preloaded_plan=plan):
@@ -2433,4 +2628,5 @@ def execute_plan(
     return _run_durable_stream(
         run_turn_worker,
         on_client_disconnect=lambda: _record_turn_lifecycle_by_public_id(turn_public_id["id"], "client_disconnected"),
+        detach_on_event=_detach_after_job_started,
     )

@@ -261,3 +261,86 @@ Reviewed against the audit above. Diagnosis confirmed; three refinements adopted
 - Full backend suite: `335 passed, 4 skipped`.
 - Web `npx tsc --noEmit -p tsconfig.json` clean.
 - Backend `py_compile` clean for touched Python modules.
+
+### 2026-06-15 — Slice 4: durable progressive jobs for explicit long turns
+
+**Shipped**
+
+- Added a `job_started` SSE event for explicit deep/expert research turns and confirmed document-generation turns.
+- The SSE response now intentionally detaches after `job_started` for those long jobs, while the existing durable turn worker continues in the background and persists progress, final messages, research metadata, and generated document previews.
+- The frontend now treats `job_started` as the handoff to the durable status card: it keeps the assistant placeholder, starts active-turn polling, and updates the card from persisted turn progress instead of relying on a long-lived SSE connection.
+- Initial document requests still surface the final metadata/template/format popup before detaching; generation detaches only after the user confirms the document plan.
+- Extended active-turn polling from ~4 minutes to ~12 minutes so research/deck jobs do not prematurely leave the UI in a stale state.
+
+**Still pending after this slice**
+
+- Warm Node renderer.
+- Async/off-critical-path LibreOffice QA polishing pass.
+- AgentDeck per-slide parallel fan-out after storyline/design lock.
+
+**Verified**
+
+- Stream regression suite: `23 passed`.
+- Full backend suite: `335 passed, 4 skipped`.
+- Web `npx tsc --noEmit -p tsconfig.json` clean.
+- Backend `py_compile` clean for touched Python modules.
+
+### 2026-06-15 — Slice 5: warm AgentDeck renderer
+
+**Shipped**
+
+- Refactored `render_agentdeck.js` so the CLI still works while exposing a reusable `renderPayload()` function.
+- Added `render_agentdeck_server.js`, a persistent JSONL stdio renderer that keeps Node, PptxGenJS, and layout modules warm across deck renders.
+- Added a Python warm-renderer process manager used by `generate_agentdeck_pptx_bytes()`, with automatic fallback to the previous one-shot subprocess renderer on warm-process failure.
+- Added `agentdeck_warm_renderer_enabled` config, defaulting to `true`.
+
+**Still pending after this slice**
+
+- Async/off-critical-path LibreOffice QA polishing pass for executive mode beyond the durable-job boundary.
+- AgentDeck per-slide parallel fan-out after storyline/design lock.
+
+**Verified**
+
+- AgentDeck renderer tests: `33 passed`.
+- Full backend suite after warm-renderer integration: `337 passed, 4 skipped`.
+- Web `npx tsc --noEmit -p tsconfig.json` clean.
+- Backend `py_compile` clean for touched Python modules.
+
+### 2026-06-15 — Slice 6: AgentDeck slide-content fan-out
+
+**Shipped**
+
+- Changed AgentDeck block/content selection so, after the outline/storyline is locked, multi-slide decks bind content blocks with one LLM call per content slide using bounded parallelism.
+- Kept the existing single-call behavior for one-content-slide decks to preserve the old cheap path and existing test assumptions.
+- Added regression coverage proving block prompts are scoped to one slide each and recomposed into the final `DocPlan`.
+
+**Still pending after this slice**
+
+- Async/off-critical-path LibreOffice QA polishing pass for executive mode beyond the durable-job boundary.
+
+**Verified**
+
+- AgentDeck planner/renderer focused tests: `84 passed`.
+- Full backend suite: `337 passed, 4 skipped`.
+- Web `npx tsc --noEmit -p tsconfig.json` clean.
+- Backend `py_compile` clean for touched Python modules.
+
+### 2026-06-15 — Slice 7: async executive PPTX polish
+
+**Shipped**
+
+- Added a deferred render-QA path for executive PPTX artifacts: the first downloadable deck returns without waiting for LibreOffice thumbnail rendering, deterministic render QA, vision judging, or repair loops.
+- The initial preview carries `render_qa.status="queued"` so the UI/backend can distinguish a fast artifact from a fully polished artifact.
+- Added a background polish worker that rebuilds the same preview with full executive QA enabled and patches the saved assistant message in place when it succeeds.
+- Render-QA failure logging now happens after the background polish pass for deferred executive decks; failed polish attempts leave the original usable deck attached.
+
+**Still pending after this slice**
+
+- Measure production p50/p95 for the new durable-job and background-polish boundaries; the code path is now split, but live traces should decide whether to further tune executive defaults.
+
+**Verified**
+
+- Deferred QA + durable stream focused tests: `36 passed`.
+- Full backend suite: `338 passed, 4 skipped`.
+- Web `npx tsc --noEmit -p tsconfig.json` clean.
+- Backend `py_compile` clean for touched Python modules.

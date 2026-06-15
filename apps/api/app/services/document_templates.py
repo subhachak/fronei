@@ -229,6 +229,13 @@ MAX_LOGO_ASSET_BYTES = 400 * 1024
 _EMU_PER_INCH = 914400
 
 
+# pptxgenjs's addImage() only reliably handles raster formats it can sniff
+# from a data URI; vector/legacy formats commonly embedded as PowerPoint
+# "logos" (EMF/WMF from copy-paste, SVG, TIFF, WEBP) make it throw, which
+# crashes the whole render subprocess (-> "renderer" stage failure, #198).
+_SUPPORTED_LOGO_EXTS = {"png", "jpg", "jpeg", "gif", "bmp"}
+
+
 def _extract_logo_asset(prs: "Presentation") -> dict[str, object] | None:
     """Best-effort extraction of a brand logo image from an uploaded PPTX
     (#185), used to populate `BrandProfile.logo_assets`.
@@ -249,6 +256,14 @@ def _extract_logo_asset(prs: "Presentation") -> dict[str, object] | None:
             except Exception:
                 continue
             if not image.blob or len(image.blob) > MAX_LOGO_ASSET_BYTES:
+                continue
+            # #198: logos pasted into PowerPoint are frequently EMF/WMF
+            # (Windows Metafile), SVG, TIFF, or WEBP -- pptxgenjs's
+            # addImage() can't sniff/encode those from a data URI and throws,
+            # which crashes the whole render subprocess (renderer-stage
+            # DocumentGenerationFailure). Only carry through formats
+            # pptxgenjs can actually embed.
+            if image.ext.lower() not in _SUPPORTED_LOGO_EXTS:
                 continue
             width_in = (shape.width or 0) / _EMU_PER_INCH
             height_in = (shape.height or 0) / _EMU_PER_INCH

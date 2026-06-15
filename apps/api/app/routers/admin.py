@@ -429,6 +429,57 @@ def _ops_recommendations(db, budget: dict) -> list[dict]:
     return recs
 
 
+def _percentile(values: list[int], percentile: float) -> int:
+    if not values:
+        return 0
+    ordered = sorted(values)
+    idx = min(len(ordered) - 1, max(0, round((len(ordered) - 1) * percentile)))
+    return int(ordered[idx])
+
+
+def _stage_latency_summary(db, *, since: datetime, limit: int = 500) -> list[dict]:
+    rows = (
+        db.query(ConversationMessage.execution_log_json)
+        .filter(
+            ConversationMessage.role == "assistant",
+            ConversationMessage.created_at >= since,
+            ConversationMessage.execution_log_json.isnot(None),
+        )
+        .order_by(ConversationMessage.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    by_stage: dict[str, list[int]] = defaultdict(list)
+    for (raw,) in rows:
+        try:
+            payload = json.loads(raw or "{}")
+        except (TypeError, ValueError):
+            continue
+        for timing in payload.get("stage_timings") or []:
+            if not isinstance(timing, dict):
+                continue
+            stage = str(timing.get("stage") or "").strip()
+            latency = timing.get("latency_ms")
+            if not stage or not isinstance(latency, (int, float)):
+                continue
+            by_stage[stage].append(max(0, int(latency)))
+
+    return sorted(
+        [
+            {
+                "stage": stage,
+                "count": len(values),
+                "avg_ms": round(sum(values) / len(values), 1) if values else 0,
+                "p50_ms": _percentile(values, 0.50),
+                "p95_ms": _percentile(values, 0.95),
+            }
+            for stage, values in by_stage.items()
+        ],
+        key=lambda item: item["p95_ms"],
+        reverse=True,
+    )
+
+
 @router.get("/ops-summary")
 def ops_summary(admin: AdminPrincipal = Depends(require_admin)) -> dict:
     db = SessionLocal()
@@ -495,6 +546,7 @@ def ops_summary(admin: AdminPrincipal = Depends(require_admin)) -> dict:
                 }
                 for row in recent_errors
             ],
+            "stage_latency": _stage_latency_summary(db, since=_now().replace(tzinfo=None) - timedelta(days=7)),
             "recommendations": _ops_recommendations(db, budget),
         }
     finally:

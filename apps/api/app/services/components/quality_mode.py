@@ -17,7 +17,7 @@ QUALITY_MODES: tuple[QualityMode, ...] = ("draft", "standard", "executive")
 
 REPAIR_ITERATION_CAPS: dict[QualityMode, int] = {
     "draft": 0,
-    "standard": 2,
+    "standard": 1,
     "executive": 5,
 }
 

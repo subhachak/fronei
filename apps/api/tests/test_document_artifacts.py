@@ -116,7 +116,7 @@ def test_build_document_artifact_agentdeck_compose_failure_does_not_use_legacy_r
 
 
 def test_build_document_artifact_repairs_dense_slide_via_render_qa(monkeypatch):
-    assert get_settings().pptx_render_qa_enabled is True
+    assert get_settings().pptx_render_qa_enabled is False
 
     deck_plan = json.dumps({
         "title": "Client AI Strategy",
@@ -150,7 +150,7 @@ def test_build_document_artifact_repairs_dense_slide_via_render_qa(monkeypatch):
 
     monkeypatch.setattr(documents, "run_pptx_render_qa", fake_run_qa)
 
-    preview = documents.build_document_artifact("", deck_plan, "presentation", "pptx")
+    preview = documents.build_document_artifact("", deck_plan, "presentation", "pptx", quality_mode="executive")
 
     assert preview["format"] == "pptx"
     assert "generation_error" not in preview
@@ -164,7 +164,7 @@ def test_build_document_artifact_repairs_dense_slide_via_render_qa(monkeypatch):
 
 
 def test_build_document_artifact_draft_quality_skips_repair_loop(monkeypatch):
-    assert get_settings().pptx_render_qa_enabled is True
+    assert get_settings().pptx_render_qa_enabled is False
 
     deck_plan = json.dumps({
         "title": "Client AI Strategy",
@@ -197,8 +197,7 @@ def test_build_document_artifact_draft_quality_skips_repair_loop(monkeypatch):
 
     assert preview["format"] == "pptx"
     assert preview["quality_mode"] == "draft"
-    assert preview["render_qa"]["issues"]
-    assert "repair_iterations" not in preview["render_qa"]
+    assert "render_qa" not in preview
     assert "- Bullet number 6" in preview["markdown"]
 
 
@@ -287,8 +286,8 @@ def test_build_document_artifact_standard_quality_skips_vision_judge(monkeypatch
     )
 
     assert preview["format"] == "pptx"
-    assert include_images_values == [False]
-    assert "vision_judge" not in preview["render_qa"]
+    assert include_images_values == []
+    assert "render_qa" not in preview
 
 
 def test_build_document_artifact_uses_readable_preview_for_deck_plan_json():

@@ -1,6 +1,7 @@
 import re
 import socket
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from ipaddress import ip_address
 from dataclasses import dataclass
 from html.parser import HTMLParser
@@ -373,22 +374,36 @@ def ddg_search(query: str, recency: str | None = None) -> list[WebSource]:
         return []
 
 
+def search_web_sources(query: str, recency: str | None = None) -> tuple[str, list[WebSource]]:
+    """Race configured search providers and return the first non-empty result."""
+    settings = get_settings()
+    providers = []
+    if settings.tavily_api_key:
+        providers.append(("Tavily", tavily_search))
+    if settings.brave_api_key:
+        providers.append(("Brave", brave_search))
+    providers.append(("DuckDuckGo", ddg_search))
+
+    with ThreadPoolExecutor(max_workers=len(providers)) as pool:
+        futures = {pool.submit(fn, query, recency): name for name, fn in providers}
+        for future in as_completed(futures):
+            provider = futures[future]
+            try:
+                sources = future.result()
+            except Exception:
+                sources = []
+            if sources:
+                return provider, sources
+    return "", []
+
+
 def gather_web_context(query: str, enable_search: bool, recency: str | None = None) -> WebContextResult:
     direct_sources = [source for url in find_urls(query) if (source := crawl_url(url))]
 
     search_sources: list[WebSource] = []
     search_provider = ""
     if enable_search:
-        settings = get_settings()
-        if settings.tavily_api_key:
-            search_sources = tavily_search(query, recency)
-            search_provider = "Tavily"
-        elif settings.brave_api_key:
-            search_sources = brave_search(query, recency)
-            search_provider = "Brave"
-        else:
-            search_sources = ddg_search(query, recency)
-            search_provider = "DuckDuckGo" if search_sources else ""
+        search_provider, search_sources = search_web_sources(query, recency)
 
     sources: list[WebSource] = []
     seen_urls: set[str] = set()

@@ -319,12 +319,18 @@ class WorkerLog(BaseModel):
     sub_queries_count: int = 0
     sub_query_logs: list[SubQueryLog] = []
 
+class StageTiming(BaseModel):
+    stage: str
+    latency_ms: int
+    meta: dict[str, Any] = {}
+
 class ExecutionLog(BaseModel):
     planner: PlannerLog
     web_context: WebContextLog
     worker: WorkerLog
     total_cost_usd: float
     total_latency_ms: int
+    stage_timings: list[StageTiming] = []
 
 class ConvChatResponse(BaseModel):
     conversation_id: str

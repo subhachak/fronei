@@ -76,7 +76,7 @@ class Settings(BaseSettings):
     # (see pptx_render_qa.CONVERT_TIMEOUT_SECONDS). Disabled by default in
     # production to avoid adding tens of seconds of latency to every PPTX
     # generation request; enable for local/staging diagnostics.
-    pptx_render_qa_enabled: bool = True
+    pptx_render_qa_enabled: bool = False
 
     # AgentDeck v2: keep component-usage logging passive until enough real
     # samples exist to make the signal reliable. When false, the planner still

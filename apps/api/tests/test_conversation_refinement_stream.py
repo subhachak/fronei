@@ -262,7 +262,7 @@ def _patch_pipeline(monkeypatch, raw_answer: str):
 
 def test_stream_refinement_events_fire_with_profile(client, monkeypatch):
     c, Session = client
-    raw_answer = " ".join(["This response has enough words to trigger refinement"] * 8)
+    raw_answer = " ".join(["This response has enough words to trigger refinement"] * 18)
     _patch_pipeline(monkeypatch, raw_answer)
 
     with Session() as db:
@@ -1390,7 +1390,7 @@ def test_execute_plan_with_clarifications_reaches_generation(client, monkeypatch
 
 def test_stream_refinement_skips_raw_mode(client, monkeypatch):
     c, Session = client
-    raw_answer = " ".join(["This response has enough words to trigger refinement"] * 8)
+    raw_answer = " ".join(["This response has enough words to trigger refinement"] * 18)
     _patch_pipeline(monkeypatch, raw_answer)
 
     with Session() as db:
@@ -1414,7 +1414,7 @@ def test_stream_refinement_skips_raw_mode(client, monkeypatch):
 
 def test_stream_refinement_skips_without_profile(client, monkeypatch):
     c, _Session = client
-    raw_answer = " ".join(["This response has enough words to trigger refinement"] * 8)
+    raw_answer = " ".join(["This response has enough words to trigger refinement"] * 18)
     _patch_pipeline(monkeypatch, raw_answer)
 
     response = c.post(
@@ -1433,7 +1433,7 @@ def test_stream_refinement_skips_without_profile(client, monkeypatch):
 
 def test_stream_refinement_failure_keeps_raw_answer(client, monkeypatch):
     c, Session = client
-    raw_answer = " ".join(["This response has enough words to trigger refinement"] * 8)
+    raw_answer = " ".join(["This response has enough words to trigger refinement"] * 18)
     _patch_pipeline(monkeypatch, raw_answer)
 
     with Session() as db:

@@ -926,7 +926,9 @@ def build_document_artifact(
         )
 
     def _run_render_qa(content_bytes: bytes) -> dict | None:
-        if not get_settings().pptx_render_qa_enabled:
+        if resolved_quality_mode == "draft":
+            return None
+        if resolved_quality_mode != "executive" and not get_settings().pptx_render_qa_enabled:
             return None
         try:
             return run_pptx_render_qa(content_bytes, include_images=_vision_judge_enabled())

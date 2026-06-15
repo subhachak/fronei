@@ -3788,7 +3788,7 @@ const PLAN_STEP_GROUP: Record<PipelineStage, PlanStepGroup> = {
 }
 
 const PLAN_STEP_LABELS: Record<PlanStepGroup, string> = {
-  planning: 'Analysing your request',
+  planning: 'Analyzing your request',
   routing: 'Planning the approach',
   working: 'Researching & working',
   refining: 'Refining the response',

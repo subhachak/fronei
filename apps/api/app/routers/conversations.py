@@ -1562,7 +1562,7 @@ def chat_stream(req: ConvChatRequest, user_id: str = CurrentUser, is_admin: bool
 
 def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memory, profile, user_msg, preloaded_plan=None):
             yield _sse("start", {"conversation_id": conv.public_id})
-            yield _pipeline_log("planning", "Analysing your request…")
+            yield _pipeline_log("planning", "Analyzing your request…")
 
             twin_profile = get_twin_profile(db, user_id)
             output_mode: OutputMode = req.output_mode

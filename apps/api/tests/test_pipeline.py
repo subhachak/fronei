@@ -40,7 +40,9 @@ def _make_settings():
 
 @patch("app.services.chat_pipeline.run_planner")
 @patch("app.services.chat_pipeline.gather_web_context")
-def test_build_pipeline_setup_returns_setup(mock_web, mock_planner):
+@patch("app.services.chat_pipeline._run_fast_turn_triage")
+def test_build_pipeline_setup_returns_setup(mock_triage, mock_web, mock_planner):
+    mock_triage.return_value = None
     mock_planner.return_value = passthrough("Hello")
     mock_web.return_value = MagicMock(context=None, status="ok", provider="",
                                       sources_count=0, search_query=None)
@@ -53,8 +55,10 @@ def test_build_pipeline_setup_returns_setup(mock_web, mock_planner):
 @patch("app.services.chat_pipeline.run_planner")
 @patch("app.services.chat_pipeline.gather_web_context")
 @patch("app.services.chat_pipeline.invoke_llm")
-def test_run_pipeline_returns_result(mock_llm, mock_web, mock_planner):
+@patch("app.services.chat_pipeline._run_fast_turn_triage")
+def test_run_pipeline_returns_result(mock_triage, mock_llm, mock_web, mock_planner):
     from app.services.llm_gateway import LLMResult
+    mock_triage.return_value = None
     mock_planner.return_value = passthrough("What is 2+2?")
     mock_web.return_value = MagicMock(context=None, status="ok", provider="",
                                       sources_count=0, search_query=None)
@@ -85,7 +89,61 @@ def test_build_pipeline_setup_skips_planner_for_trivial_followup(mock_web, mock_
 
 @patch("app.services.chat_pipeline.run_planner")
 @patch("app.services.chat_pipeline.gather_web_context")
-def test_build_pipeline_setup_does_not_skip_planner_when_tools_selected(mock_web, mock_planner):
+@patch("app.services.chat_pipeline._run_fast_turn_triage")
+def test_build_pipeline_setup_skips_planner_when_agentic_triage_allows_it(mock_triage, mock_web, mock_planner):
+    mock_triage.return_value = {
+        "decision": "simple_direct",
+        "reason": "evergreen concept explanation",
+        "task_type": "writing",
+        "complexity": "low",
+    }
+    mock_web.return_value = MagicMock(context=None, status="ok", provider="",
+                                      sources_count=0, search_query=None)
+
+    setup = build_pipeline_setup(
+        _make_req("Explain API gateway rate limiting in plain English."),
+        _make_conv(),
+        [],
+        _make_settings(),
+    )
+
+    mock_planner.assert_not_called()
+    mock_triage.assert_called_once()
+    assert setup.plan.action == "answer_directly"
+    assert setup.plan.plan_confidence == "high"
+    assert setup.stage_timings[0].stage == "planner_triage"
+    assert setup.stage_timings[0].meta["decision"] == "simple_direct"
+
+
+@patch("app.services.chat_pipeline.run_planner")
+@patch("app.services.chat_pipeline.gather_web_context")
+@patch("app.services.chat_pipeline._run_fast_turn_triage")
+def test_build_pipeline_setup_uses_planner_when_agentic_triage_requires_it(mock_triage, mock_web, mock_planner):
+    mock_triage.return_value = {
+        "decision": "planner_required",
+        "reason": "current immigration timing requires research judgment",
+        "task_type": "research",
+        "complexity": "high",
+    }
+    mock_planner.return_value = passthrough("What are current H4 EAD timelines?")
+    mock_web.return_value = MagicMock(context=None, status="ok", provider="",
+                                      sources_count=0, search_query=None)
+
+    build_pipeline_setup(
+        _make_req("What are current H4 EAD timelines?"),
+        _make_conv(),
+        [],
+        _make_settings(),
+    )
+
+    mock_triage.assert_called_once()
+    mock_planner.assert_called_once()
+
+
+@patch("app.services.chat_pipeline.run_planner")
+@patch("app.services.chat_pipeline.gather_web_context")
+@patch("app.services.chat_pipeline._run_fast_turn_triage")
+def test_build_pipeline_setup_does_not_skip_planner_when_tools_selected(mock_triage, mock_web, mock_planner):
     mock_planner.return_value = passthrough("thanks")
     mock_web.return_value = MagicMock(context=None, status="ok", provider="",
                                       sources_count=0, search_query=None)
@@ -94,12 +152,15 @@ def test_build_pipeline_setup_does_not_skip_planner_when_tools_selected(mock_web
 
     build_pipeline_setup(req, _make_conv(), history, _make_settings())
 
+    mock_triage.assert_not_called()
     mock_planner.assert_called_once()
 
 
 @patch("app.services.chat_pipeline.run_planner")
 @patch("app.services.chat_pipeline.gather_web_context")
-def test_build_pipeline_setup_defers_web_context_until_plan_confirmed(mock_web, mock_planner):
+@patch("app.services.chat_pipeline._run_fast_turn_triage")
+def test_build_pipeline_setup_defers_web_context_until_plan_confirmed(mock_triage, mock_web, mock_planner):
+    mock_triage.return_value = None
     plan = passthrough("Look up current vendor pricing")
     plan.needs_web_search = True
     plan.web_search_criticality = "material"

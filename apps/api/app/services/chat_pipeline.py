@@ -11,10 +11,12 @@ build_exec_log()    — constructs ExecutionLog from a completed execution
 Internal helpers (prefixed _) are importable for the streaming path in conversations.py.
 """
 import json
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Callable
+from litellm import completion
 
 from app.config import Settings, get_settings
 from app.db.models import Conversation
@@ -59,6 +61,24 @@ _TRIVIAL_FAST_PATH_PREFIXES = (
     "rewrite that",
     "try again",
 )
+TRIAGE_MODEL = "gemini/gemini-2.5-flash"
+TRIAGE_TIMEOUT_SECONDS = 4
+TRIAGE_SYSTEM_PROMPT = """You are Fronei's fast turn triage.
+
+Classify whether this user message can skip the full planner.
+
+Return ONLY valid JSON:
+{"decision":"simple_direct"|"planner_required","reason":"short reason","task_type":"writing|summarization|planning|reasoning|unknown","complexity":"low|medium|high"}
+
+Choose simple_direct only when the user is asking for a timeless, low-risk
+explanation/definition/how-it-works answer that does not need current facts,
+web search, deep research, user clarification, document generation, attachments,
+or sensitive domain handling.
+
+Choose planner_required for anything ambiguous, current/latest, comparative,
+recommendation-seeking, legal, medical, financial, immigration, safety-critical,
+document/deck/report/proposal-producing, research/search/citation-seeking, or
+likely to need clarification/tools."""
 
 
 def _can_use_trivial_fast_path(req: ConvChatRequest, history: list[dict]) -> bool:
@@ -85,6 +105,68 @@ def _can_use_trivial_fast_path(req: ConvChatRequest, history: list[dict]) -> boo
     if text in _TRIVIAL_FAST_PATH_EXACT:
         return True
     return any(text.startswith(prefix) for prefix in _TRIVIAL_FAST_PATH_PREFIXES)
+
+
+def _has_tool_or_artifact_signal(req: ConvChatRequest) -> bool:
+    return bool(
+        req.deep_research
+        or req.research_mode != "quick"
+        or req.web_search
+        or req.document_requested
+        or req.artifact_type
+        or req.attached_documents
+        or req.confirmed_plan is not None
+    )
+
+
+def _parse_triage_json(raw: str) -> dict | None:
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        pass
+    match = re.search(r"\{.*\}", raw or "", re.DOTALL)
+    if not match:
+        return None
+    try:
+        return json.loads(match.group(0))
+    except json.JSONDecodeError:
+        return None
+
+
+def _run_fast_turn_triage(req: ConvChatRequest) -> dict | None:
+    if _has_tool_or_artifact_signal(req):
+        return None
+    if not req.message.strip() or len(req.message) > 500:
+        return None
+    try:
+        response = completion(
+            model=TRIAGE_MODEL,
+            messages=[
+                {"role": "system", "content": TRIAGE_SYSTEM_PROMPT},
+                {"role": "user", "content": req.message},
+            ],
+            max_tokens=128,
+            temperature=0,
+            timeout=TRIAGE_TIMEOUT_SECONDS,
+        )
+        raw = response.choices[0].message.content or ""
+        return _parse_triage_json(raw)
+    except Exception:
+        return None
+
+
+def _simple_direct_plan_from_triage(req: ConvChatRequest, triage: dict | None) -> Plan | None:
+    if not triage or triage.get("decision") != "simple_direct":
+        return None
+    task_type = triage.get("task_type") if triage.get("task_type") in {"writing", "summarization", "planning", "reasoning"} else "writing"
+    complexity = triage.get("complexity") if triage.get("complexity") in {"low", "medium", "high"} else "low"
+    plan = passthrough(req.message)
+    plan.action = "answer_directly"
+    plan.task_type = task_type
+    plan.complexity = complexity
+    plan.plan_confidence = "high"
+    plan.context_summary = f"Fast triage: {triage.get('reason') or 'simple direct response'}"
+    return plan
 
 
 def _build_doc_context(docs: list) -> str:
@@ -420,6 +502,26 @@ def build_pipeline_setup(
             latency_ms=0,
             meta={"reason": "trivial_continuation"},
         ))
+    if plan is None and not _has_tool_or_artifact_signal(req):
+        started = time.perf_counter()
+        triage = _run_fast_turn_triage(req)
+        plan = _simple_direct_plan_from_triage(req, triage)
+        if plan is not None:
+            stage_timings.append(_timing(
+                "planner_triage",
+                started,
+                decision="simple_direct",
+                model=TRIAGE_MODEL,
+                reason=triage.get("reason") if triage else None,
+            ))
+        elif triage is not None:
+            stage_timings.append(_timing(
+                "planner_triage",
+                started,
+                decision=triage.get("decision", "planner_required"),
+                model=TRIAGE_MODEL,
+                reason=triage.get("reason"),
+            ))
     if plan is None:
         started = time.perf_counter()
         plan = run_planner(

@@ -9,7 +9,7 @@ import json
 import logging
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
@@ -480,6 +480,198 @@ def _stage_latency_summary(db, *, since: datetime, limit: int = 500) -> list[dic
     )
 
 
+def _parse_json_object(raw: str | None) -> dict[str, Any]:
+    try:
+        data = json.loads(raw or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _parse_json_list(raw: str | None) -> list[Any]:
+    try:
+        data = json.loads(raw or "[]")
+    except (TypeError, ValueError):
+        return []
+    return data if isinstance(data, list) else []
+
+
+def _ms(value: Any) -> int:
+    return max(0, int(value)) if isinstance(value, (int, float)) else 0
+
+
+def _stage_rows_from_exec_log(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for timing in payload.get("stage_timings") or []:
+        if not isinstance(timing, dict):
+            continue
+        stage = str(timing.get("stage") or "").strip()
+        latency = timing.get("latency_ms")
+        if not stage or not isinstance(latency, (int, float)):
+            continue
+        rows.append({
+            "stage": stage,
+            "latency_ms": _ms(latency),
+            "meta": timing.get("meta") if isinstance(timing.get("meta"), dict) else {},
+        })
+    return rows
+
+
+def _turn_profiler_payload(db, *, since: datetime | None, limit: int) -> dict:
+    query = (
+        db.query(ConversationMessage, Conversation, ConversationTurn)
+        .join(Conversation, ConversationMessage.conversation_id == Conversation.id)
+        .outerjoin(ConversationTurn, ConversationTurn.assistant_message_id == ConversationMessage.id)
+        .filter(
+            ConversationMessage.role == "assistant",
+            ConversationMessage.execution_log_json.isnot(None),
+        )
+    )
+    if since is not None:
+        query = query.filter(ConversationMessage.created_at >= since)
+    rows = query.order_by(ConversationMessage.created_at.desc()).limit(limit).all()
+
+    stage_values: dict[str, list[int]] = defaultdict(list)
+    stage_total_ms: dict[str, int] = defaultdict(int)
+    model_values: dict[str, list[int]] = defaultdict(list)
+    model_costs: dict[str, float] = defaultdict(float)
+    turn_kind_counts: dict[str, int] = defaultdict(int)
+    turn_status_counts: dict[str, int] = defaultdict(int)
+    profiled_turns: list[dict[str, Any]] = []
+    total_latency_values: list[int] = []
+    total_cost = 0.0
+    total_tokens = 0
+
+    for msg, conv, turn in rows:
+        payload = _parse_json_object(msg.execution_log_json)
+        stages = _stage_rows_from_exec_log(payload)
+        planner = payload.get("planner") if isinstance(payload.get("planner"), dict) else {}
+        worker = payload.get("worker") if isinstance(payload.get("worker"), dict) else {}
+        total_latency_ms = _ms(payload.get("total_latency_ms") or msg.latency_ms)
+        if total_latency_ms:
+            total_latency_values.append(total_latency_ms)
+        cost = float(payload.get("total_cost_usd") or msg.estimated_cost_usd or 0.0)
+        total_cost += cost
+        prompt_tokens = int(msg.prompt_tokens or worker.get("prompt_tokens") or 0)
+        completion_tokens = int(msg.completion_tokens or worker.get("completion_tokens") or 0)
+        total_tokens += prompt_tokens + completion_tokens
+
+        stage_sum = 0
+        for stage in stages:
+            latency = _ms(stage.get("latency_ms"))
+            stage_name = str(stage.get("stage") or "")
+            stage_values[stage_name].append(latency)
+            stage_total_ms[stage_name] += latency
+            stage_sum += latency
+        bottleneck = max(stages, key=lambda s: _ms(s.get("latency_ms")), default=None)
+        model = str(msg.model_used or worker.get("model") or planner.get("model") or "unknown")
+        if total_latency_ms:
+            model_values[model].append(total_latency_ms)
+        model_costs[model] += cost
+        kind = str((turn.turn_kind if turn else None) or planner.get("turn_type") or msg.task_type or "unknown")
+        status = str((turn.status if turn else None) or "completed")
+        turn_kind_counts[kind] += 1
+        turn_status_counts[status] += 1
+
+        progress = _parse_json_list(turn.progress_json if turn else None)
+        lifecycle = _parse_json_list(turn.lifecycle_json if turn else None)
+        profiled_turns.append({
+            "message_id": msg.id,
+            "turn_id": turn.public_id if turn else None,
+            "conversation_id": conv.public_id,
+            "user_id": conv.user_id,
+            "created_at": _fmt(msg.created_at),
+            "completed_at": _fmt(turn.completed_at) if turn else None,
+            "status": status,
+            "turn_kind": kind,
+            "task_type": msg.task_type,
+            "complexity": msg.complexity,
+            "action": planner.get("action"),
+            "turn_type": planner.get("turn_type"),
+            "model": model,
+            "planner_model": planner.get("model"),
+            "worker_model": worker.get("model"),
+            "latency_ms": total_latency_ms,
+            "cost_usd": round(cost, 6),
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "stage_sum_ms": stage_sum,
+            "unattributed_ms": max(0, total_latency_ms - stage_sum),
+            "bottleneck_stage": bottleneck.get("stage") if bottleneck else None,
+            "bottleneck_ms": _ms(bottleneck.get("latency_ms")) if bottleneck else 0,
+            "stage_timings": stages,
+            "progress_count": len(progress),
+            "last_progress": progress[-1] if progress else None,
+            "lifecycle_last_event": lifecycle[-1] if lifecycle else None,
+        })
+
+    stage_summary = sorted(
+        [
+            {
+                "stage": stage,
+                "count": len(values),
+                "total_ms": stage_total_ms[stage],
+                "avg_ms": round(sum(values) / len(values), 1) if values else 0,
+                "p50_ms": _percentile(values, 0.50),
+                "p95_ms": _percentile(values, 0.95),
+                "max_ms": max(values) if values else 0,
+            }
+            for stage, values in stage_values.items()
+        ],
+        key=lambda item: (item["total_ms"], item["p95_ms"]),
+        reverse=True,
+    )
+    model_summary = sorted(
+        [
+            {
+                "model": model,
+                "count": len(values),
+                "avg_ms": round(sum(values) / len(values), 1) if values else 0,
+                "p95_ms": _percentile(values, 0.95),
+                "cost_usd": round(model_costs[model], 6),
+            }
+            for model, values in model_values.items()
+        ],
+        key=lambda item: (item["cost_usd"], item["p95_ms"]),
+        reverse=True,
+    )
+    slow_turns = sorted(profiled_turns, key=lambda item: item["latency_ms"], reverse=True)[:25]
+    recommendations: list[dict[str, str]] = []
+    if stage_summary:
+        top = stage_summary[0]
+        recommendations.append({
+            "severity": "medium" if top["p95_ms"] < 30000 else "high",
+            "title": f"Top latency stage: {top['stage']}",
+            "detail": f"p95 {top['p95_ms']} ms across {top['count']} turn(s); total observed time {top['total_ms']} ms.",
+            "action": "Prioritize this stage for caching, parallelism, timeout tuning, or async/background execution.",
+        })
+    high_unattributed = [t for t in profiled_turns if t["unattributed_ms"] > 2000 and t["unattributed_ms"] > t["latency_ms"] * 0.25]
+    if high_unattributed:
+        recommendations.append({
+            "severity": "medium",
+            "title": "Unattributed latency is visible",
+            "detail": f"{len(high_unattributed)} turn(s) spent >25% of latency outside named stage timings.",
+            "action": "Add finer spans around DB, serialization, subprocess, polling, and background handoff boundaries.",
+        })
+    return {
+        "summary": {
+            "turns": len(profiled_turns),
+            "avg_latency_ms": round(sum(total_latency_values) / len(total_latency_values), 1) if total_latency_values else 0,
+            "p50_latency_ms": _percentile(total_latency_values, 0.50),
+            "p95_latency_ms": _percentile(total_latency_values, 0.95),
+            "total_cost_usd": round(total_cost, 6),
+            "total_tokens": total_tokens,
+        },
+        "stage_summary": stage_summary,
+        "model_summary": model_summary,
+        "turn_kind_counts": dict(sorted(turn_kind_counts.items())),
+        "turn_status_counts": dict(sorted(turn_status_counts.items())),
+        "slow_turns": slow_turns,
+        "recent_turns": profiled_turns[:limit],
+        "recommendations": recommendations,
+    }
+
+
 @router.get("/ops-summary")
 def ops_summary(admin: AdminPrincipal = Depends(require_admin)) -> dict:
     db = SessionLocal()
@@ -548,6 +740,23 @@ def ops_summary(admin: AdminPrincipal = Depends(require_admin)) -> dict:
             ],
             "stage_latency": _stage_latency_summary(db, since=_now().replace(tzinfo=None) - timedelta(days=7)),
             "recommendations": _ops_recommendations(db, budget),
+        }
+    finally:
+        db.close()
+
+
+@router.get("/turn-profiler")
+def turn_profiler(
+    range: str = Query(default="7d", pattern="^(1d|7d|30d|all)$"),
+    limit: int = Query(default=100, ge=1, le=500),
+    admin: AdminPrincipal = Depends(require_admin),
+) -> dict:
+    db = SessionLocal()
+    try:
+        return {
+            "range": range,
+            "limit": limit,
+            **_turn_profiler_payload(db, since=_start_for_range(range), limit=limit),
         }
     finally:
         db.close()

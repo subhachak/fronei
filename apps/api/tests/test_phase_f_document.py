@@ -167,7 +167,7 @@ def test_orchestrator_node_document_route_returns_handled_true(monkeypatch):
     )
     monkeypatch.setattr(
         "app.services.agent_runtime.document_agent.DocumentAgent.run",
-        lambda self, state, decision: DocumentResult(
+        lambda self, state, decision, **_kwargs: DocumentResult(
             title="Test",
             doc_type="memo",
             markdown="# Test",

@@ -255,6 +255,7 @@ class JudgeResult(BaseModel):
     status: JudgeStatus
     issues: list[dict[str, Any]] = Field(default_factory=list)
     required_repairs: list[dict[str, Any]] = Field(default_factory=list)
+    suggested_strategy: str | None = None
     can_publish: bool
 
 

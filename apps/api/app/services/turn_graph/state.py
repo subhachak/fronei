@@ -47,6 +47,8 @@ class TurnGraphState(BaseModel):
     quality_mode: str = "standard"
     trace_id: str | None = None
     accumulated_cost_usd: float = 0.0
+    checkpoint_key: str | None = None
+    degradation_tier: str = "full"
 
     history: list[dict[str, Any]] = Field(default_factory=list)
     user_memory: str = ""

@@ -8,8 +8,10 @@ from types import SimpleNamespace
 from typing import Any
 
 from app.services.agent_runtime.judge_service import JudgeService
+from app.services.agent_runtime.job_checkpoint import JobCheckpoint
 from app.services.agent_runtime.registry import RuntimeRegistry
 from app.services.agent_runtime.sub_agent_runner import SubAgentRunner
+from app.services.agent_runtime.degradation import resolve_tier
 from app.services.agent_runtime.tool_runner import (
     ToolCallResult,
     ToolExecutionError,
@@ -59,48 +61,90 @@ class ResearchAgent:
         self.prompt = registry.prompt(self.agent_def.prompt_template_id)
 
     def run(self, state: TurnGraphState, decision) -> ResearchResult:
+        checkpoint = JobCheckpoint()
+        turn_id = str(getattr(state, "turn_id", "") or "")
         tool_calls: list[ToolCallResult] = []
 
-        state = decompose_research_node(
-            state,
-            fn=lambda s: self._decompose(s, decision, tool_calls),
-        )
-        queries = list(state.research_queries) or [state.user_message]
+        resumed_synthesis = self._try_resume_synthesis(state, checkpoint, turn_id)
+        if resumed_synthesis is not None:
+            synthesis_obj = resumed_synthesis
+            synthesis_holder = [synthesis_obj]
+            state.checkpoint_key = "research.synthesis_complete"
+        else:
+            resumed_sources = self._try_resume_crawl(state, checkpoint, turn_id)
+            if resumed_sources:
+                state.checkpoint_key = "research.crawl_complete"
+            else:
+                state = decompose_research_node(
+                    state,
+                    fn=lambda s: self._decompose(s, decision, tool_calls),
+                )
+                queries = list(state.research_queries) or [state.user_message]
 
-        state = search_research_node(
-            state,
-            fn=lambda s: self._scout(s, queries, tool_calls),
-        )
+                state = search_research_node(
+                    state,
+                    fn=lambda s: self._scout(s, queries, tool_calls),
+                )
 
-        state = crawl_research_node(
-            state,
-            fn=lambda s: self._crawl(s, tool_calls),
-        )
+                state = crawl_research_node(
+                    state,
+                    fn=lambda s: self._crawl(s, tool_calls),
+                )
+                checkpoint.save(turn_id, "research.crawl_complete", {
+                    "research_sources": state.research_sources or [],
+                    "tool_calls_log": [call.__dict__ for call in tool_calls],
+                }, score=0.8)
 
-        state = extract_research_node(
-            state,
-            fn=lambda s: self._extract(s),
-        )
+            state = extract_research_node(
+                state,
+                fn=lambda s: self._extract(s),
+            )
 
-        self._resolve_contradictions(state)
+            self._resolve_contradictions(state)
 
-        state = sufficiency_research_node(
-            state,
-            fn=lambda s: self._check_sufficiency(s),
-        )
+            state = sufficiency_research_node(
+                state,
+                fn=lambda s: self._check_sufficiency(s),
+            )
 
-        synthesis_holder: list[Any] = []
-        state = synthesize_research_node(
-            state,
-            fn=lambda s: self._synthesize_from_claims(s, decision, synthesis_holder),
-        )
+            synthesis_holder: list[Any] = []
+            state = synthesize_research_node(
+                state,
+                fn=lambda s: self._synthesize_from_claims(s, decision, synthesis_holder),
+            )
 
-        self._judge_synthesis_loop(state, decision, synthesis_holder)
-        synthesis_obj = synthesis_holder[0] if synthesis_holder else None
+            self._judge_synthesis_loop(state, decision, synthesis_holder)
+            synthesis_obj = synthesis_holder[0] if synthesis_holder else None
+            if synthesis_obj is not None:
+                checkpoint.save(turn_id, "research.synthesis_complete", {
+                    "research_answer": getattr(synthesis_obj, "answer", ""),
+                    "research_claims": state.research_claims or [],
+                    "research_sources": state.research_sources or [],
+                }, score=0.8)
 
         state = verify_research_node(state)
 
-        return self._build_result(state, tool_calls, synthesis_obj)
+        return self._build_result(state, tool_calls, synthesis_obj, checkpoint, turn_id)
+
+    def _try_resume_synthesis(self, state: TurnGraphState, checkpoint: JobCheckpoint, turn_id: str) -> Any | None:
+        payload, score = checkpoint.load(turn_id, "research.synthesis_complete")
+        if not payload or not checkpoint.should_trust(score):
+            return None
+        state.research_claims = list(payload.get("research_claims") or [])
+        state.research_sources = list(payload.get("research_sources") or [])
+        return SimpleNamespace(
+            answer=str(payload.get("research_answer") or ""),
+            model_used="checkpoint",
+            latency_ms=0,
+            estimated_cost_usd=0.0,
+        )
+
+    def _try_resume_crawl(self, state: TurnGraphState, checkpoint: JobCheckpoint, turn_id: str) -> bool:
+        payload, score = checkpoint.load(turn_id, "research.crawl_complete")
+        if not payload or not checkpoint.should_trust(score):
+            return False
+        state.research_sources = list(payload.get("research_sources") or [])
+        return True
 
     def _decompose(
         self,
@@ -439,6 +483,10 @@ class ResearchAgent:
             logger.info("Research judge repair skipped: quality_mode=%s", quality_mode)
             return
 
+        best_obj = synthesis_obj
+        best_score = float(judge_result.score or 0.0)
+        consecutive_regressions = 0
+
         for attempt in range(max_iters):
             logger.info(
                 "Research judge repair %d/%d: re-synthesizing (repairs=%s)",
@@ -451,14 +499,11 @@ class ResearchAgent:
                 decision,
                 judge_result.required_repairs,
             )
-            if repaired is not None:
-                if synthesis_holder:
-                    synthesis_holder[0] = repaired
-                else:
-                    synthesis_holder.append(repaired)
-                answer = getattr(repaired, "answer", "") or ""
+            if repaired is None:
+                break
+            answer = getattr(repaired, "answer", "") or ""
 
-            judge_result = JudgeService(self.registry).evaluate(
+            next_judge = JudgeService(self.registry).evaluate(
                 judge_policy_id,
                 content=answer,
                 context={
@@ -471,11 +516,26 @@ class ResearchAgent:
                 "Research judge [%d]: policy=%s status=%s score=%.2f",
                 attempt + 1,
                 judge_policy_id,
-                judge_result.status,
-                judge_result.score,
+                next_judge.status,
+                next_judge.score,
             )
-            if judge_result.status != "repair":
+            next_score = float(next_judge.score or 0.0)
+            if next_score > best_score:
+                best_obj = repaired
+                best_score = next_score
+                consecutive_regressions = 0
+            else:
+                consecutive_regressions += 1
+
+            if next_judge.status != "repair" or consecutive_regressions >= 2:
                 break
+            judge_result = next_judge
+
+        if best_obj is not synthesis_obj:
+            if synthesis_holder:
+                synthesis_holder[0] = best_obj
+            else:
+                synthesis_holder.append(best_obj)
 
     def _resynthesize_with_repairs(
         self,
@@ -523,6 +583,8 @@ class ResearchAgent:
         state: TurnGraphState,
         tool_calls: list[ToolCallResult],
         synthesis: Any,
+        checkpoint: JobCheckpoint | None = None,
+        turn_id: str = "",
     ) -> ResearchResult:
         answer = getattr(synthesis, "answer", "") or ""
         model_used = getattr(synthesis, "model_used", "") or ""
@@ -536,7 +598,7 @@ class ResearchAgent:
             if source.get("url")
         ]
 
-        return ResearchResult(
+        result = ResearchResult(
             answer=answer,
             sources=sources[:10],
             tool_calls=tool_calls,
@@ -546,6 +608,10 @@ class ResearchAgent:
             synthesis_latency_ms=synthesis_latency,
             cost_usd=cost,
         )
+        if checkpoint is not None:
+            checkpoint.clear(turn_id)
+        state.degradation_tier = resolve_tier().value
+        return result
 
 
 def _extract_queries(plan: dict[str, Any], fallback: str) -> list[str]:

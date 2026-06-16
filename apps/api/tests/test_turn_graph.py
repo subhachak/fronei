@@ -605,22 +605,42 @@ def test_mcp_adapter_catalog_maps_back_to_registered_tools():
 
 
 def test_graph_rollout_decision_keeps_kill_switch_and_answer_canary_only():
-    disabled = graph_rollout_decision(type("SettingsStub", (), {"turn_graph_enabled": False})())
+    disabled = graph_rollout_decision(
+        type("SettingsStub", (), {"turn_graph_enabled": False, "turn_graph_authoritative": False})()
+    )
     enabled_answer = graph_rollout_decision(
-        type("SettingsStub", (), {"turn_graph_enabled": True})(),
+        type("SettingsStub", (), {"turn_graph_enabled": True, "turn_graph_authoritative": False})(),
         tool_name="answer_directly",
     )
     enabled_research = graph_rollout_decision(
-        type("SettingsStub", (), {"turn_graph_enabled": True})(),
+        type("SettingsStub", (), {"turn_graph_enabled": True, "turn_graph_authoritative": False})(),
         tool_name="deep_research",
     )
 
+    assert disabled.mode == "disabled"
     assert disabled.record_shadow_trace is False
     assert disabled.allow_canary_execution is False
+    assert disabled.allow_full_execution is False
+    assert enabled_answer.mode == "shadow_canary"
     assert enabled_answer.record_shadow_trace is True
     assert enabled_answer.allow_canary_execution is True
+    assert enabled_answer.allow_full_execution is False
     assert enabled_research.record_shadow_trace is True
     assert enabled_research.allow_canary_execution is False
+    assert enabled_research.allow_full_execution is False
+
+
+def test_graph_rollout_decision_authoritative_allows_full_execution():
+    decision = graph_rollout_decision(
+        type("SettingsStub", (), {"turn_graph_enabled": True, "turn_graph_authoritative": True})(),
+        tool_name="deep_research",
+    )
+
+    assert decision.mode == "authoritative"
+    assert decision.record_shadow_trace is True
+    assert decision.allow_canary_execution is True
+    assert decision.allow_full_execution is True
+    assert decision.to_dict()["allow_full_execution"] is True
 
 
 def test_admin_turn_row_exposes_graph_summary_and_canary():

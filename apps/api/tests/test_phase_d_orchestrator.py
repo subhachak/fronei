@@ -82,6 +82,18 @@ def test_orchestrator_agent_routes_clarify(monkeypatch):
     assert decision.clarification_question == "Which platform?"
 
 
+def test_orchestrator_messages_remap_developer_prompt_for_non_claude():
+    registry = load_default_registry()
+    agent = OrchestratorAgent(registry)
+    agent.prompt.developer_prompt = "Return JSON only."
+    agent.model_policy.primary_model = "gpt-4.1-mini"
+
+    messages = agent._build_messages(TurnGraphState(user_message="Hi"))
+
+    assert {"role": "system", "content": "Return JSON only."} in messages
+    assert all(message["role"] != "developer" for message in messages)
+
+
 def test_orchestrator_agent_parse_failure_defaults_to_direct_answer():
     decision = _parse_orchestrator_response("not json")
 

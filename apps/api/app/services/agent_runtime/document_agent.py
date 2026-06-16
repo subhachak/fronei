@@ -20,7 +20,6 @@ from app.services.turn_graph.state import TurnGraphState
 
 
 logger = logging.getLogger(__name__)
-_SAFE_TEMPLATE_IDS = {"fronei-default", "", None}
 _SAFE_FILENAME_CHARS_RE = re.compile(r"[^\w\s-]")
 
 
@@ -100,8 +99,10 @@ class DocumentAgent:
                     "content": content_result.answer,
                     "doc_type": brief.get("doc_type", "executive_report"),
                     "subtitle": brief.get("subtitle"),
+                    "template_id": brand_profile.get("template_id") or None,
                 },
                 state=state,
+                plan=decision.plan if isinstance(getattr(decision, "plan", None), dict) else None,
             )
             tool_latency_ms = tool_call.latency_ms
             docx_base64 = tool_call.output.get("docx_base64") or ""
@@ -169,19 +170,13 @@ class DocumentAgent:
 
 
 def _extract_brand_profile(plan: dict | None) -> dict:
+    """Extract brand_profile from the orchestrator plan."""
+
     if not isinstance(plan, dict):
         return {}
     profile = plan.get("brand_profile") or {}
     if not isinstance(profile, dict):
         return {}
-    template_id = profile.get("template_id")
-    if template_id not in _SAFE_TEMPLATE_IDS:
-        logger.warning(
-            "Untrusted template_id %r in brand_profile; falling back to fronei-default. "
-            "Template ownership validation is Phase G.",
-            template_id,
-        )
-        return {key: value for key, value in profile.items() if key != "template_id"}
     return profile
 
 

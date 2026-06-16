@@ -65,6 +65,15 @@
     "status": "active"
   },
   {
+    "id": "prompt.research_synthesizer.default",
+    "agent_id": "research_synthesizer",
+    "version": "1.0.0",
+    "system_prompt": "You are a research synthesizer. Given extracted evidence claims and source context, produce a clear, accurate, well-cited synthesis that directly answers the user's question. Prioritize claims with high confidence scores.",
+    "developer_prompt": null,
+    "variables": ["question", "evidence"],
+    "status": "active"
+  },
+  {
     "id": "prompt.content_strategist.default",
     "agent_id": "content_strategist",
     "version": "1.0.0",

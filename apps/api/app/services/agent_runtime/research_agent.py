@@ -425,9 +425,9 @@ class ResearchAgent:
         _decision,
         required_repairs: list[dict[str, Any]],
     ) -> Any | None:
-        """Re-run research synthesis with repair instructions. Never raises."""
+        """Re-run research_synthesizer sub-agent with repair context. Never raises."""
 
-        from app.services.llm_gateway import invoke_llm
+        from app.services.agent_runtime.sub_agent_runner import SubAgentRunner
 
         claims = state.research_claims or []
         sources = state.research_sources or []
@@ -449,12 +449,9 @@ class ResearchAgent:
         web_context = f"{repair_note}\n\n{web_context}" if web_context else repair_note
 
         try:
-            # TODO(new-phase-m): Replace this direct LLM call with
-            # SubAgentRunner("research_synthesizer", self.registry) once the
-            # true sub-agent runtime is in place.
-            return invoke_llm(
+            agent = SubAgentRunner("research_synthesizer", self.registry)
+            return agent.invoke(
                 message=state.user_message,
-                route=model_policy_to_route(self.model_policy),
                 history=state.history[-8:] if state.history else [],
                 web_context=web_context,
                 planner_context=state.running_summary or None,

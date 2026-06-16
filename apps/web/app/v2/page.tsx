@@ -20,12 +20,14 @@ export default function V2Page() {
 
   return (
     <Shell
-      sidebar={(
+      sidebar={({ collapsed, onToggleCollapse }) => (
         <ConversationSidebar
+          collapsed={collapsed}
           conversations={conversations}
           activeConvId={activeConvId}
           onSelectConversation={loadConversation}
           onNewConversation={newConversation}
+          onToggleCollapse={onToggleCollapse}
         />
       )}
       conversation={(

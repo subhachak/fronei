@@ -1,7 +1,14 @@
 'use client'
 
 import { SignOutButton, useUser } from '@clerk/nextjs'
-import { IconLogout, IconMessage, IconPlus, IconSearch, IconSettings } from '@tabler/icons-react'
+import {
+  IconLayoutSidebarLeftCollapse,
+  IconLayoutSidebarLeftExpand,
+  IconLogout,
+  IconMessage,
+  IconPlus,
+  IconSearch,
+} from '@tabler/icons-react'
 import { useMemo, useState } from 'react'
 import { Button } from './ui/button'
 import { Input } from './ui/input'
@@ -15,21 +22,24 @@ export type ConversationSummary = {
 }
 
 interface ConversationSidebarProps {
+  collapsed: boolean
   conversations: ConversationSummary[]
   activeConvId: string | null
   onSelectConversation: (id: string) => void
   onNewConversation: () => void
+  onToggleCollapse: () => void
 }
 
 export function ConversationSidebar({
+  collapsed,
   conversations,
   activeConvId,
   onSelectConversation,
   onNewConversation,
+  onToggleCollapse,
 }: ConversationSidebarProps) {
   const { user } = useUser()
   const [query, setQuery] = useState('')
-  const [collapsed, setCollapsed] = useState(false)
 
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase()
@@ -49,8 +59,15 @@ export function ConversationSidebar({
           <img src={collapsed ? '/fronei-icon.svg' : '/fronei-logo-wide.png'} alt="Fronei" className={collapsed ? 'h-7 w-7' : 'h-8 w-auto max-w-32'} />
         </button>
         {!collapsed && (
-          <Button variant="ghost" size="icon" type="button" aria-label="Collapse sidebar" title="Collapse sidebar" onClick={() => setCollapsed(true)}>
-            <IconSettings className="h-4 w-4" />
+          <Button
+            variant="ghost"
+            size="icon"
+            type="button"
+            aria-label="Collapse sidebar"
+            title="Collapse sidebar"
+            onClick={onToggleCollapse}
+          >
+            <IconLayoutSidebarLeftCollapse className="h-4 w-4" />
           </Button>
         )}
       </div>
@@ -61,8 +78,8 @@ export function ConversationSidebar({
           {!collapsed && <span>New chat</span>}
         </Button>
         {collapsed ? (
-          <Button variant="ghost" size="icon" type="button" aria-label="Expand sidebar" title="Expand sidebar" onClick={() => setCollapsed(false)}>
-            <IconMessage className="h-4 w-4" />
+          <Button variant="ghost" size="icon" type="button" aria-label="Expand sidebar" title="Expand sidebar" onClick={onToggleCollapse}>
+            <IconLayoutSidebarLeftExpand className="h-4 w-4" />
           </Button>
         ) : (
           <div className="relative">

@@ -20,6 +20,9 @@ from app.config import get_settings
 from app.services.clerk import fetch_clerk_user
 from app.db.models import (
     AdminAuditLog,
+    AgentGoal,
+    AgentRunLog,
+    AgentStep,
     Conversation,
     ConversationMessage,
     ConversationTurn,
@@ -978,6 +981,91 @@ def turn_guardrail_events(
         return {
             "turn_id": turn.public_id,
             "events": [_guardrail_event_row(row) for row in rows],
+        }
+    finally:
+        db.close()
+
+
+@router.get("/turns/{turn_id}/trace")
+def turn_trace(
+    turn_id: str,
+    admin: AdminPrincipal = Depends(require_admin),
+) -> dict:
+    db = SessionLocal()
+    try:
+        goal = db.query(AgentGoal).filter(AgentGoal.turn_id == turn_id).first()
+        runs = (
+            db.query(AgentRunLog)
+            .filter(AgentRunLog.goal_id == goal.id)
+            .order_by(AgentRunLog.started_at.asc())
+            .all()
+            if goal else []
+        )
+        run_ids = [run.id for run in runs]
+        steps = (
+            db.query(AgentStep)
+            .filter(AgentStep.run_id.in_(run_ids))
+            .order_by(AgentStep.created_at.asc())
+            .all()
+            if run_ids else []
+        )
+        events = (
+            db.query(GuardrailEvent)
+            .filter(GuardrailEvent.turn_id == turn_id)
+            .order_by(GuardrailEvent.created_at.asc())
+            .all()
+        )
+
+        runs_by_id = {run.id: run for run in runs}
+        prompt_versions: dict[str, str] = {}
+        for step in steps:
+            meta = _parse_json_object(step.metadata_json)
+            prompt_id = meta.get("prompt_id")
+            run = runs_by_id.get(step.run_id)
+            if run and isinstance(prompt_id, str):
+                prompt_versions[run.agent_id] = prompt_id
+
+        return {
+            "turn_id": turn_id,
+            "goal": {
+                "id": goal.id,
+                "objective": goal.objective,
+                "quality_mode": goal.quality_mode,
+                "status": goal.status,
+            } if goal else None,
+            "agent_runs": [
+                {
+                    "id": run.id,
+                    "agent_id": run.agent_id,
+                    "parent_run_id": run.parent_run_id,
+                    "status": run.status,
+                    "latency_ms": run.latency_ms,
+                    "cost_usd": run.total_cost_usd,
+                }
+                for run in runs
+            ],
+            "agent_steps": [
+                {
+                    "id": step.id,
+                    "run_id": step.run_id,
+                    "step_type": step.step_type,
+                    "model_used": step.model_used,
+                    "latency_ms": step.latency_ms,
+                    "cost_usd": step.cost_usd,
+                }
+                for step in steps
+            ],
+            "guardrail_events": [
+                {
+                    "policy_id": event.policy_id,
+                    "boundary": event.boundary,
+                    "action": event.action,
+                    "tool_name": event.tool_name,
+                }
+                for event in events
+            ],
+            "prompt_versions": prompt_versions,
+            "total_cost_usd": sum(float(run.total_cost_usd or 0.0) for run in runs),
         }
     finally:
         db.close()

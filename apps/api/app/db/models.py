@@ -243,6 +243,22 @@ class AgentRunLog(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
+class AgentStep(Base):
+    __tablename__ = "agent_steps"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    run_id: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    step_type: Mapped[str] = mapped_column(Text, nullable=False)
+    input_summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    output_summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    model_used: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tool_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    latency_ms: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    cost_usd: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    metadata_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
 class RequestLog(Base):
     __tablename__ = "request_logs"
 

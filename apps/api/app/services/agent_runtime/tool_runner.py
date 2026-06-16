@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -15,6 +16,14 @@ logger = logging.getLogger(__name__)
 
 MAX_CONTENT_CHARS = 2_000
 MAX_SOURCES = 5
+
+_NATIVE_BACKENDS: dict[str, Callable[[dict], dict]] = {}
+
+
+def register_native_backend(ref: str, fn: Callable[[dict], dict]) -> None:
+    """Register a native in-process executor for a ToolDefinition.backend_ref."""
+
+    _NATIVE_BACKENDS[ref] = fn
 
 
 class ToolNotPermittedError(Exception):
@@ -140,6 +149,16 @@ class ToolRunner:
                         "title": source.title if source else "",
                         "provider": "crawl",
                     }
+            if tool_def.backend == "native":
+                backend_fn = _NATIVE_BACKENDS.get(tool_def.backend_ref or "")
+                if backend_fn is None:
+                    raise ToolExecutionError(
+                        f"No native backend registered for ref={tool_def.backend_ref!r}. "
+                        "Call register_native_backend() at startup."
+                    )
+                return backend_fn(inputs)
+        except (ToolNotPermittedError, ToolExecutionError):
+            raise
         except Exception as exc:
             raise ToolExecutionError(f"Tool {tool_def.id!r} failed: {exc}") from exc
 
@@ -168,6 +187,15 @@ def _sanitize_tool_output(tool_name: str, raw: dict[str, Any]) -> dict[str, Any]
             "url": str(raw.get("url") or ""),
             "title": str(raw.get("title") or "")[:300],
             "provider": str(raw.get("provider") or ""),
+        }
+
+    if tool_name == "generate_document":
+        return {
+            "title": str(raw.get("title") or ""),
+            "doc_type": str(raw.get("doc_type") or ""),
+            "filename": str(raw.get("filename") or ""),
+            "markdown_preview": str(raw.get("markdown") or "")[:500],
+            "docx_base64": raw.get("docx_base64") or "",
         }
 
     return {key: value for key, value in raw.items() if key.lower() not in blocked_keys}

@@ -149,7 +149,6 @@ class DocumentAgent:
                 grammar,
                 research_summary,
                 template_id,
-                tool_runner,
                 content_holder,
                 tool_result_holder,
             ),
@@ -476,7 +475,6 @@ class DocumentAgent:
         grammar: dict | None,
         research_summary: str | None,
         template_id: str | None,
-        tool_runner: ToolRunner,
         content_holder: list[Any],
         tool_result_holder: list[dict],
     ) -> dict | None:
@@ -523,7 +521,6 @@ class DocumentAgent:
                 grammar,
                 research_summary,
                 template_id,
-                tool_runner,
             )
             if repaired_obj is not None:
                 if content_holder:
@@ -567,12 +564,13 @@ class DocumentAgent:
         grammar: dict | None,
         research_summary: str | None,
         template_id: str | None,
-        tool_runner: ToolRunner,
     ) -> tuple[Any | None, dict | None]:
-        """Re-generate content with repair context and re-run render tool. Never raises."""
+        """Re-invoke evidence_binder or deck_designer with repair context. Never raises."""
 
         try:
-            from app.services.llm_gateway import invoke_llm
+            from app.services.agent_runtime.sub_agent_runner import SubAgentRunner
+
+            agent = SubAgentRunner("deck_designer" if is_presentation else "evidence_binder", self.registry)
 
             repair_note = (
                 "REVISION REQUIRED. The previous content was evaluated and needs improvement:\n"
@@ -592,12 +590,8 @@ class DocumentAgent:
                     doc_context += f"\nResearch context:\n{research_summary[:3000]}\n"
             doc_context = f"{repair_note}\n\n{doc_context}"
 
-            # TODO(new-phase-m): Replace this direct LLM call with
-            # SubAgentRunner("evidence_binder"|"deck_designer", self.registry)
-            # once the true sub-agent runtime is in place.
-            content_obj = invoke_llm(
+            content_obj = agent.invoke(
                 message=state.user_message,
-                route=model_policy_to_route(self.model_policy),
                 history=state.history[-4:] if state.history else [],
                 planner_context=state.running_summary or None,
                 doc_context=doc_context,
@@ -609,7 +603,7 @@ class DocumentAgent:
                 is_presentation,
                 decision,
                 template_id,
-                tool_runner,
+                agent,
             )
             return content_obj, tool_result
         except Exception:
@@ -624,7 +618,7 @@ class DocumentAgent:
         is_presentation: bool,
         decision: Any,
         template_id: str | None,
-        tool_runner: ToolRunner,
+        agent: Any,
     ) -> dict:
         docx_base64 = ""
         pptx_base64 = ""
@@ -635,7 +629,7 @@ class DocumentAgent:
 
         try:
             if is_presentation:
-                tool_call = tool_runner.run(
+                tool_call = agent.run_tool(
                     "render_pptx",
                     {
                         "title": brief.get("title", "Presentation"),
@@ -652,7 +646,7 @@ class DocumentAgent:
                 pptx_base64 = tool_call.output.get("pptx_base64") or ""
                 filename = tool_call.output.get("filename") or filename
             else:
-                tool_call = tool_runner.run(
+                tool_call = agent.run_tool(
                     "generate_document",
                     {
                         "title": brief.get("title", "Document"),

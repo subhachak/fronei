@@ -62,7 +62,8 @@ class OrchestratorAgent:
         )
         messages = [{"role": "system", "content": self.prompt.system_prompt}]
         if self.prompt.developer_prompt:
-            messages.append({"role": "developer", "content": self.prompt.developer_prompt})
+            role = "developer" if self.model_policy.primary_model.startswith("claude") else "system"
+            messages.append({"role": role, "content": self.prompt.developer_prompt})
         messages.append({"role": "user", "content": user_payload})
         return messages
 

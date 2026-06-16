@@ -496,7 +496,8 @@ def invoke_llm_json(
         try:
             try:
                 response = completion(**kwargs)
-            except Exception:
+            except Exception as exc:
+                logger.debug("response_format rejected by provider, retrying plain JSON call: %s", exc)
                 kwargs.pop("response_format", None)
                 response = completion(**kwargs)
         except Exception as exc:

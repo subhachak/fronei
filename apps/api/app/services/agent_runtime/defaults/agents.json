@@ -44,7 +44,7 @@
     "name": "Document Lead",
     "role": "Controls document and presentation generation workflows.",
     "prompt_template_id": "prompt.document_lead.default",
-    "allowed_tools": ["generate_document"],
+    "allowed_tools": ["generate_document", "render_pptx"],
     "model_policy_id": "model.executive",
     "guardrail_policy_ids": ["document.template_ownership"],
     "judge_policy_id": "document_judge",

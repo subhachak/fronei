@@ -36,6 +36,7 @@ class DocumentResult:
     content_latency_ms: int
     latency_ms: int
     cost_usd: float
+    pptx_base64: str = ""
     run_id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
 
@@ -75,9 +76,33 @@ class DocumentAgent:
                 estimated_cost_usd=0.0,
             )
         brief = _extract_document_brief(planning_result.answer, state.user_message)
+        is_presentation = str(brief.get("doc_type") or "").lower() == "presentation"
+        template_id = brand_profile.get("template_id") or None
+
+        grammar: dict | None = None
+        if is_presentation:
+            grammar = _fetch_template_grammar(
+                user_id=str(getattr(state, "user_id", "") or ""),
+                template_id=template_id,
+                brief=brief,
+            )
+
+        research_summary: str | None = None
+        if isinstance(getattr(state, "research_result", None), dict):
+            research_summary = (
+                state.research_result.get("answer")
+                or state.research_result.get("summary")
+                or None
+            )
 
         try:
-            content_result = self._generate_content(state, brief, decision)
+            content_result = self._generate_content(
+                state,
+                brief,
+                decision,
+                grammar=grammar,
+                research_summary=research_summary,
+            )
         except Exception:
             logger.exception("Document content generation failed; using fallback content")
             title = brief.get("title") or state.user_message[:120] or "Document"
@@ -89,43 +114,71 @@ class DocumentAgent:
             )
 
         docx_base64 = ""
+        pptx_base64 = ""
         filename = _fallback_filename(str(brief.get("title") or "document"))
+        if is_presentation:
+            filename = filename.replace(".docx", ".pptx")
         tool_latency_ms = 0
         try:
-            tool_call = tool_runner.run(
-                "generate_document",
-                {
-                    "title": brief.get("title", "Document"),
-                    "content": content_result.answer,
-                    "doc_type": brief.get("doc_type", "executive_report"),
-                    "subtitle": brief.get("subtitle"),
-                    "template_id": brand_profile.get("template_id") or None,
-                },
-                state=state,
-                plan=decision.plan if isinstance(getattr(decision, "plan", None), dict) else None,
-            )
-            tool_latency_ms = tool_call.latency_ms
-            docx_base64 = tool_call.output.get("docx_base64") or ""
-            filename = tool_call.output.get("filename") or filename
+            if is_presentation:
+                tool_call = tool_runner.run(
+                    "render_pptx",
+                    {
+                        "title": brief.get("title", "Presentation"),
+                        "content": content_result.answer,
+                        "doc_type": "presentation",
+                        "subtitle": brief.get("subtitle"),
+                        "template_id": template_id,
+                        "user_id": str(getattr(state, "user_id", "") or ""),
+                    },
+                    state=state,
+                    plan=decision.plan if isinstance(getattr(decision, "plan", None), dict) else None,
+                )
+                tool_latency_ms = tool_call.latency_ms
+                pptx_base64 = tool_call.output.get("pptx_base64") or ""
+                filename = tool_call.output.get("filename") or filename
+            else:
+                tool_call = tool_runner.run(
+                    "generate_document",
+                    {
+                        "title": brief.get("title", "Document"),
+                        "content": content_result.answer,
+                        "doc_type": brief.get("doc_type", "executive_report"),
+                        "subtitle": brief.get("subtitle"),
+                        "template_id": template_id,
+                    },
+                    state=state,
+                    plan=decision.plan if isinstance(getattr(decision, "plan", None), dict) else None,
+                )
+                tool_latency_ms = tool_call.latency_ms
+                docx_base64 = tool_call.output.get("docx_base64") or ""
+                filename = tool_call.output.get("filename") or filename
         except (ToolNotPermittedError, ToolExecutionError) as exc:
-            logger.warning("generate_document tool call failed: %s", exc)
+            logger.warning(
+                "%s tool call failed: %s",
+                "render_pptx" if is_presentation else "generate_document",
+                exc,
+            )
         except Exception:
-            logger.exception("Unexpected generate_document tool failure; returning markdown only")
+            logger.exception("Unexpected tool failure; returning markdown only")
 
-        planning_cost = planning_result.estimated_cost_usd or 0.0
-        content_cost = content_result.estimated_cost_usd or 0.0
-        total_latency = planning_result.latency_ms + content_result.latency_ms + tool_latency_ms
+        planning_cost = getattr(planning_result, "estimated_cost_usd", 0.0) or 0.0
+        content_cost = getattr(content_result, "estimated_cost_usd", 0.0) or 0.0
+        planning_latency_ms = getattr(planning_result, "latency_ms", 0) or 0
+        content_latency_ms = getattr(content_result, "latency_ms", 0) or 0
+        total_latency = planning_latency_ms + content_latency_ms + tool_latency_ms
 
         return DocumentResult(
             title=str(brief.get("title") or "Document"),
             doc_type=str(brief.get("doc_type") or "executive_report"),
             markdown=content_result.answer,
             docx_base64=docx_base64,
+            pptx_base64=pptx_base64,
             filename=filename,
             model_used=content_result.model_used,
             prompt_id=self.prompt.id,
-            planning_latency_ms=planning_result.latency_ms,
-            content_latency_ms=content_result.latency_ms,
+            planning_latency_ms=planning_latency_ms,
+            content_latency_ms=content_latency_ms,
             latency_ms=total_latency,
             cost_usd=planning_cost + content_cost,
         )
@@ -150,15 +203,28 @@ class DocumentAgent:
         })
         return invoke_llm_json(messages, model_policy_to_route(self.model_policy))
 
-    def _generate_content(self, state: TurnGraphState, brief: dict, decision):
+    def _generate_content(
+        self,
+        state: TurnGraphState,
+        brief: dict,
+        decision,
+        grammar: dict | None = None,
+        research_summary: str | None = None,
+    ):
         from app.services.llm_gateway import invoke_llm
 
-        doc_context = (
-            f"Document type: {brief.get('doc_type', 'executive_report')}\n"
-            f"Title: {brief.get('title', state.user_message)}\n"
-        )
-        if brief.get("outline"):
-            doc_context += f"Outline: {json.dumps(brief['outline'])}\n"
+        is_presentation = str(brief.get("doc_type") or "").lower() == "presentation"
+        if is_presentation and grammar is not None:
+            doc_context = _build_pptx_doc_context(brief, grammar, research_summary)
+        else:
+            doc_context = (
+                f"Document type: {brief.get('doc_type', 'executive_report')}\n"
+                f"Title: {brief.get('title', state.user_message)}\n"
+            )
+            if brief.get("outline"):
+                doc_context += f"Outline: {json.dumps(brief['outline'])}\n"
+            if research_summary:
+                doc_context += f"\nResearch context:\n{research_summary[:3000]}\n"
 
         return invoke_llm(
             message=state.user_message,
@@ -167,6 +233,45 @@ class DocumentAgent:
             planner_context=state.running_summary or None,
             doc_context=doc_context,
         )
+
+
+def _fetch_template_grammar(user_id: str, template_id: str | None, brief: dict | None) -> dict:
+    """Fetch template grammar for presentation content generation. Never raises."""
+
+    from app.db.models import SessionLocal
+    from app.services.document_templates import template_grammar_for_selection
+
+    try:
+        with SessionLocal() as db:
+            return template_grammar_for_selection(db, user_id, template_id, brief)
+    except Exception:
+        if template_id:
+            logger.warning(
+                "Could not fetch template grammar for %r; proceeding without it",
+                template_id,
+            )
+        else:
+            logger.warning("Could not fetch default template grammar")
+        return {}
+
+
+def _build_pptx_doc_context(brief: dict, grammar: dict, research_summary: str | None) -> str:
+    """Build the doc_context string for presentation content generation."""
+
+    from app.services.document_templates import template_design_context
+
+    lines = [
+        "Document type: presentation",
+        f"Title: {brief.get('title', 'Presentation')}",
+    ]
+    if brief.get("outline"):
+        lines.append(f"Outline: {json.dumps(brief['outline'])}")
+    if research_summary:
+        lines.append(f"\nResearch context:\n{research_summary[:3000]}")
+    design_ctx = template_design_context(grammar)
+    if design_ctx:
+        lines.append(f"\n{design_ctx}")
+    return "\n".join(lines)
 
 
 def _extract_brand_profile(plan: dict | None) -> dict:

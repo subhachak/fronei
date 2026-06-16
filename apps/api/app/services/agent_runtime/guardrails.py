@@ -17,6 +17,17 @@ from app.services.agent_runtime.registry import RuntimeRegistry
 
 logger = logging.getLogger(__name__)
 
+# Fronei-owned builtin template IDs. Keep in sync with BUILTIN_PPTX_TEMPLATES
+# in services/document_templates.py. Do not import it here to avoid cycles.
+BUILTIN_SAFE_TEMPLATE_IDS: frozenset[str] = frozenset({
+    "fronei-default",
+    "warm-editorial",
+    "modern-tech",
+    "executive-navy",
+    "data-product-os",
+    "clean-light",
+})
+
 GuardrailBoundary = Literal["input", "planning", "tool_pre", "tool_post", "output"]
 TemplateOwnerLookup = Callable[[str, str], bool]
 
@@ -188,9 +199,24 @@ class GuardrailService:
         template_id = _template_id_from_input(context.tool_input)
         if not template_id or template_id == "default":
             return _CheckResult(action="allow", reason="No user template selected.")
-        if self.template_owner_lookup(template_id, context.user_id):
+        if template_id in BUILTIN_SAFE_TEMPLATE_IDS:
+            return _CheckResult(action="allow", reason="Built-in template; ownership not required.")
+
+        user_id = context.user_id or ""
+        if not user_id:
+            return _CheckResult(
+                action="block",
+                triggered=True,
+                reason="Cannot verify template ownership: user_id is missing from context.",
+            )
+
+        if self.template_owner_lookup(template_id, user_id):
             return _CheckResult(action="allow", reason="Template belongs to user.")
-        return _CheckResult(action="block", triggered=True, reason="Selected template does not belong to user.")
+        return _CheckResult(
+            action="block",
+            triggered=True,
+            reason=f"Template {template_id!r} does not belong to user {user_id!r} or does not exist.",
+        )
 
     def _check_no_silent_default_template_fallback(self, context: GuardrailContext) -> _CheckResult:
         template_id = _template_id_from_input(context.tool_input)

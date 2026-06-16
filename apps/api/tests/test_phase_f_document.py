@@ -112,20 +112,21 @@ def test_document_agent_planning_call_extracts_brief(monkeypatch):
     assert result.markdown.startswith("# Q3 Review")
 
 
-def test_document_agent_sanitizes_untrusted_template_id(monkeypatch):
+def test_document_agent_with_unowned_template_id_falls_back(monkeypatch):
     register_all()
     monkeypatch.setattr(
         "app.services.llm_gateway.invoke_llm_json",
         lambda *_args, **_kwargs: _llm('{"document_brief":{"title":"Safe","doc_type":"memo"}}'),
     )
     monkeypatch.setattr("app.services.llm_gateway.invoke_llm", lambda **_kwargs: _llm("# Safe\n\nContent."))
-    monkeypatch.setattr("app.services.document_generator.generate_docx_bytes", lambda *args, **kwargs: b"DOCX")
+    monkeypatch.setattr("app.services.agent_runtime.guardrails._template_belongs_to_user_db", lambda *_args: False)
     decision = SimpleNamespace(plan={"brand_profile": {"template_id": "user-abc-123"}})
 
     result = DocumentAgent(_load_from_files()).run(_state(), decision)
 
     assert result.doc_type == "memo"
-    assert result.docx_base64
+    assert result.docx_base64 == ""
+    assert result.markdown.startswith("# Safe")
 
 
 def test_document_agent_handles_planning_json_parse_failure(monkeypatch):

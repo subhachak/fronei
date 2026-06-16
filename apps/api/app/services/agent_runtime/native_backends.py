@@ -29,6 +29,7 @@ def _generate_document_output(inputs: dict) -> dict:
     content = str(inputs.get("content") or "")
     doc_type = str(inputs.get("doc_type") or "executive_report")
     subtitle = inputs.get("subtitle") or None
+    template_id = inputs.get("template_id") or None
 
     if doc_type not in KNOWN_DOC_TYPES:
         logger.warning("Unknown doc_type %r; defaulting to executive_report", doc_type)
@@ -41,6 +42,7 @@ def _generate_document_output(inputs: dict) -> dict:
         "filename": f"{_safe_filename(title)}.docx",
         "markdown": content,
         "docx_base64": base64.b64encode(content_bytes).decode("ascii"),
+        "template_id": template_id,
     }
 
 

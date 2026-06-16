@@ -1382,19 +1382,153 @@ Acceptance criteria:
 - Admin has enough observability to debug failures.
 - Every remaining fallback has an owner, metric, and removal date.
 
+---
+
+*Frontend phases run in parallel to backend phases B–I.*
+
+---
+
+### Phase J - Frontend Shell (parallel to Phase B)
+
+**Track:** Frontend
+**Route:** `/v2`
+
+Deliverables:
+
+- `apps/web/app/v2/layout.tsx` — new shell layout, three-zone (sidebar /
+  conversation pane / work pane).
+- `apps/web/app/admin/layout.tsx` — separate admin shell layout.
+- Tailwind CSS and shadcn/ui installed and configured to reference existing
+  CSS variable tokens.
+- `@tabler/icons-react` package replacing CDN webfont.
+- `<Shell>` component with responsive sidebar collapse.
+- `<ConversationSidebar>` extracted and cleaned from `Sidebar.tsx`.
+- `<MessageThread>` extracted from `page.tsx`, handling markdown, code
+  highlight, and DOMPurify sanitization.
+- `<InputBar>` with quality mode selector (draft / standard / executive),
+  attachment, and send.
+- `/v2` route live in staging with Clerk auth working.
+
+Acceptance criteria:
+
+- `/v2` renders a complete chat session end-to-end against the existing API.
+- Existing `/` is completely unchanged.
+- Quality mode selector is visible and sends the correct profile to the API.
+- Mobile layout collapses correctly.
+- Light/dark theme toggle works.
+
+### Phase K - Agentic UI Components (parallel to Phase D)
+
+**Track:** Frontend
+**Route:** `/v2`
+
+Deliverables:
+
+- `<GoalStatusBar>` — shows active goal status, quality mode, and estimated
+  cost, driven by turn response metadata.
+- `<AgentProgressPanel>` — collapsible step timeline, populated from
+  `RuntimeTrace` data in the API response.
+- `<DurableJobCard>` — milestone progress for research and document jobs
+  (queued → planning → searching → extracting → synthesizing →
+  quality_checking → ready).
+- `<GuardrailChoiceCard>` — inline choice card rendered in the message
+  thread when the API signals `ask_user`.
+- `<StaleJobBanner>` — surfaces when a delivered result is marked stale.
+
+Acceptance criteria:
+
+- `<DurableJobCard>` can be driven by mock data with no API dependency.
+- `<AgentProgressPanel>` renders step timelines from the `runtime_trace`
+  field in API responses.
+- `<GuardrailChoiceCard>` renders correctly for all guardrail action types
+  that require user input.
+- No existing API contract changed to support these components.
+
+### Phase L - Work Pane and Command Palette (parallel to Phase E/F)
+
+**Track:** Frontend
+**Route:** `/v2`
+
+Deliverables:
+
+- `<ResearchPane>` — source list, citation links, evidence quality
+  indicator, research judge score, conflict flags.
+- `<ArtifactViewer>` — PPTX/DOCX/XLSX preview, download button,
+  regenerate trigger.
+- `<CommandPalette>` — Cmd+K: switch conversation, new chat, change quality
+  mode, open settings, jump to admin.
+- Work pane slides in when a research or document job is active; collapses
+  when idle.
+
+Acceptance criteria:
+
+- Work pane does not break the conversation pane layout at any viewport.
+- Command palette is accessible from keyboard only.
+- Artifact viewer renders a PPTX preview without requiring a plugin.
+
+### Phase M - Admin Shell (parallel to Phase G)
+
+**Track:** Frontend
+**Route:** `/admin`
+
+Deliverables:
+
+- `<TurnTrace>` — full orchestrator decision, agent steps, tool calls,
+  guardrail events, judge results, cost, and latency for a single turn.
+- `<GuardrailEventLog>` — tabular view of guardrail decisions with filters
+  by boundary, action, policy, and user.
+- `<RegistryView>` — read-only tables for agents, prompts, model policies,
+  tools, and guardrails.
+- `<RegistryEditor>` — edit registry entries with draft/active/archive
+  lifecycle, diff view, and rollback (requires Phase G backend).
+- `<BudgetDashboard>` — cost by model/agent/workflow, p50/p95 latency by
+  stage, time-range selector.
+
+Acceptance criteria:
+
+- Admin can view a full turn trace with all agent steps and guardrail events.
+- Registry editor cannot activate a prompt without fixture pass (enforced
+  by the backend; UI surfaces the result).
+- `/admin` route is protected by admin role check independent of the main
+  chat auth.
+
+### Phase N - Frontend Cutover
+
+**Track:** Frontend
+
+Deliverables:
+
+- `app/v2/*` moved to `app/`.
+- `app/page.tsx` archived to `app/_legacy/page.tsx`.
+- `/v2` route removed.
+- All legacy component references cleaned up.
+- Redirect from any cached `/v2` URLs to `/`.
+
+Acceptance criteria:
+
+- All existing user sessions continue working after cutover.
+- No regression on Clerk auth flows.
+- Lighthouse score ≥ 90 on performance, accessibility, best practices.
+- Legacy monolith (`_legacy/`) retained for one release cycle then deleted.
+
 ## 15.1 Product Outcomes by Phase
 
-| Phase | User-visible outcome | Admin/business metric |
-|---|---|---|
-| A | No visible change; safer foundation | Runtime contracts import cleanly; no regression |
-| B | Safer behavior on risky turns | Guardrail decision accuracy; block/ask false positives |
-| C | Faster prompt iteration without deploys | Prompt rollback time; fixture pass rate |
-| D | More consistent direct answers and clarification | Planner latency, direct-answer p50/p95, clarification quality |
-| E | Research feels more active and better cited | Citation completeness, research p95, source quality score |
-| F | Deck/document generation becomes more reliable | Artifact failure rate, template fidelity, judge pass rate |
-| G | Admin can debug and tune without code | Mean time to diagnose failed turn |
-| H | System improves from feedback | Regeneration rate, accepted output rate, user corrections |
-| I | Lower tech debt and simpler runtime | Legacy branch count, fallback usage, rollback readiness |
+| Phase | Track | User-visible outcome | Admin/business metric |
+|---|---|---|---|
+| A | Backend | No visible change; safer foundation | Runtime contracts import cleanly; no regression |
+| B | Backend | Safer behavior on risky turns | Guardrail decision accuracy; block/ask false positives |
+| C | Backend | Faster prompt iteration without deploys | Prompt rollback time; fixture pass rate |
+| D | Backend | More consistent direct answers and clarification | Planner latency, direct-answer p50/p95, clarification quality |
+| E | Backend | Research feels more active and better cited | Citation completeness, research p95, source quality score |
+| F | Backend | Deck/document generation becomes more reliable | Artifact failure rate, template fidelity, judge pass rate |
+| G | Backend | Admin can debug and tune without code | Mean time to diagnose failed turn |
+| H | Backend | System improves from feedback | Regeneration rate, accepted output rate, user corrections |
+| I | Backend | Lower tech debt and simpler runtime | Legacy branch count, fallback usage, rollback readiness |
+| J | Frontend | `/v2` shell live in staging; modern layout | Shell render time; auth regression rate |
+| K | Frontend | Users see goal status, agent progress, job milestones | Component coverage of agentic runtime events |
+| L | Frontend | Research and document work in a dedicated side pane | Work pane adoption rate; command palette usage |
+| M | Frontend | Admin has a dedicated shell with full turn traces | Admin MTTD (mean time to diagnose); registry edit rate |
+| N | Frontend | `/v2` becomes `/`; monolith retired | Lighthouse score ≥ 90; zero regression on auth flows |
 
 ## 16. Testing and Evaluation
 
@@ -1513,9 +1647,50 @@ Mitigation:
 - Lighthouse fixtures.
 - No silent fallback.
 
+### Risk: Frontend parallel build diverges from backend API contracts
+
+The `/v2` shell is built against the same API as the legacy frontend. If
+backend API shapes change during Phases B–D, both frontends must be kept
+in sync.
+
+Mitigation:
+
+- Define a stable `FrontendTurnResponse` contract early. The legacy
+  frontend and `/v2` both consume it. Backend changes add fields; they do
+  not remove or rename existing ones until the legacy frontend is retired.
+- Add `runtime_trace` as an optional field on the turn response from Phase
+  B. The legacy frontend ignores it; the new shell reads it.
+
+### Risk: New UI patterns are designed in isolation from the agentic runtime
+
+`<DurableJobCard>`, `<AgentProgressPanel>`, and `<GuardrailChoiceCard>`
+are new patterns with no prior art in the product. If built against mock
+data only, they may not match what the runtime actually produces.
+
+Mitigation:
+
+- Phase K components must be driven by real `RuntimeTrace` payloads from
+  the Phase B shadow mode before they are considered done.
+- Build `<DurableJobCard>` first — it can be demoed on mock data — but
+  acceptance criteria require a live job before Phase K closes.
+
+### Risk: Admin shell scope creep delays Phase M
+
+The admin shell is tempting to over-build (editing everything, live
+metrics, alert rules). Phase M must stay read-first.
+
+Mitigation:
+
+- Phase M delivers read-only trace and registry views.
+- Registry editing is gated on Phase G backend (draft/active/archive
+  lifecycle). Do not build the edit UI before the backend can enforce it.
+- Budget dashboards are display-only; no write actions in Phase M.
+
 ## 18. Immediate Next Steps
 
-Phase A is complete. The next steps are Phase B.
+Phase A is complete. Two parallel tracks are now active.
+
+**Backend track (Phase B):**
 
 1. ~~Decide package boundary~~ — `agent_runtime/` created alongside `turn_graph/`.
 2. ~~Add clean runtime schemas~~ — all schemas in `agent_runtime/models.py`.
@@ -1527,15 +1702,29 @@ Phase A is complete. The next steps are Phase B.
    `agent_runtime/guardrails.py` with deterministic check types.
 6. Wire guardrail hooks into `turn_graph` as shadow-mode side effects (no
    behavior change yet).
-7. Add `guardrail_events` table and DB write path.
+7. Add `guardrail_events`, `goals`, and `agent_runs` DB tables.
 8. Build compatibility adapters: `ResearchRun → AgentRun`,
    `ConversationTurn → Goal`, budget service bridge.
-9. Add read-only admin trace view for guardrail decisions per turn.
-10. Write guardrail eval fixtures (allow, ask_user, block, require_research).
-11. Add `goals` and `agent_runs` DB tables.
-12. Once guardrail evals pass in shadow mode, start Phase C DB migration for
-    agent/prompt/model_policy tables.
-13. Delete each old branch only after its replacement path is proven stable.
+9. Add `runtime_trace` as an optional field on the existing turn API
+   response. Legacy frontend ignores it; new frontend reads it.
+10. Add read-only admin endpoint for guardrail events per turn.
+11. Write guardrail eval fixtures (allow, ask_user, block, require_research).
+12. Once guardrail evals pass in shadow mode, start Phase C DB migration.
+
+**Frontend track (Phase J — parallel):**
+
+1. Install Tailwind CSS and configure to reference existing CSS variable
+   tokens. Install shadcn/ui.
+2. Replace Tabler Icons CDN webfont with `@tabler/icons-react` package.
+3. Create `apps/web/app/v2/layout.tsx` with three-zone shell (sidebar /
+   conversation pane / work pane).
+4. Create `apps/web/app/admin/layout.tsx` as a separate admin shell.
+5. Extract `<ConversationSidebar>` from `Sidebar.tsx`.
+6. Extract `<MessageThread>` from `page.tsx`.
+7. Build `<InputBar>` with quality mode selector.
+8. Wire `/v2` against the existing API. `/` must remain unchanged.
+9. Build `<DurableJobCard>` on mock data — first agentic UI component.
+10. Delete each old branch only after its replacement path is proven stable.
 
 ## 19. Definition of Done
 
@@ -1552,3 +1741,194 @@ The multi-agent migration is complete when:
 - All phase-gate eval suites pass in CI.
 - Old planner/research/document branches are deleted or explicitly marked as
   temporary fallback with owner, metric, and removal date.
+- Frontend `/v2` shell has been cut over to `/` and the legacy monolith
+  retired.
+
+## 20. Frontend Architecture
+
+### 20.1 Current State
+
+The existing frontend (`apps/web/`) is a Next.js App Router application
+using Clerk for auth, TypeScript, custom CSS variables, Tabler Icons, marked,
+highlight.js, DOMPurify, recharts, and mammoth.
+
+The design foundation is production-grade: a well-structured CSS variable
+system with dark/light themes and a purple accent (`#7c3aed`) that should be
+preserved. What needs to change is the structural architecture.
+
+The core problem is a single monolithic `app/page.tsx` containing chat,
+admin, settings, memory, analytics, and artifact handling in one component
+tree. This will not support the agentic runtime's new UI requirements: goal
+tracking, agent progress timelines, durable job milestones, guardrail
+ask-user surfaces, and quality mode selection.
+
+### 20.2 Stack Decision
+
+Stay on Next.js App Router. Add:
+
+- **shadcn/ui** — headless Radix-backed components copied into the project
+  and owned. Works directly with existing CSS variables. Provides dialogs,
+  sheets, dropdowns, command palette, toasts, and tabs without style
+  conflicts or lock-in.
+- **Tailwind CSS** — utility-first layout inside components. Existing CSS
+  variables remain authoritative; Tailwind references them via
+  `var(--ac)`, `var(--bg-base)` etc. The design system is extended, not
+  replaced.
+
+Do not add MUI, Chakra, Ant Design, or any opinionated component library.
+They would fight the existing design intent.
+
+### 20.3 Parallel Route Strategy
+
+Build the new frontend at `apps/web/app/v2/` in parallel. The existing
+`app/page.tsx` is untouched. Users can access the new experience at `/v2`
+while production remains stable at `/`.
+
+```
+apps/web/app/
+  layout.tsx            ← shared Clerk + theme bootstrap (unchanged)
+  page.tsx              ← current monolith (untouched until cutover)
+  v2/
+    layout.tsx          ← new shell layout
+    page.tsx            ← new chat entry point
+    research/[id]/      ← research job view
+    document/[id]/      ← document generation view
+  admin/                ← admin shell (separate route, separate layout)
+    layout.tsx
+    page.tsx
+    turns/[id]/
+    agents/
+    prompts/
+    guardrails/
+    budgets/
+```
+
+**Cutover:** rename `app/page.tsx` → `app/_legacy/page.tsx`, move
+`app/v2/*` → `app/`. One commit, fully reversible by revert.
+
+**Admin is a separate route.** The admin shell (`/admin`) is a different
+tool for a different user with different auth requirements. It must not be
+embedded inside the main chat shell.
+
+### 20.4 Shell Layout
+
+Three-zone layout:
+
+```
+┌─────────────┬────────────────────────────┬──────────────────┐
+│             │                            │                  │
+│ Conversation│    Conversation Pane       │   Work Pane      │
+│ Sidebar     │    (message thread         │   (slides in     │
+│             │     + input bar)           │    for research  │
+│ history     │                            │    / document /  │
+│ new chat    │                            │    artifact)     │
+│ settings    │                            │                  │
+└─────────────┴────────────────────────────┴──────────────────┘
+```
+
+The work pane is the primary new concept. Research results, document
+generation progress, and artifact preview currently live inside the chat
+thread. They need their own surface with status, source list, agent
+timeline, and artifact viewer.
+
+### 20.5 Component Inventory
+
+Build in this order:
+
+**Foundation (Phase J)**
+
+- `<Shell>` — three-zone layout, sidebar + main + optional work pane
+- `<ConversationSidebar>` — history, new conversation, settings entry
+  (extracted and cleaned from current `Sidebar.tsx`)
+- `<MessageThread>` — message bubbles and markdown rendering (extracted
+  from `page.tsx`)
+- `<InputBar>` — quality mode selector, attachment, send
+
+**Agentic UI (Phase K)**
+
+- `<GoalStatusBar>` — thin bar above input showing active goal status,
+  quality mode, and budget consumed
+- `<AgentProgressPanel>` — collapsible timeline of agent steps as they
+  fire, with name, role, and latency
+- `<DurableJobCard>` — milestones for research and document jobs
+  (queued → planning → searching → extracting → synthesizing →
+  quality_checking → ready). Not a spinner — real milestone progress.
+- `<GuardrailChoiceCard>` — inline structured choice card rendered in
+  the message thread when a guardrail triggers `ask_user`. Not a modal,
+  not a toast.
+- `<StaleJobBanner>` — surfaces when a background job completes after
+  the goal was changed; prompts user to accept, discard, or compare.
+
+**Work Pane (Phase L)**
+
+- `<ResearchPane>` — sources, citations, evidence quality, judge score,
+  conflict flags
+- `<ArtifactViewer>` — PPTX/DOCX preview, download, regenerate trigger
+- `<CommandPalette>` — Cmd+K: switch conversation, new chat, change
+  quality mode, open settings
+
+**Admin Shell (Phase M, parallel to Phase G backend)**
+
+- `<TurnTrace>` — orchestrator decision, agents, tools, guardrails,
+  judges, cost, latency for a single turn
+- `<GuardrailEventLog>` — decisions per turn with triggered checks and
+  actions
+- `<RegistryView>` — read-only tables for agents, prompts, model
+  policies, tools, guardrails
+- `<RegistryEditor>` — edit configs with draft/active/archive lifecycle
+  (Phase G backend must be live first)
+- `<BudgetDashboard>` — cost by model/agent/user, p50/p95 latency by
+  stage
+
+### 20.6 New UI Patterns Required by the Agentic Runtime
+
+These patterns do not exist in the current frontend and must be designed
+from scratch:
+
+**Quality mode as a first-class control.** Draft / standard / executive
+affects cost, latency, and output depth. It must be visible in the input
+bar, not buried in settings.
+
+**Goal state indicator.** A subtle, persistent indicator showing whether
+the current goal is `created`, `running`, `waiting_for_user`, or
+`completed`. Not a blocking UI — ambient information.
+
+**Guardrail ask-user surface.** When the guardrail layer triggers
+`ask_user`, the response must render as a structured choice card inline in
+the message thread. The user picks from concise options; the choice is
+sent back as a normal message. No modals, no interruptions.
+
+**Agent step timeline.** For deep research and document generation, a
+collapsible side panel shows which agents fired, in what order, and how
+long each took. This is a transparency signal for users and a debugging
+surface for admin.
+
+**Durable job milestones.** Long-running jobs show named milestone
+stages, not a generic spinner. Users can see the system is actively
+working and at what stage.
+
+**Stale result handling.** If a background job finishes after the user
+changed the goal, the UI must not silently deliver the old result. It
+surfaces a dismissible banner with options: use result, discard, or view
+both.
+
+### 20.7 Design System Evolution
+
+The existing CSS variable system is kept as the single source of truth.
+Tailwind is configured to reference CSS variables, not hardcode colors.
+
+Preserve:
+
+- All `--bg-*`, `--bd*`, `--t*`, `--ac*` tokens in `globals.css`.
+- Dark/light theme switching via `data-theme` attribute.
+- Purple accent (`#7c3aed` dark / `#6d28d9` light).
+- Tabler Icons (migrate from CDN webfont to `@tabler/icons-react` package
+  for tree-shaking and type safety).
+
+Evolve:
+
+- Add `--radius`, `--shadow-*`, `--transition-*` tokens for consistent
+  motion and shape.
+- Add focus-ring tokens for keyboard accessibility.
+- Add semantic tokens for job status colors (queued, running, completed,
+  failed, stale).

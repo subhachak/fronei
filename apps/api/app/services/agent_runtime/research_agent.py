@@ -10,7 +10,6 @@ from typing import Any
 from app.services.agent_runtime.adapters import model_policy_to_route
 from app.services.agent_runtime.guardrails import GuardrailService
 from app.services.agent_runtime.judge_service import JudgeService
-from app.services.agent_runtime.models import JudgeResult
 from app.services.agent_runtime.registry import RuntimeRegistry
 from app.services.agent_runtime.tool_runner import (
     ToolCallResult,
@@ -18,7 +17,7 @@ from app.services.agent_runtime.tool_runner import (
     ToolNotPermittedError,
     ToolRunner,
 )
-from app.services.agent_runtime.utils import strip_json_fence
+from app.services.agent_runtime.utils import effective_max_repair_iters, strip_json_fence
 from app.services.turn_graph.research import (
     crawl_research_node,
     decompose_research_node,
@@ -101,15 +100,8 @@ class ResearchAgent:
             fn=lambda s: self._synthesize_from_claims(s, decision, synthesis_holder),
         )
 
+        self._judge_synthesis_loop(state, decision, synthesis_holder)
         synthesis_obj = synthesis_holder[0] if synthesis_holder else None
-        judge_result = self._judge_synthesis(state, synthesis_obj)
-        if judge_result is not None:
-            logger.info(
-                "Research judge: policy=%s status=%s score=%.2f",
-                self.agent_def.judge_policy_id,
-                judge_result.status,
-                judge_result.score,
-            )
 
         state = verify_research_node(state)
 
@@ -344,21 +336,27 @@ class ResearchAgent:
             holder.append(fallback)
             return {"model_used": "unavailable"}
 
-    def _judge_synthesis(self, state: TurnGraphState, synthesis: Any) -> JudgeResult | None:
-        """Run the research judge against the synthesized answer. Never raises."""
+    def _judge_synthesis_loop(
+        self,
+        state: TurnGraphState,
+        decision,
+        synthesis_holder: list[Any],
+    ) -> None:
+        """Evaluate synthesis and repair in place when the judge requests it."""
 
         judge_policy_id = self.agent_def.judge_policy_id
         if not judge_policy_id:
-            return None
+            return
 
-        answer = getattr(synthesis, "answer", "") or ""
+        synthesis_obj = synthesis_holder[0] if synthesis_holder else None
+        answer = getattr(synthesis_obj, "answer", "") or ""
         sources_summary = _format_sources([
             {"title": source.get("title", ""), "url": source.get("url", "")}
             for source in (state.research_sources or [])[:10]
             if source.get("url")
         ])
 
-        return JudgeService(self.registry).evaluate(
+        judge_result = JudgeService(self.registry).evaluate(
             judge_policy_id,
             content=answer,
             context={
@@ -367,6 +365,100 @@ class ResearchAgent:
             },
             target_id=str(getattr(state, "turn_id", "") or ""),
         )
+        logger.info(
+            "Research judge [0]: policy=%s status=%s score=%.2f",
+            judge_policy_id,
+            judge_result.status,
+            judge_result.score,
+        )
+        if judge_result.status != "repair":
+            return
+
+        quality_mode = getattr(state, "quality_mode", None) or "standard"
+        policy = self.registry.judges.get(judge_policy_id)
+        max_iters = effective_max_repair_iters(quality_mode, policy)
+        if max_iters == 0:
+            logger.info("Research judge repair skipped: quality_mode=%s", quality_mode)
+            return
+
+        for attempt in range(max_iters):
+            logger.info(
+                "Research judge repair %d/%d: re-synthesizing (repairs=%s)",
+                attempt + 1,
+                max_iters,
+                judge_result.required_repairs,
+            )
+            repaired = self._resynthesize_with_repairs(
+                state,
+                decision,
+                judge_result.required_repairs,
+            )
+            if repaired is not None:
+                if synthesis_holder:
+                    synthesis_holder[0] = repaired
+                else:
+                    synthesis_holder.append(repaired)
+                answer = getattr(repaired, "answer", "") or ""
+
+            judge_result = JudgeService(self.registry).evaluate(
+                judge_policy_id,
+                content=answer,
+                context={
+                    "user_question": state.user_message,
+                    "sources_summary": sources_summary,
+                },
+                target_id=str(getattr(state, "turn_id", "") or ""),
+            )
+            logger.info(
+                "Research judge [%d]: policy=%s status=%s score=%.2f",
+                attempt + 1,
+                judge_policy_id,
+                judge_result.status,
+                judge_result.score,
+            )
+            if judge_result.status != "repair":
+                break
+
+    def _resynthesize_with_repairs(
+        self,
+        state: TurnGraphState,
+        _decision,
+        required_repairs: list[dict[str, Any]],
+    ) -> Any | None:
+        """Re-run research synthesis with repair instructions. Never raises."""
+
+        from app.services.llm_gateway import invoke_llm
+
+        claims = state.research_claims or []
+        sources = state.research_sources or []
+
+        if claims:
+            claims_text = "\n".join(
+                f"- {claim['text']} (confidence: {claim['confidence']:.0%}, source: {claim['source_url']})"
+                for claim in claims
+            )
+            web_context: str | None = f"Evidence:\n{claims_text}"
+        else:
+            web_context = _format_sources(sources) if sources else None
+
+        repair_note = (
+            "REVISION REQUIRED. The previous synthesis was evaluated and needs improvement:\n"
+            + "\n".join(f"- {_repair_instruction_text(repair)}" for repair in required_repairs)
+            + "\nAddress each point in your revised synthesis."
+        )
+        web_context = f"{repair_note}\n\n{web_context}" if web_context else repair_note
+
+        try:
+            return invoke_llm(
+                message=state.user_message,
+                route=model_policy_to_route(self.model_policy),
+                history=state.history[-8:] if state.history else [],
+                web_context=web_context,
+                planner_context=state.running_summary or None,
+            )
+        except Exception:
+            logger.exception("Research re-synthesis failed; retaining previous answer")
+            return None
 
     def _build_result(
         self,
@@ -422,3 +514,13 @@ def _format_sources(sources: list[dict[str, str]]) -> str:
         url = source.get("url", "")
         lines.append(f"[{index}] {title} - {url}")
     return "\n".join(lines)
+
+
+def _repair_instruction_text(repair: dict[str, Any] | str) -> str:
+    if isinstance(repair, dict):
+        section = str(repair.get("section", "")).strip()
+        instruction = str(repair.get("instruction") or repair.get("message") or "").strip()
+        if section and instruction:
+            return f"{section}: {instruction}"
+        return instruction or section or json.dumps(repair, sort_keys=True)
+    return str(repair)

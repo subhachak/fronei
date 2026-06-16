@@ -30,6 +30,7 @@ from app.services.turn_graph.document import (
     render_artifact_node,
 )
 from app.services.turn_graph.state import TurnGraphState
+from app.services.agent_runtime.utils import effective_max_repair_iters
 
 
 logger = logging.getLogger(__name__)
@@ -139,8 +140,22 @@ class DocumentAgent:
 
         state = qa_polish_node(
             state,
-            fn=lambda s: self._qa_stage(s, content_obj),
+            fn=lambda s: self._qa_repair_stage(
+                s,
+                content_obj,
+                brief,
+                is_presentation,
+                decision,
+                grammar,
+                research_summary,
+                template_id,
+                tool_runner,
+                content_holder,
+                tool_result_holder,
+            ),
         )
+        content_obj = content_holder[0] if content_holder else None
+        tool_result = tool_result_holder[0] if tool_result_holder else {}
 
         state = final_preview_node(state)
 
@@ -238,16 +253,25 @@ class DocumentAgent:
         judge_result = JudgeService(self.registry).evaluate(
             judge_policy_id,
             content=_brief_for_judge(brief),
-            context={"user_question": state.user_message},
+            context={"user_question": state.user_message, "stage": "plan"},
             target_id=str(getattr(state, "turn_id", "") or ""),
         )
-        if judge_result.status != "repair":
+        logger.info(
+            "Document plan judge [0]: policy=%s status=%s score=%.2f",
+            judge_policy_id,
+            judge_result.status,
+            judge_result.score,
+        )
+        policy = self.registry.judges.get(judge_policy_id)
+        quality_mode = getattr(state, "quality_mode", None) or "standard"
+        max_iters = effective_max_repair_iters(quality_mode, policy)
+
+        if judge_result.status != "repair" or max_iters == 0:
+            if judge_result.status == "repair" and max_iters == 0:
+                logger.info("Document plan repair skipped: quality_mode=%s", quality_mode)
             return judge_result, brief
 
-        policy = self.registry.judges.get(judge_policy_id)
-        max_iters = policy.max_repair_iterations if policy else 1
         brand_profile = _extract_brand_profile(getattr(state, "plan", None) or {})
-        quality_mode = getattr(state, "quality_mode", None) or "standard"
 
         for attempt in range(max_iters):
             logger.info(
@@ -263,11 +287,19 @@ class DocumentAgent:
                 brand_profile,
                 quality_mode,
             )
+            state.document_brief = brief
             judge_result = JudgeService(self.registry).evaluate(
                 judge_policy_id,
                 content=_brief_for_judge(brief),
-                context={"user_question": state.user_message},
+                context={"user_question": state.user_message, "stage": "plan"},
                 target_id=str(getattr(state, "turn_id", "") or ""),
+            )
+            logger.info(
+                "Document plan judge [%d]: policy=%s status=%s score=%.2f",
+                attempt + 1,
+                judge_policy_id,
+                judge_result.status,
+                judge_result.score,
             )
             if judge_result.status != "repair":
                 break
@@ -434,16 +466,29 @@ class DocumentAgent:
         })
         return {"content_length": len(content_obj.answer), "filename": filename}
 
-    def _qa_stage(
+    def _qa_repair_stage(
         self,
         state: TurnGraphState,
         content_obj: Any,
+        brief: dict,
+        is_presentation: bool,
+        decision: Any,
+        grammar: dict | None,
+        research_summary: str | None,
+        template_id: str | None,
+        tool_runner: ToolRunner,
+        content_holder: list[Any],
+        tool_result_holder: list[dict],
     ) -> dict | None:
-        """Stage fn for qa_polish_node. Phase M: log-only judge on final content."""
+        """Stage fn for qa_polish_node. Judge final content and repair in place."""
 
         judge_policy_id = self.agent_def.judge_policy_id
         if not judge_policy_id or content_obj is None:
             return None
+        quality_mode = getattr(state, "quality_mode", None) or "standard"
+        policy = self.registry.judges.get(judge_policy_id)
+        max_iters = effective_max_repair_iters(quality_mode, policy)
+
         content = getattr(content_obj, "answer", "") or ""
         judge_result = JudgeService(self.registry).evaluate(
             judge_policy_id,
@@ -452,12 +497,184 @@ class DocumentAgent:
             target_id=str(getattr(state, "turn_id", "") or ""),
         )
         logger.info(
-            "Document content judge: policy=%s status=%s score=%.2f",
+            "Document content judge [0]: policy=%s status=%s score=%.2f",
             judge_policy_id,
             judge_result.status,
             judge_result.score,
         )
+        if judge_result.status != "repair" or max_iters == 0:
+            if judge_result.status == "repair" and max_iters == 0:
+                logger.info("Document content repair skipped: quality_mode=%s", quality_mode)
+            return {"judge_status": judge_result.status, "judge_score": judge_result.score}
+
+        for attempt in range(max_iters):
+            logger.info(
+                "Document content repair %d/%d: re-generating (repairs=%s)",
+                attempt + 1,
+                max_iters,
+                judge_result.required_repairs,
+            )
+            repaired_obj, repaired_tool = self._regenerate_with_repairs(
+                state,
+                brief,
+                judge_result.required_repairs,
+                is_presentation,
+                decision,
+                grammar,
+                research_summary,
+                template_id,
+                tool_runner,
+            )
+            if repaired_obj is not None:
+                if content_holder:
+                    content_holder[0] = repaired_obj
+                else:
+                    content_holder.append(repaired_obj)
+                content_obj = repaired_obj
+                content = getattr(content_obj, "answer", "") or ""
+                state.document_content = content
+            if repaired_tool is not None:
+                if tool_result_holder:
+                    tool_result_holder[0] = repaired_tool
+                else:
+                    tool_result_holder.append(repaired_tool)
+
+            judge_result = JudgeService(self.registry).evaluate(
+                judge_policy_id,
+                content=content[:4_000],
+                context={"user_question": state.user_message, "stage": "content"},
+                target_id=str(getattr(state, "turn_id", "") or ""),
+            )
+            logger.info(
+                "Document content judge [%d]: policy=%s status=%s score=%.2f",
+                attempt + 1,
+                judge_policy_id,
+                judge_result.status,
+                judge_result.score,
+            )
+            if judge_result.status != "repair":
+                break
+
         return {"judge_status": judge_result.status, "judge_score": judge_result.score}
+
+    def _regenerate_with_repairs(
+        self,
+        state: TurnGraphState,
+        brief: dict,
+        required_repairs: list[dict[str, Any]],
+        is_presentation: bool,
+        decision: Any,
+        grammar: dict | None,
+        research_summary: str | None,
+        template_id: str | None,
+        tool_runner: ToolRunner,
+    ) -> tuple[Any | None, dict | None]:
+        """Re-generate content with repair context and re-run render tool. Never raises."""
+
+        try:
+            from app.services.llm_gateway import invoke_llm
+
+            repair_note = (
+                "REVISION REQUIRED. The previous content was evaluated and needs improvement:\n"
+                + "\n".join(f"- {_repair_instruction_text(repair)}" for repair in required_repairs)
+                + "\nAddress each point in your revised content."
+            )
+            if is_presentation and grammar is not None:
+                doc_context = _build_pptx_doc_context(brief, grammar, research_summary)
+            else:
+                doc_context = (
+                    f"Document type: {brief.get('doc_type', 'executive_report')}\n"
+                    f"Title: {brief.get('title', state.user_message)}\n"
+                )
+                if brief.get("outline"):
+                    doc_context += f"Outline: {json.dumps(brief['outline'])}\n"
+                if research_summary:
+                    doc_context += f"\nResearch context:\n{research_summary[:3000]}\n"
+            doc_context = f"{repair_note}\n\n{doc_context}"
+
+            content_obj = invoke_llm(
+                message=state.user_message,
+                route=model_policy_to_route(self.model_policy),
+                history=state.history[-4:] if state.history else [],
+                planner_context=state.running_summary or None,
+                doc_context=doc_context,
+            )
+            tool_result = self._render_content_tool(
+                state,
+                brief,
+                content_obj,
+                is_presentation,
+                decision,
+                template_id,
+                tool_runner,
+            )
+            return content_obj, tool_result
+        except Exception:
+            logger.exception("Document content re-generation failed; retaining original")
+            return None, None
+
+    def _render_content_tool(
+        self,
+        state: TurnGraphState,
+        brief: dict,
+        content_obj: Any,
+        is_presentation: bool,
+        decision: Any,
+        template_id: str | None,
+        tool_runner: ToolRunner,
+    ) -> dict:
+        docx_base64 = ""
+        pptx_base64 = ""
+        filename = _fallback_filename(str(brief.get("title") or "document"))
+        if is_presentation:
+            filename = filename.replace(".docx", ".pptx")
+        tool_latency_ms = 0
+
+        try:
+            if is_presentation:
+                tool_call = tool_runner.run(
+                    "render_pptx",
+                    {
+                        "title": brief.get("title", "Presentation"),
+                        "content": content_obj.answer,
+                        "doc_type": "presentation",
+                        "subtitle": brief.get("subtitle"),
+                        "template_id": template_id,
+                        "user_id": str(getattr(state, "user_id", "") or ""),
+                    },
+                    state=state,
+                    plan=decision.plan if isinstance(getattr(decision, "plan", None), dict) else None,
+                )
+                tool_latency_ms = tool_call.latency_ms
+                pptx_base64 = tool_call.output.get("pptx_base64") or ""
+                filename = tool_call.output.get("filename") or filename
+            else:
+                tool_call = tool_runner.run(
+                    "generate_document",
+                    {
+                        "title": brief.get("title", "Document"),
+                        "content": content_obj.answer,
+                        "doc_type": brief.get("doc_type", "executive_report"),
+                        "subtitle": brief.get("subtitle"),
+                        "template_id": template_id,
+                    },
+                    state=state,
+                    plan=decision.plan if isinstance(getattr(decision, "plan", None), dict) else None,
+                )
+                tool_latency_ms = tool_call.latency_ms
+                docx_base64 = tool_call.output.get("docx_base64") or ""
+                filename = tool_call.output.get("filename") or filename
+        except (ToolNotPermittedError, ToolExecutionError) as exc:
+            logger.warning("Repair tool call failed: %s", exc)
+        except Exception:
+            logger.exception("Unexpected failure in repair tool call")
+
+        return {
+            "docx_base64": docx_base64,
+            "pptx_base64": pptx_base64,
+            "filename": filename,
+            "tool_latency_ms": tool_latency_ms,
+        }
 
     def _build_document_result(
         self,

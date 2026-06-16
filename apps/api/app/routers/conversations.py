@@ -2022,7 +2022,12 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                         def progress(stage: str, message: str, extra: dict) -> None:
                             progress_q.put({"stage": stage, "message": message, **extra})
 
-                        if getattr(settings, "turn_graph_enabled", False):
+                        rollout = graph_rollout_decision(settings, tool_name="deep_research")
+                        if rollout.allow_full_execution:
+                            from app.services.agent_runtime.research_agent import ResearchAgent
+                            from app.services.agent_runtime.registry import load_default_registry
+
+                            progress("research_agent", "Running graph-native research agent…", {})
                             research_state = state_from_turn(
                                 conversation=None,
                                 turn=None,
@@ -2034,6 +2039,47 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                             )
                             research_state.conversation_id = conv.public_id
                             research_state.user_id = user_id
+                            research_state.tenant_id = user_id
+                            research_state.quality_mode = "executive" if research_mode == "expert" else "standard"
+                            decision = SimpleNamespace(plan=plan_to_dict(plan))
+                            agent_result = ResearchAgent(load_default_registry()).run(research_state, decision)
+                            research_holder[0] = ResearchPipelineResult(
+                                run=SimpleNamespace(id=None, confidence="medium"),
+                                result=LLMResult(
+                                    answer=agent_result.answer,
+                                    model_used=agent_result.model_used,
+                                    latency_ms=agent_result.latency_ms,
+                                    prompt_tokens=None,
+                                    completion_tokens=None,
+                                    estimated_cost_usd=agent_result.cost_usd,
+                                ),
+                                route=RouteDecision(
+                                    task_type="research",
+                                    complexity="high",
+                                    profile=profile,
+                                    primary_model=agent_result.model_used or "agent_runtime",
+                                    fallbacks=[],
+                                    reason="graph-native research agent",
+                                ),
+                                source_logs=agent_result.sources,
+                                questions=[],
+                                gaps=[],
+                                contradictions=[],
+                                verifier_notes=None,
+                            )
+                        elif getattr(settings, "turn_graph_enabled", False):
+                            research_state = state_from_turn(
+                                conversation=None,
+                                turn=None,
+                                user_message=research_query,
+                                history=history,
+                                user_memory=user_memory,
+                                profile=profile,
+                                user_role="admin" if is_admin else "user",
+                            )
+                            research_state.conversation_id = conv.public_id
+                            research_state.user_id = user_id
+                            research_state.tenant_id = user_id
                             research_output = execute_deep_research_tool(
                                 research_state,
                                 db=research_db,
@@ -2362,9 +2408,56 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                 brand_profile, design_system_id, user_document_profile = _document_generation_profiles(db, user_id, plan)
                 stage_timings = list(setup.stage_timings or [])
                 doc_graph_state = None
+                graph_document_preview = None
                 try:
                     started = time.perf_counter()
-                    if getattr(settings, "turn_graph_enabled", False):
+                    rollout = graph_rollout_decision(settings, tool_name="generate_document")
+                    if rollout.allow_full_execution:
+                        from app.services.agent_runtime.document_agent import DocumentAgent
+                        from app.services.agent_runtime.registry import load_default_registry
+
+                        doc_graph_state = state_from_turn(
+                            conversation=conv,
+                            turn=None,
+                            user_message=plan.enriched_prompt or req.message,
+                            history=history,
+                            user_memory=user_memory,
+                            profile=profile,
+                            user_role="admin" if is_admin else "user",
+                        )
+                        doc_graph_state.quality_mode = _document_quality_mode(plan)
+                        doc_graph_state.plan = plan_to_dict(plan)
+                        doc_result = DocumentAgent(load_default_registry()).run(
+                            doc_graph_state,
+                            SimpleNamespace(plan=doc_graph_state.plan),
+                            db=db,
+                        )
+                        result = LLMResult(
+                            answer=doc_result.markdown,
+                            model_used=doc_result.model_used,
+                            latency_ms=doc_result.latency_ms,
+                            prompt_tokens=None,
+                            completion_tokens=None,
+                            estimated_cost_usd=doc_result.cost_usd,
+                        )
+                        doc_body = doc_result.markdown
+                        chat_summary = doc_result.markdown
+                        doc_type = doc_result.doc_type
+                        preview_format = "pptx" if doc_result.pptx_base64 else ("docx" if doc_result.docx_base64 else "markdown")
+                        graph_document_preview = {
+                            "title": doc_result.title,
+                            "doc_type": doc_result.doc_type,
+                            "format": preview_format,
+                            "requested_format": fmt,
+                            "quality_mode": doc_graph_state.quality_mode,
+                            "markdown": doc_result.markdown,
+                            "filename": doc_result.filename,
+                        }
+                        if doc_result.docx_base64:
+                            graph_document_preview["docx_base64"] = doc_result.docx_base64
+                        if doc_result.pptx_base64:
+                            graph_document_preview["pptx_base64"] = doc_result.pptx_base64
+                    elif getattr(settings, "turn_graph_enabled", False):
                         doc_graph_state = state_from_turn(
                             conversation=conv,
                             turn=None,
@@ -2469,7 +2562,10 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                 try:
                     yield _pipeline_log("working", f"Rendering {fmt.upper()} artifact…", doc_type=doc_type, format=fmt)
                     started = time.perf_counter()
-                    if getattr(settings, "turn_graph_enabled", False) and doc_graph_state is not None:
+                    rollout = graph_rollout_decision(settings, tool_name="render_artifact")
+                    if rollout.allow_full_execution and graph_document_preview is not None:
+                        document_preview = graph_document_preview
+                    elif getattr(settings, "turn_graph_enabled", False) and doc_graph_state is not None:
                         render_output = execute_render_artifact_tool(
                             doc_graph_state,
                             tool_input=ArtifactRenderToolInput(

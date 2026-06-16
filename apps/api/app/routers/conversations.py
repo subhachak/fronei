@@ -75,6 +75,19 @@ router = APIRouter(prefix="/conversations", tags=["conversations"])
 logger = logging.getLogger(__name__)
 
 
+def _turn_graph_debug(settings, message: str, **fields) -> None:
+    """Emit searchable rollout diagnostics only when explicitly enabled."""
+
+    if not getattr(settings, "turn_graph_debug_enabled", False):
+        return
+    safe_fields = {
+        key: value
+        for key, value in fields.items()
+        if value is not None
+    }
+    logger.info("turn_graph_debug %s %s", message, json.dumps(safe_fields, default=str, sort_keys=True))
+
+
 # ── Bounded execution for long synchronous pipeline work (#168) ───────────────
 # generate_document_output / build_document_artifact run a chain of LLM calls,
 # subprocess renders, and QA/repair loops with no internal deadline — a single
@@ -1826,8 +1839,29 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
             twin_profile = get_twin_profile(db, user_id)
             output_mode: OutputMode = req.output_mode
             research_mode = req.research_mode if req.research_mode != "quick" else ("deep" if req.deep_research else "quick")
+            _turn_graph_debug(
+                settings,
+                "stream_turn_start",
+                conversation_id=conv.public_id,
+                user_id=user_id,
+                request_research_mode=req.research_mode,
+                resolved_research_mode=research_mode,
+                deep_research=req.deep_research,
+                document_requested=req.document_requested,
+                web_search=req.web_search,
+                turn_graph_enabled=getattr(settings, "turn_graph_enabled", False),
+                turn_graph_authoritative=getattr(settings, "turn_graph_authoritative", False),
+                orchestrator_enabled=getattr(settings, "orchestrator_enabled", False),
+            )
 
             if research_mode != "quick":
+                _turn_graph_debug(
+                    settings,
+                    "research_branch_entered",
+                    conversation_id=conv.public_id,
+                    user_id=user_id,
+                    research_mode=research_mode,
+                )
                 # ── Adaptive research routing ─────────────────────────────
                 # If a prior research run exists in this conversation, run the
                 # planner first to classify the turn. Follow-ups / continuations
@@ -2176,10 +2210,30 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                             progress_q.put({"stage": stage, "message": message, **extra})
 
                         rollout = graph_rollout_decision(settings, tool_name="deep_research")
+                        _turn_graph_debug(
+                            settings,
+                            "research_rollout_decision",
+                            conversation_id=conv.public_id,
+                            user_id=user_id,
+                            mode=rollout.mode,
+                            allow_full_execution=rollout.allow_full_execution,
+                            allow_canary_execution=rollout.allow_canary_execution,
+                            record_shadow_trace=rollout.record_shadow_trace,
+                            reason=rollout.reason,
+                            research_mode=research_mode,
+                        )
                         if rollout.allow_full_execution:
                             from app.services.agent_runtime.research_agent import ResearchAgent
                             from app.services.agent_runtime.registry import load_default_registry
 
+                            _turn_graph_debug(
+                                settings,
+                                "research_authoritative_start",
+                                conversation_id=conv.public_id,
+                                user_id=user_id,
+                                query=research_query[:500],
+                                research_mode=research_mode,
+                            )
                             progress("research_agent", "Running graph-native research agent…", {})
                             research_state = state_from_turn(
                                 conversation=None,
@@ -2196,6 +2250,16 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                             research_state.quality_mode = "executive" if research_mode == "expert" else "standard"
                             decision = SimpleNamespace(plan=plan_to_dict(plan))
                             agent_result = ResearchAgent(load_default_registry()).run(research_state, decision)
+                            _turn_graph_debug(
+                                settings,
+                                "research_authoritative_agent_result",
+                                conversation_id=conv.public_id,
+                                user_id=user_id,
+                                model_used=agent_result.model_used,
+                                latency_ms=agent_result.latency_ms,
+                                source_count=len(agent_result.sources or []),
+                                claim_count=len(research_state.research_claims or []),
+                            )
                             compat_run, compat_sources, compat_claims = _persist_graph_research_compat_run(
                                 research_db,
                                 user_id=user_id,
@@ -2205,6 +2269,15 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                                 answer=agent_result.answer,
                                 sources=agent_result.sources,
                                 claims=research_state.research_claims or [],
+                            )
+                            _turn_graph_debug(
+                                settings,
+                                "research_authoritative_compat_persisted",
+                                conversation_id=conv.public_id,
+                                user_id=user_id,
+                                research_run_id=compat_run.id,
+                                source_count=len(compat_sources),
+                                claim_count=len(compat_claims),
                             )
                             research_holder[0] = ResearchPipelineResult(
                                 run=compat_run,
@@ -2232,6 +2305,13 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                                 claim_logs=compat_claims,
                             )
                         elif getattr(settings, "turn_graph_enabled", False):
+                            _turn_graph_debug(
+                                settings,
+                                "research_wrapper_path_start",
+                                conversation_id=conv.public_id,
+                                user_id=user_id,
+                                research_mode=research_mode,
+                            )
                             research_state = state_from_turn(
                                 conversation=None,
                                 turn=None,
@@ -2262,6 +2342,13 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                                 raise RuntimeError(research_output.error or "Research tool failed")
                             research_holder[0] = research_state.research_raw_result
                         else:
+                            _turn_graph_debug(
+                                settings,
+                                "research_legacy_path_start",
+                                conversation_id=conv.public_id,
+                                user_id=user_id,
+                                research_mode=research_mode,
+                            )
                             research_holder[0] = run_research(
                                 research_db,
                                 user_id=user_id,
@@ -2273,6 +2360,15 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                                 progress=progress,
                             )
                     except BaseException as exc:
+                        _turn_graph_debug(
+                            settings,
+                            "research_worker_error",
+                            conversation_id=conv.public_id,
+                            user_id=user_id,
+                            error=repr(exc),
+                            error_type=type(exc).__name__,
+                            research_mode=research_mode,
+                        )
                         error_holder[0] = exc
                     finally:
                         research_db.close()
@@ -2291,11 +2387,38 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                     yield _pipeline_log(stage, message, **update)
 
                 if error_holder[0]:
+                    _turn_graph_debug(
+                        settings,
+                        "research_stream_error_propagating",
+                        conversation_id=conv.public_id,
+                        user_id=user_id,
+                        error=repr(error_holder[0]),
+                        error_type=type(error_holder[0]).__name__,
+                        research_mode=research_mode,
+                    )
                     raise error_holder[0]
                 research = research_holder[0]
                 if research is None:
+                    _turn_graph_debug(
+                        settings,
+                        "research_stream_no_result",
+                        conversation_id=conv.public_id,
+                        user_id=user_id,
+                        research_mode=research_mode,
+                    )
                     yield _sse("error", {"message": "Research pipeline returned no result"})
                     return
+                _turn_graph_debug(
+                    settings,
+                    "research_stream_result_ready",
+                    conversation_id=conv.public_id,
+                    user_id=user_id,
+                    research_run_id=getattr(research.run, "id", None),
+                    source_count=len(research.source_logs),
+                    claim_count=len(research.claim_logs),
+                    model_used=research.result.model_used,
+                    research_mode=research_mode,
+                )
 
                 result = research.result
                 final_answer = result.answer
@@ -2576,10 +2699,31 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                 try:
                     started = time.perf_counter()
                     rollout = graph_rollout_decision(settings, tool_name="generate_document")
+                    _turn_graph_debug(
+                        settings,
+                        "document_rollout_decision",
+                        conversation_id=conv.public_id,
+                        user_id=user_id,
+                        mode=rollout.mode,
+                        allow_full_execution=rollout.allow_full_execution,
+                        allow_canary_execution=rollout.allow_canary_execution,
+                        record_shadow_trace=rollout.record_shadow_trace,
+                        reason=rollout.reason,
+                        requested_format=fmt,
+                        doc_type=str((plan.document_brief or {}).get("doc_type") or "document"),
+                    )
                     if rollout.allow_full_execution:
                         from app.services.agent_runtime.document_agent import DocumentAgent
                         from app.services.agent_runtime.registry import load_default_registry
 
+                        _turn_graph_debug(
+                            settings,
+                            "document_authoritative_start",
+                            conversation_id=conv.public_id,
+                            user_id=user_id,
+                            quality_mode=_document_quality_mode(plan),
+                            requested_format=fmt,
+                        )
                         doc_graph_state = state_from_turn(
                             conversation=conv,
                             turn=None,
@@ -2595,6 +2739,18 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                             doc_graph_state,
                             SimpleNamespace(plan=doc_graph_state.plan),
                             db=db,
+                        )
+                        _turn_graph_debug(
+                            settings,
+                            "document_authoritative_result",
+                            conversation_id=conv.public_id,
+                            user_id=user_id,
+                            doc_type=doc_result.doc_type,
+                            filename=doc_result.filename,
+                            has_docx=bool(doc_result.docx_base64),
+                            has_pptx=bool(doc_result.pptx_base64),
+                            model_used=doc_result.model_used,
+                            latency_ms=doc_result.latency_ms,
                         )
                         result = LLMResult(
                             answer=doc_result.markdown,
@@ -2622,6 +2778,13 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                         if doc_result.pptx_base64:
                             graph_document_preview["pptx_base64"] = doc_result.pptx_base64
                     elif getattr(settings, "turn_graph_enabled", False):
+                        _turn_graph_debug(
+                            settings,
+                            "document_wrapper_path_start",
+                            conversation_id=conv.public_id,
+                            user_id=user_id,
+                            requested_format=fmt,
+                        )
                         doc_graph_state = state_from_turn(
                             conversation=conv,
                             turn=None,
@@ -2661,6 +2824,13 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                             raise RuntimeError(doc_output.error or "Document generation failed")
                         result, doc_body, chat_summary, doc_type = doc_graph_state.document_raw_result
                     else:
+                        _turn_graph_debug(
+                            settings,
+                            "document_legacy_path_start",
+                            conversation_id=conv.public_id,
+                            user_id=user_id,
+                            requested_format=fmt,
+                        )
                         result, doc_body, chat_summary, doc_type = _run_with_timeout(
                             generate_document_output,
                             plan, route, history, wc, planner_ctx,
@@ -2727,9 +2897,34 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                     yield _pipeline_log("working", f"Rendering {fmt.upper()} artifact…", doc_type=doc_type, format=fmt)
                     started = time.perf_counter()
                     rollout = graph_rollout_decision(settings, tool_name="render_artifact")
+                    _turn_graph_debug(
+                        settings,
+                        "render_rollout_decision",
+                        conversation_id=conv.public_id,
+                        user_id=user_id,
+                        mode=rollout.mode,
+                        allow_full_execution=rollout.allow_full_execution,
+                        reason=rollout.reason,
+                        requested_format=fmt,
+                        graph_preview_available=graph_document_preview is not None,
+                    )
                     if rollout.allow_full_execution and graph_document_preview is not None:
+                        _turn_graph_debug(
+                            settings,
+                            "render_authoritative_preview_reused",
+                            conversation_id=conv.public_id,
+                            user_id=user_id,
+                            requested_format=fmt,
+                        )
                         document_preview = graph_document_preview
                     elif getattr(settings, "turn_graph_enabled", False) and doc_graph_state is not None:
+                        _turn_graph_debug(
+                            settings,
+                            "render_wrapper_path_start",
+                            conversation_id=conv.public_id,
+                            user_id=user_id,
+                            requested_format=fmt,
+                        )
                         render_output = execute_render_artifact_tool(
                             doc_graph_state,
                             tool_input=ArtifactRenderToolInput(
@@ -2753,6 +2948,13 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                             raise RuntimeError(render_output.error or "Artifact rendering failed")
                         document_preview = doc_graph_state.artifact_result
                     else:
+                        _turn_graph_debug(
+                            settings,
+                            "render_legacy_path_start",
+                            conversation_id=conv.public_id,
+                            user_id=user_id,
+                            requested_format=fmt,
+                        )
                         document_preview = _run_with_timeout(
                             build_document_artifact,
                             title or "Fronei document", doc_body, doc_type, fmt,

@@ -63,5 +63,32 @@
     "system_prompt": "Extract structured factual claims from source content and bind every claim to its source URL.",
     "variables": ["question", "sources"],
     "status": "active"
+  },
+  {
+    "id": "prompt.content_strategist.default",
+    "agent_id": "content_strategist",
+    "version": "1.0.0",
+    "system_prompt": "You are a content strategist. Given a user goal and brand profile, produce a structured document brief as JSON with keys: title, doc_type, subtitle, outline.",
+    "developer_prompt": null,
+    "variables": ["goal", "brand_profile", "quality_mode"],
+    "status": "active"
+  },
+  {
+    "id": "prompt.evidence_binder.default",
+    "agent_id": "evidence_binder",
+    "version": "1.0.0",
+    "system_prompt": "You are an evidence binder. Given a document brief and research context, write a complete, well-structured markdown document body.",
+    "developer_prompt": null,
+    "variables": ["document_brief", "research_context"],
+    "status": "active"
+  },
+  {
+    "id": "prompt.deck_designer.default",
+    "agent_id": "deck_designer",
+    "version": "1.0.0",
+    "system_prompt": "You are a deck designer. Given a presentation brief and template grammar, write structured slide content as markdown with clear slide separators.",
+    "developer_prompt": null,
+    "variables": ["presentation_brief", "template_grammar"],
+    "status": "active"
   }
 ]

@@ -34,6 +34,13 @@ from app.services.planner import apply_confirmed_plan, passthrough, plan_to_dict
 from app.services.web_context import WebContextResult
 
 
+@pytest.fixture(autouse=True)
+def _isolate_mocks(monkeypatch):
+    """Reset function-scoped monkeypatches between stream tests."""
+
+    yield
+
+
 def _events(body: str) -> list[tuple[str, dict]]:
     parsed = []
     for part in body.split("\n\n"):

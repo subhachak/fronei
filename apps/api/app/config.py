@@ -98,6 +98,9 @@ class Settings(BaseSettings):
     # in shadow mode and admin traces can show graph events beside the current
     # execution log.
     turn_graph_enabled: bool = False
+    # Cutover switch: when true and turn_graph_enabled is also true, graph
+    # research/document agents become authoritative instead of shadow wrappers.
+    turn_graph_authoritative: bool = False
     # Phase D: enable the LLM-backed orchestrator agent node in the turn graph
     # shell. Existing pipeline remains the fallback on every error.
     orchestrator_enabled: bool = False

@@ -62,5 +62,34 @@
     "backend_ref": "documents.generate_document_output",
     "enabled": true,
     "version": "1.0.0"
+  },
+  {
+    "id": "render_pptx",
+    "name": "render_pptx",
+    "description": "Render a DeckPlan JSON or markdown slide outline into a downloadable PPTX presentation.",
+    "input_schema": {
+      "title": "str",
+      "content": "str",
+      "subtitle": "Optional[str]",
+      "template_id": "Optional[str]",
+      "user_id": "str",
+      "doc_type": "str"
+    },
+    "output_schema": {
+      "title": "str",
+      "filename": "str",
+      "markdown": "str",
+      "pptx_base64": "str",
+      "template_id": "Optional[str]"
+    },
+    "allowed_agent_ids": ["document_lead", "orchestrator"],
+    "guardrail_policy_ids": ["document.template_ownership"],
+    "timeout_ms": 90000,
+    "retry_policy": {"max_attempts": 1},
+    "idempotent": false,
+    "backend": "native",
+    "backend_ref": "documents.render_pptx_output",
+    "enabled": true,
+    "version": "1.0.0"
   }
 ]

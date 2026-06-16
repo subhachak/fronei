@@ -5538,12 +5538,12 @@ export default function Home() {
           message: activeTurn.progress.at(-1)?.message || 'Fronei is still working on this turn.',
           userMessage: activeUserMessage,
         })
-        void pollActiveTurn(id, activeTurn.id)
+        void pollActiveTurn(id, activeTurn.id, activeAssistantId)
       }
     } catch { setError('Failed to load conversation') }
   }
 
-  async function pollActiveTurn(convId: string, turnId: string) {
+  async function pollActiveTurn(convId: string, turnId: string, assistantMsgId?: number) {
     if (pollingTurnRef.current === turnId) return
     pollingTurnRef.current = turnId
     for (let attempt = 0; attempt < 240; attempt++) {
@@ -5604,7 +5604,7 @@ export default function Home() {
             ? { ...prev, status: turn.status, message: last.message || prev.message }
             : prev)
           setMessages(prev => prev.map(m =>
-            m.id < 0 && m.role === 'assistant'
+            m.role === 'assistant' && (m.id < 0 || m.id === assistantMsgId)
               ? {
                   ...m,
                   content: last.message || m.content,
@@ -6260,7 +6260,7 @@ export default function Home() {
             setStreaming(false)
             setRefining(false)
             setArtifactGenerating(false)
-            void pollActiveTurn(convId, turnId)
+            void pollActiveTurn(convId, turnId, tempAsstId)
 
           } else if (eventType === 'pipeline_log') {
             const step: PipelineStep = {

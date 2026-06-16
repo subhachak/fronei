@@ -122,3 +122,51 @@ def test_resume_from_synthesis_checkpoint_skips_research(monkeypatch):
     result = ResearchAgent(_load_from_files()).run(TurnGraphState(user_message="research", turn_id="t1"), SimpleNamespace(plan={}))
 
     assert result.answer == "Checkpoint answer"
+
+
+def test_resume_from_document_generate_checkpoint_skips_generation(monkeypatch):
+    payload = {
+        "document_brief": {"title": "Deck", "doc_type": "presentation"},
+        "document_content": "# Deck\n## Slide 1",
+        "pptx_base64": "PPTX",
+        "filename": "deck.pptx",
+    }
+    monkeypatch.setattr(JobCheckpoint, "load", lambda self, turn_id, stage: (payload, 0.9) if stage == "document.generate_complete" else (None, None))
+    monkeypatch.setattr(JobCheckpoint, "clear", lambda self, turn_id: None)
+    monkeypatch.setattr("app.services.agent_runtime.judge_service.JudgeService.evaluate", lambda *a, **kw: SimpleNamespace(status="pass", score=0.9, required_repairs=[], suggested_strategy=None))
+
+    def should_not_call(*args, **kwargs):
+        raise AssertionError("generation should be skipped")
+
+    agent = DocumentAgent(_load_from_files())
+    monkeypatch.setattr(agent, "_plan", should_not_call)
+    monkeypatch.setattr(agent, "_generate_content", should_not_call)
+    state = TurnGraphState(user_message="make deck", turn_id="t1")
+
+    result = agent.run(state, SimpleNamespace(plan={}))
+
+    assert state.checkpoint_key == "document.generate_complete"
+    assert result.markdown == "# Deck\n## Slide 1"
+    assert result.pptx_base64 == "PPTX"
+    assert result.filename == "deck.pptx"
+
+
+def test_resume_from_document_plan_checkpoint_skips_planning(monkeypatch):
+    plan_payload = {"document_brief": {"title": "Doc", "doc_type": "executive_report"}}
+    monkeypatch.setattr(JobCheckpoint, "load", lambda self, turn_id, stage: (plan_payload, 0.9) if stage == "document.plan_complete" else (None, None))
+    monkeypatch.setattr(JobCheckpoint, "save", lambda *a, **kw: None)
+    monkeypatch.setattr(JobCheckpoint, "clear", lambda self, turn_id: None)
+    monkeypatch.setattr("app.services.agent_runtime.tool_runner.ToolRunner.run", lambda *a, **kw: SimpleNamespace(output={"docx_base64": "DOCX", "filename": "doc.docx"}, latency_ms=1))
+    monkeypatch.setattr("app.services.agent_runtime.judge_service.JudgeService.evaluate", lambda *a, **kw: SimpleNamespace(status="pass", score=0.9, required_repairs=[], suggested_strategy=None))
+
+    agent = DocumentAgent(_load_from_files())
+    monkeypatch.setattr(agent, "_plan", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("planning should be skipped")))
+    monkeypatch.setattr(agent, "_judge_plan_loop", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("plan judge should be skipped")))
+    monkeypatch.setattr(agent, "_generate_content", lambda *a, **kw: SimpleNamespace(answer="# Doc", model_used="m", latency_ms=1, estimated_cost_usd=0))
+    state = TurnGraphState(user_message="make doc", turn_id="t1")
+
+    result = agent.run(state, SimpleNamespace(plan={}))
+
+    assert state.checkpoint_key == "document.plan_complete"
+    assert result.docx_base64 == "DOCX"
+    assert result.title == "Doc"

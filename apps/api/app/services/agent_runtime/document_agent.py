@@ -95,22 +95,57 @@ class DocumentAgent:
         if isinstance(getattr(decision, "plan", None), dict):
             state.plan = decision.plan
         quality_mode = getattr(state, "quality_mode", None) or "standard"
+        checkpoint = JobCheckpoint()
+        turn_id = str(getattr(state, "turn_id", "") or "")
 
-        state = content_plan_node(
-            state,
-            fn=lambda s: self._plan_stage(s, brand_profile, quality_mode),
-        )
-        brief = state.document_brief or _fallback_brief(state)
-
-        judge_result, brief = self._judge_plan_loop(state, brief)
-        if judge_result is not None:
-            logger.info(
-                "Document judge final: policy=%s status=%s score=%.2f",
-                self.agent_def.judge_policy_id,
-                judge_result.status,
-                judge_result.score,
+        resumed_generate = self._try_resume_generate(state, checkpoint, turn_id)
+        if resumed_generate is not None:
+            brief, content_obj, tool_result = resumed_generate
+            is_presentation = str(brief.get("doc_type") or "").lower() == "presentation"
+            template_id = brand_profile.get("template_id") or None
+            state.checkpoint_key = "document.generate_complete"
+            content_holder: list[Any] = [content_obj]
+            tool_result_holder: list[dict] = [tool_result]
+            state = qa_polish_node(
+                state,
+                fn=lambda s: self._qa_repair_stage(
+                    s,
+                    content_obj,
+                    brief,
+                    is_presentation,
+                    decision,
+                    None,
+                    _extract_research_summary(state),
+                    template_id,
+                    content_holder,
+                    tool_result_holder,
+                ),
             )
-        state.document_brief = brief
+            content_obj = content_holder[0] if content_holder else content_obj
+            tool_result = tool_result_holder[0] if tool_result_holder else tool_result
+            state = final_preview_node(state)
+            return self._build_document_result(state, brief, content_obj, tool_result)
+
+        resumed_plan = self._try_resume_plan(state, checkpoint, turn_id)
+        if resumed_plan is not None:
+            state.checkpoint_key = "document.plan_complete"
+            brief = resumed_plan
+        else:
+            state = content_plan_node(
+                state,
+                fn=lambda s: self._plan_stage(s, brand_profile, quality_mode),
+            )
+            brief = state.document_brief or _fallback_brief(state)
+
+            judge_result, brief = self._judge_plan_loop(state, brief)
+            if judge_result is not None:
+                logger.info(
+                    "Document judge final: policy=%s status=%s score=%.2f",
+                    self.agent_def.judge_policy_id,
+                    judge_result.status,
+                    judge_result.score,
+                )
+            state.document_brief = brief
 
         is_presentation = str(brief.get("doc_type") or "").lower() == "presentation"
         template_id = brand_profile.get("template_id") or None
@@ -163,6 +198,61 @@ class DocumentAgent:
         state = final_preview_node(state)
 
         return self._build_document_result(state, brief, content_obj, tool_result)
+
+    def _try_resume_plan(
+        self,
+        state: TurnGraphState,
+        checkpoint: JobCheckpoint,
+        turn_id: str,
+    ) -> dict | None:
+        payload, score = checkpoint.load(turn_id, "document.plan_complete")
+        if not payload or not checkpoint.should_trust(score):
+            return None
+        brief = payload.get("document_brief")
+        if not isinstance(brief, dict):
+            return None
+        state.document_brief = brief
+        return brief
+
+    def _try_resume_generate(
+        self,
+        state: TurnGraphState,
+        checkpoint: JobCheckpoint,
+        turn_id: str,
+    ) -> tuple[dict, Any, dict] | None:
+        payload, score = checkpoint.load(turn_id, "document.generate_complete")
+        if not payload or not checkpoint.should_trust(score):
+            return None
+
+        brief = payload.get("document_brief")
+        if not isinstance(brief, dict):
+            plan_payload, plan_score = checkpoint.load(turn_id, "document.plan_complete")
+            if plan_payload and checkpoint.should_trust(plan_score):
+                candidate = plan_payload.get("document_brief")
+                if isinstance(candidate, dict):
+                    brief = candidate
+        if not isinstance(brief, dict):
+            brief = _fallback_brief(state)
+            filename = str(payload.get("filename") or "")
+            if payload.get("pptx_base64") or filename.lower().endswith(".pptx"):
+                brief["doc_type"] = "presentation"
+
+        answer = str(payload.get("document_content") or "")
+        state.document_brief = brief
+        state.document_content = answer
+        content_obj = SimpleNamespace(
+            answer=answer,
+            model_used="checkpoint",
+            latency_ms=0,
+            estimated_cost_usd=0.0,
+        )
+        tool_result = {
+            "docx_base64": str(payload.get("docx_base64") or ""),
+            "pptx_base64": str(payload.get("pptx_base64") or ""),
+            "filename": str(payload.get("filename") or _fallback_filename(str(brief.get("title") or "document"))),
+            "tool_latency_ms": 0,
+        }
+        return brief, content_obj, tool_result
 
     def _plan(self, state: TurnGraphState, brand_profile: dict, quality_mode: str):
         agent = SubAgentRunner("content_strategist", self.registry)
@@ -481,6 +571,7 @@ class DocumentAgent:
             str(getattr(state, "turn_id", "") or ""),
             "document.generate_complete",
             {
+                "document_brief": brief,
                 "document_content": state.document_content or "",
                 "docx_base64": docx_base64,
                 "pptx_base64": pptx_base64,
@@ -540,6 +631,7 @@ class DocumentAgent:
         best_content = content_obj
         best_tool_result = tool_result_holder[0] if tool_result_holder else {}
         best_score = float(judge_result.score or 0.0)
+        best_status = judge_result.status
         consecutive_regressions = 0
 
         for attempt in range(max_iters):
@@ -587,6 +679,7 @@ class DocumentAgent:
                 best_content = repaired_obj
                 best_tool_result = latest_tool
                 best_score = next_score
+                best_status = next_judge.status
                 consecutive_regressions = 0
             else:
                 consecutive_regressions += 1
@@ -604,7 +697,7 @@ class DocumentAgent:
             tool_result_holder[0] = best_tool_result
         else:
             tool_result_holder.append(best_tool_result)
-        return {"judge_status": judge_result.status, "judge_score": judge_result.score}
+        return {"judge_status": best_status, "judge_score": best_score}
 
     def _regenerate_with_repairs(
         self,

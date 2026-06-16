@@ -16,6 +16,7 @@ from app.services.chat_pipeline import (
 )
 from app.services.planner import Plan, passthrough, plan_from_dict, plan_to_dict, run_planner
 from app.services.prompts import ARTIFACT_PROMPTS
+from app.services.turn_graph.graph import _shadow_guardrail_hook
 from app.services.turn_graph.state import TurnGraphState
 from app.services.turn_graph.tools import select_tools_from_state
 
@@ -201,5 +202,6 @@ def run_planning_shadow_graph(
     except Exception as exc:
         state.status = "failed"
         state.error = str(exc)
+    _shadow_guardrail_hook(state, settings)
     state.add_event("end", state.status, "Planning shadow graph finished")
     return state

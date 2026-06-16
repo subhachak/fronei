@@ -24,6 +24,7 @@ from app.db.models import (
     ConversationMessage,
     ConversationTurn,
     DocumentTemplate,
+    GuardrailEvent,
     RequestLog,
     ResearchClaim,
     ResearchFinding,
@@ -940,6 +941,46 @@ def turns(
         return {"items": [_turn_row(turn, conv_public_id) for turn, conv_public_id in rows]}
     finally:
         db.close()
+
+
+@router.get("/turns/{turn_id}/guardrail-events")
+def turn_guardrail_events(
+    turn_id: str,
+    admin: AdminPrincipal = Depends(require_admin),
+) -> dict:
+    db = SessionLocal()
+    try:
+        turn = db.query(ConversationTurn).filter(ConversationTurn.public_id == turn_id).first()
+        if not turn:
+            raise HTTPException(status_code=404, detail="Turn not found")
+        rows = (
+            db.query(GuardrailEvent)
+            .filter(GuardrailEvent.turn_id == turn.public_id)
+            .order_by(GuardrailEvent.created_at.asc())
+            .all()
+        )
+        return {
+            "turn_id": turn.public_id,
+            "events": [_guardrail_event_row(row) for row in rows],
+        }
+    finally:
+        db.close()
+
+
+def _guardrail_event_row(row: GuardrailEvent) -> dict:
+    try:
+        triggered_checks = json.loads(row.triggered_checks_json or "[]")
+    except (TypeError, ValueError):
+        triggered_checks = []
+    return {
+        "policy_id": row.policy_id,
+        "boundary": row.boundary,
+        "action": row.action,
+        "triggered_checks": triggered_checks if isinstance(triggered_checks, list) else [],
+        "reason": row.reason,
+        "tool_name": row.tool_name,
+        "created_at": _fmt(row.created_at),
+    }
 
 
 @router.post("/turns/{turn_id}/cancel")

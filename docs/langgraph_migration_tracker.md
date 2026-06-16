@@ -29,6 +29,28 @@ Status legend: `todo`, `in_progress`, `done`, `blocked`.
 | 7 | done | Admin graph observability | Admin turn rows expose graph trace plus summary path/timing/tools/canary. |
 | 8 | done | Cutover / cleanup | Central rollout helper enforces kill switch and answer-only canary; full backend suite is green. |
 
+## Multi-Agent v2 Architecture
+
+The next architecture layer is documented in
+[`docs/multi_agent_orchestrator_architecture.md`](multi_agent_orchestrator_architecture.md).
+It extends this graph migration into a clean runtime boundary for a full
+orchestrator-led multi-agent system with configurable agents, prompts, goals,
+judges, tools, and first-class guardrails. The existing app shell remains in
+place; old planner/research/document branches are replaced path by path and
+deleted after stable cutover.
+
+New roadmap phases:
+
+- [x] A - Clean runtime and policy foundation.
+- [x] B - Guardrail control plane.
+- [ ] C - Agent and prompt registry.
+- [ ] D - Orchestrator agent.
+- [ ] E - Deep research multi-agent subtree.
+- [ ] F - Document multi-agent subtree.
+- [ ] G - Admin dashboard.
+- [ ] H - Feedback loop.
+- [ ] I - Cutover and cleanup.
+
 ## Phase 0 Checklist
 
 - [x] Create living migration tracker.
@@ -172,6 +194,11 @@ MCP candidates after the internal tool contract stabilizes:
 
 ## Latest Updates
 
+- 2026-06-15: Implemented Phase B guardrail control plane: deterministic guardrail service, guardrail/goal/agent-run tables, shadow graph hook, admin guardrail-events endpoint, adapters, migration, and offline tests. Full backend suite: 392 passed, 4 skipped.
+- 2026-06-15: Implemented Phase A foundation: new inert `agent_runtime` package, core runtime schemas, file-backed default agents/prompts/model policies/tools/guardrails, compatibility context/goal adapters, registry loader, and focused tests.
+- 2026-06-15: Closed architecture consistency gaps: added missing document agents, triage placement, `ToolDefinition`, typed runtime budget, direct-with-web tool path, goal locks, Phase A schema scope, and CI eval DoD.
+- 2026-06-15: Refined multi-agent architecture with concurrency policy, failure taxonomy, memory invocation rules, MCP boundary, model policies, durable jobs, tenant isolation, latency targets, early eval gates, and product outcome mapping.
+- 2026-06-15: Added multi-agent orchestrator architecture and roadmap with guardrails as a first-class control layer.
 - 2026-06-15: Completed Phase 8 after full backend validation: 375 passed, 4 skipped.
 - 2026-06-15: Added MCP adapter catalog, admin graph summary rollups, and centralized graph rollout guardrails.
 - 2026-06-15: Wired main document generation/render branch through graph document adapters behind `turn_graph_enabled`; research-followup document path remains on current pipeline for now.

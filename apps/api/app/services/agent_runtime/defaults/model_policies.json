@@ -1,0 +1,32 @@
+[
+  {
+    "id": "model.fast",
+    "name": "Fast low-cost model policy",
+    "allowed_models": ["openrouter/qwen/qwen3.7-max", "gpt-4.1-mini"],
+    "primary_model": "openrouter/qwen/qwen3.7-max",
+    "fallback_models": ["gpt-4.1-mini"],
+    "max_input_tokens": 16000,
+    "max_output_tokens": 2000,
+    "max_cost_usd_per_call": 0.05,
+    "timeout_ms": 20000,
+    "parallel_fallback_enabled": false,
+    "quality_modes": ["draft", "standard"],
+    "sensitive_domain_allowed": true,
+    "enabled": true
+  },
+  {
+    "id": "model.executive",
+    "name": "Executive quality model policy",
+    "allowed_models": ["claude-sonnet-4-6", "openrouter/qwen/qwen3.7-max"],
+    "primary_model": "claude-sonnet-4-6",
+    "fallback_models": ["openrouter/qwen/qwen3.7-max"],
+    "max_input_tokens": 64000,
+    "max_output_tokens": 6000,
+    "max_cost_usd_per_call": 0.50,
+    "timeout_ms": 60000,
+    "parallel_fallback_enabled": false,
+    "quality_modes": ["standard", "executive"],
+    "sensitive_domain_allowed": true,
+    "enabled": true
+  }
+]

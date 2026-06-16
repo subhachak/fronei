@@ -86,7 +86,9 @@ def _orchestrator_node(state: TurnGraphState, settings) -> tuple[TurnGraphState,
     from app.services.agent_runtime.direct_answer import DirectAnswerAgent
     from app.services.agent_runtime.orchestrator import OrchestratorAgent
 
+    node_db = None
     try:
+        node_db = SessionLocal()
         registry = load_default_registry()
         orchestrator = OrchestratorAgent(registry)
 
@@ -129,7 +131,7 @@ def _orchestrator_node(state: TurnGraphState, settings) -> tuple[TurnGraphState,
         if plan_action == "block":
             state.final_answer = "I can't complete that request."
             state.status = "completed"
-            _write_orchestrator_trace(state, decision, registry, db_session=None)
+            _write_orchestrator_trace(state, decision, registry, db_session=node_db)
             return state, True
         if plan_action == "ask_user":
             state.final_answer = (
@@ -138,13 +140,13 @@ def _orchestrator_node(state: TurnGraphState, settings) -> tuple[TurnGraphState,
                 else "I need more information before proceeding."
             )
             state.status = "completed"
-            _write_orchestrator_trace(state, decision, registry, db_session=None)
+            _write_orchestrator_trace(state, decision, registry, db_session=node_db)
             return state, True
 
         if decision.route == "clarify":
             state.final_answer = decision.clarification_question or "Could you clarify what you're looking for?"
             state.status = "completed"
-            _write_orchestrator_trace(state, decision, registry, db_session=None)
+            _write_orchestrator_trace(state, decision, registry, db_session=node_db)
             return state, True
 
         if decision.route == "direct_answer":
@@ -153,7 +155,7 @@ def _orchestrator_node(state: TurnGraphState, settings) -> tuple[TurnGraphState,
             state.final_answer = da_result.answer
             state.status = "completed"
             state.add_event("direct_answer_agent", "completed", f"Answered in {da_result.latency_ms}ms")
-            _write_orchestrator_trace(state, decision, registry, db_session=None, da_result=da_result)
+            _write_orchestrator_trace(state, decision, registry, db_session=node_db, da_result=da_result)
             return state, True
 
         if decision.route == "research":
@@ -175,14 +177,14 @@ def _orchestrator_node(state: TurnGraphState, settings) -> tuple[TurnGraphState,
                 "completed",
                 f"Research completed: {len(ra_result.sources)} sources, {ra_result.latency_ms}ms",
             )
-            _write_orchestrator_trace(state, decision, registry, db_session=None, ra_result=ra_result)
+            _write_orchestrator_trace(state, decision, registry, db_session=node_db, ra_result=ra_result)
             return state, True
 
         if decision.route == "document":
             from app.services.agent_runtime.document_agent import DocumentAgent
 
             document_agent = DocumentAgent(registry)
-            doc_result = document_agent.run(state, decision)
+            doc_result = document_agent.run(state, decision, db=node_db)
             state.final_answer = doc_result.markdown
             state.document_result = {
                 "title": doc_result.title,
@@ -201,7 +203,7 @@ def _orchestrator_node(state: TurnGraphState, settings) -> tuple[TurnGraphState,
                 "completed",
                 f"Document generated: {doc_result.title!r} ({doc_result.doc_type})",
             )
-            _write_orchestrator_trace(state, decision, registry, db_session=None, doc_result=doc_result)
+            _write_orchestrator_trace(state, decision, registry, db_session=node_db, doc_result=doc_result)
             return state, True
 
         state.add_event(
@@ -209,11 +211,14 @@ def _orchestrator_node(state: TurnGraphState, settings) -> tuple[TurnGraphState,
             "deferred",
             f"Route {decision.route} deferred to existing pipeline",
         )
-        _write_orchestrator_trace(state, decision, registry, db_session=None)
+        _write_orchestrator_trace(state, decision, registry, db_session=node_db)
         return state, False
     except Exception:
         logger.exception("Orchestrator node failed; falling back to existing pipeline")
         return state, False
+    finally:
+        if node_db is not None:
+            node_db.close()
 
 
 def _write_orchestrator_trace(
@@ -229,7 +234,6 @@ def _write_orchestrator_trace(
     """Write Phase-D orchestrator trace rows. Never raises."""
 
     try:
-        # TODO Phase E: replace standalone SessionLocal usage with request/job-scoped DI session.
         db = db_session or SessionLocal()
         should_close = db_session is None
         try:

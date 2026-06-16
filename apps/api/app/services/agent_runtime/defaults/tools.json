@@ -3,12 +3,23 @@
     "id": "answer_directly",
     "name": "answer_directly",
     "description": "Generate a normal chat answer from the current goal and context.",
-    "input_schema": {"query": "str", "context": "dict"},
-    "output_schema": {"answer": "str", "model_used": "str"},
-    "allowed_agent_ids": ["direct_answer_agent", "orchestrator"],
+    "input_schema": {
+      "query": "str",
+      "context": "dict"
+    },
+    "output_schema": {
+      "answer": "str",
+      "model_used": "str"
+    },
+    "allowed_agent_ids": [
+      "direct_answer_agent",
+      "orchestrator"
+    ],
     "guardrail_policy_ids": [],
     "timeout_ms": 30000,
-    "retry_policy": {"max_attempts": 1},
+    "retry_policy": {
+      "max_attempts": 1
+    },
     "idempotent": true,
     "backend": "native",
     "backend_ref": "turn_graph.answer_directly",
@@ -19,12 +30,30 @@
     "id": "web_search",
     "name": "web_search",
     "description": "Search the public web for current information.",
-    "input_schema": {"query": "str", "recency": "Optional[str]", "max_results": "int"},
-    "output_schema": {"sources": "list[WebSource]", "provider": "str"},
-    "allowed_agent_ids": ["source_scout", "direct_answer_agent", "research_lead"],
-    "guardrail_policy_ids": ["tool.ssrf_prevention", "tool.output_sanitize"],
+    "input_schema": {
+      "query": "str",
+      "recency": "Optional[str]",
+      "max_results": "int"
+    },
+    "output_schema": {
+      "sources": "list[WebSource]",
+      "provider": "str"
+    },
+    "allowed_agent_ids": [
+      "source_scout",
+      "direct_answer_agent",
+      "research_lead"
+    ],
+    "guardrail_policy_ids": [
+      "tool.ssrf_prevention",
+      "tool.output_sanitize",
+      "tool.source_content_public"
+    ],
     "timeout_ms": 15000,
-    "retry_policy": {"max_attempts": 2, "backoff_ms": 500},
+    "retry_policy": {
+      "max_attempts": 2,
+      "backoff_ms": 500
+    },
     "idempotent": true,
     "backend": "mcp",
     "backend_ref": "mcp.web.search",
@@ -35,12 +64,29 @@
     "id": "read_url",
     "name": "read_url",
     "description": "Extract readable content from a known public URL.",
-    "input_schema": {"url": "str"},
-    "output_schema": {"content": "str", "url": "str", "provider": "str"},
-    "allowed_agent_ids": ["source_reader", "direct_answer_agent", "research_lead"],
-    "guardrail_policy_ids": ["tool.ssrf_prevention", "tool.output_sanitize"],
+    "input_schema": {
+      "url": "str"
+    },
+    "output_schema": {
+      "content": "str",
+      "url": "str",
+      "provider": "str"
+    },
+    "allowed_agent_ids": [
+      "source_reader",
+      "direct_answer_agent",
+      "research_lead"
+    ],
+    "guardrail_policy_ids": [
+      "tool.ssrf_prevention",
+      "tool.output_sanitize",
+      "tool.source_content_public"
+    ],
     "timeout_ms": 15000,
-    "retry_policy": {"max_attempts": 2, "backoff_ms": 500},
+    "retry_policy": {
+      "max_attempts": 2,
+      "backoff_ms": 500
+    },
     "idempotent": true,
     "backend": "mcp",
     "backend_ref": "mcp.web.search",
@@ -51,12 +97,26 @@
     "id": "generate_document",
     "name": "generate_document",
     "description": "Generate structured document or presentation content.",
-    "input_schema": {"goal": "Goal", "document_brief": "dict"},
-    "output_schema": {"document_plan": "dict"},
-    "allowed_agent_ids": ["document_lead", "content_strategist", "evidence_binder", "orchestrator"],
-    "guardrail_policy_ids": ["document.template_ownership"],
+    "input_schema": {
+      "goal": "Goal",
+      "document_brief": "dict"
+    },
+    "output_schema": {
+      "document_plan": "dict"
+    },
+    "allowed_agent_ids": [
+      "document_lead",
+      "content_strategist",
+      "evidence_binder",
+      "orchestrator"
+    ],
+    "guardrail_policy_ids": [
+      "document.template_ownership"
+    ],
     "timeout_ms": 60000,
-    "retry_policy": {"max_attempts": 1},
+    "retry_policy": {
+      "max_attempts": 1
+    },
     "idempotent": false,
     "backend": "native",
     "backend_ref": "documents.generate_document_output",
@@ -82,13 +142,80 @@
       "pptx_base64": "str",
       "template_id": "Optional[str]"
     },
-    "allowed_agent_ids": ["document_lead", "deck_designer", "orchestrator"],
-    "guardrail_policy_ids": ["document.template_ownership"],
+    "allowed_agent_ids": [
+      "document_lead",
+      "deck_designer",
+      "orchestrator"
+    ],
+    "guardrail_policy_ids": [
+      "document.template_ownership"
+    ],
     "timeout_ms": 90000,
-    "retry_policy": {"max_attempts": 1},
+    "retry_policy": {
+      "max_attempts": 1
+    },
     "idempotent": false,
     "backend": "native",
     "backend_ref": "documents.render_pptx_output",
+    "enabled": true,
+    "version": "1.0.0"
+  },
+  {
+    "id": "memory_read",
+    "name": "memory_read",
+    "description": "Fetch ranked personal memory items for the current user. Returns top memories relevant to the current task.",
+    "input_schema": {
+      "category_hint": "Optional[str]"
+    },
+    "output_schema": {
+      "memories": "list[str]",
+      "count": "int",
+      "truncated": "bool"
+    },
+    "allowed_agent_ids": [
+      "direct_answer_agent",
+      "research_synthesizer",
+      "content_strategist"
+    ],
+    "required_user_roles": [],
+    "guardrail_policy_ids": [],
+    "timeout_ms": 5000,
+    "retry_policy": {
+      "max_attempts": 1
+    },
+    "idempotent": true,
+    "backend": "native",
+    "backend_ref": "memory_tool.read_scoped_memory",
+    "enabled": true,
+    "version": "1.0.0"
+  },
+  {
+    "id": "admin_override_judge",
+    "name": "admin_override_judge",
+    "description": "Override judge policy decision for a specific turn. Admin-only.",
+    "input_schema": {
+      "turn_id": "str",
+      "new_status": "str",
+      "reason": "str"
+    },
+    "output_schema": {
+      "overridden": "bool",
+      "turn_id": "str"
+    },
+    "allowed_agent_ids": [
+      "orchestrator"
+    ],
+    "required_user_roles": [
+      "admin"
+    ],
+    "guardrail_policy_ids": [],
+    "timeout_ms": 5000,
+    "retry_policy": {
+      "max_attempts": 1
+    },
+    "idempotent": false,
+    "backend": "native",
+    "backend_ref": "admin.override_judge",
     "enabled": true,
     "version": "1.0.0"
   }

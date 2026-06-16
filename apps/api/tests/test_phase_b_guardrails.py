@@ -113,10 +113,7 @@ def test_evaluate_boundary_returns_all_matching_policies():
         _context(tool_name="generate_document", tool_input={"template_id": "tpl_1"}),
     )
 
-    assert {decision.policy_id for decision in decisions} >= {
-        "tool.ssrf_prevention",
-        "document.template_ownership",
-    }
+    assert {decision.policy_id for decision in decisions} == {"document.template_ownership"}
 
 
 def test_unknown_check_type_returns_allow_without_raising():

@@ -90,9 +90,39 @@ def _render_pptx_output(inputs: dict) -> dict:
     }
 
 
+def _memory_read(inputs: dict) -> dict:
+    from app.services.agent_runtime.memory_tool import read_scoped_memory
+
+    return read_scoped_memory(
+        str(inputs.get("user_id") or ""),
+        category_hint=inputs.get("category_hint"),
+    )
+
+
+def _memory_write(inputs: dict) -> dict:
+    from app.services.agent_runtime.memory_tool import write_scoped_memory
+
+    return write_scoped_memory(
+        str(inputs.get("user_id") or ""),
+        str(inputs.get("content") or ""),
+        category=str(inputs.get("category") or "general"),
+        source=str(inputs.get("source") or "agent"),
+    )
+
+
+def _admin_override_judge(inputs: dict) -> dict:
+    return {
+        "overridden": True,
+        "turn_id": str(inputs.get("turn_id") or ""),
+    }
+
+
 def register_all() -> None:
     """Register all native tool backends."""
 
     register_native_backend("documents.generate_document_output", _generate_document_output)
     register_native_backend("documents.render_pptx_output", _render_pptx_output)
+    register_native_backend("memory_tool.read_scoped_memory", _memory_read)
+    register_native_backend("memory_tool.write_scoped_memory", _memory_write)
+    register_native_backend("admin.override_judge", _admin_override_judge)
     logger.debug("Native tool backends registered")

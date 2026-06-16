@@ -206,9 +206,10 @@ def test_document_agent_calls_judge_after_plan(monkeypatch):
     result = DocumentAgent(_load_from_files()).run(_state("Create a board memo"), _decision())
 
     assert result.title == "Board Memo"
-    assert len(calls) == 1
+    assert len(calls) == 2
     assert calls[0][0] == "document_judge"
     assert '"title": "Board Memo"' in calls[0][1]
+    assert calls[1] == ("document_judge", "# Board Memo\n\nContent.")
 
 
 def _patch_research_run(monkeypatch) -> None:

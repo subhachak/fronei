@@ -381,14 +381,31 @@ def max_boundary_action(decisions: list[GuardrailDecision]) -> GuardrailAction:
     return result
 
 
-def _template_belongs_to_user_db(template_id: str, user_id: str) -> bool:
-    # TODO Phase E: replace standalone SessionLocal usage with request/job-scoped DI session.
-    db = SessionLocal()
-    try:
-        return db.query(DocumentTemplate).filter(
+def _query_template_ownership(db, template_id: str, user_id: str) -> bool:
+    """Run the template ownership DB query against an already-open session."""
+
+    return (
+        db.query(DocumentTemplate)
+        .filter(
             DocumentTemplate.public_id == template_id,
             DocumentTemplate.user_id == user_id,
             DocumentTemplate.is_active.is_(True),
-        ).first() is not None
+        )
+        .first()
+        is not None
+    )
+
+
+def _template_belongs_to_user_db(template_id: str, user_id: str) -> bool:
+    """Open a standalone session and check template ownership.
+
+    This signature is kept for default guardrail lookups and tests. When a
+    request-scoped session is available, pass a closure over
+    _query_template_ownership to GuardrailService instead.
+    """
+
+    db = SessionLocal()
+    try:
+        return _query_template_ownership(db, template_id, user_id)
     finally:
         db.close()

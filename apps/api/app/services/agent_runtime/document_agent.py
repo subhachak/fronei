@@ -9,7 +9,11 @@ from types import SimpleNamespace
 from typing import Any
 
 from app.services.agent_runtime.adapters import model_policy_to_route
-from app.services.agent_runtime.guardrails import GuardrailService
+from app.services.agent_runtime.guardrails import (
+    GuardrailService,
+    _query_template_ownership,
+    _template_belongs_to_user_db,
+)
 from app.services.agent_runtime.registry import RuntimeRegistry
 from app.services.agent_runtime.tool_runner import (
     ToolExecutionError,
@@ -49,13 +53,29 @@ class DocumentAgent:
         self.model_policy = registry.model_policy(self.agent_def.model_policy_id)
         self.prompt = registry.prompt(self.agent_def.prompt_template_id)
 
-    def run(self, state: TurnGraphState, decision) -> DocumentResult:
-        """Run the document pipeline. Never raises."""
+    def run(self, state: TurnGraphState, decision, *, db=None) -> DocumentResult:
+        """Run the document pipeline. Never raises.
+
+        Args:
+            state: Current turn graph state.
+            decision: Orchestrator routing decision.
+            db: Optional request-scoped SQLAlchemy session. When provided, the
+                template ownership guardrail and grammar fetcher use it directly
+                rather than opening their own connections. When None, each
+                function opens and closes its own session as a fallback.
+        """
 
         tool_runner = ToolRunner(
             registry=self.registry,
             agent_id="document_lead",
-            guardrail_service=GuardrailService(self.registry),
+            guardrail_service=GuardrailService(
+                self.registry,
+                template_owner_lookup=(
+                    (lambda tid, uid: _query_template_ownership(db, tid, uid))
+                    if db is not None
+                    else _template_belongs_to_user_db
+                ),
+            ),
         )
         brand_profile = _extract_brand_profile(decision.plan)
         quality_mode = getattr(state, "quality_mode", None) or "standard"
@@ -85,6 +105,7 @@ class DocumentAgent:
                 user_id=str(getattr(state, "user_id", "") or ""),
                 template_id=template_id,
                 brief=brief,
+                db=db,
             )
 
         research_summary: str | None = None
@@ -235,15 +256,37 @@ class DocumentAgent:
         )
 
 
-def _fetch_template_grammar(user_id: str, template_id: str | None, brief: dict | None) -> dict:
-    """Fetch template grammar for presentation content generation. Never raises."""
+def _fetch_template_grammar(
+    user_id: str,
+    template_id: str | None,
+    brief: dict | None,
+    db=None,
+) -> dict:
+    """Fetch template grammar for presentation content generation. Never raises.
+
+    Uses the provided session if given; otherwise opens its own.
+    """
+
+    from app.services.document_templates import template_grammar_for_selection
+
+    def _call(session) -> dict:
+        return template_grammar_for_selection(session, user_id, template_id, brief)
+
+    if db is not None:
+        try:
+            return _call(db)
+        except Exception:
+            logger.warning(
+                "Could not fetch template grammar for %r; proceeding without it",
+                template_id,
+            )
+            return {}
 
     from app.db.models import SessionLocal
-    from app.services.document_templates import template_grammar_for_selection
 
     try:
         with SessionLocal() as db:
-            return template_grammar_for_selection(db, user_id, template_id, brief)
+            return _call(db)
     except Exception:
         if template_id:
             logger.warning(

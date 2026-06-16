@@ -1633,6 +1633,82 @@ def test_execute_plan_confirmed_expert_mode_bypasses_followup_fast_path(client, 
     assert "Expert-verified findings" in done["answer"]
 
 
+def test_execute_plan_confirmed_deep_research_without_mode_defaults_to_deep(client, monkeypatch):
+    """If the popup sends deep_research=true without research_mode, execute-plan
+    must still run deep research instead of silently downgrading to quick.
+    """
+
+    c, Session = client
+
+    plan = passthrough("Research this thoroughly.")
+    plan.intent = "Run deep research."
+    plan.enriched_prompt = "Run deep research."
+    plan.needs_web_search = True
+    plan.recommend_deep_research = True
+
+    with Session() as db:
+        conv = Conversation(user_id="u1", title="Research", profile="balanced", message_count=1)
+        db.add(conv)
+        db.flush()
+        user_msg = ConversationMessage(
+            conversation_id=conv.id,
+            role="user",
+            content="Research this thoroughly.",
+            plan_json=json.dumps(plan_to_dict(plan)),
+        )
+        db.add(user_msg)
+        db.commit()
+        conv_id = conv.public_id
+        message_id = user_msg.id
+
+    captured: dict = {}
+    route = RouteDecision(
+        task_type="research",
+        complexity="high",
+        profile="balanced",
+        primary_model="gpt-4.1",
+        fallbacks=[],
+        reason="confirmed mode fallback test",
+    )
+
+    def fake_run_research(_db, **kwargs):
+        captured["mode"] = kwargs["mode"]
+        kwargs["progress"]("searching", "Searching…", {"query": kwargs["query"]})
+        return ResearchPipelineResult(
+            run=SimpleNamespace(id=101, confidence="medium"),
+            result=LLMResult(
+                answer="Deep research result [S1].",
+                model_used="gpt-4.1",
+                latency_ms=80,
+                prompt_tokens=20,
+                completion_tokens=30,
+                estimated_cost_usd=0.004,
+            ),
+            route=route,
+            source_logs=[{"title": "Source", "url": "https://example.com/source"}],
+            questions=["Research this thoroughly."],
+            gaps=[],
+            contradictions=[],
+            verifier_notes=None,
+        )
+
+    monkeypatch.setattr(conversations, "run_research", fake_run_research)
+
+    response = c.post(
+        f"/conversations/{conv_id}/messages/{message_id}/execute-plan",
+        json={"confirmed_plan": {"deep_research": True}},
+    )
+
+    assert response.status_code == 200
+    events = _events(response.text)
+    assert events[-1][0] == "job_started"
+    turn = _wait_for_completed_turn(Session, events[-1][1]["turn_id"])
+    done = json.loads(turn.result_json)
+
+    assert captured["mode"] == "deep"
+    assert done["research_run_id"] == 101
+
+
 def test_execute_plan_with_clarifications_reaches_generation(client, monkeypatch):
     """Regression test for the plan-confirmation popup showing open_questions
     with no way for the user to answer them. The PlanModal now lets the user

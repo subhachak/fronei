@@ -22,6 +22,13 @@ from app.services.agent_runtime.tool_runner import (
     ToolNotPermittedError,
     ToolRunner,
 )
+from app.services.turn_graph.document import (
+    content_plan_node,
+    design_plan_node,
+    final_preview_node,
+    qa_polish_node,
+    render_artifact_node,
+)
 from app.services.turn_graph.state import TurnGraphState
 
 
@@ -56,7 +63,7 @@ class DocumentAgent:
         self.prompt = registry.prompt(self.agent_def.prompt_template_id)
 
     def run(self, state: TurnGraphState, decision, *, db=None) -> DocumentResult:
-        """Run the document pipeline. Never raises.
+        """Run the document pipeline through all five stage nodes. Never raises.
 
         Args:
             state: Current turn graph state.
@@ -80,140 +87,64 @@ class DocumentAgent:
             ),
         )
         brand_profile = _extract_brand_profile(decision.plan)
+        if isinstance(getattr(decision, "plan", None), dict):
+            state.plan = decision.plan
         quality_mode = getattr(state, "quality_mode", None) or "standard"
 
-        try:
-            planning_result = self._plan(state, brand_profile, quality_mode)
-        except Exception:
-            logger.exception("Document planning failed; using fallback brief")
-            planning_result = SimpleNamespace(
-                answer=json.dumps({
-                    "document_brief": {
-                        "title": state.user_message[:120],
-                        "doc_type": "executive_report",
-                    }
-                }),
-                model_used="unavailable",
-                latency_ms=0,
-                estimated_cost_usd=0.0,
-            )
-        brief = _extract_document_brief(planning_result.answer, state.user_message)
-        judge_result = self._judge_plan(state, brief)
+        state = content_plan_node(
+            state,
+            fn=lambda s: self._plan_stage(s, brand_profile, quality_mode),
+        )
+        brief = state.document_brief or _fallback_brief(state)
+
+        judge_result, brief = self._judge_plan_loop(state, brief)
         if judge_result is not None:
             logger.info(
-                "Document judge: policy=%s status=%s score=%.2f",
+                "Document judge final: policy=%s status=%s score=%.2f",
                 self.agent_def.judge_policy_id,
                 judge_result.status,
                 judge_result.score,
             )
+        state.document_brief = brief
 
         is_presentation = str(brief.get("doc_type") or "").lower() == "presentation"
         template_id = brand_profile.get("template_id") or None
+        grammar_holder: list[dict] = []
+        state = design_plan_node(
+            state,
+            fn=lambda s: self._design_stage(s, brief, is_presentation, template_id, db, grammar_holder),
+        )
+        grammar = grammar_holder[0] if grammar_holder else None
+        research_summary = _extract_research_summary(state)
 
-        grammar: dict | None = None
-        if is_presentation:
-            grammar = _fetch_template_grammar(
-                user_id=str(getattr(state, "user_id", "") or ""),
-                template_id=template_id,
-                brief=brief,
-                db=db,
-            )
-
-        research_summary: str | None = None
-        if isinstance(getattr(state, "research_result", None), dict):
-            research_summary = (
-                state.research_result.get("answer")
-                or state.research_result.get("summary")
-                or None
-            )
-
-        try:
-            content_result = self._generate_content(
-                state,
+        content_holder: list[Any] = []
+        tool_result_holder: list[dict] = []
+        state = render_artifact_node(
+            state,
+            fn=lambda s: self._generate_stage(
+                s,
                 brief,
                 decision,
-                grammar=grammar,
-                research_summary=research_summary,
-            )
-        except Exception:
-            logger.exception("Document content generation failed; using fallback content")
-            title = brief.get("title") or state.user_message[:120] or "Document"
-            content_result = SimpleNamespace(
-                answer=f"# {title}\n\nI couldn't generate the full document content right now.",
-                model_used=getattr(planning_result, "model_used", "unavailable"),
-                latency_ms=0,
-                estimated_cost_usd=0.0,
-            )
-
-        docx_base64 = ""
-        pptx_base64 = ""
-        filename = _fallback_filename(str(brief.get("title") or "document"))
-        if is_presentation:
-            filename = filename.replace(".docx", ".pptx")
-        tool_latency_ms = 0
-        try:
-            if is_presentation:
-                tool_call = tool_runner.run(
-                    "render_pptx",
-                    {
-                        "title": brief.get("title", "Presentation"),
-                        "content": content_result.answer,
-                        "doc_type": "presentation",
-                        "subtitle": brief.get("subtitle"),
-                        "template_id": template_id,
-                        "user_id": str(getattr(state, "user_id", "") or ""),
-                    },
-                    state=state,
-                    plan=decision.plan if isinstance(getattr(decision, "plan", None), dict) else None,
-                )
-                tool_latency_ms = tool_call.latency_ms
-                pptx_base64 = tool_call.output.get("pptx_base64") or ""
-                filename = tool_call.output.get("filename") or filename
-            else:
-                tool_call = tool_runner.run(
-                    "generate_document",
-                    {
-                        "title": brief.get("title", "Document"),
-                        "content": content_result.answer,
-                        "doc_type": brief.get("doc_type", "executive_report"),
-                        "subtitle": brief.get("subtitle"),
-                        "template_id": template_id,
-                    },
-                    state=state,
-                    plan=decision.plan if isinstance(getattr(decision, "plan", None), dict) else None,
-                )
-                tool_latency_ms = tool_call.latency_ms
-                docx_base64 = tool_call.output.get("docx_base64") or ""
-                filename = tool_call.output.get("filename") or filename
-        except (ToolNotPermittedError, ToolExecutionError) as exc:
-            logger.warning(
-                "%s tool call failed: %s",
-                "render_pptx" if is_presentation else "generate_document",
-                exc,
-            )
-        except Exception:
-            logger.exception("Unexpected tool failure; returning markdown only")
-
-        planning_cost = getattr(planning_result, "estimated_cost_usd", 0.0) or 0.0
-        content_cost = getattr(content_result, "estimated_cost_usd", 0.0) or 0.0
-        planning_latency_ms = getattr(planning_result, "latency_ms", 0) or 0
-        content_latency_ms = getattr(content_result, "latency_ms", 0) or 0
-        total_latency = planning_latency_ms + content_latency_ms + tool_latency_ms
-
-        return DocumentResult(
-            title=str(brief.get("title") or "Document"),
-            doc_type=str(brief.get("doc_type") or "executive_report"),
-            markdown=content_result.answer,
-            docx_base64=docx_base64,
-            pptx_base64=pptx_base64,
-            filename=filename,
-            model_used=content_result.model_used,
-            prompt_id=self.prompt.id,
-            planning_latency_ms=planning_latency_ms,
-            content_latency_ms=content_latency_ms,
-            latency_ms=total_latency,
-            cost_usd=planning_cost + content_cost,
+                grammar,
+                research_summary,
+                is_presentation,
+                template_id,
+                tool_runner,
+                content_holder,
+                tool_result_holder,
+            ),
         )
+        content_obj = content_holder[0] if content_holder else None
+        tool_result = tool_result_holder[0] if tool_result_holder else {}
+
+        state = qa_polish_node(
+            state,
+            fn=lambda s: self._qa_stage(s, content_obj),
+        )
+
+        state = final_preview_node(state)
+
+        return self._build_document_result(state, brief, content_obj, tool_result)
 
     def _plan(self, state: TurnGraphState, brand_profile: dict, quality_mode: str):
         from app.services.llm_gateway import invoke_llm_json
@@ -266,26 +197,298 @@ class DocumentAgent:
             doc_context=doc_context,
         )
 
-    def _judge_plan(self, state: TurnGraphState, brief: dict) -> JudgeResult | None:
-        """Run the document judge against the planned document brief. Never raises."""
+    def _plan_stage(
+        self,
+        state: TurnGraphState,
+        brand_profile: dict,
+        quality_mode: str,
+    ) -> dict | None:
+        """Stage fn for content_plan_node. Calls _plan(); writes state.document_brief."""
+
+        try:
+            result = self._plan(state, brand_profile, quality_mode)
+        except Exception:
+            logger.exception("Document planning failed; using fallback brief")
+            result = SimpleNamespace(
+                answer=json.dumps({
+                    "document_brief": {
+                        "title": state.user_message[:120],
+                        "doc_type": "executive_report",
+                    }
+                }),
+                model_used="unavailable",
+                latency_ms=0,
+                estimated_cost_usd=0.0,
+            )
+        brief = _extract_document_brief(result.answer, state.user_message)
+        state.document_brief = brief
+        return {"doc_type": brief.get("doc_type"), "title": brief.get("title")}
+
+    def _judge_plan_loop(
+        self,
+        state: TurnGraphState,
+        brief: dict,
+    ) -> tuple[JudgeResult | None, dict]:
+        """Run judge against the plan and repair via re-plan when requested."""
 
         judge_policy_id = self.agent_def.judge_policy_id
         if not judge_policy_id:
-            return None
+            return None, brief
 
-        plan_text = json.dumps(brief, indent=2) if isinstance(brief, dict) else str(brief)
-        research_summary = ""
-        if isinstance(getattr(state, "research_result", None), dict):
-            research_summary = str(state.research_result.get("answer", ""))[:500]
-
-        return JudgeService(self.registry).evaluate(
+        judge_result = JudgeService(self.registry).evaluate(
             judge_policy_id,
-            content=plan_text,
-            context={
-                "user_question": state.user_message,
-                "sources_summary": research_summary,
-            },
+            content=_brief_for_judge(brief),
+            context={"user_question": state.user_message},
             target_id=str(getattr(state, "turn_id", "") or ""),
+        )
+        if judge_result.status != "repair":
+            return judge_result, brief
+
+        policy = self.registry.judges.get(judge_policy_id)
+        max_iters = policy.max_repair_iterations if policy else 1
+        brand_profile = _extract_brand_profile(getattr(state, "plan", None) or {})
+        quality_mode = getattr(state, "quality_mode", None) or "standard"
+
+        for attempt in range(max_iters):
+            logger.info(
+                "Document judge repair %d/%d: re-planning (repairs=%s)",
+                attempt + 1,
+                max_iters,
+                judge_result.required_repairs,
+            )
+            brief = self._replan_with_repairs(
+                state,
+                brief,
+                judge_result.required_repairs,
+                brand_profile,
+                quality_mode,
+            )
+            judge_result = JudgeService(self.registry).evaluate(
+                judge_policy_id,
+                content=_brief_for_judge(brief),
+                context={"user_question": state.user_message},
+                target_id=str(getattr(state, "turn_id", "") or ""),
+            )
+            if judge_result.status != "repair":
+                break
+
+        return judge_result, brief
+
+    def _replan_with_repairs(
+        self,
+        state: TurnGraphState,
+        original_brief: dict,
+        required_repairs: list[dict[str, Any]],
+        brand_profile: dict,
+        quality_mode: str,
+    ) -> dict:
+        """Re-invoke the planning LLM with repair instructions appended. Never raises."""
+
+        try:
+            from app.services.llm_gateway import invoke_llm_json
+
+            is_claude = self.model_policy.primary_model.startswith("claude")
+            messages: list[dict[str, str]] = [
+                {"role": "system", "content": self.prompt.system_prompt},
+            ]
+            if self.prompt.developer_prompt:
+                messages.append({
+                    "role": "developer" if is_claude else "system",
+                    "content": self.prompt.developer_prompt,
+                })
+            repair_note = (
+                "The previous plan was evaluated and requires revision. "
+                "Required repairs:\n" + "\n".join(
+                    f"- {_repair_instruction_text(repair)}" for repair in required_repairs
+                )
+            )
+            messages.append({
+                "role": "user",
+                "content": json.dumps({
+                    "goal": state.user_message,
+                    "brand_profile": brand_profile,
+                    "quality_mode": quality_mode,
+                    "previous_brief": original_brief,
+                    "repair_instructions": repair_note,
+                }),
+            })
+            # Uses document_lead for now; a future sub-agent runner will invoke
+            # content_strategist directly for this repair step.
+            result = invoke_llm_json(messages, model_policy_to_route(self.model_policy))
+            return _extract_document_brief(result.answer, state.user_message)
+        except Exception:
+            logger.exception("Replan failed; retaining original brief")
+            return original_brief
+
+    def _design_stage(
+        self,
+        state: TurnGraphState,
+        brief: dict,
+        is_presentation: bool,
+        template_id: str | None,
+        db: Any,
+        grammar_holder: list[dict],
+    ) -> dict | None:
+        """Stage fn for design_plan_node. Fetches grammar for presentations."""
+
+        if is_presentation:
+            grammar = _fetch_template_grammar(
+                user_id=str(getattr(state, "user_id", "") or ""),
+                template_id=template_id,
+                brief=brief,
+                db=db,
+            )
+            grammar_holder.append(grammar)
+        return {"is_presentation": is_presentation, "has_grammar": bool(grammar_holder)}
+
+    def _generate_stage(
+        self,
+        state: TurnGraphState,
+        brief: dict,
+        decision: Any,
+        grammar: dict | None,
+        research_summary: str | None,
+        is_presentation: bool,
+        template_id: str | None,
+        tool_runner: ToolRunner,
+        content_holder: list[Any],
+        tool_result_holder: list[dict],
+    ) -> dict | None:
+        """Stage fn for render_artifact_node. Calls _generate_content() then render tool."""
+
+        try:
+            content_obj = self._generate_content(
+                state,
+                brief,
+                decision,
+                grammar=grammar,
+                research_summary=research_summary,
+            )
+        except Exception:
+            logger.exception("Document content generation failed; using fallback content")
+            title = brief.get("title") or state.user_message[:120] or "Document"
+            content_obj = SimpleNamespace(
+                answer=f"# {title}\n\nI couldn't generate the full document content right now.",
+                model_used="unavailable",
+                latency_ms=0,
+                estimated_cost_usd=0.0,
+            )
+        content_holder.append(content_obj)
+        state.document_content = content_obj.answer
+
+        docx_base64 = ""
+        pptx_base64 = ""
+        filename = _fallback_filename(str(brief.get("title") or "document"))
+        if is_presentation:
+            filename = filename.replace(".docx", ".pptx")
+        tool_latency_ms = 0
+
+        try:
+            if is_presentation:
+                tool_call = tool_runner.run(
+                    "render_pptx",
+                    {
+                        "title": brief.get("title", "Presentation"),
+                        "content": content_obj.answer,
+                        "doc_type": "presentation",
+                        "subtitle": brief.get("subtitle"),
+                        "template_id": template_id,
+                        "user_id": str(getattr(state, "user_id", "") or ""),
+                    },
+                    state=state,
+                    plan=decision.plan if isinstance(getattr(decision, "plan", None), dict) else None,
+                )
+                tool_latency_ms = tool_call.latency_ms
+                pptx_base64 = tool_call.output.get("pptx_base64") or ""
+                filename = tool_call.output.get("filename") or filename
+            else:
+                tool_call = tool_runner.run(
+                    "generate_document",
+                    {
+                        "title": brief.get("title", "Document"),
+                        "content": content_obj.answer,
+                        "doc_type": brief.get("doc_type", "executive_report"),
+                        "subtitle": brief.get("subtitle"),
+                        "template_id": template_id,
+                    },
+                    state=state,
+                    plan=decision.plan if isinstance(getattr(decision, "plan", None), dict) else None,
+                )
+                tool_latency_ms = tool_call.latency_ms
+                docx_base64 = tool_call.output.get("docx_base64") or ""
+                filename = tool_call.output.get("filename") or filename
+        except (ToolNotPermittedError, ToolExecutionError) as exc:
+            logger.warning(
+                "%s tool call failed: %s",
+                "render_pptx" if is_presentation else "generate_document",
+                exc,
+            )
+        except Exception:
+            logger.exception("Unexpected tool failure; returning markdown only")
+
+        tool_result_holder.append({
+            "docx_base64": docx_base64,
+            "pptx_base64": pptx_base64,
+            "filename": filename,
+            "tool_latency_ms": tool_latency_ms,
+        })
+        return {"content_length": len(content_obj.answer), "filename": filename}
+
+    def _qa_stage(
+        self,
+        state: TurnGraphState,
+        content_obj: Any,
+    ) -> dict | None:
+        """Stage fn for qa_polish_node. Phase M: log-only judge on final content."""
+
+        judge_policy_id = self.agent_def.judge_policy_id
+        if not judge_policy_id or content_obj is None:
+            return None
+        content = getattr(content_obj, "answer", "") or ""
+        judge_result = JudgeService(self.registry).evaluate(
+            judge_policy_id,
+            content=content[:4_000],
+            context={"user_question": state.user_message, "stage": "content"},
+            target_id=str(getattr(state, "turn_id", "") or ""),
+        )
+        logger.info(
+            "Document content judge: policy=%s status=%s score=%.2f",
+            judge_policy_id,
+            judge_result.status,
+            judge_result.score,
+        )
+        return {"judge_status": judge_result.status, "judge_score": judge_result.score}
+
+    def _build_document_result(
+        self,
+        state: TurnGraphState,
+        brief: dict,
+        content_obj: Any,
+        tool_result: dict,
+    ) -> DocumentResult:
+        planning_latency_ms = 0
+        content_latency_ms = getattr(content_obj, "latency_ms", 0) or 0
+        tool_latency_ms = tool_result.get("tool_latency_ms", 0)
+        content_cost = getattr(content_obj, "estimated_cost_usd", 0.0) or 0.0
+
+        for timing in state.node_timings:
+            if timing.node == "document.content_plan":
+                planning_latency_ms = timing.latency_ms
+                break
+
+        return DocumentResult(
+            title=str(brief.get("title") or "Document"),
+            doc_type=str(brief.get("doc_type") or "executive_report"),
+            markdown=getattr(content_obj, "answer", "") or "",
+            docx_base64=tool_result.get("docx_base64", ""),
+            pptx_base64=tool_result.get("pptx_base64", ""),
+            filename=tool_result.get("filename") or _fallback_filename(str(brief.get("title") or "document")),
+            model_used=getattr(content_obj, "model_used", "unavailable") or "unavailable",
+            prompt_id=self.prompt.id,
+            planning_latency_ms=planning_latency_ms,
+            content_latency_ms=content_latency_ms,
+            latency_ms=planning_latency_ms + content_latency_ms + tool_latency_ms,
+            cost_usd=content_cost,
         )
 
 
@@ -350,6 +553,24 @@ def _build_pptx_doc_context(brief: dict, grammar: dict, research_summary: str | 
     return "\n".join(lines)
 
 
+def _fallback_brief(state: TurnGraphState) -> dict:
+    """Return a minimal brief when planning fails to populate state.document_brief."""
+
+    return {"title": state.user_message[:120], "doc_type": "executive_report"}
+
+
+def _extract_research_summary(state: TurnGraphState) -> str | None:
+    """Extract text summary from research_result if present."""
+
+    if isinstance(getattr(state, "research_result", None), dict):
+        return (
+            state.research_result.get("answer")
+            or state.research_result.get("summary")
+            or None
+        )
+    return None
+
+
 def _extract_brand_profile(plan: dict | None) -> dict:
     """Extract brand_profile from the orchestrator plan."""
 
@@ -380,6 +601,20 @@ def _extract_document_brief(planning_response: str, fallback_goal: str) -> dict:
         "subtitle": brief.get("subtitle") or None,
         "outline": brief.get("outline") or brief.get("sections") or None,
     }
+
+
+def _brief_for_judge(brief: dict) -> str:
+    return json.dumps(brief, indent=2) if isinstance(brief, dict) else str(brief)
+
+
+def _repair_instruction_text(repair: dict[str, Any] | str) -> str:
+    if isinstance(repair, dict):
+        section = str(repair.get("section", "")).strip()
+        instruction = str(repair.get("instruction") or repair.get("message") or "").strip()
+        if section and instruction:
+            return f"{section}: {instruction}"
+        return instruction or section or json.dumps(repair, sort_keys=True)
+    return str(repair)
 
 
 def _fallback_filename(title: str) -> str:

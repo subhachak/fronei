@@ -1140,6 +1140,27 @@ def _record_turn_lifecycle_by_public_id(turn_public_id: str | None, event: str, 
         db.close()
 
 
+def _record_turn_progress_by_public_id(turn_public_id: str | None, stage: str, message: str) -> None:
+    if not turn_public_id:
+        return
+    db = SessionLocal()
+    try:
+        turn = db.query(ConversationTurn).filter(
+            ConversationTurn.public_id == turn_public_id,
+            ConversationTurn.status.in_(ACTIVE_TURN_STATUSES),
+        ).first()
+        if not turn:
+            return
+        _append_turn_progress(turn, "pipeline_log", {"stage": stage, "message": message})
+        turn.updated_at = datetime.now(timezone.utc)
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.warning("Failed to persist direct turn progress for %s", turn_public_id, exc_info=True)
+    finally:
+        db.close()
+
+
 def _record_turn_event(db, turn: ConversationTurn | None, payload: str) -> None:
     if turn is None:
         return
@@ -1827,6 +1848,7 @@ def chat_stream(req: ConvChatRequest, user_id: str = CurrentUser, is_admin: bool
             for payload in _stream_turn(
                 db, conv, req, user_id, is_admin, settings, history, user_memory, profile, user_msg,
                 preloaded_plan=graph_canary_plan,
+                turn_public_id=turn.public_id,
             ):
                 parsed_event = _parse_sse_event(payload)
                 is_token = bool(parsed_event) and parsed_event[0] == "token"
@@ -1858,7 +1880,20 @@ def chat_stream(req: ConvChatRequest, user_id: str = CurrentUser, is_admin: bool
     )
 
 
-def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memory, profile, user_msg, preloaded_plan=None):
+def _stream_turn(
+    db,
+    conv,
+    req,
+    user_id,
+    is_admin,
+    settings,
+    history,
+    user_memory,
+    profile,
+    user_msg,
+    preloaded_plan=None,
+    turn_public_id: str | None = None,
+):
             yield _sse("start", {"conversation_id": conv.public_id})
             yield _pipeline_log("planning", "Analyzing your request…")
 
@@ -2233,6 +2268,21 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                     research_db = SessionLocal()
                     try:
                         def progress(stage: str, message: str, extra: dict) -> None:
+                            _record_turn_progress_by_public_id(
+                                turn_public_id,
+                                stage,
+                                message,
+                            )
+                            _turn_graph_debug(
+                                settings,
+                                "research_worker_progress",
+                                conversation_id=conv.public_id,
+                                user_id=user_id,
+                                turn_id=turn_public_id,
+                                stage=stage,
+                                progress_message=message,
+                                research_mode=research_mode,
+                            )
                             progress_q.put({"stage": stage, "message": message, **extra})
 
                         rollout = graph_rollout_decision(settings, tool_name="deep_research")
@@ -2443,6 +2493,11 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                             elapsed_ms=elapsed_ms,
                             heartbeat_count=heartbeat_count,
                             research_mode=research_mode,
+                        )
+                        _record_turn_progress_by_public_id(
+                            turn_public_id,
+                            "research_agent",
+                            "Still running graph-native research…",
                         )
                         yield _pipeline_log(
                             "research_agent",
@@ -3447,7 +3502,8 @@ def execute_plan(
 
             for payload in _stream_turn(
                     db, conv, req, user_id, is_admin, settings, history, user_memory, profile, user_msg,
-                    preloaded_plan=plan):
+                    preloaded_plan=plan,
+                    turn_public_id=turn.public_id):
                 parsed_event = _parse_sse_event(payload)
                 is_token = bool(parsed_event) and parsed_event[0] == "token"
                 if _is_turn_cancelled(db, turn, allow_db_check=not is_token):

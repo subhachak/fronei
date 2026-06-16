@@ -9,6 +9,8 @@ from typing import Any
 
 from app.services.agent_runtime.adapters import model_policy_to_route
 from app.services.agent_runtime.guardrails import GuardrailService
+from app.services.agent_runtime.judge_service import JudgeService
+from app.services.agent_runtime.models import JudgeResult
 from app.services.agent_runtime.registry import RuntimeRegistry
 from app.services.agent_runtime.tool_runner import (
     ToolCallResult,
@@ -98,10 +100,19 @@ class ResearchAgent:
             fn=lambda s: self._synthesize_from_claims(s, decision, synthesis_holder),
         )
 
+        synthesis_obj = synthesis_holder[0] if synthesis_holder else None
+        judge_result = self._judge_synthesis(state, synthesis_obj)
+        if judge_result is not None:
+            logger.info(
+                "Research judge: policy=%s status=%s score=%.2f",
+                self.agent_def.judge_policy_id,
+                judge_result.status,
+                judge_result.score,
+            )
+
         state = verify_research_node(state)
 
-        synthesis = synthesis_holder[0] if synthesis_holder else None
-        return self._build_result(state, tool_calls, synthesis)
+        return self._build_result(state, tool_calls, synthesis_obj)
 
     def _decompose(
         self,
@@ -333,6 +344,34 @@ class ResearchAgent:
             )
             holder.append(fallback)
             return {"model_used": "unavailable"}
+
+    def _judge_synthesis(self, state: TurnGraphState, synthesis: Any) -> JudgeResult | None:
+        """Run the research judge against the synthesized answer. Never raises."""
+
+        judge_policy_id = self.agent_def.judge_policy_id
+        if not judge_policy_id:
+            return None
+
+        answer = getattr(synthesis, "answer", "") or ""
+        sources_summary = _format_sources([
+            {"title": source.get("title", ""), "url": source.get("url", "")}
+            for source in (state.research_sources or [])[:10]
+            if source.get("url")
+        ])
+
+        try:
+            return JudgeService(self.registry).evaluate(
+                judge_policy_id,
+                content=answer,
+                context={
+                    "user_question": state.user_message,
+                    "sources_summary": sources_summary,
+                },
+                target_id=str(getattr(state, "turn_id", "") or ""),
+            )
+        except Exception:
+            logger.exception("Research judge failed unexpectedly; continuing")
+            return None
 
     def _build_result(
         self,

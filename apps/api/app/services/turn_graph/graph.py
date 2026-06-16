@@ -161,6 +161,13 @@ def _orchestrator_node(state: TurnGraphState, settings) -> tuple[TurnGraphState,
 
             research_agent = ResearchAgent(registry)
             ra_result = research_agent.run(state, decision)
+            state.research_result = {
+                "answer": ra_result.answer,
+                "sources": ra_result.sources,
+                "model_used": ra_result.model_used,
+                "latency_ms": ra_result.latency_ms,
+                "cost_usd": ra_result.cost_usd,
+            }
             state.final_answer = ra_result.answer
             state.status = "completed"
             state.add_event(
@@ -181,7 +188,9 @@ def _orchestrator_node(state: TurnGraphState, settings) -> tuple[TurnGraphState,
                 "title": doc_result.title,
                 "doc_type": doc_result.doc_type,
                 "filename": doc_result.filename,
+                "markdown": doc_result.markdown,
                 "docx_base64": doc_result.docx_base64,
+                "pptx_base64": doc_result.pptx_base64,
                 "model_used": doc_result.model_used,
                 "latency_ms": doc_result.latency_ms,
                 "cost_usd": doc_result.cost_usd,
@@ -355,11 +364,13 @@ def _write_orchestrator_trace(
                         "doc_type": doc_result.doc_type,
                     }),
                 ))
+                is_presentation = (doc_result.doc_type or "").lower() == "presentation"
+                tool_name_for_trace = "render_pptx" if is_presentation else "generate_document"
                 db.add(AgentStep(
                     id=str(uuid.uuid4()),
                     run_id=doc_result.run_id,
                     step_type="tool_call",
-                    tool_name="generate_document",
+                    tool_name=tool_name_for_trace,
                     input_summary=doc_result.title[:200],
                     output_summary=doc_result.filename,
                     latency_ms=max(
@@ -397,7 +408,7 @@ def _shadow_guardrail_hook(state: TurnGraphState, settings) -> None:
 
         for tool in state.selected_tools:
             tool_name = str(tool.get("name") or "")
-            if tool_name in {"web_context", "web_search", "read_url", "generate_document"}:
+            if tool_name in {"web_context", "web_search", "read_url", "generate_document", "render_pptx"}:
                 tool_input = _shadow_tool_input(tool_name, state)
                 tool_pre_context = GuardrailContext(
                     boundary="tool_pre",
@@ -460,12 +471,15 @@ def _shadow_tool_input(tool_name: str, state: TurnGraphState) -> dict[str, Any]:
         plan = state.plan or {}
         url = plan.get("url") if isinstance(plan, dict) else None
         return {"url": url} if isinstance(url, str) else {}
-    if tool_name == "generate_document":
+    if tool_name in {"generate_document", "render_pptx"}:
         plan = state.plan or {}
         document_brief = plan.get("document_brief") if isinstance(plan, dict) else None
+        brand_profile = plan.get("brand_profile") if isinstance(plan, dict) else None
         tool_input: dict[str, Any] = {"document_brief": document_brief or {}}
         if isinstance(document_brief, dict) and isinstance(document_brief.get("template_id"), str):
             tool_input["template_id"] = document_brief["template_id"]
+        elif isinstance(brand_profile, dict) and isinstance(brand_profile.get("template_id"), str):
+            tool_input["template_id"] = brand_profile["template_id"]
         return tool_input
     return {}
 
@@ -475,7 +489,7 @@ def _shadow_tool_output(tool_name: str, state: TurnGraphState) -> dict[str, Any]
         return state.web_context
     if tool_name == "read_url" and isinstance(state.web_context, dict):
         return state.web_context
-    if tool_name == "generate_document" and isinstance(state.document_result, dict):
+    if tool_name in {"generate_document", "render_pptx"} and isinstance(state.document_result, dict):
         return state.document_result
     return None
 

@@ -6,6 +6,7 @@ import base64
 import logging
 import re
 
+from app.services.agent_runtime.guardrails import BUILTIN_SAFE_TEMPLATE_IDS
 from app.services.agent_runtime.tool_runner import register_native_backend
 
 
@@ -46,8 +47,52 @@ def _generate_document_output(inputs: dict) -> dict:
     }
 
 
+def _render_pptx_output(inputs: dict) -> dict:
+    """Native backend for the render_pptx tool."""
+
+    from app.db.models import SessionLocal
+    from app.services.document_generator import generate_pptx_bytes
+    from app.services.document_templates import resolve_pptx_template_path, resolve_template_path
+
+    title = str(inputs.get("title") or "Presentation")
+    content = str(inputs.get("content") or "")
+    subtitle = inputs.get("subtitle") or None
+    template_id = inputs.get("template_id") or None
+    user_id = str(inputs.get("user_id") or "")
+
+    template_path = None
+    builtin_path = resolve_pptx_template_path(template_id)
+    if builtin_path:
+        template_path = builtin_path
+    elif template_id and user_id and template_id not in BUILTIN_SAFE_TEMPLATE_IDS:
+        try:
+            with SessionLocal() as db:
+                template_path = resolve_template_path(db, user_id, template_id)
+        except Exception:
+            logger.warning(
+                "Could not resolve template path for %r; using freehand renderer",
+                template_id,
+            )
+
+    pptx_bytes = generate_pptx_bytes(
+        title=title,
+        content=content,
+        subtitle=subtitle,
+        template_id=template_id,
+        template_path=template_path,
+    )
+    return {
+        "title": title,
+        "filename": f"{_safe_filename(title)}.pptx",
+        "markdown": content,
+        "pptx_base64": base64.b64encode(pptx_bytes).decode("ascii"),
+        "template_id": template_id,
+    }
+
+
 def register_all() -> None:
     """Register all native tool backends."""
 
     register_native_backend("documents.generate_document_output", _generate_document_output)
+    register_native_backend("documents.render_pptx_output", _render_pptx_output)
     logger.debug("Native tool backends registered")

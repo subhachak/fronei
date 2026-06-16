@@ -190,13 +190,12 @@ def _sanitize_tool_output(tool_name: str, raw: dict[str, Any]) -> dict[str, Any]
             "provider": str(raw.get("provider") or ""),
         }
 
-    if tool_name == "generate_document":
-        return {
-            "title": str(raw.get("title") or ""),
-            "doc_type": str(raw.get("doc_type") or ""),
-            "filename": str(raw.get("filename") or ""),
-            "markdown_preview": str(raw.get("markdown") or "")[:500],
-            "docx_base64": raw.get("docx_base64") or "",
-        }
+    if tool_name in {"generate_document", "render_pptx"}:
+        # Native document backends are controlled in-process; preserve artifact payloads
+        # for the caller while keeping long markdown content out of traces/log previews.
+        sanitized = dict(raw)
+        if "markdown" in sanitized:
+            sanitized["markdown_preview"] = str(sanitized.pop("markdown") or "")[:500]
+        return sanitized
 
     return {key: value for key, value in raw.items() if key.lower() not in blocked_keys}

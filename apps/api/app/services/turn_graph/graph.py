@@ -5,11 +5,13 @@ import logging
 import time
 import uuid
 from collections.abc import Callable
+from datetime import datetime, timezone
 from typing import Any
 
 from app.config import get_settings
-from app.db.models import GuardrailEvent, SessionLocal
+from app.db.models import AgentGoal, AgentRunLog, AgentStep, GuardrailEvent, SessionLocal
 from app.services.agent_runtime import GuardrailContext, GuardrailDecision, GuardrailService, load_default_registry
+from app.services.agent_runtime.guardrails import max_boundary_action
 from app.services.turn_graph.state import TurnGraphState
 
 
@@ -33,6 +35,15 @@ def run_turn_graph_shell(
 
     state.status = "running"
     state.add_event("start", "started", "Turn graph shell started")
+
+    settings = settings or get_settings()
+
+    if getattr(settings, "orchestrator_enabled", False):
+        state, handled = _orchestrator_node(state, settings)
+        if handled:
+            _shadow_guardrail_hook(state, settings)
+            state.add_event("end", state.status, "Turn graph shell finished (orchestrator)")
+            return state
 
     started = time.perf_counter()
     state.add_event("execute_existing_pipeline", "started", "Delegating to existing pipeline")
@@ -63,10 +74,182 @@ def run_turn_graph_shell(
         )
         state.add_event("execute_existing_pipeline", "failed", state.error)
 
-    _shadow_guardrail_hook(state, settings or get_settings())
+    _shadow_guardrail_hook(state, settings)
 
     state.add_event("end", state.status, "Turn graph shell finished")
     return state
+
+
+def _orchestrator_node(state: TurnGraphState, settings) -> tuple[TurnGraphState, bool]:
+    """Run Phase-D orchestrator/direct-answer nodes. Never raises."""
+
+    from app.services.agent_runtime.direct_answer import DirectAnswerAgent
+    from app.services.agent_runtime.orchestrator import OrchestratorAgent
+
+    try:
+        registry = load_default_registry()
+        orchestrator = OrchestratorAgent(registry)
+
+        state.add_event("orchestrator", "started", "Orchestrator routing")
+        started = time.perf_counter()
+        decision = orchestrator.route(state)
+        state.add_timing("orchestrator", "completed", int((time.perf_counter() - started) * 1000))
+        state.add_event(
+            "orchestrator",
+            "completed",
+            decision.route,
+            route=decision.route,
+            reasoning=decision.reasoning,
+        )
+
+        state.triage_decision = {
+            "route": decision.route,
+            "reasoning": decision.reasoning,
+            "model_used": decision.model_used,
+            "prompt_id": decision.prompt_id,
+            "run_id": decision.run_id,
+        }
+        state.plan = decision.plan or {}
+        state.selected_tools = [{"name": tool} for tool in decision.selected_tools]
+
+        service = GuardrailService(registry)
+        plan_context = GuardrailContext(
+            boundary="planning",
+            user_id=state.user_id or "",
+            tenant_id=None,
+            tool_name=None,
+            tool_input=None,
+            tool_output=None,
+            request_text=state.user_message,
+            plan=state.plan,
+            response_text=None,
+        )
+        plan_decisions = service.evaluate_boundary("planning", plan_context)
+        plan_action = max_boundary_action(plan_decisions)
+        if plan_action == "block":
+            state.final_answer = "I can't complete that request."
+            state.status = "completed"
+            _write_orchestrator_trace(state, decision, registry, db_session=None)
+            return state, True
+        if plan_action == "ask_user":
+            state.final_answer = (
+                plan_decisions[0].reason
+                if plan_decisions
+                else "I need more information before proceeding."
+            )
+            state.status = "completed"
+            _write_orchestrator_trace(state, decision, registry, db_session=None)
+            return state, True
+
+        if decision.route == "clarify":
+            state.final_answer = decision.clarification_question or "Could you clarify what you're looking for?"
+            state.status = "completed"
+            _write_orchestrator_trace(state, decision, registry, db_session=None)
+            return state, True
+
+        if decision.route == "direct_answer":
+            direct_answer = DirectAnswerAgent(registry)
+            da_result = direct_answer.answer(state)
+            state.final_answer = da_result.answer
+            state.status = "completed"
+            state.add_event("direct_answer_agent", "completed", f"Answered in {da_result.latency_ms}ms")
+            _write_orchestrator_trace(state, decision, registry, db_session=None, da_result=da_result)
+            return state, True
+
+        state.add_event(
+            "orchestrator",
+            "deferred",
+            f"Route {decision.route} deferred to existing pipeline (Phase E/F)",
+        )
+        _write_orchestrator_trace(state, decision, registry, db_session=None)
+        return state, False
+    except Exception:
+        logger.exception("Orchestrator node failed; falling back to existing pipeline")
+        return state, False
+
+
+def _write_orchestrator_trace(
+    state: TurnGraphState,
+    decision,
+    registry,
+    *,
+    db_session,
+    da_result=None,
+) -> None:
+    """Write Phase-D orchestrator trace rows. Never raises."""
+
+    try:
+        # TODO Phase E: replace standalone SessionLocal usage with request/job-scoped DI session.
+        db = db_session or SessionLocal()
+        should_close = db_session is None
+        try:
+            goal_id = f"goal_{state.turn_id}"
+            existing_goal = db.get(AgentGoal, goal_id)
+            if not existing_goal:
+                db.add(AgentGoal(
+                    id=goal_id,
+                    user_id=state.user_id or "",
+                    conversation_id=state.conversation_id or "",
+                    turn_id=state.turn_id or "",
+                    objective=state.user_message,
+                    quality_mode=getattr(state, "quality_mode", "standard"),
+                    budget_json=json.dumps({}),
+                    status="completed" if state.status == "completed" else "running",
+                ))
+
+            db.add(AgentRunLog(
+                id=decision.run_id,
+                goal_id=goal_id,
+                agent_id="orchestrator",
+                status="completed",
+                total_cost_usd=decision.cost_usd,
+                latency_ms=decision.latency_ms,
+                completed_at=datetime.now(timezone.utc),
+            ))
+            db.add(AgentStep(
+                id=str(uuid.uuid4()),
+                run_id=decision.run_id,
+                step_type="llm_call",
+                input_summary=state.user_message[:200],
+                output_summary=decision.route,
+                model_used=decision.model_used,
+                latency_ms=decision.latency_ms,
+                cost_usd=decision.cost_usd,
+                metadata_json=json.dumps({"prompt_id": decision.prompt_id, "route": decision.route}),
+            ))
+
+            if da_result is not None:
+                db.add(AgentRunLog(
+                    id=da_result.run_id,
+                    goal_id=goal_id,
+                    agent_id="direct_answer_agent",
+                    parent_run_id=decision.run_id,
+                    status="completed",
+                    total_cost_usd=da_result.cost_usd,
+                    latency_ms=da_result.latency_ms,
+                    completed_at=datetime.now(timezone.utc),
+                ))
+                db.add(AgentStep(
+                    id=str(uuid.uuid4()),
+                    run_id=da_result.run_id,
+                    step_type="llm_call",
+                    input_summary=state.user_message[:200],
+                    output_summary=(state.final_answer or "")[:200],
+                    model_used=da_result.model_used,
+                    latency_ms=da_result.latency_ms,
+                    cost_usd=da_result.cost_usd,
+                    metadata_json=json.dumps({"prompt_id": da_result.prompt_id}),
+                ))
+
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception("Failed to write orchestrator trace; ignoring")
+        finally:
+            if should_close:
+                db.close()
+    except Exception:
+        logger.exception("Failed to open DB session for orchestrator trace; ignoring")
 
 
 def _shadow_guardrail_hook(state: TurnGraphState, settings) -> None:

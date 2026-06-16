@@ -175,6 +175,7 @@ class JudgeService:
             status=status,
             issues=issues,
             required_repairs=required_repairs if status == "repair" else [],
+            suggested_strategy=(str(parsed.get("suggested_strategy")) if parsed.get("suggested_strategy") else None),
             can_publish=(status == "pass"),
         )
 

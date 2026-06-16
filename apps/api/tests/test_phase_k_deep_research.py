@@ -1,7 +1,9 @@
+import time
 from types import SimpleNamespace
 
 from app.services.agent_runtime.guardrails import GuardrailService
 from app.services.agent_runtime.registry import _load_from_files
+from app.services.agent_runtime import research_agent as research_agent_module
 from app.services.agent_runtime.research_agent import ResearchAgent
 from app.services.agent_runtime.tool_runner import ToolRunner
 from app.services.agent_runtime.utils import strip_json_fence
@@ -49,6 +51,21 @@ def test_decompose_writes_queries_from_llm_json(monkeypatch):
 
 def test_decompose_falls_back_on_parse_failure(monkeypatch):
     monkeypatch.setattr("app.services.llm_gateway.invoke_llm", lambda **_kwargs: _llm("not json"))
+    state = _state()
+
+    _agent()._decompose(state, _decision({"search_queries": ["fallback_q"]}), [])
+
+    assert state.research_queries == ["fallback_q"]
+
+
+def test_decompose_times_out_and_uses_fallback_queries(monkeypatch):
+    monkeypatch.setattr(research_agent_module, "QUERY_DECOMPOSITION_TIMEOUT_SECONDS", 0.01)
+
+    def slow_invoke_llm(**_kwargs):
+        time.sleep(0.1)
+        return _llm('{"search_queries": ["too_late"]}')
+
+    monkeypatch.setattr("app.services.llm_gateway.invoke_llm", slow_invoke_llm)
     state = _state()
 
     _agent()._decompose(state, _decision({"search_queries": ["fallback_q"]}), [])

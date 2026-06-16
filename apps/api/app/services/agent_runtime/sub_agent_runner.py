@@ -4,6 +4,7 @@ import logging
 from typing import Any
 
 from app.services.agent_runtime.budget_guard import BudgetExceeded, RuntimeBudgetGuard
+from app.services.agent_runtime.circuit_breaker import CircuitBreakerRegistry, CircuitOpen
 from app.services.agent_runtime.guardrails import GuardrailService
 from app.services.agent_runtime.model_fallback import invoke_with_policy_fallback
 from app.services.agent_runtime.output_sanitizer import sanitize_text
@@ -79,12 +80,18 @@ class SubAgentRunner:
         def _call(route):
             return invoke_llm(message=message, route=route, **kwargs)
 
+        breaker = CircuitBreakerRegistry.get().breaker(f"llm:{self.model_policy.primary_model}")
+
         if self.trace and self.trace_run:
             with self.trace.step(self.trace_run, "model", input_summary=message) as step:
-                result = invoke_with_policy_fallback(self.model_policy, _call)
+                result = breaker.call(lambda: invoke_with_policy_fallback(self.model_policy, _call))
                 return self._record_and_return(result, step)
 
-        result = invoke_with_policy_fallback(self.model_policy, _call)
+        try:
+            result = breaker.call(lambda: invoke_with_policy_fallback(self.model_policy, _call))
+        except CircuitOpen:
+            logger.warning("Circuit open for agent %s model %s", self.agent_id, self.model_policy.primary_model)
+            raise
         return self._record_and_return(result)
 
     def invoke_json(self, messages: list[dict[str, str]]) -> Any:
@@ -97,12 +104,17 @@ class SubAgentRunner:
             return invoke_llm_json(messages, route)
 
         summary = "\n".join(str(m.get("content", "")) for m in messages[-2:])[:500]
+        breaker = CircuitBreakerRegistry.get().breaker(f"llm:{self.model_policy.primary_model}")
         if self.trace and self.trace_run:
             with self.trace.step(self.trace_run, "model", input_summary=summary) as step:
-                result = invoke_with_policy_fallback(self.model_policy, _call)
+                result = breaker.call(lambda: invoke_with_policy_fallback(self.model_policy, _call))
                 return self._record_and_return(result, step)
 
-        result = invoke_with_policy_fallback(self.model_policy, _call)
+        try:
+            result = breaker.call(lambda: invoke_with_policy_fallback(self.model_policy, _call))
+        except CircuitOpen:
+            logger.warning("Circuit open for agent %s model %s", self.agent_id, self.model_policy.primary_model)
+            raise
         return self._record_and_return(result)
 
     def _record_and_return(self, result: Any, step: AgentStepTrace | None = None) -> Any:
@@ -127,7 +139,11 @@ class SubAgentRunner:
         plan: dict | None = None,
     ) -> ToolCallResult:
         try:
-            return self.tool_runner.run(tool_name, args, state=state, plan=plan)
+            breaker = CircuitBreakerRegistry.get().breaker(f"tool:{tool_name}")
+            return breaker.call(lambda: self.tool_runner.run(tool_name, args, state=state, plan=plan))
+        except CircuitOpen:
+            logger.warning("Tool circuit open for agent %s tool %s", self.agent_id, tool_name)
+            raise
         except BudgetExceeded:
             logger.warning("Sub-agent %s exceeded runtime budget during %s", self.agent_id, tool_name)
             raise

@@ -1958,6 +1958,13 @@ def registry_prompt_activate(prompt_id: str, admin: AdminPrincipal = Depends(req
 
 @router.post("/registry/prompts/{prompt_id}/rollback")
 def registry_prompt_rollback(prompt_id: str, admin: AdminPrincipal = Depends(require_admin)) -> dict:
+    """Roll back the active prompt for the prompt_id's agent.
+
+    The path prompt_id selects the agent via prompt.agent_id. The endpoint
+    always archives that agent's currently active prompt and restores its most
+    recently archived version, regardless of which prompt version ID is passed.
+    """
+
     db = SessionLocal()
     try:
         prompt = db.get(DBPromptTemplate, prompt_id)

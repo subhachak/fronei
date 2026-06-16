@@ -123,9 +123,11 @@ def _seed_guardrails(db) -> int:
 
 def seed_registry_from_defaults(db) -> dict[str, int]:
     """
-    Populate DB registry tables from defaults/*.json.
+    Populate DB registry tables from defaults/*.json if tables are empty.
 
     Idempotent at table level: if a table already has rows, it is left alone.
+    To update a seeded table, use the admin registry endpoints or a targeted
+    db.merge(); re-running this function will not overwrite existing data.
     """
 
     counts = {

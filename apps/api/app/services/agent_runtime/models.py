@@ -262,6 +262,10 @@ class RuntimeTrace(BaseModel):
 
     goal: Goal | None = None
     agent_runs: list[AgentRun] = Field(default_factory=list)
+    prompt_versions: dict[str, str] = Field(
+        default_factory=dict,
+        description="agent_id -> prompt_template_id used for this trace",
+    )
     agent_steps: list[AgentStep] = Field(default_factory=list)
     guardrail_decisions: list[dict[str, Any]] = Field(default_factory=list)
     judge_results: list[JudgeResult] = Field(default_factory=list)

@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import check_production_config, get_settings
-from app.db.models import engine, init_db
+from app.db.models import SessionLocal, engine, init_db
 from app.db.schema_check import check_schema_version
 from app.routers.admin import router as admin_router
 from app.routers.analytics import router as analytics_router
@@ -18,6 +18,7 @@ from app.routers.personal_context import router as personal_context_router
 from app.routers.research_runs import router as research_runs_router
 from app.routers.twin_profile import router as twin_profile_router
 from app.routers.users import router as users_router
+from app.services.agent_runtime.seeder import seed_registry_from_defaults
 from app.services.llm_gateway import configure_provider_keys
 
 settings = get_settings()
@@ -29,6 +30,12 @@ async def lifespan(app: FastAPI):
     init_db()
     check_schema_version(engine)
     configure_provider_keys()
+    if settings.should_seed_registry_on_startup:
+        db = SessionLocal()
+        try:
+            seed_registry_from_defaults(db)
+        finally:
+            db.close()
     mark_stale_conversation_turns()
     yield
 

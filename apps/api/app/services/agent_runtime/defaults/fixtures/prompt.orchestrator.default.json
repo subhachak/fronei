@@ -1,0 +1,40 @@
+[
+  {
+    "scenario": "direct answer - factual question",
+    "input": {
+      "user_message": "What is the capital of France?",
+      "conversation_context": "",
+      "runtime_budget": {"quality_mode": "standard"},
+      "available_tools": ["answer_directly", "web_search", "generate_document"]
+    },
+    "expect": {
+      "response_contains": ["Paris"],
+      "tool_called": "answer_directly",
+      "no_tool_called": ["web_search"]
+    }
+  },
+  {
+    "scenario": "current fact should consider web",
+    "input": {
+      "user_message": "What are the latest mortgage rates today?",
+      "conversation_context": "",
+      "runtime_budget": {"quality_mode": "standard"},
+      "available_tools": ["answer_directly", "web_search"]
+    },
+    "expect": {
+      "tool_called": "web_search"
+    }
+  },
+  {
+    "scenario": "presentation request should route to document",
+    "input": {
+      "user_message": "Create a 10-slide board deck on Q3 platform modernization.",
+      "conversation_context": "",
+      "runtime_budget": {"quality_mode": "executive"},
+      "available_tools": ["answer_directly", "generate_document"]
+    },
+    "expect": {
+      "tool_called": "generate_document"
+    }
+  }
+]

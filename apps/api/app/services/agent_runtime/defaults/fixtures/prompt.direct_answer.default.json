@@ -1,0 +1,36 @@
+[
+  {
+    "scenario": "plain-language explanation",
+    "input": {
+      "user_message": "Explain API gateway rate limiting in plain English.",
+      "memory_context": "",
+      "web_context": ""
+    },
+    "expect": {
+      "response_contains": ["rate", "limit"],
+      "no_tool_called": ["web_search"]
+    }
+  },
+  {
+    "scenario": "uses memory when relevant",
+    "input": {
+      "user_message": "Make this sound more like me.",
+      "memory_context": "User prefers concise executive language.",
+      "web_context": ""
+    },
+    "expect": {
+      "response_contains": ["concise"]
+    }
+  },
+  {
+    "scenario": "does not invent current facts",
+    "input": {
+      "user_message": "Who is the current CEO of a company?",
+      "memory_context": "",
+      "web_context": ""
+    },
+    "expect": {
+      "no_tool_called": ["web_search"]
+    }
+  }
+]

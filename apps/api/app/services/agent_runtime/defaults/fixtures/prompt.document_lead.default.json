@@ -1,0 +1,35 @@
+[
+  {
+    "scenario": "board deck with brand profile",
+    "input": {
+      "goal": "Create a board-ready deck on Q3 platform modernization.",
+      "brand_profile": {"template_id": "fronei-default"},
+      "quality_mode": "executive"
+    },
+    "expect": {
+      "tool_called": "generate_document"
+    }
+  },
+  {
+    "scenario": "preserve uploaded template",
+    "input": {
+      "goal": "Use my uploaded brand template for an architecture review deck.",
+      "brand_profile": {"template_id": "user-template-1"},
+      "quality_mode": "standard"
+    },
+    "expect": {
+      "tool_called": "generate_document"
+    }
+  },
+  {
+    "scenario": "never fallback to markdown",
+    "input": {
+      "goal": "Generate a PPTX proposal for a client workshop.",
+      "brand_profile": {},
+      "quality_mode": "standard"
+    },
+    "expect": {
+      "no_tool_called": ["markdown_fallback"]
+    }
+  }
+]

@@ -799,6 +799,7 @@ def _append_turn_graph_shadow(
     history: list[dict],
     user_memory: str,
     profile: str,
+    is_admin: bool = False,
 ) -> object | None:
     """Record a shadow graph trace without changing live turn execution."""
 
@@ -812,6 +813,7 @@ def _append_turn_graph_shadow(
             history=history,
             user_memory=user_memory,
             profile=profile,
+            user_role="admin" if is_admin else "user",
         )
         graph_state.add_event(
             "shadow_mode",
@@ -1597,6 +1599,7 @@ def chat_stream(req: ConvChatRequest, user_id: str = CurrentUser, is_admin: bool
                 history=history,
                 user_memory=user_memory,
                 profile=profile,
+                is_admin=is_admin,
             )
             graph_canary_plan = _turn_graph_canary_plan(graph_state)
             if (
@@ -2027,6 +2030,7 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                                 history=history,
                                 user_memory=user_memory,
                                 profile=profile,
+                                user_role="admin" if is_admin else "user",
                             )
                             research_state.conversation_id = conv.public_id
                             research_state.user_id = user_id
@@ -2368,6 +2372,7 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                             history=history,
                             user_memory=user_memory,
                             profile=profile,
+                            user_role="admin" if is_admin else "user",
                         )
 
                         def _generate_document_via_current_pipeline(**_kwargs):
@@ -2863,6 +2868,7 @@ def execute_plan(
                 history=history,
                 user_memory=user_memory,
                 profile=profile,
+                is_admin=is_admin,
             )
             db.commit()
 

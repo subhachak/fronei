@@ -471,6 +471,57 @@ def invoke_llm(
     raise RuntimeError("All models failed. " + " | ".join(errors))
 
 
+def invoke_llm_json(
+    messages: list[dict],
+    route: RouteDecision,
+) -> LLMResult:
+    """Non-streaming LLM call for short JSON routing decisions."""
+
+    models_to_try = _order_by_circuit([route.primary_model, *route.fallbacks])
+    errors: list[str] = []
+    started = time.perf_counter()
+
+    for model in models_to_try:
+        provider = provider_for_model(model)
+        kwargs: dict = {
+            "model": model,
+            "messages": messages,
+            "max_tokens": 1024,
+            "timeout": NON_STREAM_REQUEST_TIMEOUT_S,
+            "response_format": {"type": "json_object"},
+        }
+        if _supports_temperature(model):
+            kwargs["temperature"] = 0.0
+
+        try:
+            try:
+                response = completion(**kwargs)
+            except Exception:
+                kwargs.pop("response_format", None)
+                response = completion(**kwargs)
+        except Exception as exc:
+            err = f"{model}: {exc}"
+            errors.append(err)
+            logger.warning("Model fallback (json): %s", err)
+            record_provider_failure(provider)
+            continue
+
+        record_provider_success(provider)
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        prompt_tokens, completion_tokens, cost = _extract_usage(response)
+        return LLMResult(
+            answer=response.choices[0].message.content or "",
+            model_used=model,
+            latency_ms=latency_ms,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            estimated_cost_usd=cost,
+            fallback_errors=errors,
+        )
+
+    raise RuntimeError("All models failed (json). " + " | ".join(errors))
+
+
 def synthesize_answers(
     intent: str,
     sub_results: list[tuple[str, str]],

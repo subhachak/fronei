@@ -98,6 +98,9 @@ class Settings(BaseSettings):
     # in shadow mode and admin traces can show graph events beside the current
     # execution log.
     turn_graph_enabled: bool = False
+    # Phase D: enable the LLM-backed orchestrator agent node in the turn graph
+    # shell. Existing pipeline remains the fallback on every error.
+    orchestrator_enabled: bool = False
     # Seed the DB-backed agent registry from file defaults on startup. When
     # unset, this defaults on for local/dev/CI and off for production.
     seed_registry_on_startup: bool | None = None

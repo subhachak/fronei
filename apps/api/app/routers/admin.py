@@ -2016,7 +2016,7 @@ def registry_prompt_activate(prompt_id: str, admin: AdminPrincipal = Depends(req
             registry = load_registry_from_db(db)
         except RegistryNotSeeded:
             registry = load_default_registry()
-        summary = PromptFixtureRunner(registry).run(prompt_id)
+        summary = PromptFixtureRunner(registry).run(prompt_id, live=True)
         if not summary.all_passed:
             raise HTTPException(
                 status_code=422,

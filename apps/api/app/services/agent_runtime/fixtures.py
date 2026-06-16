@@ -58,7 +58,7 @@ class PromptFixtureRunner:
     def __init__(self, registry: RuntimeRegistry):
         self.registry = registry
 
-    def run(self, prompt_id: str) -> FixtureRunSummary:
+    def run(self, prompt_id: str, *, live: bool = False) -> FixtureRunSummary:
         prompt = self.registry.prompt(prompt_id)
         fixture_path = FIXTURES_DIR / f"{prompt_id}.json"
         if not fixture_path.exists():
@@ -72,10 +72,10 @@ class PromptFixtureRunner:
         if not isinstance(raw, list):
             return _summary(prompt_id, [FixtureResult("fixture file shape", False, "fixture must be a list")])
 
-        results = [self._run_one(prompt, item) for item in raw]
+        results = [self._run_one(prompt, item, live=live) for item in raw]
         return _summary(prompt_id, results)
 
-    def _run_one(self, prompt, item: Any) -> FixtureResult:
+    def _run_one(self, prompt, item: Any, *, live: bool = False) -> FixtureResult:
         scenario = item.get("scenario", "unnamed") if isinstance(item, dict) else "invalid fixture"
         if not isinstance(item, dict):
             return FixtureResult(scenario, False, "fixture must be an object")
@@ -103,6 +103,59 @@ class PromptFixtureRunner:
         except Exception as exc:
             return FixtureResult(scenario, False, f"prompt render failed: {exc}")
 
+        if not live:
+            return FixtureResult(scenario, True)
+        return self._run_live(prompt, scenario, fixture_input, expect)
+
+    def _run_live(
+        self,
+        prompt,
+        scenario: str,
+        fixture_input: dict[str, Any],
+        expect: dict[str, Any],
+    ) -> FixtureResult:
+        from app.services.agent_runtime.adapters import model_policy_to_route
+        from app.services.llm_gateway import invoke_llm_json
+
+        try:
+            agent_def = next(
+                (
+                    agent for agent in self.registry.agents.values()
+                    if agent.prompt_template_id == prompt.id
+                ),
+                None,
+            )
+            if agent_def is None:
+                agent_def = self.registry.agent(prompt.agent_id)
+            model_policy = self.registry.model_policy(agent_def.model_policy_id)
+        except KeyError as exc:
+            return FixtureResult(scenario, False, f"cannot resolve model policy: {exc}")
+
+        is_claude = model_policy.primary_model.startswith("claude")
+        messages: list[dict[str, str]] = [
+            {"role": "system", "content": self._render_prompt_text(prompt.system_prompt, fixture_input)}
+        ]
+        if prompt.developer_prompt:
+            messages.append({
+                "role": "developer" if is_claude else "system",
+                "content": self._render_prompt_text(prompt.developer_prompt, fixture_input),
+            })
+        messages.append({"role": "user", "content": json.dumps(fixture_input)})
+
+        try:
+            result = invoke_llm_json(messages, model_policy_to_route(model_policy))
+        except Exception as exc:
+            return FixtureResult(scenario, False, f"model call failed: {exc}")
+
+        try:
+            parsed = json.loads(result.answer)
+        except (json.JSONDecodeError, ValueError, TypeError):
+            parsed = None
+
+        for field_name, expected_value in expect.items():
+            failure = _evaluate_expect(field_name, expected_value, result.answer, parsed)
+            if failure:
+                return FixtureResult(scenario, False, failure)
         return FixtureResult(scenario, True)
 
     def _render_prompt_text(self, text: str, values: dict[str, Any]) -> str:
@@ -124,3 +177,28 @@ def _summary(prompt_id: str, results: list[FixtureResult]) -> FixtureRunSummary:
         failed=failed,
         results=results,
     )
+
+
+def _evaluate_expect(
+    field_name: str,
+    expected_value: Any,
+    raw_answer: str,
+    parsed: dict | None,
+) -> str | None:
+    if field_name == "response_contains":
+        expected_values = expected_value if isinstance(expected_value, list) else [expected_value]
+        missing = [value for value in expected_values if str(value).lower() not in raw_answer.lower()]
+        if missing:
+            return f"response_contains: {missing!r} not found in model response"
+        return None
+
+    selected_tools = (parsed or {}).get("selected_tools") or [] if isinstance(parsed, dict) else []
+    if field_name == "tool_called":
+        if expected_value not in selected_tools:
+            return f"tool_called: {expected_value!r} not in selected_tools={selected_tools!r}"
+    elif field_name == "no_tool_called":
+        disallowed_values = expected_value if isinstance(expected_value, list) else [expected_value]
+        found = [value for value in disallowed_values if value in selected_tools]
+        if found:
+            return f"no_tool_called: {found!r} found in selected_tools={selected_tools!r}"
+    return None

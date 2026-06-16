@@ -156,10 +156,25 @@ def _orchestrator_node(state: TurnGraphState, settings) -> tuple[TurnGraphState,
             _write_orchestrator_trace(state, decision, registry, db_session=None, da_result=da_result)
             return state, True
 
+        if decision.route == "research":
+            from app.services.agent_runtime.research_agent import ResearchAgent
+
+            research_agent = ResearchAgent(registry)
+            ra_result = research_agent.run(state, decision)
+            state.final_answer = ra_result.answer
+            state.status = "completed"
+            state.add_event(
+                "research_agent",
+                "completed",
+                f"Research completed: {len(ra_result.sources)} sources, {ra_result.latency_ms}ms",
+            )
+            _write_orchestrator_trace(state, decision, registry, db_session=None, ra_result=ra_result)
+            return state, True
+
         state.add_event(
             "orchestrator",
             "deferred",
-            f"Route {decision.route} deferred to existing pipeline (Phase E/F)",
+            f"Route {decision.route} deferred to existing pipeline (Phase F)",
         )
         _write_orchestrator_trace(state, decision, registry, db_session=None)
         return state, False
@@ -175,6 +190,7 @@ def _write_orchestrator_trace(
     *,
     db_session,
     da_result=None,
+    ra_result=None,
 ) -> None:
     """Write Phase-D orchestrator trace rows. Never raises."""
 
@@ -239,6 +255,40 @@ def _write_orchestrator_trace(
                     latency_ms=da_result.latency_ms,
                     cost_usd=da_result.cost_usd,
                     metadata_json=json.dumps({"prompt_id": da_result.prompt_id}),
+                ))
+
+            if ra_result is not None:
+                db.add(AgentRunLog(
+                    id=ra_result.run_id,
+                    goal_id=goal_id,
+                    agent_id="research_lead",
+                    parent_run_id=decision.run_id,
+                    status="completed",
+                    total_cost_usd=ra_result.cost_usd,
+                    latency_ms=ra_result.latency_ms,
+                    completed_at=datetime.now(timezone.utc),
+                ))
+                for tool_call in ra_result.tool_calls:
+                    db.add(AgentStep(
+                        id=tool_call.step_id,
+                        run_id=ra_result.run_id,
+                        step_type="tool_call",
+                        tool_name=tool_call.tool_name,
+                        input_summary=tool_call.input_summary,
+                        output_summary=f"{len(tool_call.output.get('sources') or [])} sources",
+                        latency_ms=tool_call.latency_ms,
+                        metadata_json=json.dumps({"tool_name": tool_call.tool_name}),
+                    ))
+                db.add(AgentStep(
+                    id=str(uuid.uuid4()),
+                    run_id=ra_result.run_id,
+                    step_type="llm_call",
+                    input_summary=state.user_message[:200],
+                    output_summary=(state.final_answer or "")[:200],
+                    model_used=ra_result.model_used,
+                    latency_ms=ra_result.synthesis_latency_ms,
+                    cost_usd=ra_result.cost_usd,
+                    metadata_json=json.dumps({"prompt_id": ra_result.prompt_id}),
                 ))
 
             db.commit()

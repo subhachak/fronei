@@ -14,7 +14,9 @@ from app.routers import admin as admin_router
 from app.schemas import RouteDecision
 from app.services.agent_runtime.direct_answer import DirectAnswerAgent
 from app.services.agent_runtime.orchestrator import OrchestratorAgent, _parse_orchestrator_response
+from app.services.agent_runtime.research_agent import ResearchResult
 from app.services.agent_runtime.registry import load_default_registry
+from app.services.agent_runtime.tool_runner import ToolCallResult
 from app.services.llm_gateway import LLMResult
 from app.services.turn_graph import graph as turn_graph
 from app.services.turn_graph.state import TurnGraphState
@@ -131,10 +133,22 @@ def test_orchestrator_node_skips_existing_pipeline_on_direct_answer(monkeypatch)
     assert state.final_answer == "Direct answer."
 
 
-def test_orchestrator_node_falls_through_for_research_route(monkeypatch):
+def test_orchestrator_node_handles_research_route(monkeypatch):
     monkeypatch.setattr(
         "app.services.llm_gateway.invoke_llm_json",
         lambda *_args, **_kwargs: _llm_result('{"route":"research","reasoning":"current","selected_tools":["web_search"]}'),
+    )
+    monkeypatch.setattr(
+        "app.services.agent_runtime.research_agent.ResearchAgent.run",
+        lambda self, state, decision: ResearchResult(
+            answer="Research answer",
+            sources=[],
+            tool_calls=[],
+            model_used="test-model",
+            prompt_id="prompt.research_lead.default",
+            latency_ms=1,
+            cost_usd=0.0,
+        ),
     )
 
     state, handled = turn_graph._orchestrator_node(
@@ -142,7 +156,8 @@ def test_orchestrator_node_falls_through_for_research_route(monkeypatch):
         SimpleNamespace(),
     )
 
-    assert handled is False
+    assert handled is True
+    assert state.final_answer == "Research answer"
     assert state.triage_decision["route"] == "research"
 
 
@@ -227,6 +242,52 @@ def test_orchestrator_writes_goal_and_agent_runs(db_session):
     assert db_session.get(AgentGoal, "goal_turn_1") is not None
     assert db_session.query(AgentRunLog).count() == 2
     assert db_session.query(AgentStep).count() == 2
+
+
+def test_orchestrator_trace_records_research_synthesis_latency_only(db_session):
+    decision = SimpleNamespace(
+        run_id="orch-run-research",
+        cost_usd=0.001,
+        latency_ms=10,
+        model_used="model-a",
+        prompt_id="prompt.orchestrator.default",
+        route="research",
+    )
+    ra_result = ResearchResult(
+        answer="Research answer",
+        sources=[],
+        tool_calls=[
+            ToolCallResult(
+                tool_name="web_search",
+                input_summary="query",
+                output={"sources": [{"title": "One", "url": "https://one.example"}]},
+                latency_ms=50,
+            )
+        ],
+        model_used="model-r",
+        prompt_id="prompt.research_lead.default",
+        latency_ms=57,
+        synthesis_latency_ms=7,
+        cost_usd=0.002,
+    )
+    state = TurnGraphState(
+        user_message="Research this",
+        turn_id="turn_research",
+        conversation_id="conv_1",
+        user_id="u1",
+        final_answer="Research answer",
+        status="completed",
+    )
+
+    turn_graph._write_orchestrator_trace(state, decision, load_default_registry(), db_session=None, ra_result=ra_result)
+
+    research_llm_step = (
+        db_session.query(AgentStep)
+        .join(AgentRunLog, AgentStep.run_id == AgentRunLog.id)
+        .filter(AgentRunLog.agent_id == "research_lead", AgentStep.step_type == "llm_call")
+        .one()
+    )
+    assert research_llm_step.latency_ms == 7
 
 
 def test_admin_turn_trace_endpoint(admin_client, db_session):

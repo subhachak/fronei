@@ -58,6 +58,21 @@ def runtime_trace_payload(trace: RuntimeTrace) -> dict[str, Any]:
     return trace.model_dump(mode="json", exclude_none=True)
 
 
+def model_policy_to_route(policy: "ModelPolicy") -> "RouteDecision":
+    """Convert a registry ModelPolicy into a gateway RouteDecision."""
+
+    from app.schemas import RouteDecision
+
+    return RouteDecision(
+        task_type="planning",
+        complexity="low",
+        profile="balanced",
+        primary_model=policy.primary_model,
+        fallbacks=policy.fallback_models,
+        reason="agent routing",
+    )
+
+
 def goal_from_conversation_turn(
     turn,
     conversation,

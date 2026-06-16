@@ -45,6 +45,8 @@ class TurnGraphState(BaseModel):
     user_message: str
     profile: str = "balanced"
     quality_mode: str = "standard"
+    trace_id: str | None = None
+    accumulated_cost_usd: float = 0.0
 
     history: list[dict[str, Any]] = Field(default_factory=list)
     user_memory: str = ""
@@ -68,10 +70,12 @@ class TurnGraphState(BaseModel):
     research_result: dict[str, Any] | None = None
     research_raw_result: Any = Field(default=None, exclude=True)
     document_brief: dict[str, Any] | None = None
+    brand_profile: dict[str, Any] | None = None
     document_content: str | None = None
     document_result: dict[str, Any] | None = None
     document_raw_result: Any = Field(default=None, exclude=True)
     artifact_result: dict[str, Any] | None = None
+    qa_issues: list[dict[str, Any]] = Field(default_factory=list)
 
     final_answer: str | None = None
     error: str | None = None

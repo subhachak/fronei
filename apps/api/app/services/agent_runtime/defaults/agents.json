@@ -124,6 +124,20 @@
     "version": "1.0.0"
   },
   {
+    "id": "contradiction_resolver",
+    "name": "Contradiction Resolver",
+    "role": "Reviews extracted research claims for conflicts and summarizes how contradictions should be handled.",
+    "prompt_template_id": "prompt.contradiction_resolver.default",
+    "allowed_tools": [],
+    "model_policy_id": "model.executive",
+    "guardrail_policy_ids": [],
+    "judge_policy_id": null,
+    "max_iterations": 1,
+    "max_tool_calls": 0,
+    "enabled": true,
+    "version": "1.0.0"
+  },
+  {
     "id": "content_strategist",
     "name": "Content Strategist",
     "role": "Plans the document brief: title, doc_type, subtitle, and outline from the user goal and brand profile.",

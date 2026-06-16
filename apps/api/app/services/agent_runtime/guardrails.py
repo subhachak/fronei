@@ -346,7 +346,17 @@ def _more_restrictive_action(current: GuardrailAction, candidate: GuardrailActio
     return candidate if order[candidate] > order[current] else current
 
 
+def max_boundary_action(decisions: list[GuardrailDecision]) -> GuardrailAction:
+    """Return the effective action for a boundary's guardrail decisions."""
+
+    result: GuardrailAction = "allow"
+    for decision in decisions:
+        result = _more_restrictive_action(result, decision.action)
+    return result
+
+
 def _template_belongs_to_user_db(template_id: str, user_id: str) -> bool:
+    # TODO Phase E: replace standalone SessionLocal usage with request/job-scoped DI session.
     db = SessionLocal()
     try:
         return db.query(DocumentTemplate).filter(

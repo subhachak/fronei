@@ -94,6 +94,8 @@ def _get(mapping: dict[str, T], key: str, label: str) -> T:
 
 def _load_list(filename: str, model: type[T]) -> dict[str, T]:
     raw = json.loads((DEFAULTS_DIR / filename).read_text())
+    if isinstance(raw, dict) and "policies" in raw:
+        raw = raw["policies"]
     items = [model.model_validate(item) for item in raw]
     return {item.id: item for item in items}
 

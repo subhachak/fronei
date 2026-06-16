@@ -191,6 +191,8 @@ def _sanitize_tool_output(tool_name: str, raw: dict[str, Any]) -> dict[str, Any]
         }
 
     if tool_name in {"generate_document", "render_pptx"}:
+        # Native document backends are controlled in-process; preserve artifact payloads
+        # for the caller while keeping long markdown content out of traces/log previews.
         sanitized = dict(raw)
         if "markdown" in sanitized:
             sanitized["markdown_preview"] = str(sanitized.pop("markdown") or "")[:500]

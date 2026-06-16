@@ -6,6 +6,7 @@ import base64
 import logging
 import re
 
+from app.services.agent_runtime.guardrails import BUILTIN_SAFE_TEMPLATE_IDS
 from app.services.agent_runtime.tool_runner import register_native_backend
 
 
@@ -13,14 +14,6 @@ logger = logging.getLogger(__name__)
 
 _SAFE_FILENAME_RE = re.compile(r"[^\w\s-]")
 _WHITESPACE_RE = re.compile(r"[\s_-]+")
-_BUILTIN_TEMPLATE_IDS = {
-    "fronei-default",
-    "warm-editorial",
-    "modern-tech",
-    "executive-navy",
-    "data-product-os",
-    "clean-light",
-}
 
 
 def _safe_filename(title: str) -> str:
@@ -71,7 +64,7 @@ def _render_pptx_output(inputs: dict) -> dict:
     builtin_path = resolve_pptx_template_path(template_id)
     if builtin_path:
         template_path = builtin_path
-    elif template_id and user_id and template_id not in _BUILTIN_TEMPLATE_IDS:
+    elif template_id and user_id and template_id not in BUILTIN_SAFE_TEMPLATE_IDS:
         try:
             with SessionLocal() as db:
                 template_path = resolve_template_path(db, user_id, template_id)

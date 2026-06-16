@@ -6,6 +6,7 @@ from app.services.agent_runtime.document_agent import DocumentAgent
 from app.services.agent_runtime.native_backends import _render_pptx_output, register_all
 from app.services.agent_runtime.registry import _load_from_files
 from app.services.llm_gateway import LLMResult
+from app.services.turn_graph import graph as turn_graph
 from app.services.turn_graph.state import TurnGraphState
 
 
@@ -232,3 +233,12 @@ def test_render_pptx_tool_registered_in_document_lead():
     assert tool.backend == "native"
     assert tool.backend_ref == "documents.render_pptx_output"
     assert tool.guardrail_policy_ids == ["document.template_ownership"]
+
+
+def test_shadow_tool_input_reads_template_id_from_brand_profile():
+    state = _state()
+    state.plan = {"brand_profile": {"template_id": "user-abc"}}
+
+    tool_input = turn_graph._shadow_tool_input("render_pptx", state)
+
+    assert tool_input == {"document_brief": {}, "template_id": "user-abc"}

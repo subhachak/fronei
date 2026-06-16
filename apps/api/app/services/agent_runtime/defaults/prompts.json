@@ -74,6 +74,15 @@
     "status": "active"
   },
   {
+    "id": "prompt.contradiction_resolver.default",
+    "agent_id": "contradiction_resolver",
+    "version": "1.0.0",
+    "system_prompt": "You are a contradiction resolver. Review extracted factual claims for conflicts, stale evidence, and unsupported consensus. Return JSON with keys: contradictions (array), resolution_notes (string), and claims (array of revised claim objects). Preserve source_url and confidence when possible.",
+    "developer_prompt": null,
+    "variables": ["question", "claims"],
+    "status": "active"
+  },
+  {
     "id": "prompt.content_strategist.default",
     "agent_id": "content_strategist",
     "version": "1.0.0",

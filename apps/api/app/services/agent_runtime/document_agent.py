@@ -17,6 +17,7 @@ from app.services.agent_runtime.guardrails import (
 from app.services.agent_runtime.judge_service import JudgeService
 from app.services.agent_runtime.models import JudgeResult
 from app.services.agent_runtime.registry import RuntimeRegistry
+from app.services.agent_runtime.sub_agent_runner import SubAgentRunner
 from app.services.agent_runtime.tool_runner import (
     ToolExecutionError,
     ToolNotPermittedError,
@@ -31,6 +32,7 @@ from app.services.turn_graph.document import (
 )
 from app.services.turn_graph.state import TurnGraphState
 from app.services.agent_runtime.utils import effective_max_repair_iters
+from app.services.template_store import TemplateOwnershipError, brand_profile_for_selection
 
 
 logger = logging.getLogger(__name__)
@@ -161,24 +163,13 @@ class DocumentAgent:
         return self._build_document_result(state, brief, content_obj, tool_result)
 
     def _plan(self, state: TurnGraphState, brand_profile: dict, quality_mode: str):
-        from app.services.llm_gateway import invoke_llm_json
-
-        is_claude = self.model_policy.primary_model.startswith("claude")
-        messages: list[dict[str, str]] = [{"role": "system", "content": self.prompt.system_prompt}]
-        if self.prompt.developer_prompt:
-            messages.append({
-                "role": "developer" if is_claude else "system",
-                "content": self.prompt.developer_prompt,
-            })
-        messages.append({
-            "role": "user",
-            "content": json.dumps({
-                "goal": state.user_message,
-                "brand_profile": brand_profile,
-                "quality_mode": quality_mode,
-            }),
-        })
-        return invoke_llm_json(messages, model_policy_to_route(self.model_policy))
+        agent = SubAgentRunner("content_strategist", self.registry)
+        messages = agent.build_messages(json.dumps({
+            "goal": state.user_message,
+            "brand_profile": brand_profile,
+            "quality_mode": quality_mode,
+        }))
+        return agent.invoke_json(messages)
 
     def _generate_content(
         self,
@@ -188,9 +179,8 @@ class DocumentAgent:
         grammar: dict | None = None,
         research_summary: str | None = None,
     ):
-        from app.services.llm_gateway import invoke_llm
-
         is_presentation = str(brief.get("doc_type") or "").lower() == "presentation"
+        agent = SubAgentRunner("deck_designer" if is_presentation else "evidence_binder", self.registry)
         if is_presentation and grammar is not None:
             doc_context = _build_pptx_doc_context(brief, grammar, research_summary)
         else:
@@ -203,9 +193,8 @@ class DocumentAgent:
             if research_summary:
                 doc_context += f"\nResearch context:\n{research_summary[:3000]}\n"
 
-        return invoke_llm(
+        return agent.invoke(
             message=state.user_message,
-            route=model_policy_to_route(self.model_policy),
             history=state.history[-4:] if state.history else [],
             planner_context=state.running_summary or None,
             doc_context=doc_context,
@@ -370,6 +359,23 @@ class DocumentAgent:
                 db=db,
             )
             grammar_holder.append(grammar)
+            try:
+                state.brand_profile = brand_profile_for_selection(
+                    db,
+                    str(getattr(state, "user_id", "") or ""),
+                    template_id,
+                    grammar=grammar,
+                ).to_dict()
+            except TemplateOwnershipError as exc:
+                state.error = str(exc)
+                state.add_event("document.design_plan", "template_blocked", str(exc), template_id=template_id)
+                state.brand_profile = {
+                    "template_id": template_id,
+                    "source": "blocked",
+                    "error": str(exc),
+                }
+            except Exception:
+                logger.exception("Could not resolve runtime brand profile for template %r", template_id)
         return {"is_presentation": is_presentation, "has_grammar": bool(grammar_holder)}
 
     def _generate_stage(
@@ -463,6 +469,13 @@ class DocumentAgent:
             "filename": filename,
             "tool_latency_ms": tool_latency_ms,
         })
+        if pptx_base64:
+            try:
+                from app.services.renderer.slide_inspector import inspect_pptx_base64
+
+                state.qa_issues.extend(inspect_pptx_base64(pptx_base64))
+            except Exception:
+                logger.exception("PPTX structural inspection failed; continuing")
         return {"content_length": len(content_obj.answer), "filename": filename}
 
     def _qa_repair_stage(

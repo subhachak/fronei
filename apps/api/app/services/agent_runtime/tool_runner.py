@@ -7,8 +7,11 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.services.agent_runtime.budget_guard import RuntimeBudgetGuard
 from app.services.agent_runtime.guardrails import GuardrailContext, GuardrailService, max_boundary_action
 from app.services.agent_runtime.registry import RuntimeRegistry
+from app.services.agent_runtime.ssrf_guard import SSRFViolation, check_url_public
+from app.services.agent_runtime.tracing import AgentRunTrace, AgentTrace
 from app.services.turn_graph.state import TurnGraphState
 
 
@@ -51,10 +54,17 @@ class ToolRunner:
         registry: RuntimeRegistry,
         agent_id: str,
         guardrail_service: GuardrailService,
+        *,
+        budget_guard: RuntimeBudgetGuard | None = None,
+        trace: AgentTrace | None = None,
+        trace_run: AgentRunTrace | None = None,
     ) -> None:
         self.registry = registry
         self.agent_id = agent_id
         self.guardrail_service = guardrail_service
+        self.budget_guard = budget_guard
+        self.trace = trace
+        self.trace_run = trace_run
 
     def run(
         self,
@@ -75,6 +85,15 @@ class ToolRunner:
                 f"Allowed: {tool_def.allowed_agent_ids}"
             )
 
+        if self.budget_guard:
+            self.budget_guard.check_tool_call()
+
+        if tool_name == "read_url":
+            try:
+                check_url_public(str(inputs.get("url") or ""))
+            except SSRFViolation as exc:
+                raise ToolNotPermittedError(f"Tool {tool_name!r} blocked by SSRF guard: {exc}") from exc
+
         pre_context = GuardrailContext(
             boundary="tool_pre",
             user_id=state.user_id or "",
@@ -92,7 +111,17 @@ class ToolRunner:
             raise ToolNotPermittedError(f"Tool {tool_name!r} blocked by guardrail: {reason}")
 
         started = time.perf_counter()
-        raw_output = self._execute(tool_def, inputs)
+        if self.trace and self.trace_run:
+            with self.trace.step(
+                self.trace_run,
+                "tool",
+                input_summary=str(inputs)[:500],
+                tool_name=tool_name,
+            ) as trace_step:
+                raw_output = self._execute(tool_def, inputs)
+                trace_step.output_summary = str(raw_output)[:500]
+        else:
+            raw_output = self._execute(tool_def, inputs)
         latency_ms = int((time.perf_counter() - started) * 1000)
         sanitized = _sanitize_tool_output(tool_name, raw_output)
 
@@ -116,6 +145,15 @@ class ToolRunner:
             logger.exception("Post-guardrail evaluation failed for tool %s; ignoring", tool_name)
 
         input_summary = str(inputs.get("query") or inputs.get("url") or inputs)[:200]
+        if self.budget_guard:
+            cost = 0.0
+            try:
+                cost = float(sanitized.get("estimated_cost_usd") or sanitized.get("cost_usd") or 0.0)
+            except Exception:
+                cost = 0.0
+            self.budget_guard.record_cost(cost)
+            if hasattr(state, "accumulated_cost_usd"):
+                state.accumulated_cost_usd += cost
         return ToolCallResult(
             tool_name=tool_name,
             input_summary=input_summary,

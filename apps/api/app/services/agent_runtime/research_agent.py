@@ -118,13 +118,12 @@ class ResearchAgent:
         self,
         state: TurnGraphState,
         decision,
-        tool_calls_log: list[ToolCallResult],
+        _tool_calls_log: list[ToolCallResult],
     ) -> dict[str, Any]:
         """Call the fast model to split the user query into focused sub-queries."""
 
         from app.services.llm_gateway import invoke_llm
 
-        del tool_calls_log
         fallback = _extract_queries(decision.plan, state.user_message)
         try:
             fast_policy = self.registry.model_policy("model.fast")
@@ -298,14 +297,13 @@ class ResearchAgent:
     def _synthesize_from_claims(
         self,
         state: TurnGraphState,
-        decision,
+        _decision,
         holder: list[Any],
     ) -> dict[str, Any]:
         """Synthesize final answer from extracted claims."""
 
         from app.services.llm_gateway import invoke_llm
 
-        del decision
         claims = state.research_claims or []
         sources = state.research_sources or []
 
@@ -430,6 +428,7 @@ def _format_sources(sources: list[dict[str, str]]) -> str:
 
 
 def _strip_json_fence(raw: str) -> str:
+    raw = raw.lstrip()
     if raw.startswith("```"):
         parts = raw.split("```")
         raw = parts[1] if len(parts) > 1 else raw

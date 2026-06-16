@@ -5,7 +5,7 @@ import logging
 import uuid
 from dataclasses import dataclass, field
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Callable
 
 from app.services.agent_runtime.judge_service import JudgeService
 from app.services.agent_runtime.job_checkpoint import JobCheckpoint
@@ -36,6 +36,7 @@ MAX_CRAWL_SOURCES = 3
 MAX_CLAIMS_PER_SOURCE = 5
 SUFFICIENCY_MIN_CLAIMS = 2
 SUFFICIENCY_MIN_SOURCES = 2
+ProgressSink = Callable[[str, str, dict[str, Any]], None]
 
 
 @dataclass
@@ -60,7 +61,12 @@ class ResearchAgent:
         self.model_policy = registry.model_policy(self.agent_def.model_policy_id)
         self.prompt = registry.prompt(self.agent_def.prompt_template_id)
 
-    def run(self, state: TurnGraphState, decision) -> ResearchResult:
+    def run(
+        self,
+        state: TurnGraphState,
+        decision,
+        progress_sink: ProgressSink | None = None,
+    ) -> ResearchResult:
         checkpoint = JobCheckpoint()
         turn_id = str(getattr(state, "turn_id", "") or "")
         tool_calls: list[ToolCallResult] = []
@@ -75,17 +81,20 @@ class ResearchAgent:
             if resumed_sources:
                 state.checkpoint_key = "research.crawl_complete"
             else:
+                _emit_progress(progress_sink, "research_agent", "Planning research questions…")
                 state = decompose_research_node(
                     state,
                     fn=lambda s: self._decompose(s, decision, tool_calls),
                 )
                 queries = list(state.research_queries) or [state.user_message]
 
+                _emit_progress(progress_sink, "research_agent", "Searching for sources…", {"queries": queries[:MAX_SEARCH_QUERIES]})
                 state = search_research_node(
                     state,
                     fn=lambda s: self._scout(s, queries, tool_calls),
                 )
 
+                _emit_progress(progress_sink, "research_agent", "Reading selected sources…", {"source_count": len(state.research_sources or [])})
                 state = crawl_research_node(
                     state,
                     fn=lambda s: self._crawl(s, tool_calls),
@@ -95,6 +104,7 @@ class ResearchAgent:
                     "tool_calls_log": [call.__dict__ for call in tool_calls],
                 }, score=0.8)
 
+            _emit_progress(progress_sink, "research_agent", "Extracting evidence claims…", {"source_count": len(state.research_sources or [])})
             state = extract_research_node(
                 state,
                 fn=lambda s: self._extract(s),
@@ -102,12 +112,17 @@ class ResearchAgent:
 
             self._resolve_contradictions(state)
 
+            _emit_progress(progress_sink, "research_agent", "Checking evidence sufficiency…", {"claim_count": len(state.research_claims or [])})
             state = sufficiency_research_node(
                 state,
                 fn=lambda s: self._check_sufficiency(s),
             )
 
             synthesis_holder: list[Any] = []
+            _emit_progress(progress_sink, "research_agent", "Synthesizing findings…", {
+                "source_count": len(state.research_sources or []),
+                "claim_count": len(state.research_claims or []),
+            })
             state = synthesize_research_node(
                 state,
                 fn=lambda s: self._synthesize_from_claims(s, decision, synthesis_holder),
@@ -122,9 +137,15 @@ class ResearchAgent:
                     "research_sources": state.research_sources or [],
                 }, score=0.8)
 
+        _emit_progress(progress_sink, "research_agent", "Verifying answer…")
         state = verify_research_node(state)
 
-        return self._build_result(state, tool_calls, synthesis_obj, checkpoint, turn_id)
+        result = self._build_result(state, tool_calls, synthesis_obj, checkpoint, turn_id)
+        _emit_progress(progress_sink, "research_agent", "Graph-native research complete.", {
+            "source_count": len(result.sources or []),
+            "latency_ms": result.latency_ms,
+        })
+        return result
 
     def _try_resume_synthesis(self, state: TurnGraphState, checkpoint: JobCheckpoint, turn_id: str) -> Any | None:
         payload, score = checkpoint.load(turn_id, "research.synthesis_complete")
@@ -175,8 +196,13 @@ class ResearchAgent:
                 if query
             ][:MAX_SEARCH_QUERIES]
             state.research_queries = queries if queries else fallback
-        except Exception:
-            logger.warning("Query decomposition failed; using fallback queries for %r", state.user_message[:80])
+        except Exception as exc:
+            logger.warning(
+                "Query decomposition failed; using fallback queries for %r: %s: %s",
+                state.user_message[:80],
+                type(exc).__name__,
+                exc,
+            )
             state.research_queries = fallback
 
         return {"queries": state.research_queries}
@@ -648,3 +674,17 @@ def _repair_instruction_text(repair: dict[str, Any] | str) -> str:
             return f"{section}: {instruction}"
         return instruction or section or json.dumps(repair, sort_keys=True)
     return str(repair)
+
+
+def _emit_progress(
+    progress_sink: ProgressSink | None,
+    stage: str,
+    message: str,
+    extra: dict[str, Any] | None = None,
+) -> None:
+    if progress_sink is None:
+        return
+    try:
+        progress_sink(stage, message, extra or {})
+    except Exception:
+        logger.debug("Research progress sink failed; continuing", exc_info=True)

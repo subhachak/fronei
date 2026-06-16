@@ -18,6 +18,7 @@ from app.routers.personal_context import router as personal_context_router
 from app.routers.research_runs import router as research_runs_router
 from app.routers.twin_profile import router as twin_profile_router
 from app.routers.users import router as users_router
+from app.services.agent_runtime.native_backends import register_all as register_native_backends
 from app.services.agent_runtime.seeder import seed_registry_from_defaults
 from app.services.llm_gateway import configure_provider_keys
 
@@ -36,6 +37,7 @@ async def lifespan(app: FastAPI):
             seed_registry_from_defaults(db)
         finally:
             db.close()
+    register_native_backends()
     mark_stale_conversation_turns()
     yield
 

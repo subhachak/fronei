@@ -44,6 +44,7 @@ class TurnGraphState(BaseModel):
     user_id: str | None = None
     user_message: str
     profile: str = "balanced"
+    quality_mode: str = "standard"
 
     history: list[dict[str, Any]] = Field(default_factory=list)
     user_memory: str = ""

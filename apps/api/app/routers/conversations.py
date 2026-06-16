@@ -130,6 +130,18 @@ def _graph_research_timeout_seconds(db, mode: str) -> float:
     return max(60.0, min(configured_minutes, cap_minutes) * 60.0)
 
 
+def _confirmed_research_mode(confirmed_plan, fallback_recommended: bool) -> str:
+    """Resolve popup research choices without silently downgrading to quick."""
+
+    if confirmed_plan.deep_research is True:
+        return confirmed_plan.research_mode or "deep"
+    if confirmed_plan.deep_research is False:
+        return "quick"
+    if fallback_recommended:
+        return confirmed_plan.research_mode or "deep"
+    return confirmed_plan.research_mode or "quick"
+
+
 def _run_graph_research_agent(agent, state, decision, progress_sink):
     if "progress_sink" in inspect.signature(agent.run).parameters:
         return agent.run(state, decision, progress_sink=progress_sink)
@@ -3359,12 +3371,36 @@ def execute_plan(
                     if plan.enriched_prompt else message_text
                 )
 
+            confirmed_deep_research = (
+                bool(body.confirmed_plan.deep_research)
+                if body.confirmed_plan.deep_research is not None
+                else plan.recommend_deep_research
+            )
+            confirmed_research_mode = _confirmed_research_mode(
+                body.confirmed_plan,
+                plan.recommend_deep_research,
+            )
+            _turn_graph_debug(
+                settings,
+                "execute_plan_confirmed",
+                conversation_id=conv.public_id,
+                user_id=user_id,
+                message_id=message_id,
+                confirmed_deep_research=body.confirmed_plan.deep_research,
+                confirmed_research_mode=body.confirmed_plan.research_mode,
+                resolved_deep_research=confirmed_deep_research,
+                resolved_research_mode=confirmed_research_mode,
+                recommended_deep_research=plan.recommend_deep_research,
+                document=body.confirmed_plan.document,
+                web_search=body.confirmed_plan.web_search,
+            )
+
             req = ConvChatRequest(
                 message=message_text,
                 conversation_id=conv_id,
                 profile=profile,
-                deep_research=bool(body.confirmed_plan.deep_research) if body.confirmed_plan.deep_research is not None else plan.recommend_deep_research,
-                research_mode=body.confirmed_plan.research_mode or "quick",
+                deep_research=confirmed_deep_research,
+                research_mode=confirmed_research_mode,
                 confirmed_plan=body.confirmed_plan,
             )
             turn = ConversationTurn(

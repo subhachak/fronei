@@ -251,10 +251,10 @@ class DocumentAgent:
 
         for attempt in range(max_iters):
             logger.info(
-                "Document judge repair %d/%d: re-planning",
+                "Document judge repair %d/%d: re-planning (repairs=%s)",
                 attempt + 1,
                 max_iters,
-                extra={"required_repairs": judge_result.required_repairs},
+                judge_result.required_repairs,
             )
             brief = self._replan_with_repairs(
                 state,
@@ -312,6 +312,8 @@ class DocumentAgent:
                     "repair_instructions": repair_note,
                 }),
             })
+            # Uses document_lead for now; a future sub-agent runner will invoke
+            # content_strategist directly for this repair step.
             result = invoke_llm_json(messages, model_policy_to_route(self.model_policy))
             return _extract_document_brief(result.answer, state.user_message)
         except Exception:
@@ -442,9 +444,6 @@ class DocumentAgent:
         judge_policy_id = self.agent_def.judge_policy_id
         if not judge_policy_id or content_obj is None:
             return None
-        quality_mode = getattr(state, "quality_mode", None) or "standard"
-        if quality_mode != "executive":
-            return {"judge_skipped": True, "quality_mode": quality_mode}
         content = getattr(content_obj, "answer", "") or ""
         judge_result = JudgeService(self.registry).evaluate(
             judge_policy_id,

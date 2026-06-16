@@ -5,6 +5,7 @@ import queue as _queue_module
 import re
 import threading as _threading
 import time
+import inspect
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as _FutureTimeoutError
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -120,6 +121,19 @@ def _run_with_timeout(fn, *args, timeout_seconds: float, **kwargs):
 def _document_pipeline_timeout_seconds(db) -> float:
     config = get_turn_runtime_config(db)
     return float(config.get("document_timeout_minutes", 120)) * 60.0
+
+
+def _graph_research_timeout_seconds(db, mode: str) -> float:
+    config = get_turn_runtime_config(db)
+    configured_minutes = float(config.get("research_timeout_minutes", 180))
+    cap_minutes = 30.0 if mode == "expert" else 20.0
+    return max(60.0, min(configured_minutes, cap_minutes) * 60.0)
+
+
+def _run_graph_research_agent(agent, state, decision, progress_sink):
+    if "progress_sink" in inspect.signature(agent.run).parameters:
+        return agent.run(state, decision, progress_sink=progress_sink)
+    return agent.run(state, decision)
 
 
 def _stage_timing(stage: str, started: float, **meta) -> StageTiming:
@@ -2249,7 +2263,15 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                             research_state.tenant_id = user_id
                             research_state.quality_mode = "executive" if research_mode == "expert" else "standard"
                             decision = SimpleNamespace(plan=plan_to_dict(plan))
-                            agent_result = ResearchAgent(load_default_registry()).run(research_state, decision)
+                            research_agent = ResearchAgent(load_default_registry())
+                            agent_result = _run_with_timeout(
+                                _run_graph_research_agent,
+                                research_agent,
+                                research_state,
+                                decision,
+                                progress,
+                                timeout_seconds=_graph_research_timeout_seconds(research_db, research_mode),
+                            )
                             _turn_graph_debug(
                                 settings,
                                 "research_authoritative_agent_result",
@@ -2377,9 +2399,46 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                 research_started = time.perf_counter()
                 t = _threading.Thread(target=_run_research_worker, daemon=True)
                 t.start()
+                heartbeat_count = 0
+                research_timeout_seconds = _graph_research_timeout_seconds(db, research_mode)
 
                 while True:
-                    update = progress_q.get()
+                    try:
+                        update = progress_q.get(timeout=20)
+                    except _queue_module.Empty:
+                        elapsed_ms = int((time.perf_counter() - research_started) * 1000)
+                        if not t.is_alive():
+                            continue
+                        if elapsed_ms / 1000 > research_timeout_seconds:
+                            error_holder[0] = PipelineTimeout(
+                                "Graph-native research exceeded its timeout. Please retry the research request."
+                            )
+                            _turn_graph_debug(
+                                settings,
+                                "research_stream_timeout",
+                                conversation_id=conv.public_id,
+                                user_id=user_id,
+                                elapsed_ms=elapsed_ms,
+                                research_mode=research_mode,
+                            )
+                            break
+                        heartbeat_count += 1
+                        _turn_graph_debug(
+                            settings,
+                            "research_stream_heartbeat",
+                            conversation_id=conv.public_id,
+                            user_id=user_id,
+                            elapsed_ms=elapsed_ms,
+                            heartbeat_count=heartbeat_count,
+                            research_mode=research_mode,
+                        )
+                        yield _pipeline_log(
+                            "research_agent",
+                            "Still running graph-native research…",
+                            elapsed_ms=elapsed_ms,
+                            heartbeat_count=heartbeat_count,
+                        )
+                        continue
                     if update is None:
                         break
                     stage = update.pop("stage")

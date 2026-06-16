@@ -85,7 +85,7 @@ def _turn_graph_debug(settings, message: str, **fields) -> None:
         for key, value in fields.items()
         if value is not None
     }
-    logger.info("turn_graph_debug %s %s", message, json.dumps(safe_fields, default=str, sort_keys=True))
+    logger.warning("turn_graph_debug %s %s", message, json.dumps(safe_fields, default=str, sort_keys=True))
 
 
 # ── Bounded execution for long synchronous pipeline work (#168) ───────────────

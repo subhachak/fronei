@@ -116,13 +116,14 @@ class JudgeService:
             f"Content to evaluate:\n{content}",
         ]
         prompt = "\n\n".join(part for part in prompt_parts if part)
+        system_prompt = _judge_system_prompt(policy.target_type, criteria_block)
 
         def _call(route):
             return invoke_llm(
                 message=prompt,
                 route=route,
                 history=[],
-                system_prompt=_judge_system_prompt(policy.target_type, criteria_block),
+                planner_context=system_prompt,
             )
 
         if self.trace and self.trace_run:

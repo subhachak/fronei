@@ -1,0 +1,90 @@
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Any, Literal
+from uuid import uuid4
+
+from pydantic import BaseModel, Field
+
+
+RouteName = Literal["direct", "research", "document", "research_document"]
+
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def new_id(prefix: str) -> str:
+    return f"{prefix}_{uuid4().hex[:24]}"
+
+
+class AgentV3Request(BaseModel):
+    message: str = Field(min_length=1)
+    conversation_id: str | None = None
+    quality_mode: Literal["draft", "standard", "executive"] = "standard"
+    force_route: RouteName | None = None
+    output_format: Literal["chat", "markdown", "docx"] = "chat"
+
+
+class Goal(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("goal"))
+    user_id: str
+    conversation_id: str | None = None
+    objective: str
+    route: RouteName
+    quality_mode: str = "standard"
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class ProgressEvent(BaseModel):
+    event_id: str = Field(default_factory=lambda: new_id("evt"))
+    turn_id: str
+    stage: str
+    message: str
+    data: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class Source(BaseModel):
+    title: str = ""
+    url: str = ""
+    snippet: str = ""
+    content: str = ""
+
+
+class ToolCall(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("tool"))
+    name: str
+    input: dict[str, Any] = Field(default_factory=dict)
+    output: dict[str, Any] = Field(default_factory=dict)
+    ok: bool = True
+    error: str | None = None
+    latency_ms: int = 0
+
+
+class Artifact(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("artifact"))
+    kind: Literal["markdown", "docx"]
+    filename: str
+    mime_type: str
+    base64_data: str
+
+
+class AgentV3Result(BaseModel):
+    turn_id: str
+    goal: Goal
+    answer: str
+    route: RouteName
+    model_used: str = ""
+    sources: list[Source] = Field(default_factory=list)
+    tool_calls: list[ToolCall] = Field(default_factory=list)
+    artifacts: list[Artifact] = Field(default_factory=list)
+    events: list[ProgressEvent] = Field(default_factory=list)
+    latency_ms: int = 0
+    cost_usd: float = 0.0
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class StreamEnvelope(BaseModel):
+    type: Literal["start", "progress", "result", "error", "done"]
+    data: dict[str, Any] = Field(default_factory=dict)

@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 from app.services.agent_runtime.guardrails import GuardrailService
 from app.services.agent_runtime.registry import _load_from_files
-from app.services.agent_runtime.research_agent import ResearchAgent
+from app.services.agent_runtime.research_agent import ResearchAgent, _strip_json_fence
 from app.services.agent_runtime.tool_runner import ToolRunner
 from app.services.turn_graph.state import TurnGraphState
 from app.services.web_context import WebSource
@@ -53,6 +53,12 @@ def test_decompose_falls_back_on_parse_failure(monkeypatch):
     _agent()._decompose(state, _decision({"search_queries": ["fallback_q"]}), [])
 
     assert state.research_queries == ["fallback_q"]
+
+
+def test_strip_json_fence_handles_leading_whitespace():
+    raw = '  ```json\n{"ok": true}\n```'
+
+    assert _strip_json_fence(raw) == '{"ok": true}'
 
 
 def test_scout_deduplicates_by_url(monkeypatch):

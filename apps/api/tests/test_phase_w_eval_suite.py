@@ -87,6 +87,28 @@ def test_s4_document_generate_checkpoint_saved(monkeypatch):
     assert "document.generate_complete" in saved
 
 
+def test_s4_evidence_binder_used_for_non_presentation(monkeypatch):
+    used: list[str] = []
+
+    class FakeSubAgent:
+        def __init__(self, agent_id, registry):
+            used.append(agent_id)
+
+        def invoke(self, **kwargs):
+            return SimpleNamespace(answer="# Report", model_used="m", latency_ms=1, estimated_cost_usd=0)
+
+    monkeypatch.setattr("app.services.agent_runtime.document_agent.SubAgentRunner", FakeSubAgent)
+
+    result = DocumentAgent(_load_from_files())._generate_content(
+        TurnGraphState(user_message="doc"),
+        {"title": "Doc", "doc_type": "executive_report"},
+        SimpleNamespace(plan={}),
+    )
+
+    assert result.answer == "# Report"
+    assert used == ["evidence_binder"]
+
+
 def test_s5_deck_brand_profile_state_field():
     state = TurnGraphState(user_message="deck")
     state.brand_profile = {"source": "builtin"}
@@ -188,6 +210,40 @@ def test_s10_state_document_content_reflects_best_seen():
 def test_s10_best_seen_content_holder_update():
     holder = [SimpleNamespace(answer="best")]
     assert holder[0].answer == "best"
+
+
+def test_s10_document_repair_stage_emits_best_seen(monkeypatch):
+    from app.services.agent_runtime.models import JudgeResult
+
+    registry = _load_from_files()
+    registry.judges["document_judge"].max_repair_iterations = 2
+    agent = DocumentAgent(registry)
+    scores = iter([
+        JudgeResult(id="1", target_type="document", target_id="t", judge_agent_id="j", score=0.5, status="repair", required_repairs=[{"instruction": "fix"}], can_publish=False),
+        JudgeResult(id="2", target_type="document", target_id="t", judge_agent_id="j", score=0.9, status="pass", can_publish=True),
+    ])
+    monkeypatch.setattr("app.services.agent_runtime.judge_service.JudgeService.evaluate", lambda *a, **kw: next(scores))
+    monkeypatch.setattr(agent, "_regenerate_with_repairs", lambda *a, **kw: (SimpleNamespace(answer="best", model_used="m", latency_ms=1, estimated_cost_usd=0), {"docx_base64": "BEST", "filename": "best.docx", "tool_latency_ms": 1}))
+    content_holder = [SimpleNamespace(answer="initial")]
+    tool_holder = [{"docx_base64": "INITIAL", "filename": "initial.docx", "tool_latency_ms": 1}]
+    state = TurnGraphState(user_message="doc", quality_mode="executive")
+
+    result = agent._qa_repair_stage(
+        state,
+        content_holder[0],
+        {"title": "Doc", "doc_type": "executive_report"},
+        False,
+        SimpleNamespace(plan={}),
+        None,
+        None,
+        None,
+        content_holder,
+        tool_holder,
+    )
+
+    assert content_holder[0].answer == "best"
+    assert tool_holder[0]["docx_base64"] == "BEST"
+    assert result == {"judge_status": "pass", "judge_score": 0.9}
 
 
 def test_s10_poison_detection_counter_concept():

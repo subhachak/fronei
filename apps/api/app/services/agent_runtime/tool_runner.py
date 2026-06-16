@@ -62,6 +62,7 @@ class ToolRunner:
         inputs: dict[str, Any],
         *,
         state: TurnGraphState,
+        plan: dict | None = None,
     ) -> ToolCallResult:
         try:
             tool_def = self.registry.tool(tool_name)
@@ -82,7 +83,7 @@ class ToolRunner:
             tool_input=inputs,
             tool_output=None,
             request_text=state.user_message,
-            plan=None,
+            plan=plan,
             response_text=None,
         )
         pre_decisions = self.guardrail_service.evaluate_boundary("tool_pre", pre_context)
@@ -104,7 +105,7 @@ class ToolRunner:
                 tool_input=inputs,
                 tool_output=sanitized,
                 request_text=state.user_message,
-                plan=None,
+                plan=plan,
                 response_text=None,
             )
             post_decisions = self.guardrail_service.evaluate_boundary("tool_post", post_context)

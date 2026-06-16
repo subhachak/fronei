@@ -1,6 +1,6 @@
 import pytest
 
-from app.services.agent_runtime.guardrails import GuardrailContext, GuardrailService
+from app.services.agent_runtime.guardrails import GuardrailContext, GuardrailDecision, GuardrailService, max_boundary_action
 from app.services.agent_runtime.models import GuardrailPolicy
 from app.services.agent_runtime.registry import RuntimeRegistry, load_default_registry
 from app.services.turn_graph import graph as turn_graph
@@ -144,6 +144,19 @@ def test_unknown_check_type_returns_allow_without_raising():
     assert decision.action == "allow"
     assert decision.triggered_checks == []
     assert "Unknown check type" in decision.reason
+
+
+def test_max_boundary_action_returns_most_restrictive_decision():
+    decisions = [
+        GuardrailDecision("p1", "allow", [], "ok"),
+        GuardrailDecision("p2", "transform", ["strip_tool_instructions"], "sanitize"),
+        GuardrailDecision("p3", "require_judge", ["review"], "review"),
+        GuardrailDecision("p4", "block", ["ssrf"], "blocked"),
+    ]
+
+    assert max_boundary_action(decisions) == "block"
+    assert max_boundary_action(decisions[:3]) == "require_judge"
+    assert max_boundary_action([]) == "allow"
 
 
 def test_shadow_hook_does_not_raise_on_db_failure(monkeypatch):

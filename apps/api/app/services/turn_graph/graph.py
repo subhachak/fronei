@@ -81,7 +81,7 @@ def _shadow_guardrail_hook(state: TurnGraphState, settings) -> None:
 
         for tool in state.selected_tools:
             tool_name = str(tool.get("name") or "")
-            if tool_name in {"web_context", "web_search", "generate_document"}:
+            if tool_name in {"web_context", "web_search", "read_url", "generate_document"}:
                 tool_input = _shadow_tool_input(tool_name, state)
                 tool_pre_context = GuardrailContext(
                     boundary="tool_pre",
@@ -140,6 +140,10 @@ def _shadow_guardrail_hook(state: TurnGraphState, settings) -> None:
 def _shadow_tool_input(tool_name: str, state: TurnGraphState) -> dict[str, Any]:
     if tool_name in {"web_context", "web_search"}:
         return {"query": state.user_message, "max_results": 5}
+    if tool_name == "read_url":
+        plan = state.plan or {}
+        url = plan.get("url") if isinstance(plan, dict) else None
+        return {"url": url} if isinstance(url, str) else {}
     if tool_name == "generate_document":
         plan = state.plan or {}
         document_brief = plan.get("document_brief") if isinstance(plan, dict) else None
@@ -153,6 +157,8 @@ def _shadow_tool_input(tool_name: str, state: TurnGraphState) -> dict[str, Any]:
 def _shadow_tool_output(tool_name: str, state: TurnGraphState) -> dict[str, Any] | None:
     if tool_name in {"web_context", "web_search"} and isinstance(state.web_context, dict):
         return state.web_context
+    if tool_name == "read_url" and isinstance(state.web_context, dict):
+        return state.web_context
     if tool_name == "generate_document" and isinstance(state.document_result, dict):
         return state.document_result
     return None
@@ -161,6 +167,7 @@ def _shadow_tool_output(tool_name: str, state: TurnGraphState) -> dict[str, Any]
 def _write_guardrail_events(rows: list[tuple[str, str | None, GuardrailDecision]], state: TurnGraphState) -> None:
     if not rows:
         return
+    # TODO Phase E: replace standalone SessionLocal usage with request/job-scoped DI session.
     db = SessionLocal()
     try:
         for boundary, tool_name, decision in rows:

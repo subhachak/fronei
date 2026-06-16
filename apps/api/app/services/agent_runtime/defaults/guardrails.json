@@ -1,4 +1,6 @@
-[
+{
+  "_comment": "applies_to accepts boundary selectors such as tool_pre/tool_post/output and future per-tool selectors such as tool:web_search. Phase B evaluate_boundary matches boundary selectors only; later enforcement can also filter by tool selectors.",
+  "policies": [
   {
     "id": "tool.ssrf_prevention",
     "name": "Prevent server-side request forgery",
@@ -38,4 +40,5 @@
     "enabled": true,
     "version": "1.0.0"
   }
-]
+  ]
+}

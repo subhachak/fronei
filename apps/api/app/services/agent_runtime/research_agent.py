@@ -18,6 +18,7 @@ from app.services.agent_runtime.tool_runner import (
     ToolNotPermittedError,
     ToolRunner,
 )
+from app.services.agent_runtime.utils import strip_json_fence
 from app.services.turn_graph.research import (
     crawl_research_node,
     decompose_research_node,
@@ -139,7 +140,7 @@ class ResearchAgent:
                     "Output ONLY valid JSON with no other text."
                 ),
             )
-            raw = _strip_json_fence((getattr(result, "answer", "") or "").strip())
+            raw = strip_json_fence((getattr(result, "answer", "") or "").strip())
             queries = [
                 str(query)
                 for query in json.loads(raw).get("search_queries", [])
@@ -260,7 +261,7 @@ class ResearchAgent:
                     "Output ONLY valid JSON with no other text."
                 ),
             )
-            raw = _strip_json_fence((getattr(result, "answer", "") or "").strip())
+            raw = strip_json_fence((getattr(result, "answer", "") or "").strip())
             claims = [
                 {
                     "text": str(claim.get("text", "")),
@@ -357,19 +358,15 @@ class ResearchAgent:
             if source.get("url")
         ])
 
-        try:
-            return JudgeService(self.registry).evaluate(
-                judge_policy_id,
-                content=answer,
-                context={
-                    "user_question": state.user_message,
-                    "sources_summary": sources_summary,
-                },
-                target_id=str(getattr(state, "turn_id", "") or ""),
-            )
-        except Exception:
-            logger.exception("Research judge failed unexpectedly; continuing")
-            return None
+        return JudgeService(self.registry).evaluate(
+            judge_policy_id,
+            content=answer,
+            context={
+                "user_question": state.user_message,
+                "sources_summary": sources_summary,
+            },
+            target_id=str(getattr(state, "turn_id", "") or ""),
+        )
 
     def _build_result(
         self,
@@ -425,13 +422,3 @@ def _format_sources(sources: list[dict[str, str]]) -> str:
         url = source.get("url", "")
         lines.append(f"[{index}] {title} - {url}")
     return "\n".join(lines)
-
-
-def _strip_json_fence(raw: str) -> str:
-    raw = raw.lstrip()
-    if raw.startswith("```"):
-        parts = raw.split("```")
-        raw = parts[1] if len(parts) > 1 else raw
-        if raw.startswith("json"):
-            raw = raw[4:]
-    return raw.strip()

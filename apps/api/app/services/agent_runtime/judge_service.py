@@ -7,6 +7,7 @@ from typing import Any
 
 from app.services.agent_runtime.models import JudgePolicy, JudgeResult, JudgeStatus
 from app.services.agent_runtime.registry import RuntimeRegistry
+from app.services.agent_runtime.utils import strip_json_fence
 
 
 logger = logging.getLogger(__name__)
@@ -36,7 +37,11 @@ class JudgeService:
 
         policy = self._get_policy(policy_id)
         if policy is None or not policy.enabled:
-            return self._skip_result(policy_id, target_id)
+            return self._skip_result(
+                policy_id,
+                target_id,
+                target_type=policy.target_type if policy else "answer",
+            )
 
         try:
             return self._run_judge(policy, content, context or {}, target_id or "")
@@ -61,10 +66,16 @@ class JudgeService:
             logger.warning("JudgeService: unknown policy_id=%r", policy_id)
             return None
 
-    def _skip_result(self, policy_id: str, target_id: str | None) -> JudgeResult:
+    def _skip_result(
+        self,
+        policy_id: str,
+        target_id: str | None,
+        *,
+        target_type: str = "answer",
+    ) -> JudgeResult:
         return JudgeResult(
             id=str(uuid.uuid4()),
-            target_type="answer",
+            target_type=target_type,
             target_id=target_id or "",
             judge_agent_id=policy_id,
             score=1.0,
@@ -103,7 +114,7 @@ class JudgeService:
             system_prompt=_judge_system_prompt(policy.target_type, criteria_block),
         )
 
-        parsed = json.loads(_strip_json_fence((getattr(result, "answer", "") or "").strip()))
+        parsed = json.loads(strip_json_fence((getattr(result, "answer", "") or "").strip()))
         score = max(0.0, min(1.0, float(parsed.get("score", 0.0))))
 
         issues = [
@@ -149,12 +160,3 @@ def _judge_system_prompt(target_type: str, criteria_block: str) -> str:
         "for each repair needed (empty array if score >= pass threshold)\n\n"
         "Output ONLY valid JSON."
     )
-
-
-def _strip_json_fence(raw: str) -> str:
-    if raw.startswith("```"):
-        parts = raw.split("```")
-        raw = parts[1] if len(parts) > 1 else raw
-        if raw.startswith("json"):
-            raw = raw[4:]
-    return raw.strip()

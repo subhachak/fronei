@@ -278,19 +278,15 @@ class DocumentAgent:
         if isinstance(getattr(state, "research_result", None), dict):
             research_summary = str(state.research_result.get("answer", ""))[:500]
 
-        try:
-            return JudgeService(self.registry).evaluate(
-                judge_policy_id,
-                content=plan_text,
-                context={
-                    "user_question": state.user_message,
-                    "sources_summary": research_summary,
-                },
-                target_id=str(getattr(state, "turn_id", "") or ""),
-            )
-        except Exception:
-            logger.exception("Document judge failed unexpectedly; continuing")
-            return None
+        return JudgeService(self.registry).evaluate(
+            judge_policy_id,
+            content=plan_text,
+            context={
+                "user_question": state.user_message,
+                "sources_summary": research_summary,
+            },
+            target_id=str(getattr(state, "turn_id", "") or ""),
+        )
 
 
 def _fetch_template_grammar(

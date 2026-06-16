@@ -21,6 +21,7 @@ from app.services.agent_runtime.registry import (
     load_registry_from_db,
 )
 from app.services.agent_runtime.seeder import seed_registry_from_defaults
+from app.services.llm_gateway import LLMResult
 
 
 @pytest.fixture
@@ -83,10 +84,36 @@ def test_admin_registry_agents_endpoint(admin_client):
     assert "orchestrator" in ids
 
 
-def test_prompt_activation_requires_fixture_pass(db_session, admin_client):
+def _fixture_llm_result(answer: str = '{"route":"direct_answer","selected_tools":["answer_directly"]}') -> LLMResult:
+    return LLMResult(
+        answer=answer,
+        model_used="test-model",
+        latency_ms=1,
+        prompt_tokens=1,
+        completion_tokens=1,
+        estimated_cost_usd=0.0,
+    )
+
+
+def _fixture_llm_for_orchestrator(messages, *_args, **_kwargs) -> LLMResult:
+    payload = messages[-1]["content"] if messages else ""
+    # Strings match user_message values in defaults/fixtures/prompt.orchestrator.default.json.
+    # Keep this mock in sync when fixture scenarios change.
+    if "latest mortgage rates" in payload:
+        return _fixture_llm_result('{"route":"research","selected_tools":["web_search"]}')
+    if "10-slide board deck" in payload:
+        return _fixture_llm_result('{"route":"document","selected_tools":["generate_document"]}')
+    return _fixture_llm_result('{"route":"direct_answer","selected_tools":["answer_directly"]}')
+
+
+def test_prompt_activation_requires_fixture_pass(db_session, admin_client, monkeypatch):
     seed_registry_from_defaults(db_session)
     db_session.execute(text("UPDATE prompt_templates SET status='draft' WHERE id='prompt.orchestrator.default'"))
     db_session.commit()
+    monkeypatch.setattr(
+        "app.services.llm_gateway.invoke_llm_json",
+        _fixture_llm_for_orchestrator,
+    )
 
     response = admin_client.post("/admin/registry/prompts/prompt.orchestrator.default/activate")
 
@@ -148,6 +175,10 @@ def test_prompt_rollback_restores_previous_version(db_session, admin_client, tmp
         (FIXTURES_DIR / "prompt.orchestrator.default.json").read_text()
     )
     monkeypatch.setattr("app.services.agent_runtime.fixtures.FIXTURES_DIR", fixture_dir)
+    monkeypatch.setattr(
+        "app.services.llm_gateway.invoke_llm_json",
+        _fixture_llm_for_orchestrator,
+    )
 
     activate = admin_client.post("/admin/registry/prompts/prompt.orchestrator.v2/activate")
     assert activate.status_code == 200

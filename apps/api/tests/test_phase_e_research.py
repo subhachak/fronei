@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.services.agent_runtime.fixtures import PromptFixtureRunner
+from app.services.agent_runtime.document_agent import DocumentResult
 from app.services.agent_runtime.guardrails import GuardrailDecision, GuardrailService
 from app.services.agent_runtime.registry import _load_from_files, load_default_registry
 from app.services.agent_runtime.research_agent import ResearchAgent, ResearchResult
@@ -161,17 +162,34 @@ def test_orchestrator_node_research_route_returns_handled_true(monkeypatch):
     assert state.final_answer == "Research"
 
 
-def test_orchestrator_node_document_route_falls_through(monkeypatch):
+def test_orchestrator_node_document_route_is_handled(monkeypatch):
     monkeypatch.setattr(
         "app.services.llm_gateway.invoke_llm_json",
         lambda *_args, **_kwargs: _llm('{"route":"document","reasoning":"artifact"}'),
+    )
+    monkeypatch.setattr(
+        "app.services.agent_runtime.document_agent.DocumentAgent.run",
+        lambda self, state, decision: DocumentResult(
+            title="Doc",
+            doc_type="memo",
+            markdown="# Doc",
+            docx_base64="RE9DWA==",
+            filename="doc.docx",
+            model_used="test-model",
+            prompt_id="prompt.document_lead.default",
+            planning_latency_ms=1,
+            content_latency_ms=2,
+            latency_ms=3,
+            cost_usd=0.001,
+        ),
     )
     monkeypatch.setattr(turn_graph, "load_default_registry", _load_from_files)
 
     state, handled = turn_graph._orchestrator_node(_state(), SimpleNamespace())
 
-    assert handled is False
+    assert handled is True
     assert state.triage_decision["route"] == "document"
+    assert state.document_result["title"] == "Doc"
 
 
 def test_fixture_runner_live_eval_response_contains_passes(monkeypatch, tmp_path):

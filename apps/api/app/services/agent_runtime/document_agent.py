@@ -17,6 +17,7 @@ from app.services.agent_runtime.guardrails import (
 from app.services.agent_runtime.judge_service import JudgeService
 from app.services.agent_runtime.models import JudgeResult
 from app.services.agent_runtime.registry import RuntimeRegistry
+from app.services.agent_runtime.sub_agent_runner import SubAgentRunner
 from app.services.agent_runtime.tool_runner import (
     ToolExecutionError,
     ToolNotPermittedError,
@@ -31,6 +32,7 @@ from app.services.turn_graph.document import (
 )
 from app.services.turn_graph.state import TurnGraphState
 from app.services.agent_runtime.utils import effective_max_repair_iters
+from app.services.template_store import TemplateOwnershipError, brand_profile_for_selection
 
 
 logger = logging.getLogger(__name__)
@@ -149,7 +151,6 @@ class DocumentAgent:
                 grammar,
                 research_summary,
                 template_id,
-                tool_runner,
                 content_holder,
                 tool_result_holder,
             ),
@@ -162,24 +163,13 @@ class DocumentAgent:
         return self._build_document_result(state, brief, content_obj, tool_result)
 
     def _plan(self, state: TurnGraphState, brand_profile: dict, quality_mode: str):
-        from app.services.llm_gateway import invoke_llm_json
-
-        is_claude = self.model_policy.primary_model.startswith("claude")
-        messages: list[dict[str, str]] = [{"role": "system", "content": self.prompt.system_prompt}]
-        if self.prompt.developer_prompt:
-            messages.append({
-                "role": "developer" if is_claude else "system",
-                "content": self.prompt.developer_prompt,
-            })
-        messages.append({
-            "role": "user",
-            "content": json.dumps({
-                "goal": state.user_message,
-                "brand_profile": brand_profile,
-                "quality_mode": quality_mode,
-            }),
-        })
-        return invoke_llm_json(messages, model_policy_to_route(self.model_policy))
+        agent = SubAgentRunner("content_strategist", self.registry)
+        messages = agent.build_messages(json.dumps({
+            "goal": state.user_message,
+            "brand_profile": brand_profile,
+            "quality_mode": quality_mode,
+        }))
+        return agent.invoke_json(messages)
 
     def _generate_content(
         self,
@@ -189,9 +179,8 @@ class DocumentAgent:
         grammar: dict | None = None,
         research_summary: str | None = None,
     ):
-        from app.services.llm_gateway import invoke_llm
-
         is_presentation = str(brief.get("doc_type") or "").lower() == "presentation"
+        agent = SubAgentRunner("deck_designer" if is_presentation else "evidence_binder", self.registry)
         if is_presentation and grammar is not None:
             doc_context = _build_pptx_doc_context(brief, grammar, research_summary)
         else:
@@ -204,9 +193,8 @@ class DocumentAgent:
             if research_summary:
                 doc_context += f"\nResearch context:\n{research_summary[:3000]}\n"
 
-        return invoke_llm(
+        return agent.invoke(
             message=state.user_message,
-            route=model_policy_to_route(self.model_policy),
             history=state.history[-4:] if state.history else [],
             planner_context=state.running_summary or None,
             doc_context=doc_context,
@@ -371,6 +359,23 @@ class DocumentAgent:
                 db=db,
             )
             grammar_holder.append(grammar)
+            try:
+                state.brand_profile = brand_profile_for_selection(
+                    db,
+                    str(getattr(state, "user_id", "") or ""),
+                    template_id,
+                    grammar=grammar,
+                ).to_dict()
+            except TemplateOwnershipError as exc:
+                state.error = str(exc)
+                state.add_event("document.design_plan", "template_blocked", str(exc), template_id=template_id)
+                state.brand_profile = {
+                    "template_id": template_id,
+                    "source": "blocked",
+                    "error": str(exc),
+                }
+            except Exception:
+                logger.exception("Could not resolve runtime brand profile for template %r", template_id)
         return {"is_presentation": is_presentation, "has_grammar": bool(grammar_holder)}
 
     def _generate_stage(
@@ -464,6 +469,13 @@ class DocumentAgent:
             "filename": filename,
             "tool_latency_ms": tool_latency_ms,
         })
+        if pptx_base64:
+            try:
+                from app.services.renderer.slide_inspector import inspect_pptx_base64
+
+                state.qa_issues.extend(inspect_pptx_base64(pptx_base64))
+            except Exception:
+                logger.exception("PPTX structural inspection failed; continuing")
         return {"content_length": len(content_obj.answer), "filename": filename}
 
     def _qa_repair_stage(
@@ -476,7 +488,6 @@ class DocumentAgent:
         grammar: dict | None,
         research_summary: str | None,
         template_id: str | None,
-        tool_runner: ToolRunner,
         content_holder: list[Any],
         tool_result_holder: list[dict],
     ) -> dict | None:
@@ -523,7 +534,6 @@ class DocumentAgent:
                 grammar,
                 research_summary,
                 template_id,
-                tool_runner,
             )
             if repaired_obj is not None:
                 if content_holder:
@@ -567,12 +577,13 @@ class DocumentAgent:
         grammar: dict | None,
         research_summary: str | None,
         template_id: str | None,
-        tool_runner: ToolRunner,
     ) -> tuple[Any | None, dict | None]:
-        """Re-generate content with repair context and re-run render tool. Never raises."""
+        """Re-invoke evidence_binder or deck_designer with repair context. Never raises."""
 
         try:
-            from app.services.llm_gateway import invoke_llm
+            from app.services.agent_runtime.sub_agent_runner import SubAgentRunner
+
+            agent = SubAgentRunner("deck_designer" if is_presentation else "evidence_binder", self.registry)
 
             repair_note = (
                 "REVISION REQUIRED. The previous content was evaluated and needs improvement:\n"
@@ -592,12 +603,8 @@ class DocumentAgent:
                     doc_context += f"\nResearch context:\n{research_summary[:3000]}\n"
             doc_context = f"{repair_note}\n\n{doc_context}"
 
-            # TODO(new-phase-m): Replace this direct LLM call with
-            # SubAgentRunner("evidence_binder"|"deck_designer", self.registry)
-            # once the true sub-agent runtime is in place.
-            content_obj = invoke_llm(
+            content_obj = agent.invoke(
                 message=state.user_message,
-                route=model_policy_to_route(self.model_policy),
                 history=state.history[-4:] if state.history else [],
                 planner_context=state.running_summary or None,
                 doc_context=doc_context,
@@ -609,7 +616,7 @@ class DocumentAgent:
                 is_presentation,
                 decision,
                 template_id,
-                tool_runner,
+                agent,
             )
             return content_obj, tool_result
         except Exception:
@@ -624,7 +631,7 @@ class DocumentAgent:
         is_presentation: bool,
         decision: Any,
         template_id: str | None,
-        tool_runner: ToolRunner,
+        agent: Any,
     ) -> dict:
         docx_base64 = ""
         pptx_base64 = ""
@@ -635,7 +642,7 @@ class DocumentAgent:
 
         try:
             if is_presentation:
-                tool_call = tool_runner.run(
+                tool_call = agent.run_tool(
                     "render_pptx",
                     {
                         "title": brief.get("title", "Presentation"),
@@ -652,7 +659,7 @@ class DocumentAgent:
                 pptx_base64 = tool_call.output.get("pptx_base64") or ""
                 filename = tool_call.output.get("filename") or filename
             else:
-                tool_call = tool_runner.run(
+                tool_call = agent.run_tool(
                     "generate_document",
                     {
                         "title": brief.get("title", "Document"),

@@ -1,0 +1,37 @@
+[
+  {
+    "id": "simple_explainer",
+    "message": "Explain API gateway rate limiting in plain English.",
+    "expected_path": ["load_context", "triage", "answer_directly", "persist_result"],
+    "expected_tools": [],
+    "notes": "Low-risk educational answer should not ask for research, document generation, or user confirmation."
+  },
+  {
+    "id": "current_sensitive_web",
+    "message": "What are the current H-4 EAD processing times if filed with H-1B premium processing?",
+    "expected_path": ["load_context", "triage", "planner", "gate", "web_context", "answer_directly", "persist_result"],
+    "expected_tools": ["web_context"],
+    "notes": "Current legal/immigration timing question needs fresh sources but not necessarily deep research."
+  },
+  {
+    "id": "ambiguous_purchase_research",
+    "message": "Find one quiet dishwasher suitable for my open kitchen.",
+    "expected_path": ["load_context", "triage", "planner", "gate", "ask_user"],
+    "expected_tools": [],
+    "notes": "Should ask for missing constraints or propose research before spending time/cost."
+  },
+  {
+    "id": "research_to_presentation",
+    "message": "Research 2026 enterprise AI governance trends for retail and create a board-ready 10-slide strategy deck.",
+    "expected_path": ["load_context", "triage", "planner", "gate", "deep_research", "document_generation", "artifact_render", "persist_result"],
+    "expected_tools": ["deep_research", "document_generation", "artifact_render"],
+    "notes": "Compound current research plus presentation deliverable should become a planned long-running workflow."
+  },
+  {
+    "id": "document_override_possible",
+    "message": "Create a strategic presentation on Q3 platform modernization.",
+    "expected_path": ["load_context", "triage", "planner", "gate", "document_generation", "artifact_render", "persist_result"],
+    "expected_tools": ["document_generation", "artifact_render"],
+    "notes": "Document is likely the best output, but the gate must preserve user override to normal chat."
+  }
+]

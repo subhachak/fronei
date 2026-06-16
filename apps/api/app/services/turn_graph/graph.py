@@ -118,13 +118,14 @@ def _orchestrator_node(state: TurnGraphState, settings) -> tuple[TurnGraphState,
         plan_context = GuardrailContext(
             boundary="planning",
             user_id=state.user_id or "",
-            tenant_id=None,
+            tenant_id=_state_tenant_id(state),
             tool_name=None,
             tool_input=None,
             tool_output=None,
             request_text=state.user_message,
             plan=state.plan,
             response_text=None,
+            user_role=_state_user_role(state),
         )
         plan_decisions = service.evaluate_boundary("planning", plan_context)
         plan_action = max_boundary_action(plan_decisions)
@@ -417,13 +418,14 @@ def _shadow_guardrail_hook(state: TurnGraphState, settings) -> None:
                 tool_pre_context = GuardrailContext(
                     boundary="tool_pre",
                     user_id=state.user_id or "",
-                    tenant_id=None,
+                    tenant_id=_state_tenant_id(state),
                     tool_name=tool_name,
                     tool_input=tool_input,
                     tool_output=None,
                     request_text=None,
                     plan=state.plan,
                     response_text=None,
+                    user_role=_state_user_role(state),
                 )
                 event_rows.extend(
                     ("tool_pre", tool_name, decision)
@@ -435,13 +437,14 @@ def _shadow_guardrail_hook(state: TurnGraphState, settings) -> None:
                     tool_post_context = GuardrailContext(
                         boundary="tool_post",
                         user_id=state.user_id or "",
-                        tenant_id=None,
+                        tenant_id=_state_tenant_id(state),
                         tool_name=tool_name,
                         tool_input=None,
                         tool_output=tool_output,
                         request_text=None,
                         plan=state.plan,
                         response_text=None,
+                        user_role=_state_user_role(state),
                     )
                     event_rows.extend(
                         ("tool_post", tool_name, decision)
@@ -451,13 +454,14 @@ def _shadow_guardrail_hook(state: TurnGraphState, settings) -> None:
         output_context = GuardrailContext(
             boundary="output",
             user_id=state.user_id or "",
-            tenant_id=None,
+            tenant_id=_state_tenant_id(state),
             tool_name=None,
             tool_input=None,
             tool_output=None,
             request_text=state.user_message,
             plan=state.plan,
             response_text=state.final_answer,
+            user_role=_state_user_role(state),
         )
         event_rows.extend(
             ("output", None, decision)
@@ -513,7 +517,7 @@ def _write_guardrail_events(rows: list[tuple[str, str | None, GuardrailDecision]
                 triggered_checks_json=json.dumps(decision.triggered_checks),
                 reason=decision.reason,
                 user_id=state.user_id,
-                tenant_id=None,
+                tenant_id=_state_tenant_id(state),
                 tool_name=tool_name,
                 turn_id=state.turn_id,
                 conversation_id=state.conversation_id,
@@ -524,3 +528,11 @@ def _write_guardrail_events(rows: list[tuple[str, str | None, GuardrailDecision]
         logger.exception("failed to write guardrail events; ignoring")
     finally:
         db.close()
+
+
+def _state_tenant_id(state: TurnGraphState) -> str | None:
+    return getattr(state, "tenant_id", None) or state.user_id or None
+
+
+def _state_user_role(state: TurnGraphState) -> str:
+    return getattr(state, "user_role", "user") or "user"

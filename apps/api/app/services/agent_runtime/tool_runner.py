@@ -85,6 +85,14 @@ class ToolRunner:
                 f"Allowed: {tool_def.allowed_agent_ids}"
             )
 
+        required_roles = tool_def.required_user_roles or []
+        if required_roles:
+            user_role = getattr(state, "user_role", "user") or "user"
+            if user_role not in required_roles:
+                raise ToolNotPermittedError(
+                    f"Tool {tool_name!r} requires role {required_roles}; current role: {user_role!r}"
+                )
+
         if self.budget_guard:
             self.budget_guard.check_tool_call()
 
@@ -97,13 +105,14 @@ class ToolRunner:
         pre_context = GuardrailContext(
             boundary="tool_pre",
             user_id=state.user_id or "",
-            tenant_id=None,
+            tenant_id=getattr(state, "tenant_id", None) or state.user_id or None,
             tool_name=tool_name,
-            tool_input=inputs,
+            tool_input={**inputs, "_required_roles": required_roles},
             tool_output=None,
             request_text=state.user_message,
             plan=plan,
             response_text=None,
+            user_role=getattr(state, "user_role", "user") or "user",
         )
         pre_decisions = self.guardrail_service.evaluate_boundary("tool_pre", pre_context)
         if max_boundary_action(pre_decisions) == "block":
@@ -118,10 +127,10 @@ class ToolRunner:
                 input_summary=str(inputs)[:500],
                 tool_name=tool_name,
             ) as trace_step:
-                raw_output = self._execute(tool_def, inputs)
+                raw_output = self._execute(tool_def, inputs, state)
                 trace_step.output_summary = str(raw_output)[:500]
         else:
-            raw_output = self._execute(tool_def, inputs)
+            raw_output = self._execute(tool_def, inputs, state)
         latency_ms = int((time.perf_counter() - started) * 1000)
         sanitized = _sanitize_tool_output(tool_name, raw_output)
 
@@ -129,18 +138,25 @@ class ToolRunner:
             post_context = GuardrailContext(
                 boundary="tool_post",
                 user_id=state.user_id or "",
-                tenant_id=None,
+                tenant_id=getattr(state, "tenant_id", None) or state.user_id or None,
                 tool_name=tool_name,
                 tool_input=inputs,
                 tool_output=sanitized,
                 request_text=state.user_message,
                 plan=plan,
                 response_text=None,
+                user_role=getattr(state, "user_role", "user") or "user",
             )
             post_decisions = self.guardrail_service.evaluate_boundary("tool_post", post_context)
+            if max_boundary_action(post_decisions) == "block":
+                blocking = next((decision for decision in post_decisions if decision.action == "block"), None)
+                reason = blocking.reason if blocking else "guardrail block"
+                raise ToolNotPermittedError(f"Tool {tool_name!r} output blocked by guardrail: {reason}")
             for decision in post_decisions:
                 if decision.action in {"transform", "redact"} and decision.modified_payload is not None:
                     sanitized = decision.modified_payload
+        except ToolNotPermittedError:
+            raise
         except Exception:
             logger.exception("Post-guardrail evaluation failed for tool %s; ignoring", tool_name)
 
@@ -161,10 +177,12 @@ class ToolRunner:
             latency_ms=latency_ms,
         )
 
-    def _execute(self, tool_def, inputs: dict[str, Any]) -> dict[str, Any]:
+    def _execute(self, tool_def, inputs: dict[str, Any], state: TurnGraphState) -> dict[str, Any]:
         from app.services.web_context import crawl_url, search_web_sources
 
         try:
+            if tool_def.backend_ref in {"memory_tool.read_scoped_memory", "memory_tool.write_scoped_memory"}:
+                inputs = {**inputs, "user_id": state.user_id or ""}
             if tool_def.backend == "mcp":
                 if tool_def.id == "web_search":
                     provider, sources = search_web_sources(
@@ -195,7 +213,12 @@ class ToolRunner:
                         f"No native backend registered for ref={tool_def.backend_ref!r}. "
                         "Call register_native_backend() at startup."
                     )
-                return backend_fn(inputs)
+                output = backend_fn(inputs)
+                if tool_def.backend_ref == "memory_tool.read_scoped_memory":
+                    memories = output.get("memories") if isinstance(output, dict) else None
+                    if isinstance(memories, list):
+                        state.memory_tool_reads.extend(str(item) for item in memories)
+                return output
         except (ToolNotPermittedError, ToolExecutionError):
             raise
         except Exception as exc:

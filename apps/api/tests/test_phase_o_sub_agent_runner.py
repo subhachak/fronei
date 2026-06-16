@@ -75,6 +75,24 @@ def test_sub_agent_runner_invoke_routes_through_llm_gateway(monkeypatch, default
     assert captured["message"] == "Question?"
     assert captured["web_context"] == "Evidence"
     assert captured["route"].primary_model == runner.model_policy.primary_model
+    assert captured["request_timeout_s"] == runner.model_policy.timeout_ms / 1000
+    assert captured["max_tokens_override"] == runner.model_policy.max_output_tokens
+
+
+def test_sub_agent_runner_invoke_allows_custom_system_prompt(monkeypatch, default_registry):
+    captured = {}
+
+    def fake_invoke_llm(**kwargs):
+        captured.update(kwargs)
+        return _llm("answer")
+
+    monkeypatch.setattr("app.services.llm_gateway.invoke_llm", fake_invoke_llm)
+    runner = SubAgentRunner("query_decomposer", default_registry)
+
+    result = runner.invoke("Question?", system_prompt="Return JSON only.")
+
+    assert result.answer == "answer"
+    assert captured["system_prompt"] == "Return JSON only."
 
 
 def test_sub_agent_runner_invoke_json_routes_through_llm_gateway(monkeypatch, default_registry):

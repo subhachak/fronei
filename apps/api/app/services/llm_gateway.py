@@ -216,8 +216,9 @@ def _build_messages(
     planner_context: str | None,
     doc_context: str | None = None,
     artifact_context: str | None = None,
+    system_prompt: str | None = None,
 ) -> list[dict]:
-    sys_content = DEEP_RESEARCH_SYSTEM_PROMPT if deep_research else WORKER_SYSTEM_PROMPT
+    sys_content = system_prompt or (DEEP_RESEARCH_SYSTEM_PROMPT if deep_research else WORKER_SYSTEM_PROMPT)
     if planner_context:
         sys_content = f"{sys_content}\n\nCONVERSATION CONTEXT:\n{planner_context}"
 
@@ -440,8 +441,18 @@ def invoke_llm(
     artifact_context: str | None = None,
     request_timeout_s: float | None = None,
     max_tokens_override: int | None = None,
+    system_prompt: str | None = None,
 ) -> LLMResult:
-    msgs = _build_messages(message, history or [], deep_research, web_context, planner_context, doc_context, artifact_context)
+    msgs = _build_messages(
+        message,
+        history or [],
+        deep_research,
+        web_context,
+        planner_context,
+        doc_context,
+        artifact_context,
+        system_prompt,
+    )
     max_tokens = max_tokens_override or (DEEP_RESEARCH_MAX_COMPLETION_TOKENS if deep_research else MAX_COMPLETION_TOKENS)
     models_to_try = _order_by_circuit([route.primary_model, *route.fallbacks])
     errors: list[str] = []

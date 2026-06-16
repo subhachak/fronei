@@ -449,6 +449,9 @@ class ResearchAgent:
         web_context = f"{repair_note}\n\n{web_context}" if web_context else repair_note
 
         try:
+            # TODO(new-phase-m): Replace this direct LLM call with
+            # SubAgentRunner("research_synthesizer", self.registry) once the
+            # true sub-agent runtime is in place.
             return invoke_llm(
                 message=state.user_message,
                 route=model_policy_to_route(self.model_policy),

@@ -394,7 +394,8 @@ def test_research_resynthesize_injects_repair_note_into_context(monkeypatch, def
     state = TurnGraphState(user_message="Explain ML.", turn_id="t8", quality_mode="standard")
     ResearchAgent(default_registry).run(state, SimpleNamespace(plan={}))
 
-    repair_context = "\n\n".join(captured_contexts)
+    assert len(captured_contexts) >= 2
+    repair_context = captured_contexts[-1]
     assert "Add source citations" in repair_context
     assert "REVISION REQUIRED" in repair_context
 

@@ -592,6 +592,9 @@ class DocumentAgent:
                     doc_context += f"\nResearch context:\n{research_summary[:3000]}\n"
             doc_context = f"{repair_note}\n\n{doc_context}"
 
+            # TODO(new-phase-m): Replace this direct LLM call with
+            # SubAgentRunner("evidence_binder"|"deck_designer", self.registry)
+            # once the true sub-agent runtime is in place.
             content_obj = invoke_llm(
                 message=state.user_message,
                 route=model_policy_to_route(self.model_policy),

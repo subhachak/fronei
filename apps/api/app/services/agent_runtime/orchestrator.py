@@ -6,6 +6,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from app.services.agent_runtime.adapters import model_policy_to_route as _model_policy_to_route
 from app.services.turn_graph.state import TurnGraphState
 
 
@@ -66,21 +67,6 @@ class OrchestratorAgent:
             messages.append({"role": role, "content": self.prompt.developer_prompt})
         messages.append({"role": "user", "content": user_payload})
         return messages
-
-
-def _model_policy_to_route(policy) -> "RouteDecision":
-    """Convert a ModelPolicy into the existing gateway RouteDecision."""
-
-    from app.schemas import RouteDecision
-
-    return RouteDecision(
-        task_type="planning",
-        complexity="low",
-        profile="balanced",
-        primary_model=policy.primary_model,
-        fallbacks=policy.fallback_models,
-        reason="orchestrator routing",
-    )
 
 
 def _parse_orchestrator_response(text: str) -> OrchestratorDecision:

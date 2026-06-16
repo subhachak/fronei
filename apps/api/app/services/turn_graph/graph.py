@@ -171,10 +171,34 @@ def _orchestrator_node(state: TurnGraphState, settings) -> tuple[TurnGraphState,
             _write_orchestrator_trace(state, decision, registry, db_session=None, ra_result=ra_result)
             return state, True
 
+        if decision.route == "document":
+            from app.services.agent_runtime.document_agent import DocumentAgent
+
+            document_agent = DocumentAgent(registry)
+            doc_result = document_agent.run(state, decision)
+            state.final_answer = doc_result.markdown
+            state.document_result = {
+                "title": doc_result.title,
+                "doc_type": doc_result.doc_type,
+                "filename": doc_result.filename,
+                "docx_base64": doc_result.docx_base64,
+                "model_used": doc_result.model_used,
+                "latency_ms": doc_result.latency_ms,
+                "cost_usd": doc_result.cost_usd,
+            }
+            state.status = "completed"
+            state.add_event(
+                "document_agent",
+                "completed",
+                f"Document generated: {doc_result.title!r} ({doc_result.doc_type})",
+            )
+            _write_orchestrator_trace(state, decision, registry, db_session=None, doc_result=doc_result)
+            return state, True
+
         state.add_event(
             "orchestrator",
             "deferred",
-            f"Route {decision.route} deferred to existing pipeline (Phase F)",
+            f"Route {decision.route} deferred to existing pipeline",
         )
         _write_orchestrator_trace(state, decision, registry, db_session=None)
         return state, False
@@ -191,6 +215,7 @@ def _write_orchestrator_trace(
     db_session,
     da_result=None,
     ra_result=None,
+    doc_result=None,
 ) -> None:
     """Write Phase-D orchestrator trace rows. Never raises."""
 
@@ -289,6 +314,64 @@ def _write_orchestrator_trace(
                     latency_ms=ra_result.synthesis_latency_ms,
                     cost_usd=ra_result.cost_usd,
                     metadata_json=json.dumps({"prompt_id": ra_result.prompt_id}),
+                ))
+
+            if doc_result is not None:
+                db.add(AgentRunLog(
+                    id=doc_result.run_id,
+                    goal_id=goal_id,
+                    agent_id="document_lead",
+                    parent_run_id=decision.run_id,
+                    status="completed",
+                    total_cost_usd=doc_result.cost_usd,
+                    latency_ms=doc_result.latency_ms,
+                    completed_at=datetime.now(timezone.utc),
+                ))
+                db.add(AgentStep(
+                    id=str(uuid.uuid4()),
+                    run_id=doc_result.run_id,
+                    step_type="llm_call",
+                    input_summary=state.user_message[:200],
+                    output_summary="document_brief",
+                    model_used=doc_result.model_used,
+                    latency_ms=doc_result.planning_latency_ms,
+                    cost_usd=0.0,
+                    metadata_json=json.dumps({
+                        "prompt_id": doc_result.prompt_id,
+                        "step": "planning",
+                    }),
+                ))
+                db.add(AgentStep(
+                    id=str(uuid.uuid4()),
+                    run_id=doc_result.run_id,
+                    step_type="llm_call",
+                    input_summary=state.user_message[:200],
+                    output_summary=(doc_result.markdown or "")[:200],
+                    model_used=doc_result.model_used,
+                    latency_ms=doc_result.content_latency_ms,
+                    cost_usd=doc_result.cost_usd,
+                    metadata_json=json.dumps({
+                        "step": "content_generation",
+                        "doc_type": doc_result.doc_type,
+                    }),
+                ))
+                db.add(AgentStep(
+                    id=str(uuid.uuid4()),
+                    run_id=doc_result.run_id,
+                    step_type="tool_call",
+                    tool_name="generate_document",
+                    input_summary=doc_result.title[:200],
+                    output_summary=doc_result.filename,
+                    latency_ms=max(
+                        0,
+                        doc_result.latency_ms
+                        - doc_result.planning_latency_ms
+                        - doc_result.content_latency_ms,
+                    ),
+                    metadata_json=json.dumps({
+                        "doc_type": doc_result.doc_type,
+                        "filename": doc_result.filename,
+                    }),
                 ))
 
             db.commit()

@@ -94,11 +94,21 @@ def test_state_from_turn_maps_existing_conversation_fields():
     assert state.conversation_id == "conv_public"
     assert state.turn_id == "turn_public"
     assert state.user_id == "user_1"
+    assert state.tenant_id == "user_1"
+    assert state.user_role == "user"
     assert state.profile == "focused"
     assert state.running_summary == "Prior context"
     assert state.active_task == {"goal": "ship graph migration"}
     assert state.history == [{"role": "user", "content": "Start"}]
     assert state.user_memory == "Likes concise answers."
+
+    admin_state = state_from_turn(
+        conversation=conv,
+        turn=turn,
+        user_message="Override judge result",
+        user_role="admin",
+    )
+    assert admin_state.user_role == "admin"
 
 
 def test_graph_trace_payload_serializes_events_and_timings():

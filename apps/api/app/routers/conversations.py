@@ -7,6 +7,7 @@ import threading as _threading
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as _FutureTimeoutError
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import func
@@ -15,7 +16,8 @@ from fastapi.responses import StreamingResponse
 from app.auth import CurrentUser, CurrentUserIsAdmin
 from app.config import get_settings
 from app.db.models import (
-    Conversation, ConversationMessage, ConversationTurn, DocumentTemplate, RequestLog, SessionLocal,
+    Conversation, ConversationMessage, ConversationTurn, DocumentTemplate, RequestLog,
+    ResearchClaim, ResearchRun, ResearchSource, SessionLocal,
     get_effective_monthly_budget, get_monthly_spend, get_turn_runtime_config,
     get_twin_profile, is_user_pending, is_user_suspended, UserProfile,
 )
@@ -113,6 +115,157 @@ def _stage_timing(stage: str, started: float, **meta) -> StageTiming:
         latency_ms=int((time.perf_counter() - started) * 1000),
         meta={k: v for k, v in meta.items() if v is not None},
     )
+
+
+def _score_to_confidence(score: float | int | None) -> str:
+    try:
+        value = float(score)
+    except (TypeError, ValueError):
+        return "medium"
+    if value >= 0.75:
+        return "high"
+    if value <= 0.35:
+        return "low"
+    return "medium"
+
+
+def _persist_graph_research_compat_run(
+    db,
+    *,
+    user_id: str,
+    conversation_id: int,
+    query: str,
+    mode: str,
+    answer: str,
+    sources: list[dict],
+    claims: list[dict],
+):
+    """Persist graph-native research in the legacy research tables.
+
+    The authoritative ResearchAgent is the execution path, but the existing UI
+    and follow-up synthesis still use research_runs/research_sources IDs as the
+    public contract. Keep that compatibility layer populated until the frontend
+    moves fully to agent trace objects.
+    """
+
+    now = datetime.now(timezone.utc)
+    run = ResearchRun(
+        user_id=user_id,
+        conversation_id=conversation_id,
+        query=query,
+        mode=mode,
+        status="completed",
+        iterations=1,
+        max_sources=max(len(sources), 0),
+        source_count=len(sources),
+        claim_count=len(claims),
+        confidence="medium",
+        gaps_json="[]",
+        contradictions_json="[]",
+        verifier_notes=None,
+        final_answer=answer,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(run)
+    db.flush()
+
+    persisted_sources: list[ResearchSource] = []
+    source_by_url: dict[str, ResearchSource] = {}
+    for source in sources:
+        url = str(source.get("url") or "")
+        if not url:
+            continue
+        row = ResearchSource(
+            run_id=run.id,
+            title=str(source.get("title") or url)[:500],
+            url=url,
+            provider=str(source.get("provider") or source.get("source") or "agent_runtime"),
+            excerpt=str(source.get("snippet") or source.get("excerpt") or source.get("content") or "")[:1200],
+            credibility_score=float(source.get("credibility_score") or 0.7),
+            relevance_score=float(source.get("relevance_score") or 0.7),
+            freshness_score=float(source.get("freshness_score") or 0.5),
+            source_type=source.get("source_type") if isinstance(source.get("source_type"), str) else None,
+            source_tier=str(source.get("source_tier") or "tier_2_expert"),
+            source_family=source.get("source_family") if isinstance(source.get("source_family"), str) else None,
+            source_role_prior=str(source.get("source_role_prior") or "background_context"),
+            source_date_confidence=str(source.get("source_date_confidence") or "unknown"),
+            admission_status=str(source.get("admission_status") or "admitted"),
+            admission_reason=source.get("admission_reason") if isinstance(source.get("admission_reason"), str) else None,
+        )
+        db.add(row)
+        persisted_sources.append(row)
+        source_by_url[url] = row
+
+    db.flush()
+
+    persisted_claims: list[ResearchClaim] = []
+    fallback_source = persisted_sources[0] if persisted_sources else None
+    for claim in claims:
+        text = str(claim.get("text") or claim.get("claim") or "")
+        if not text:
+            continue
+        source_url = str(claim.get("source_url") or claim.get("url") or "")
+        source = source_by_url.get(source_url) or fallback_source
+        if source is None:
+            continue
+        confidence_score = claim.get("confidence")
+        row = ResearchClaim(
+            run_id=run.id,
+            source_id=source.id,
+            claim=text,
+            quote=claim.get("quote") if isinstance(claim.get("quote"), str) else None,
+            confidence=_score_to_confidence(confidence_score),
+            relevance_score=float(claim.get("relevance_score") or confidence_score or 0.7),
+            claim_type=str(claim.get("claim_type") or "unknown"),
+            claim_role=str(claim.get("claim_role") or "background_context"),
+            freshness_risk=str(claim.get("freshness_risk") or "unknown"),
+        )
+        db.add(row)
+        persisted_claims.append(row)
+
+    run_id = run.id
+    run_confidence = run.confidence
+    source_logs = [
+        {
+            "id": source.id,
+            "title": source.title,
+            "url": source.url,
+            "provider": source.provider,
+            "credibility_score": source.credibility_score,
+            "relevance_score": source.relevance_score,
+            "freshness_score": source.freshness_score,
+            "source_type": source.source_type,
+            "source_tier": source.source_tier,
+            "source_family": source.source_family,
+            "source_role_prior": source.source_role_prior,
+            "published_at": source.published_at.isoformat() if source.published_at else None,
+            "updated_at": source.updated_at.isoformat() if source.updated_at else None,
+            "source_date_confidence": source.source_date_confidence,
+            "admission_status": source.admission_status,
+            "admission_reason": source.admission_reason,
+        }
+        for source in persisted_sources
+    ]
+    claim_logs = [
+        {
+            "id": claim.id,
+            "source_id": claim.source_id,
+            "claim": claim.claim,
+            "confidence": claim.confidence,
+            "relevance_score": claim.relevance_score,
+            "claim_type": claim.claim_type,
+            "claim_role": claim.claim_role,
+            "freshness_risk": claim.freshness_risk,
+        }
+        for claim in persisted_claims
+    ]
+
+    run.source_count = len(persisted_sources)
+    run.claim_count = len(persisted_claims)
+    db.commit()
+
+    return SimpleNamespace(id=run_id, confidence=run_confidence), source_logs, claim_logs
 
 
 # ── Error translation ─────────────────────────────────────────────────────────
@@ -2043,8 +2196,18 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                             research_state.quality_mode = "executive" if research_mode == "expert" else "standard"
                             decision = SimpleNamespace(plan=plan_to_dict(plan))
                             agent_result = ResearchAgent(load_default_registry()).run(research_state, decision)
+                            compat_run, compat_sources, compat_claims = _persist_graph_research_compat_run(
+                                research_db,
+                                user_id=user_id,
+                                conversation_id=conv_id,
+                                query=research_query,
+                                mode=research_mode,
+                                answer=agent_result.answer,
+                                sources=agent_result.sources,
+                                claims=research_state.research_claims or [],
+                            )
                             research_holder[0] = ResearchPipelineResult(
-                                run=SimpleNamespace(id=None, confidence="medium"),
+                                run=compat_run,
                                 result=LLMResult(
                                     answer=agent_result.answer,
                                     model_used=agent_result.model_used,
@@ -2061,11 +2224,12 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                                     fallbacks=[],
                                     reason="graph-native research agent",
                                 ),
-                                source_logs=agent_result.sources,
-                                questions=[],
+                                source_logs=compat_sources,
+                                questions=research_state.research_queries or [],
                                 gaps=[],
                                 contradictions=[],
                                 verifier_notes=None,
+                                claim_logs=compat_claims,
                             )
                         elif getattr(settings, "turn_graph_enabled", False):
                             research_state = state_from_turn(

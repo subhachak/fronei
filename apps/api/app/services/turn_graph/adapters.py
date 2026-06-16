@@ -15,6 +15,7 @@ def state_from_turn(
     history: list[dict[str, Any]] | None = None,
     user_memory: str = "",
     profile: str | None = None,
+    user_role: str = "user",
 ) -> TurnGraphState:
     """Build graph state from today's conversation/turn records.
 
@@ -31,10 +32,14 @@ def state_from_turn(
         except (TypeError, ValueError):
             active_task = None
 
+    user_id = getattr(turn, "user_id", None) or getattr(conversation, "user_id", None)
+
     return TurnGraphState(
         conversation_id=getattr(conversation, "public_id", None),
         turn_id=getattr(turn, "public_id", None),
-        user_id=getattr(turn, "user_id", None) or getattr(conversation, "user_id", None),
+        user_id=user_id,
+        tenant_id=user_id,
+        user_role=user_role or "user",
         user_message=user_message,
         profile=profile or getattr(conversation, "profile", None) or "balanced",
         history=history or [],

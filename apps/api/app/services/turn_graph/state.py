@@ -42,6 +42,8 @@ class TurnGraphState(BaseModel):
     conversation_id: str | None = None
     turn_id: str | None = None
     user_id: str | None = None
+    tenant_id: str | None = None
+    user_role: str = "user"
     user_message: str
     profile: str = "balanced"
     quality_mode: str = "standard"
@@ -52,6 +54,7 @@ class TurnGraphState(BaseModel):
 
     history: list[dict[str, Any]] = Field(default_factory=list)
     user_memory: str = ""
+    memory_tool_reads: list[str] = Field(default_factory=list)
     running_summary: str = ""
     active_task: dict[str, Any] | None = None
     doc_context: str = ""

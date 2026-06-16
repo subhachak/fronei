@@ -842,6 +842,40 @@ def _turn_row(turn: ConversationTurn, conv_public_id: str | None = None) -> dict
         lifecycle = json.loads(turn.lifecycle_json or "[]")
     except (TypeError, ValueError):
         lifecycle = []
+    graph_trace = None
+    graph_summary = None
+    graph_canary = None
+    if isinstance(lifecycle, list):
+        for row in reversed(lifecycle):
+            if isinstance(row, dict) and row.get("event") == "turn_graph_canary" and graph_canary is None:
+                graph_canary = {
+                    "mode": row.get("mode"),
+                    "planner_model": row.get("planner_model"),
+                    "action": row.get("action"),
+                    "plan_confidence": row.get("plan_confidence"),
+                }
+            if isinstance(row, dict) and row.get("event") == "turn_graph_shadow" and graph_trace is None:
+                graph_trace = {
+                    "status": row.get("status"),
+                    "error": row.get("error"),
+                    "selected_tools": row.get("selected_tools") or [],
+                    "accepted_tools": row.get("accepted_tools") or [],
+                    "triage_decision": row.get("triage_decision"),
+                    "gate": row.get("gate"),
+                    "events": row.get("events") or [],
+                    "node_timings": row.get("node_timings") or [],
+                }
+            if graph_trace is not None and graph_canary is not None:
+                break
+    if graph_trace:
+        timings = graph_trace.get("node_timings") or []
+        graph_summary = {
+            "status": graph_trace.get("status"),
+            "path": [t.get("node") for t in timings if isinstance(t, dict) and t.get("node")],
+            "total_node_latency_ms": sum(int(t.get("latency_ms") or 0) for t in timings if isinstance(t, dict)),
+            "selected_tools": [t.get("name") for t in (graph_trace.get("selected_tools") or []) if isinstance(t, dict)],
+            "canary": graph_canary,
+        }
     age_seconds = max(0, int((_now().replace(tzinfo=None) - turn.created_at).total_seconds()))
     idle_seconds = max(0, int((_now().replace(tzinfo=None) - turn.updated_at).total_seconds()))
     return {
@@ -856,6 +890,8 @@ def _turn_row(turn: ConversationTurn, conv_public_id: str | None = None) -> dict
         "last_progress": progress[-1] if isinstance(progress, list) and progress else None,
         "progress_count": len(progress) if isinstance(progress, list) else 0,
         "lifecycle": lifecycle[-20:] if isinstance(lifecycle, list) else [],
+        "graph_trace": graph_trace,
+        "graph_summary": graph_summary,
         "error_message": turn.error_message,
         "created_at": _fmt(turn.created_at),
         "updated_at": _fmt(turn.updated_at),

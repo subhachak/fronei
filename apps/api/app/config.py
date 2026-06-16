@@ -94,6 +94,11 @@ class Settings(BaseSettings):
     # Falls back to one-shot subprocess rendering if the warm process fails.
     agentdeck_warm_renderer_enabled: bool = True
 
+    # Agentic runtime migration. Keep disabled until the graph shell is wired
+    # in shadow mode and admin traces can show graph events beside the current
+    # execution log.
+    turn_graph_enabled: bool = False
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     @property

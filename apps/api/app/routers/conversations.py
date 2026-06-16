@@ -56,6 +56,15 @@ from app.services.brand import (
 )
 from app.services.planner import apply_confirmed_plan, passthrough, plan_from_dict, plan_to_dict, run_planner
 from app.services.prompts import ARTIFACT_PROMPTS
+from app.services.turn_graph import graph_trace_payload, run_planning_shadow_graph, state_from_turn
+from app.services.turn_graph import ResearchToolInput, execute_deep_research_tool
+from app.services.turn_graph import (
+    ArtifactRenderToolInput,
+    DocumentGenerationToolInput,
+    execute_generate_document_tool,
+    execute_render_artifact_tool,
+    graph_rollout_decision,
+)
 from app.services.web_context import WebContextResult
 from app.services.rate_limit import check_rate_limit, rate_limiter
 
@@ -779,6 +788,75 @@ def _append_turn_lifecycle(turn: ConversationTurn, event: str, data: dict | None
         **(data or {}),
     })
     turn.lifecycle_json = json.dumps(rows[-120:])
+
+
+def _append_turn_graph_shadow(
+    *,
+    settings,
+    conv: Conversation,
+    turn: ConversationTurn,
+    req: ConvChatRequest,
+    history: list[dict],
+    user_memory: str,
+    profile: str,
+) -> object | None:
+    """Record a shadow graph trace without changing live turn execution."""
+
+    if not graph_rollout_decision(settings).record_shadow_trace:
+        return None
+    try:
+        graph_state = state_from_turn(
+            conversation=conv,
+            turn=turn,
+            user_message=req.message,
+            history=history,
+            user_memory=user_memory,
+            profile=profile,
+        )
+        graph_state.add_event(
+            "shadow_mode",
+            "observed",
+            "Current chat pipeline remains authoritative",
+            turn_kind=turn.turn_kind,
+            document_requested=bool(req.document_requested),
+            deep_research=bool(req.deep_research),
+            web_search=bool(req.web_search),
+        )
+        graph_state = run_planning_shadow_graph(
+            graph_state,
+            request=req,
+            settings=settings,
+            history=history,
+            user_memory=user_memory,
+            running_summary=graph_state.running_summary,
+            active_task=graph_state.active_task,
+        )
+        _append_turn_lifecycle(turn, "turn_graph_shadow", graph_trace_payload(graph_state))
+        return graph_state
+    except Exception:
+        logger.warning("Failed to record turn graph shadow trace", exc_info=True)
+        return None
+
+
+def _turn_graph_canary_plan(graph_state: object | None):
+    """Return a graph-driven plan only for the narrow simple-direct canary."""
+
+    if graph_state is None:
+        return None
+    plan_data = getattr(graph_state, "plan", None)
+    gate_data = getattr(graph_state, "gate", None)
+    if not isinstance(plan_data, dict) or not isinstance(gate_data, dict):
+        return None
+    if plan_data.get("action") != "answer_directly":
+        return None
+    if plan_data.get("plan_confidence") != "high":
+        return None
+    if gate_data.get("mode") != "auto":
+        return None
+    capabilities = gate_data.get("capabilities") or {}
+    if any(isinstance(cap, dict) and cap.get("enabled") for cap in capabilities.values()):
+        return None
+    return plan_from_dict(plan_data, str(plan_data.get("enriched_prompt") or ""))
 
 
 # ── Background flush of non-terminal turn progress/lifecycle updates ──────────
@@ -1511,6 +1589,28 @@ def chat_stream(req: ConvChatRequest, user_id: str = CurrentUser, is_admin: bool
             db.flush()
             turn_public_id["id"] = turn.public_id
             _append_turn_lifecycle(turn, "created", {"kind": turn.turn_kind})
+            graph_state = _append_turn_graph_shadow(
+                settings=settings,
+                conv=conv,
+                turn=turn,
+                req=req,
+                history=history,
+                user_memory=user_memory,
+                profile=profile,
+            )
+            graph_canary_plan = _turn_graph_canary_plan(graph_state)
+            if (
+                graph_canary_plan is not None
+                and graph_rollout_decision(settings, tool_name="answer_directly").allow_canary_execution
+            ):
+                _append_turn_lifecycle(turn, "turn_graph_canary", {
+                    "mode": "simple_direct",
+                    "planner_model": graph_canary_plan.planner_model,
+                    "action": graph_canary_plan.action,
+                    "plan_confidence": graph_canary_plan.plan_confidence,
+                })
+            else:
+                graph_canary_plan = None
             db.commit()
 
             if _should_detach_progressive_job(req):
@@ -1529,7 +1629,10 @@ def chat_stream(req: ConvChatRequest, user_id: str = CurrentUser, is_admin: bool
                 _record_turn_event(db, turn, payload)
                 yield payload
 
-            for payload in _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memory, profile, user_msg):
+            for payload in _stream_turn(
+                db, conv, req, user_id, is_admin, settings, history, user_memory, profile, user_msg,
+                preloaded_plan=graph_canary_plan,
+            ):
                 parsed_event = _parse_sse_event(payload)
                 is_token = bool(parsed_event) and parsed_event[0] == "token"
                 if _is_turn_cancelled(db, turn, allow_db_check=not is_token):
@@ -1916,16 +2019,45 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                         def progress(stage: str, message: str, extra: dict) -> None:
                             progress_q.put({"stage": stage, "message": message, **extra})
 
-                        research_holder[0] = run_research(
-                            research_db,
-                            user_id=user_id,
-                            conversation_id=conv_id,
-                            query=research_query,
-                            profile=profile,
-                            force_model=req.force_model,
-                            mode=research_mode,
-                            progress=progress,
-                        )
+                        if getattr(settings, "turn_graph_enabled", False):
+                            research_state = state_from_turn(
+                                conversation=None,
+                                turn=None,
+                                user_message=research_query,
+                                history=history,
+                                user_memory=user_memory,
+                                profile=profile,
+                            )
+                            research_state.conversation_id = conv.public_id
+                            research_state.user_id = user_id
+                            research_output = execute_deep_research_tool(
+                                research_state,
+                                db=research_db,
+                                tool_input=ResearchToolInput(
+                                    user_id=user_id,
+                                    conversation_id=conv_id,
+                                    query=research_query,
+                                    profile=profile,
+                                    force_model=req.force_model,
+                                    mode=research_mode,
+                                ),
+                                runner=run_research,
+                                progress_sink=progress,
+                            )
+                            if research_output.status != "ok":
+                                raise RuntimeError(research_output.error or "Research tool failed")
+                            research_holder[0] = research_state.research_raw_result
+                        else:
+                            research_holder[0] = run_research(
+                                research_db,
+                                user_id=user_id,
+                                conversation_id=conv_id,
+                                query=research_query,
+                                profile=profile,
+                                force_model=req.force_model,
+                                mode=research_mode,
+                                progress=progress,
+                            )
                     except BaseException as exc:
                         error_holder[0] = exc
                     finally:
@@ -2225,20 +2357,60 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                 _coerce_presentation_brief_for_pptx(plan, fmt)
                 brand_profile, design_system_id, user_document_profile = _document_generation_profiles(db, user_id, plan)
                 stage_timings = list(setup.stage_timings or [])
+                doc_graph_state = None
                 try:
                     started = time.perf_counter()
-                    result, doc_body, chat_summary, doc_type = _run_with_timeout(
-                        generate_document_output,
-                        plan, route, history, wc, planner_ctx,
-                        _document_context_for_generation(setup.doc_context, plan), req.deep_research, enable_native,
-                        artifact_context=_presentation_artifact_context(setup.artifact_context or "", db, user_id, plan),
-                        user_memory=user_memory,
-                        db=db,
-                        brand_profile=brand_profile,
-                        user_document_profile=user_document_profile,
-                        design_system=design_system_id,
-                        timeout_seconds=_document_pipeline_timeout_seconds(db),
-                    )
+                    if getattr(settings, "turn_graph_enabled", False):
+                        doc_graph_state = state_from_turn(
+                            conversation=conv,
+                            turn=None,
+                            user_message=plan.enriched_prompt or req.message,
+                            history=history,
+                            user_memory=user_memory,
+                            profile=profile,
+                        )
+
+                        def _generate_document_via_current_pipeline(**_kwargs):
+                            return _run_with_timeout(
+                                generate_document_output,
+                                plan, route, history, wc, planner_ctx,
+                                _document_context_for_generation(setup.doc_context, plan), req.deep_research, enable_native,
+                                artifact_context=_presentation_artifact_context(setup.artifact_context or "", db, user_id, plan),
+                                user_memory=user_memory,
+                                db=db,
+                                brand_profile=brand_profile,
+                                user_document_profile=user_document_profile,
+                                design_system=design_system_id,
+                                timeout_seconds=_document_pipeline_timeout_seconds(db),
+                            )
+
+                        doc_output = execute_generate_document_tool(
+                            doc_graph_state,
+                            tool_input=DocumentGenerationToolInput(
+                                title=(plan.document_brief or {}).get("title") or plan.intent or "Fronei document",
+                                doc_type=str((plan.document_brief or {}).get("doc_type") or "document"),
+                                format=fmt,
+                                quality_mode=_document_quality_mode(plan),
+                                template_id=(plan.document_brief or {}).get("template_id"),
+                            ),
+                            generator=_generate_document_via_current_pipeline,
+                        )
+                        if doc_output.status != "ok":
+                            raise RuntimeError(doc_output.error or "Document generation failed")
+                        result, doc_body, chat_summary, doc_type = doc_graph_state.document_raw_result
+                    else:
+                        result, doc_body, chat_summary, doc_type = _run_with_timeout(
+                            generate_document_output,
+                            plan, route, history, wc, planner_ctx,
+                            _document_context_for_generation(setup.doc_context, plan), req.deep_research, enable_native,
+                            artifact_context=_presentation_artifact_context(setup.artifact_context or "", db, user_id, plan),
+                            user_memory=user_memory,
+                            db=db,
+                            brand_profile=brand_profile,
+                            user_document_profile=user_document_profile,
+                            design_system=design_system_id,
+                            timeout_seconds=_document_pipeline_timeout_seconds(db),
+                        )
                     stage_timings.append(_stage_timing("document_generation", started, doc_type=doc_type, format=fmt))
                 except PipelineTimeout as exc:
                     # Nothing has been committed yet for this turn, so a plain
@@ -2292,15 +2464,39 @@ def _stream_turn(db, conv, req, user_id, is_admin, settings, history, user_memor
                 try:
                     yield _pipeline_log("working", f"Rendering {fmt.upper()} artifact…", doc_type=doc_type, format=fmt)
                     started = time.perf_counter()
-                    document_preview = _run_with_timeout(
-                        build_document_artifact,
-                        title or "Fronei document", doc_body, doc_type, fmt,
-                        template_id=template_id if isinstance(template_id, str) else None,
-                        template_path=str(template_path) if template_path else None,
-                        quality_mode=quality_mode,
-                        defer_render_qa=defer_render_qa,
-                        timeout_seconds=_document_pipeline_timeout_seconds(db),
-                    )
+                    if getattr(settings, "turn_graph_enabled", False) and doc_graph_state is not None:
+                        render_output = execute_render_artifact_tool(
+                            doc_graph_state,
+                            tool_input=ArtifactRenderToolInput(
+                                title=title or "Fronei document",
+                                body=doc_body,
+                                doc_type=doc_type,
+                                format=fmt,
+                                template_id=template_id if isinstance(template_id, str) else None,
+                                template_path=str(template_path) if template_path else None,
+                                quality_mode=quality_mode,
+                                defer_render_qa=defer_render_qa,
+                            ),
+                            renderer=lambda *args, **kwargs: _run_with_timeout(
+                                build_document_artifact,
+                                *args,
+                                **kwargs,
+                                timeout_seconds=_document_pipeline_timeout_seconds(db),
+                            ),
+                        )
+                        if render_output.status != "ok":
+                            raise RuntimeError(render_output.error or "Artifact rendering failed")
+                        document_preview = doc_graph_state.artifact_result
+                    else:
+                        document_preview = _run_with_timeout(
+                            build_document_artifact,
+                            title or "Fronei document", doc_body, doc_type, fmt,
+                            template_id=template_id if isinstance(template_id, str) else None,
+                            template_path=str(template_path) if template_path else None,
+                            quality_mode=quality_mode,
+                            defer_render_qa=defer_render_qa,
+                            timeout_seconds=_document_pipeline_timeout_seconds(db),
+                        )
                     stage_timings.append(_stage_timing(
                         "artifact_build",
                         started,
@@ -2659,6 +2855,15 @@ def execute_plan(
             db.flush()
             turn_public_id["id"] = turn.public_id
             _append_turn_lifecycle(turn, "created", {"kind": turn.turn_kind, "source": "execute_plan"})
+            _append_turn_graph_shadow(
+                settings=settings,
+                conv=conv,
+                turn=turn,
+                req=req,
+                history=history,
+                user_memory=user_memory,
+                profile=profile,
+            )
             db.commit()
 
             if _should_detach_progressive_job(req):

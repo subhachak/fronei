@@ -53,7 +53,7 @@
     "description": "Generate structured document or presentation content.",
     "input_schema": {"goal": "Goal", "document_brief": "dict"},
     "output_schema": {"document_plan": "dict"},
-    "allowed_agent_ids": ["document_lead", "content_strategist", "orchestrator"],
+    "allowed_agent_ids": ["document_lead", "content_strategist", "evidence_binder", "orchestrator"],
     "guardrail_policy_ids": ["document.template_ownership"],
     "timeout_ms": 60000,
     "retry_policy": {"max_attempts": 1},
@@ -82,7 +82,7 @@
       "pptx_base64": "str",
       "template_id": "Optional[str]"
     },
-    "allowed_agent_ids": ["document_lead", "orchestrator"],
+    "allowed_agent_ids": ["document_lead", "deck_designer", "orchestrator"],
     "guardrail_policy_ids": ["document.template_ownership"],
     "timeout_ms": 90000,
     "retry_policy": {"max_attempts": 1},

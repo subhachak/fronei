@@ -5,8 +5,11 @@ import logging
 import uuid
 from typing import Any
 
+from app.services.agent_runtime.model_fallback import invoke_with_policy_fallback
 from app.services.agent_runtime.models import JudgePolicy, JudgeResult, JudgeStatus
+from app.services.agent_runtime.output_sanitizer import sanitize_text
 from app.services.agent_runtime.registry import RuntimeRegistry
+from app.services.agent_runtime.tracing import AgentRunTrace, AgentTrace
 from app.services.agent_runtime.utils import strip_json_fence
 
 
@@ -22,8 +25,16 @@ class JudgeService:
     later phase.
     """
 
-    def __init__(self, registry: RuntimeRegistry) -> None:
+    def __init__(
+        self,
+        registry: RuntimeRegistry,
+        *,
+        trace: AgentTrace | None = None,
+        trace_run: AgentRunTrace | None = None,
+    ) -> None:
         self.registry = registry
+        self.trace = trace
+        self.trace_run = trace_run
 
     def evaluate(
         self,
@@ -92,7 +103,6 @@ class JudgeService:
         context: dict[str, Any],
         target_id: str,
     ) -> JudgeResult:
-        from app.services.agent_runtime.adapters import model_policy_to_route
         from app.services.llm_gateway import invoke_llm
 
         model_policy = self.registry.model_policy(policy.model_policy_id)
@@ -107,12 +117,33 @@ class JudgeService:
         ]
         prompt = "\n\n".join(part for part in prompt_parts if part)
 
-        result = invoke_llm(
-            message=prompt,
-            route=model_policy_to_route(model_policy),
-            history=[],
-            system_prompt=_judge_system_prompt(policy.target_type, criteria_block),
-        )
+        def _call(route):
+            return invoke_llm(
+                message=prompt,
+                route=route,
+                history=[],
+                system_prompt=_judge_system_prompt(policy.target_type, criteria_block),
+            )
+
+        if self.trace and self.trace_run:
+            with self.trace.step(
+                self.trace_run,
+                "judge",
+                input_summary=prompt[:500],
+                metadata={"policy_id": policy.id, "target_type": policy.target_type},
+            ) as step:
+                result = invoke_with_policy_fallback(model_policy, _call)
+                answer = getattr(result, "answer", None)
+                if isinstance(answer, str):
+                    result.answer = sanitize_text(answer)
+                step.model_used = getattr(result, "model_used", None)
+                step.output_summary = str(getattr(result, "answer", "") or "")[:500]
+                step.cost_usd = float(getattr(result, "estimated_cost_usd", 0.0) or 0.0)
+        else:
+            result = invoke_with_policy_fallback(model_policy, _call)
+            answer = getattr(result, "answer", None)
+            if isinstance(answer, str):
+                result.answer = sanitize_text(answer)
 
         parsed = json.loads(strip_json_fence((getattr(result, "answer", "") or "").strip()))
         score = max(0.0, min(1.0, float(parsed.get("score", 0.0))))

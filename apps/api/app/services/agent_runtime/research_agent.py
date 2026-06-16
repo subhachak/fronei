@@ -7,15 +7,13 @@ from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any
 
-from app.services.agent_runtime.adapters import model_policy_to_route
-from app.services.agent_runtime.guardrails import GuardrailService
 from app.services.agent_runtime.judge_service import JudgeService
 from app.services.agent_runtime.registry import RuntimeRegistry
+from app.services.agent_runtime.sub_agent_runner import SubAgentRunner
 from app.services.agent_runtime.tool_runner import (
     ToolCallResult,
     ToolExecutionError,
     ToolNotPermittedError,
-    ToolRunner,
 )
 from app.services.agent_runtime.utils import effective_max_repair_iters, strip_json_fence
 from app.services.turn_graph.research import (
@@ -61,11 +59,6 @@ class ResearchAgent:
         self.prompt = registry.prompt(self.agent_def.prompt_template_id)
 
     def run(self, state: TurnGraphState, decision) -> ResearchResult:
-        tool_runner = ToolRunner(
-            registry=self.registry,
-            agent_id="research_lead",
-            guardrail_service=GuardrailService(self.registry),
-        )
         tool_calls: list[ToolCallResult] = []
 
         state = decompose_research_node(
@@ -76,18 +69,20 @@ class ResearchAgent:
 
         state = search_research_node(
             state,
-            fn=lambda s: self._scout(s, queries, tool_runner, tool_calls),
+            fn=lambda s: self._scout(s, queries, tool_calls),
         )
 
         state = crawl_research_node(
             state,
-            fn=lambda s: self._crawl(s, tool_runner, tool_calls),
+            fn=lambda s: self._crawl(s, tool_calls),
         )
 
         state = extract_research_node(
             state,
             fn=lambda s: self._extract(s),
         )
+
+        self._resolve_contradictions(state)
 
         state = sufficiency_research_node(
             state,
@@ -115,14 +110,11 @@ class ResearchAgent:
     ) -> dict[str, Any]:
         """Call the fast model to split the user query into focused sub-queries."""
 
-        from app.services.llm_gateway import invoke_llm
-
         fallback = _extract_queries(decision.plan, state.user_message)
         try:
-            fast_policy = self.registry.model_policy("model.fast")
-            result = invoke_llm(
+            agent = SubAgentRunner("query_decomposer", self.registry)
+            result = agent.invoke(
                 message=state.user_message,
-                route=model_policy_to_route(fast_policy),
                 history=[],
                 system_prompt=(
                     "You are a research planning assistant. "
@@ -149,21 +141,36 @@ class ResearchAgent:
         self,
         state: TurnGraphState,
         queries: list[str],
-        tool_runner: ToolRunner,
-        tool_calls_log: list[ToolCallResult],
+        maybe_tool_runner_or_log,
+        maybe_tool_calls_log: list[ToolCallResult] | None = None,
     ) -> dict[str, Any]:
         """Run web_search for each sub-query; deduplicate sources by URL."""
 
+        legacy_tool_runner = None
+        if maybe_tool_calls_log is None:
+            tool_calls_log = maybe_tool_runner_or_log
+        else:
+            legacy_tool_runner = maybe_tool_runner_or_log
+            tool_calls_log = maybe_tool_calls_log
+
         seen_urls: set[str] = set()
         all_sources: list[dict[str, Any]] = []
+        agent = SubAgentRunner("source_scout", self.registry) if legacy_tool_runner is None else None
 
         for query in queries[:MAX_SEARCH_QUERIES]:
             try:
-                result = tool_runner.run(
-                    "web_search",
-                    {"query": query, "max_results": 5},
-                    state=state,
-                )
+                if legacy_tool_runner is not None:
+                    result = legacy_tool_runner.run(
+                        "web_search",
+                        {"query": query, "max_results": 5},
+                        state=state,
+                    )
+                else:
+                    result = agent.run_tool(  # type: ignore[union-attr]
+                        "web_search",
+                        {"query": query, "max_results": 5},
+                        state=state,
+                    )
                 tool_calls_log.append(result)
                 for source in _source_citations(result.output):
                     url = source.get("url", "")
@@ -179,13 +186,21 @@ class ResearchAgent:
     def _crawl(
         self,
         state: TurnGraphState,
-        tool_runner: ToolRunner,
-        tool_calls_log: list[ToolCallResult],
+        maybe_tool_runner_or_log,
+        maybe_tool_calls_log: list[ToolCallResult] | None = None,
     ) -> dict[str, Any]:
         """Call read_url for the top MAX_CRAWL_SOURCES sources."""
 
+        legacy_tool_runner = None
+        if maybe_tool_calls_log is None:
+            tool_calls_log = maybe_tool_runner_or_log
+        else:
+            legacy_tool_runner = maybe_tool_runner_or_log
+            tool_calls_log = maybe_tool_calls_log
+
         sources = list(state.research_sources or [])
         enriched: list[dict[str, Any]] = []
+        agent = SubAgentRunner("source_reader", self.registry) if legacy_tool_runner is None else None
 
         for source in sources[:MAX_CRAWL_SOURCES]:
             url = source.get("url", "")
@@ -193,7 +208,11 @@ class ResearchAgent:
                 enriched.append(source)
                 continue
             try:
-                result = tool_runner.run("read_url", {"url": url}, state=state)
+                result = (
+                    legacy_tool_runner.run("read_url", {"url": url}, state=state)
+                    if legacy_tool_runner is not None
+                    else agent.run_tool("read_url", {"url": url}, state=state)  # type: ignore[union-attr]
+                )
                 tool_calls_log.append(result)
                 enriched.append({
                     **source,
@@ -216,8 +235,6 @@ class ResearchAgent:
     def _extract(self, state: TurnGraphState) -> dict[str, Any]:
         """Call executive model to extract structured claims from crawled content."""
 
-        from app.services.llm_gateway import invoke_llm
-
         content_blocks: list[str] = []
         for index, source in enumerate(state.research_sources or [], 1):
             content = source.get("content", "")
@@ -233,13 +250,12 @@ class ResearchAgent:
 
         combined = "\n\n---\n\n".join(content_blocks)
         try:
-            exec_policy = self.registry.model_policy("model.executive")
-            result = invoke_llm(
+            agent = SubAgentRunner("evidence_extractor", self.registry)
+            result = agent.invoke(
                 message=(
                     f"Research question: {state.user_message}\n\n"
                     f"Source content:\n{combined}"
                 ),
-                route=model_policy_to_route(exec_policy),
                 history=[],
                 system_prompt=(
                     "You are an evidence extractor. "
@@ -270,6 +286,50 @@ class ResearchAgent:
             state.research_claims = []
             return {"claims_extracted": 0}
 
+    def _resolve_contradictions(self, state: TurnGraphState) -> None:
+        """Resolve or annotate contradictory claims via contradiction_resolver."""
+
+        claims = state.research_claims or []
+        if len(claims) < 2:
+            return
+        if (getattr(state, "quality_mode", None) or "standard") != "executive":
+            return
+        try:
+            agent = SubAgentRunner("contradiction_resolver", self.registry)
+            result = agent.invoke(
+                message=json.dumps({
+                    "question": state.user_message,
+                    "claims": claims,
+                }),
+                history=[],
+                system_prompt=(
+                    "Review these claims for contradictions. Return only JSON with keys "
+                    "contradictions, resolution_notes, and claims. If there are no conflicts, "
+                    "return the original claims unchanged."
+                ),
+            )
+            raw = strip_json_fence((getattr(result, "answer", "") or "").strip())
+            parsed = json.loads(raw)
+            revised = parsed.get("claims")
+            if isinstance(revised, list) and revised:
+                state.research_claims = [
+                    {
+                        "text": str(claim.get("text", "")),
+                        "source_url": str(claim.get("source_url", "")),
+                        "confidence": float(claim.get("confidence", 0.5)),
+                    }
+                    for claim in revised
+                    if isinstance(claim, dict) and claim.get("text")
+                ]
+            if parsed.get("contradictions") or parsed.get("resolution_notes"):
+                state.research_progress.append({
+                    "stage": "contradiction_resolution",
+                    "contradictions": parsed.get("contradictions") or [],
+                    "resolution_notes": parsed.get("resolution_notes") or "",
+                })
+        except Exception:
+            logger.warning("Contradiction resolution failed; keeping extracted claims")
+
     def _check_sufficiency(self, state: TurnGraphState) -> dict[str, Any]:
         """Heuristic sufficiency check. No model call."""
 
@@ -295,8 +355,6 @@ class ResearchAgent:
     ) -> dict[str, Any]:
         """Synthesize final answer from extracted claims."""
 
-        from app.services.llm_gateway import invoke_llm
-
         claims = state.research_claims or []
         sources = state.research_sources or []
 
@@ -310,9 +368,9 @@ class ResearchAgent:
             web_context = _format_sources(sources) if sources else None
 
         try:
-            result = invoke_llm(
+            agent = SubAgentRunner("research_synthesizer", self.registry)
+            result = agent.invoke(
                 message=state.user_message,
-                route=model_policy_to_route(self.model_policy),
                 history=state.history[-8:] if state.history else [],
                 web_context=web_context,
                 planner_context=state.running_summary or None,
@@ -425,9 +483,9 @@ class ResearchAgent:
         _decision,
         required_repairs: list[dict[str, Any]],
     ) -> Any | None:
-        """Re-run research synthesis with repair instructions. Never raises."""
+        """Re-run research_synthesizer sub-agent with repair context. Never raises."""
 
-        from app.services.llm_gateway import invoke_llm
+        from app.services.agent_runtime.sub_agent_runner import SubAgentRunner
 
         claims = state.research_claims or []
         sources = state.research_sources or []
@@ -449,12 +507,9 @@ class ResearchAgent:
         web_context = f"{repair_note}\n\n{web_context}" if web_context else repair_note
 
         try:
-            # TODO(new-phase-m): Replace this direct LLM call with
-            # SubAgentRunner("research_synthesizer", self.registry) once the
-            # true sub-agent runtime is in place.
-            return invoke_llm(
+            agent = SubAgentRunner("research_synthesizer", self.registry)
+            return agent.invoke(
                 message=state.user_message,
-                route=model_policy_to_route(self.model_policy),
                 history=state.history[-8:] if state.history else [],
                 web_context=web_context,
                 planner_context=state.running_summary or None,

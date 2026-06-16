@@ -31,6 +31,7 @@ from app.services.chat_pipeline import PipelineSetup
 from app.services.llm_gateway import LLMResult
 from app.services.research_orchestrator import ResearchPipelineResult, ResearchFollowupResult
 from app.services.planner import apply_confirmed_plan, passthrough, plan_to_dict
+from app.services import rate_limit
 from app.services.web_context import WebContextResult
 
 
@@ -38,6 +39,8 @@ from app.services.web_context import WebContextResult
 def _isolate_mocks(monkeypatch):
     """Reset function-scoped monkeypatches between stream tests."""
 
+    with rate_limit._lock:
+        rate_limit._hits.clear()
     yield
 
 
@@ -68,7 +71,7 @@ def _wait_for_completed_turn(Session, turn_id: str, timeout: float = 2.0) -> Con
     with Session() as db:
         turn = db.query(ConversationTurn).filter(ConversationTurn.public_id == turn_id).first()
         assert turn is not None
-        assert turn.status == "completed"
+        assert turn.status == "completed", turn.error_message
         return turn
 
 
@@ -411,6 +414,94 @@ def test_stream_research_mode_uses_research_pipeline(client, monkeypatch):
     assert done["research"]["run_id"] == 7
     assert done["research_run_id"] == 7
     assert done["route"]["task_type"] == "research"
+
+
+def test_stream_research_mode_authoritative_graph_persists_research_run(client, monkeypatch):
+    c, Session = client
+    settings = conversations.get_settings()
+    monkeypatch.setattr(settings, "turn_graph_enabled", True)
+    monkeypatch.setattr(settings, "turn_graph_authoritative", True)
+
+    plan = passthrough("Research this")
+    monkeypatch.setattr(conversations, "run_planner", lambda *args, **kwargs: plan)
+    monkeypatch.setattr(conversations, "_append_turn_graph_shadow", lambda **kwargs: None)
+
+    def fake_graph_research(self, state, decision):
+        state.research_queries = ["enterprise AI governance retail 2026"]
+        state.research_claims = [{
+            "text": "Retail AI governance programs are prioritizing controls and accountability.",
+            "source_url": "https://example.com/ai-governance",
+            "confidence": 0.82,
+        }]
+        return SimpleNamespace(
+            answer="Graph-native research answer [S1].",
+            sources=[{
+                "title": "AI Governance Source",
+                "url": "https://example.com/ai-governance",
+                "provider": "test",
+                "snippet": "Governance controls and accountability.",
+            }],
+            model_used="agent-runtime-test",
+            latency_ms=33,
+            cost_usd=0.003,
+        )
+
+    monkeypatch.setattr(
+        "app.services.agent_runtime.research_agent.ResearchAgent.run",
+        fake_graph_research,
+    )
+
+    response = c.post(
+        "/conversations/chat/stream",
+        json={"message": "Research this", "research_mode": "deep", "output_mode": "raw"},
+    )
+
+    assert response.status_code == 200
+    events = _events(response.text)
+    assert events[-1][0] == "job_started"
+
+    turn = _wait_for_completed_turn(Session, events[-1][1]["turn_id"])
+    done = json.loads(turn.result_json)
+    assert done["research"]["mode"] == "deep"
+    assert done["research_run_id"] is not None
+    assert done["research"]["run_id"] == done["research_run_id"]
+    assert done["research"]["sources"][0]["url"] == "https://example.com/ai-governance"
+    assert done["research"]["claims"][0]["claim"].startswith("Retail AI governance")
+
+
+def test_graph_research_compat_run_persists_legacy_rows(client):
+    _c, Session = client
+    with Session() as db:
+        run, source_logs, claim_logs = conversations._persist_graph_research_compat_run(
+            db,
+            user_id="u1",
+            conversation_id=123,
+            query="Research this",
+            mode="deep",
+            answer="Graph-native research answer [S1].",
+            sources=[{
+                "title": "AI Governance Source",
+                "url": "https://example.com/ai-governance",
+                "provider": "test",
+                "snippet": "Governance controls and accountability.",
+            }],
+            claims=[{
+                "text": "Retail AI governance programs are prioritizing controls and accountability.",
+                "source_url": "https://example.com/ai-governance",
+                "confidence": 0.82,
+            }],
+        )
+
+    with Session() as db:
+        assert db.query(ResearchRun).count() == 1
+        row = db.query(ResearchRun).first()
+        assert row.id == run.id
+        assert row.status == "completed"
+        assert row.final_answer == "Graph-native research answer [S1]."
+        assert db.query(ResearchSource).filter(ResearchSource.run_id == run.id).count() == 1
+        assert db.query(ResearchClaim).filter(ResearchClaim.run_id == run.id).count() == 1
+    assert source_logs[0]["url"] == "https://example.com/ai-governance"
+    assert claim_logs[0]["claim"].startswith("Retail AI governance")
 
 
 def test_stream_research_mode_enriches_vague_followup_from_history(client, monkeypatch):

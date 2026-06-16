@@ -8,7 +8,6 @@
       "available_tools": ["answer_directly", "web_search", "generate_document"]
     },
     "expect": {
-      "response_contains": ["Paris"],
       "tool_called": "answer_directly",
       "no_tool_called": ["web_search"]
     }

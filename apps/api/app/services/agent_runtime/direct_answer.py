@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 
+from app.services.agent_runtime.adapters import model_policy_to_route as _model_policy_to_route
 from app.services.llm_gateway import LLMResult, invoke_llm
 from app.services.turn_graph.state import TurnGraphState
 
@@ -27,8 +28,6 @@ class DirectAnswerAgent:
         self.prompt = registry.prompt(self.agent_def.prompt_template_id)
 
     def answer(self, state: TurnGraphState) -> DirectAnswerResult:
-        from app.services.agent_runtime.orchestrator import _model_policy_to_route
-
         result: LLMResult = invoke_llm(
             message=state.user_message,
             route=_model_policy_to_route(self.model_policy),

@@ -98,6 +98,9 @@ class Settings(BaseSettings):
     # in shadow mode and admin traces can show graph events beside the current
     # execution log.
     turn_graph_enabled: bool = False
+    # Seed the DB-backed agent registry from file defaults on startup. When
+    # unset, this defaults on for local/dev/CI and off for production.
+    seed_registry_on_startup: bool | None = None
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
@@ -125,6 +128,12 @@ class Settings(BaseSettings):
     @property
     def planner_fallback_model_list(self) -> list[str]:
         return [v.strip() for v in self.planner_fallback_models.split(",") if v.strip()]
+
+    @property
+    def should_seed_registry_on_startup(self) -> bool:
+        if self.seed_registry_on_startup is not None:
+            return self.seed_registry_on_startup
+        return not self.is_production
 
 
 @lru_cache

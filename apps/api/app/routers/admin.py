@@ -46,6 +46,15 @@ from app.db.models import (
     set_turn_runtime_config,
 )
 from app.services.document_templates import template_path_for_row
+from app.services.agent_runtime.db_models import DBPromptTemplate
+from app.services.agent_runtime.fixtures import PromptFixtureRunner
+from app.services.agent_runtime.registry import (
+    RegistryNotSeeded,
+    invalidate_registry_cache,
+    load_default_registry,
+    load_registry_from_db,
+)
+from app.services.agent_runtime.seeder import seed_registry_from_defaults
 from app.services.llm_gateway import (
     PROVIDER_TEST_MODELS,
     get_circuit_status,
@@ -224,6 +233,13 @@ def _effective_role(user_id: str, db_role: str | None, email: str | None = None)
     if is_admin_user(user_id, email):
         return "admin"
     return db_role or "user"
+
+
+def _load_admin_registry(db):
+    try:
+        return load_registry_from_db(db)
+    except RegistryNotSeeded:
+        return load_default_registry()
 
 
 def _user_profiles(db, user_ids) -> dict[str, dict[str, str | None]]:
@@ -1804,6 +1820,184 @@ def audit(
                 for r in rows
             ]
         }
+    finally:
+        db.close()
+
+
+@router.get("/registry/agents")
+def registry_agents(admin: AdminPrincipal = Depends(require_admin)) -> list[dict]:
+    db = SessionLocal()
+    try:
+        registry = _load_admin_registry(db)
+        return [item.model_dump(mode="json") for item in registry.agents.values()]
+    finally:
+        db.close()
+
+
+@router.get("/registry/agents/{agent_id}")
+def registry_agent(agent_id: str, admin: AdminPrincipal = Depends(require_admin)) -> dict:
+    db = SessionLocal()
+    try:
+        registry = _load_admin_registry(db)
+        try:
+            return registry.agent(agent_id).model_dump(mode="json")
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Agent not found") from None
+    finally:
+        db.close()
+
+
+@router.get("/registry/prompts")
+def registry_prompts(admin: AdminPrincipal = Depends(require_admin)) -> list[dict]:
+    db = SessionLocal()
+    try:
+        registry = _load_admin_registry(db)
+        return [item.model_dump(mode="json") for item in registry.prompts.values()]
+    finally:
+        db.close()
+
+
+@router.get("/registry/prompts/{prompt_id}")
+def registry_prompt(prompt_id: str, admin: AdminPrincipal = Depends(require_admin)) -> dict:
+    db = SessionLocal()
+    try:
+        registry = _load_admin_registry(db)
+        try:
+            return registry.prompt(prompt_id).model_dump(mode="json")
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Prompt not found") from None
+    finally:
+        db.close()
+
+
+@router.get("/registry/model-policies")
+def registry_model_policies(admin: AdminPrincipal = Depends(require_admin)) -> list[dict]:
+    db = SessionLocal()
+    try:
+        registry = _load_admin_registry(db)
+        return [item.model_dump(mode="json") for item in registry.model_policies.values()]
+    finally:
+        db.close()
+
+
+@router.get("/registry/tools")
+def registry_tools(admin: AdminPrincipal = Depends(require_admin)) -> list[dict]:
+    db = SessionLocal()
+    try:
+        registry = _load_admin_registry(db)
+        return [item.model_dump(mode="json") for item in registry.tools.values()]
+    finally:
+        db.close()
+
+
+@router.get("/registry/guardrails")
+def registry_guardrails(admin: AdminPrincipal = Depends(require_admin)) -> list[dict]:
+    db = SessionLocal()
+    try:
+        registry = _load_admin_registry(db)
+        return [item.model_dump(mode="json") for item in registry.guardrails.values()]
+    finally:
+        db.close()
+
+
+@router.post("/registry/seed")
+def registry_seed(admin: AdminPrincipal = Depends(require_admin)) -> dict:
+    db = SessionLocal()
+    try:
+        counts = seed_registry_from_defaults(db)
+        _audit(db, admin, "registry.seed", details=counts)
+        db.commit()
+        return {"seeded": counts}
+    finally:
+        db.close()
+
+
+@router.post("/registry/prompts/{prompt_id}/activate")
+def registry_prompt_activate(prompt_id: str, admin: AdminPrincipal = Depends(require_admin)) -> dict:
+    db = SessionLocal()
+    try:
+        prompt = db.get(DBPromptTemplate, prompt_id)
+        if not prompt:
+            raise HTTPException(status_code=404, detail="Prompt not found")
+        if prompt.status == "active":
+            raise HTTPException(status_code=409, detail="Prompt is already active")
+        if prompt.status not in {"draft", "archived"}:
+            raise HTTPException(status_code=409, detail="Prompt is not activatable")
+
+        try:
+            registry = load_registry_from_db(db)
+        except RegistryNotSeeded:
+            registry = load_default_registry()
+        summary = PromptFixtureRunner(registry).run(prompt_id)
+        if not summary.all_passed:
+            raise HTTPException(
+                status_code=422,
+                detail={"fixture_failures": summary.model_dump()},
+            )
+
+        (
+            db.query(DBPromptTemplate)
+            .filter(DBPromptTemplate.agent_id == prompt.agent_id, DBPromptTemplate.status == "active")
+            .update({"status": "archived"}, synchronize_session=False)
+        )
+        prompt.status = "active"
+        prompt.updated_at = _now()
+        _audit(db, admin, "registry.prompt.activate", details={"prompt_id": prompt_id})
+        db.commit()
+        invalidate_registry_cache()
+        return {"activated": prompt_id, "fixture_summary": summary.model_dump()}
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+@router.post("/registry/prompts/{prompt_id}/rollback")
+def registry_prompt_rollback(prompt_id: str, admin: AdminPrincipal = Depends(require_admin)) -> dict:
+    db = SessionLocal()
+    try:
+        prompt = db.get(DBPromptTemplate, prompt_id)
+        if not prompt:
+            raise HTTPException(status_code=404, detail="Prompt not found")
+
+        current = (
+            db.query(DBPromptTemplate)
+            .filter(DBPromptTemplate.agent_id == prompt.agent_id, DBPromptTemplate.status == "active")
+            .first()
+        )
+        if current:
+            current.status = "archived"
+            current.updated_at = _now()
+
+        previous = (
+            db.query(DBPromptTemplate)
+            .filter(
+                DBPromptTemplate.agent_id == prompt.agent_id,
+                DBPromptTemplate.status == "archived",
+                DBPromptTemplate.id != (current.id if current else ""),
+            )
+            .order_by(DBPromptTemplate.updated_at.desc(), DBPromptTemplate.created_at.desc())
+            .first()
+        )
+        if not previous:
+            raise HTTPException(status_code=409, detail="No previous prompt version exists")
+
+        previous.status = "active"
+        previous.updated_at = _now()
+        _audit(db, admin, "registry.prompt.rollback", details={"from": current.id if current else None, "to": previous.id})
+        db.commit()
+        invalidate_registry_cache()
+        return {"rolled_back_to": previous.id}
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()
 

@@ -2492,6 +2492,8 @@ def _stream_turn(
                 t = _threading.Thread(target=_run_research_worker, daemon=True)
                 t.start()
                 heartbeat_count = 0
+                last_research_stage = "research_agent"
+                last_research_message = "Running graph-native research agent…"
                 research_timeout_seconds = _graph_research_timeout_seconds(db, research_mode)
 
                 while True:
@@ -2515,6 +2517,7 @@ def _stream_turn(
                             )
                             break
                         heartbeat_count += 1
+                        heartbeat_message = f"Still running graph-native research after: {last_research_message}"
                         _turn_graph_debug(
                             settings,
                             "research_stream_heartbeat",
@@ -2523,23 +2526,28 @@ def _stream_turn(
                             elapsed_ms=elapsed_ms,
                             heartbeat_count=heartbeat_count,
                             research_mode=research_mode,
+                            last_stage=last_research_stage,
+                            last_message=last_research_message,
                         )
                         _record_turn_progress_by_public_id(
                             turn_public_id,
                             "research_agent",
-                            "Still running graph-native research…",
+                            heartbeat_message,
                         )
                         yield _pipeline_log(
                             "research_agent",
-                            "Still running graph-native research…",
+                            heartbeat_message,
                             elapsed_ms=elapsed_ms,
                             heartbeat_count=heartbeat_count,
+                            last_stage=last_research_stage,
                         )
                         continue
                     if update is None:
                         break
                     stage = update.pop("stage")
                     message = update.pop("message")
+                    last_research_stage = stage
+                    last_research_message = message
                     yield _pipeline_log(stage, message, **update)
 
                 if error_holder[0]:

@@ -87,18 +87,31 @@ class ResearchAgent:
                     fn=lambda s: self._decompose(s, decision, tool_calls),
                 )
                 queries = list(state.research_queries) or [state.user_message]
+                _emit_progress(progress_sink, "research_agent", "Research questions ready.", {
+                    "query_count": len(queries),
+                })
 
                 _emit_progress(progress_sink, "research_agent", "Searching for sources…", {"queries": queries[:MAX_SEARCH_QUERIES]})
                 state = search_research_node(
                     state,
                     fn=lambda s: self._scout(s, queries, tool_calls),
                 )
+                _emit_progress(progress_sink, "research_agent", "Graph-native search complete.", {
+                    "source_count": len(state.research_sources or []),
+                })
 
                 _emit_progress(progress_sink, "research_agent", "Reading selected sources…", {"source_count": len(state.research_sources or [])})
                 state = crawl_research_node(
                     state,
                     fn=lambda s: self._crawl(s, tool_calls),
                 )
+                read_sources = len([
+                    source for source in (state.research_sources or []) if source.get("content")
+                ])
+                _emit_progress(progress_sink, "research_agent", "Source reading complete.", {
+                    "source_count": len(state.research_sources or []),
+                    "read_source_count": read_sources,
+                })
                 checkpoint.save(turn_id, "research.crawl_complete", {
                     "research_sources": state.research_sources or [],
                     "tool_calls_log": [call.__dict__ for call in tool_calls],
@@ -109,7 +122,13 @@ class ResearchAgent:
                 state,
                 fn=lambda s: self._extract(s),
             )
+            _emit_progress(progress_sink, "research_agent", "Evidence extraction complete.", {
+                "claim_count": len(state.research_claims or []),
+            })
 
+            _emit_progress(progress_sink, "research_agent", "Checking for evidence conflicts…", {
+                "claim_count": len(state.research_claims or []),
+            })
             self._resolve_contradictions(state)
 
             _emit_progress(progress_sink, "research_agent", "Checking evidence sufficiency…", {"claim_count": len(state.research_claims or [])})
@@ -117,6 +136,8 @@ class ResearchAgent:
                 state,
                 fn=lambda s: self._check_sufficiency(s),
             )
+            sufficiency = (state.research_progress or [{}])[-1].get("data", {}) if state.research_progress else {}
+            _emit_progress(progress_sink, "research_agent", "Evidence sufficiency checked.", sufficiency)
 
             synthesis_holder: list[Any] = []
             _emit_progress(progress_sink, "research_agent", "Synthesizing findings…", {
@@ -127,8 +148,13 @@ class ResearchAgent:
                 state,
                 fn=lambda s: self._synthesize_from_claims(s, decision, synthesis_holder),
             )
+            _emit_progress(progress_sink, "research_agent", "Synthesis draft complete.", {
+                "model_used": getattr(synthesis_holder[0], "model_used", "") if synthesis_holder else "",
+            })
 
+            _emit_progress(progress_sink, "research_agent", "Checking synthesis quality…")
             self._judge_synthesis_loop(state, decision, synthesis_holder)
+            _emit_progress(progress_sink, "research_agent", "Synthesis quality check complete.")
             synthesis_obj = synthesis_holder[0] if synthesis_holder else None
             if synthesis_obj is not None:
                 checkpoint.save(turn_id, "research.synthesis_complete", {

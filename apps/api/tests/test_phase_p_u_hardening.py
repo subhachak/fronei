@@ -8,7 +8,12 @@ import pytest
 from pptx import Presentation
 
 from app.services.agent_runtime.budget_guard import BudgetExceeded, RuntimeBudgetGuard
-from app.services.agent_runtime.model_fallback import ModelPolicyViolation, validate_model_policy
+from app.services.agent_runtime.brand_profile import BrandProfile
+from app.services.agent_runtime.model_fallback import (
+    ModelPolicyViolation,
+    invoke_with_policy_fallback,
+    validate_model_policy,
+)
 from app.services.agent_runtime.models import ModelPolicy, RuntimeBudget
 from app.services.agent_runtime.output_sanitizer import sanitize_text
 from app.services.agent_runtime.registry import _load_from_files
@@ -90,6 +95,42 @@ def test_model_policy_rejects_unlisted_primary_model():
 
     with pytest.raises(ModelPolicyViolation):
         validate_model_policy(policy)
+
+
+def test_model_policy_fallback_only_retries_retryable_errors():
+    policy = ModelPolicy.model_construct(
+        id="fallback",
+        name="Fallback",
+        allowed_models=["model-a", "model-b"],
+        primary_model="model-a",
+        fallback_models=["model-b"],
+        enabled=True,
+    )
+    attempted: list[str] = []
+
+    def invoke_retryable(route):
+        attempted.append(route.primary_model)
+        if route.primary_model == "model-a":
+            raise TimeoutError("timeout")
+        return "ok"
+
+    assert invoke_with_policy_fallback(policy, invoke_retryable) == "ok"
+    assert attempted == ["model-a", "model-b"]
+
+    attempted.clear()
+
+    def invoke_non_retryable(route):
+        attempted.append(route.primary_model)
+        raise ValueError("bad response shape")
+
+    with pytest.raises(ValueError):
+        invoke_with_policy_fallback(policy, invoke_non_retryable)
+    assert attempted == ["model-a"]
+
+
+def test_brand_profile_is_default():
+    assert BrandProfile().is_default()
+    assert not BrandProfile(template_id="template-1", source="user_template").is_default()
 
 
 def test_brand_profile_blocks_unowned_user_template():

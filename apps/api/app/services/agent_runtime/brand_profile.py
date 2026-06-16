@@ -17,6 +17,9 @@ class BrandProfile:
     slide_roles: list[str] = field(default_factory=list)
     source: str = "default"
 
+    def is_default(self) -> bool:
+        return self.source == "default" and self.template_id is None
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "template_id": self.template_id,

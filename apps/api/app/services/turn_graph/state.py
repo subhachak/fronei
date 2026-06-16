@@ -61,6 +61,9 @@ class TurnGraphState(BaseModel):
 
     web_context: dict[str, Any] | None = None
     research_progress: list[dict[str, Any]] = Field(default_factory=list)
+    research_queries: list[str] = Field(default_factory=list)
+    research_sources: list[dict[str, Any]] = Field(default_factory=list)
+    research_claims: list[dict[str, Any]] = Field(default_factory=list)
     research_result: dict[str, Any] | None = None
     research_raw_result: Any = Field(default=None, exclude=True)
     document_result: dict[str, Any] | None = None

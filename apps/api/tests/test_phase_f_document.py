@@ -244,11 +244,20 @@ def test_write_orchestrator_trace_writes_three_document_steps(monkeypatch):
 
 
 def test_research_result_synthesis_latency_ms_is_separate(monkeypatch):
-    times = iter([0.0, 0.05])
-    monkeypatch.setattr("app.services.agent_runtime.tool_runner.time.perf_counter", lambda: next(times))
+    clock = {"value": 0.0}
+
+    def fake_perf_counter():
+        clock["value"] += 0.05
+        return clock["value"]
+
+    monkeypatch.setattr("app.services.agent_runtime.tool_runner.time.perf_counter", fake_perf_counter)
     monkeypatch.setattr(
         "app.services.web_context.search_web_sources",
-        lambda query, recency=None: ("FakeSearch", [WebSource("One", "https://one.example", "A")]),
+        lambda query, recency=None: ("FakeSearch", [WebSource("One", "https://8.8.8.8/one", "A")]),
+    )
+    monkeypatch.setattr(
+        "app.services.web_context.crawl_url",
+        lambda url: WebSource("One", url, "Full source content."),
     )
     monkeypatch.setattr("app.services.llm_gateway.invoke_llm", lambda **_kwargs: _llm("Research", latency_ms=100))
 

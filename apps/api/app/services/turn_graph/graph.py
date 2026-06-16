@@ -19,6 +19,17 @@ GraphShellHandler = Callable[[TurnGraphState], TurnGraphState | dict[str, Any] |
 logger = logging.getLogger(__name__)
 
 
+def _turn_graph_debug(settings, message: str, **fields: Any) -> None:
+    if not getattr(settings, "turn_graph_debug_enabled", False):
+        return
+    safe_fields = {
+        key: value
+        for key, value in fields.items()
+        if value is not None
+    }
+    logger.info("turn_graph_debug %s %s", message, json.dumps(safe_fields, default=str, sort_keys=True))
+
+
 def run_turn_graph_shell(
     state: TurnGraphState,
     *,
@@ -39,7 +50,26 @@ def run_turn_graph_shell(
     settings = settings or get_settings()
 
     if getattr(settings, "orchestrator_enabled", False):
+        _turn_graph_debug(
+            settings,
+            "orchestrator_shell_start",
+            conversation_id=state.conversation_id,
+            turn_id=state.turn_id,
+            user_id=state.user_id,
+            status=state.status,
+        )
         state, handled = _orchestrator_node(state, settings)
+        _turn_graph_debug(
+            settings,
+            "orchestrator_shell_result",
+            conversation_id=state.conversation_id,
+            turn_id=state.turn_id,
+            user_id=state.user_id,
+            handled=handled,
+            status=state.status,
+            route=(state.triage_decision or {}).get("route") if isinstance(state.triage_decision, dict) else None,
+            error=state.error,
+        )
         if handled:
             _shadow_guardrail_hook(state, settings)
             state.add_event("end", state.status, "Turn graph shell finished (orchestrator)")
@@ -103,6 +133,17 @@ def _orchestrator_node(state: TurnGraphState, settings) -> tuple[TurnGraphState,
             route=decision.route,
             reasoning=decision.reasoning,
         )
+        _turn_graph_debug(
+            settings,
+            "orchestrator_decision",
+            conversation_id=state.conversation_id,
+            turn_id=state.turn_id,
+            user_id=state.user_id,
+            route=decision.route,
+            model_used=decision.model_used,
+            selected_tools=decision.selected_tools,
+            prompt_id=decision.prompt_id,
+        )
 
         state.triage_decision = {
             "route": decision.route,
@@ -129,6 +170,16 @@ def _orchestrator_node(state: TurnGraphState, settings) -> tuple[TurnGraphState,
         )
         plan_decisions = service.evaluate_boundary("planning", plan_context)
         plan_action = max_boundary_action(plan_decisions)
+        _turn_graph_debug(
+            settings,
+            "orchestrator_planning_guardrail",
+            conversation_id=state.conversation_id,
+            turn_id=state.turn_id,
+            user_id=state.user_id,
+            action=plan_action,
+            decision_count=len(plan_decisions),
+            policy_ids=[decision.policy_id for decision in plan_decisions],
+        )
         if plan_action == "block":
             state.final_answer = "I can't complete that request."
             state.status = "completed"
@@ -147,6 +198,14 @@ def _orchestrator_node(state: TurnGraphState, settings) -> tuple[TurnGraphState,
         if decision.route == "clarify":
             state.final_answer = decision.clarification_question or "Could you clarify what you're looking for?"
             state.status = "completed"
+            _turn_graph_debug(
+                settings,
+                "orchestrator_route_handled",
+                conversation_id=state.conversation_id,
+                turn_id=state.turn_id,
+                user_id=state.user_id,
+                route="clarify",
+            )
             _write_orchestrator_trace(state, decision, registry, db_session=node_db)
             return state, True
 
@@ -156,12 +215,29 @@ def _orchestrator_node(state: TurnGraphState, settings) -> tuple[TurnGraphState,
             state.final_answer = da_result.answer
             state.status = "completed"
             state.add_event("direct_answer_agent", "completed", f"Answered in {da_result.latency_ms}ms")
+            _turn_graph_debug(
+                settings,
+                "orchestrator_route_handled",
+                conversation_id=state.conversation_id,
+                turn_id=state.turn_id,
+                user_id=state.user_id,
+                route="direct_answer",
+                model_used=da_result.model_used,
+                latency_ms=da_result.latency_ms,
+            )
             _write_orchestrator_trace(state, decision, registry, db_session=node_db, da_result=da_result)
             return state, True
 
         if decision.route == "research":
             from app.services.agent_runtime.research_agent import ResearchAgent
 
+            _turn_graph_debug(
+                settings,
+                "orchestrator_research_start",
+                conversation_id=state.conversation_id,
+                turn_id=state.turn_id,
+                user_id=state.user_id,
+            )
             research_agent = ResearchAgent(registry)
             ra_result = research_agent.run(state, decision)
             state.research_result = {
@@ -178,12 +254,30 @@ def _orchestrator_node(state: TurnGraphState, settings) -> tuple[TurnGraphState,
                 "completed",
                 f"Research completed: {len(ra_result.sources)} sources, {ra_result.latency_ms}ms",
             )
+            _turn_graph_debug(
+                settings,
+                "orchestrator_route_handled",
+                conversation_id=state.conversation_id,
+                turn_id=state.turn_id,
+                user_id=state.user_id,
+                route="research",
+                model_used=ra_result.model_used,
+                latency_ms=ra_result.latency_ms,
+                source_count=len(ra_result.sources),
+            )
             _write_orchestrator_trace(state, decision, registry, db_session=node_db, ra_result=ra_result)
             return state, True
 
         if decision.route == "document":
             from app.services.agent_runtime.document_agent import DocumentAgent
 
+            _turn_graph_debug(
+                settings,
+                "orchestrator_document_start",
+                conversation_id=state.conversation_id,
+                turn_id=state.turn_id,
+                user_id=state.user_id,
+            )
             document_agent = DocumentAgent(registry)
             doc_result = document_agent.run(state, decision, db=node_db)
             state.final_answer = doc_result.markdown
@@ -204,6 +298,18 @@ def _orchestrator_node(state: TurnGraphState, settings) -> tuple[TurnGraphState,
                 "completed",
                 f"Document generated: {doc_result.title!r} ({doc_result.doc_type})",
             )
+            _turn_graph_debug(
+                settings,
+                "orchestrator_route_handled",
+                conversation_id=state.conversation_id,
+                turn_id=state.turn_id,
+                user_id=state.user_id,
+                route="document",
+                model_used=doc_result.model_used,
+                latency_ms=doc_result.latency_ms,
+                doc_type=doc_result.doc_type,
+                filename=doc_result.filename,
+            )
             _write_orchestrator_trace(state, decision, registry, db_session=node_db, doc_result=doc_result)
             return state, True
 
@@ -212,9 +318,26 @@ def _orchestrator_node(state: TurnGraphState, settings) -> tuple[TurnGraphState,
             "deferred",
             f"Route {decision.route} deferred to existing pipeline",
         )
+        _turn_graph_debug(
+            settings,
+            "orchestrator_route_deferred",
+            conversation_id=state.conversation_id,
+            turn_id=state.turn_id,
+            user_id=state.user_id,
+            route=decision.route,
+        )
         _write_orchestrator_trace(state, decision, registry, db_session=node_db)
         return state, False
-    except Exception:
+    except Exception as exc:
+        _turn_graph_debug(
+            settings,
+            "orchestrator_node_exception",
+            conversation_id=state.conversation_id,
+            turn_id=state.turn_id,
+            user_id=state.user_id,
+            error=repr(exc),
+            error_type=type(exc).__name__,
+        )
         logger.exception("Orchestrator node failed; falling back to existing pipeline")
         return state, False
     finally:

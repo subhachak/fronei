@@ -242,6 +242,41 @@ def test_mark_stale_conversation_turns_marks_old_running_turns_failed(client):
         assert "interrupted" in turn.error_message
 
 
+def test_supersede_active_turns_cancels_prior_inflight_turns(client):
+    _c, Session = client
+    with Session() as db:
+        conv = Conversation(user_id="u1", title="Progress", profile="balanced", message_count=1)
+        db.add(conv)
+        db.flush()
+        older = ConversationTurn(
+            user_id="u1",
+            conversation_id=conv.id,
+            status="running",
+            turn_kind="research",
+        )
+        newest = ConversationTurn(
+            user_id="u1",
+            conversation_id=conv.id,
+            status="running",
+            turn_kind="quick",
+        )
+        db.add_all([older, newest])
+        db.flush()
+
+        count = conversations._supersede_active_turns(
+            db,
+            conversation_id=conv.id,
+            user_id="u1",
+            excluding_public_id=newest.public_id,
+        )
+        db.commit()
+
+        assert count == 1
+        assert older.status == "cancelled"
+        assert "Superseded" in (older.error_message or "")
+        assert newest.status == "running"
+
+
 @pytest.fixture
 def client(monkeypatch):
     engine = create_engine(

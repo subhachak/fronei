@@ -435,6 +435,33 @@ def _latest_active_turn(db, conv: Conversation) -> ConversationTurn | None:
     )
 
 
+def _supersede_active_turns(
+    db,
+    *,
+    conversation_id: int,
+    user_id: str,
+    excluding_public_id: str | None = None,
+) -> int:
+    """Terminalize older in-flight turns so reconnect/polling follows newest work."""
+    query = db.query(ConversationTurn).filter(
+        ConversationTurn.conversation_id == conversation_id,
+        ConversationTurn.user_id == user_id,
+        ConversationTurn.status.in_(ACTIVE_TURN_STATUSES),
+    )
+    if excluding_public_id:
+        query = query.filter(ConversationTurn.public_id != excluding_public_id)
+    now = datetime.now(timezone.utc)
+    count = 0
+    for turn in query.all():
+        turn.status = "cancelled"
+        turn.error_message = "Superseded by a newer turn in this conversation."
+        turn.completed_at = now
+        turn.updated_at = now
+        _append_turn_lifecycle(turn, "superseded_by_new_turn")
+        count += 1
+    return count
+
+
 def mark_stale_conversation_turns(timeout_minutes: int = 30) -> int:
     """Fail old active turns after restart/timeout so reopen UX is deterministic."""
     db = SessionLocal()
@@ -1790,6 +1817,7 @@ def chat_stream(req: ConvChatRequest, user_id: str = CurrentUser, is_admin: bool
             user_msg = ConversationMessage(conversation_id=conv.id, role="user", content=req.message)
             db.add(user_msg)
             db.flush()
+            superseded = _supersede_active_turns(db, conversation_id=conv.id, user_id=user_id)
             turn = ConversationTurn(
                 user_id=user_id,
                 conversation_id=conv.id,
@@ -1804,6 +1832,8 @@ def chat_stream(req: ConvChatRequest, user_id: str = CurrentUser, is_admin: bool
             db.flush()
             turn_public_id["id"] = turn.public_id
             _append_turn_lifecycle(turn, "created", {"kind": turn.turn_kind})
+            if superseded:
+                _append_turn_lifecycle(turn, "superseded_prior_turns", {"count": superseded})
             graph_state = _append_turn_graph_shadow(
                 settings=settings,
                 conv=conv,
@@ -3458,6 +3488,7 @@ def execute_plan(
                 research_mode=confirmed_research_mode,
                 confirmed_plan=body.confirmed_plan,
             )
+            superseded = _supersede_active_turns(db, conversation_id=conv.id, user_id=user_id)
             turn = ConversationTurn(
                 user_id=user_id,
                 conversation_id=conv.id,
@@ -3472,6 +3503,8 @@ def execute_plan(
             db.flush()
             turn_public_id["id"] = turn.public_id
             _append_turn_lifecycle(turn, "created", {"kind": turn.turn_kind, "source": "execute_plan"})
+            if superseded:
+                _append_turn_lifecycle(turn, "superseded_prior_turns", {"count": superseded})
             _append_turn_graph_shadow(
                 settings=settings,
                 conv=conv,

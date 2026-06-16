@@ -31,5 +31,37 @@
     "system_prompt": "Lead a professional document-generation workflow. Preserve user-selected templates, bind evidence to content, and never silently fall back to markdown for artifact requests.",
     "variables": ["goal", "brand_profile", "quality_mode"],
     "status": "active"
+  },
+  {
+    "id": "prompt.query_decomposer.default",
+    "agent_id": "query_decomposer",
+    "version": "1.0.0",
+    "system_prompt": "Break compound research requests into concise, distinct web-search queries that cover the user's goal.",
+    "variables": ["goal", "context"],
+    "status": "active"
+  },
+  {
+    "id": "prompt.source_scout.default",
+    "agent_id": "source_scout",
+    "version": "1.0.0",
+    "system_prompt": "Find authoritative, diverse candidate sources for a research sub-query.",
+    "variables": ["query", "source_policy"],
+    "status": "active"
+  },
+  {
+    "id": "prompt.source_reader.default",
+    "agent_id": "source_reader",
+    "version": "1.0.0",
+    "system_prompt": "Read source content and preserve useful evidence, dates, and citations.",
+    "variables": ["url"],
+    "status": "active"
+  },
+  {
+    "id": "prompt.evidence_extractor.default",
+    "agent_id": "evidence_extractor",
+    "version": "1.0.0",
+    "system_prompt": "Extract structured factual claims from source content and bind every claim to its source URL.",
+    "variables": ["question", "sources"],
+    "status": "active"
   }
 ]

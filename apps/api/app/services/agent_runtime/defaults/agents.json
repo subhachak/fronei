@@ -52,5 +52,61 @@
     "max_tool_calls": 6,
     "enabled": true,
     "version": "1.0.0"
+  },
+  {
+    "id": "query_decomposer",
+    "name": "Query Decomposer",
+    "role": "Decomposes a compound research question into focused sub-queries.",
+    "prompt_template_id": "prompt.query_decomposer.default",
+    "allowed_tools": [],
+    "model_policy_id": "model.fast",
+    "guardrail_policy_ids": [],
+    "judge_policy_id": null,
+    "max_iterations": 1,
+    "max_tool_calls": 0,
+    "enabled": true,
+    "version": "1.0.0"
+  },
+  {
+    "id": "source_scout",
+    "name": "Source Scout",
+    "role": "Searches the web for candidate sources for a single research sub-query.",
+    "prompt_template_id": "prompt.source_scout.default",
+    "allowed_tools": ["web_search"],
+    "model_policy_id": "model.fast",
+    "guardrail_policy_ids": ["tool.ssrf_prevention", "tool.output_sanitize"],
+    "judge_policy_id": null,
+    "max_iterations": 1,
+    "max_tool_calls": 5,
+    "enabled": true,
+    "version": "1.0.0"
+  },
+  {
+    "id": "source_reader",
+    "name": "Source Reader",
+    "role": "Reads and extracts the full text content from a known source URL.",
+    "prompt_template_id": "prompt.source_reader.default",
+    "allowed_tools": ["read_url"],
+    "model_policy_id": "model.fast",
+    "guardrail_policy_ids": ["tool.ssrf_prevention", "tool.output_sanitize"],
+    "judge_policy_id": null,
+    "max_iterations": 1,
+    "max_tool_calls": 5,
+    "enabled": true,
+    "version": "1.0.0"
+  },
+  {
+    "id": "evidence_extractor",
+    "name": "Evidence Extractor",
+    "role": "Extracts structured claims and supporting evidence from crawled source content.",
+    "prompt_template_id": "prompt.evidence_extractor.default",
+    "allowed_tools": [],
+    "model_policy_id": "model.executive",
+    "guardrail_policy_ids": [],
+    "judge_policy_id": null,
+    "max_iterations": 1,
+    "max_tool_calls": 0,
+    "enabled": true,
+    "version": "1.0.0"
   }
 ]

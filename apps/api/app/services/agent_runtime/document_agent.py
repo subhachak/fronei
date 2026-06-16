@@ -14,6 +14,8 @@ from app.services.agent_runtime.guardrails import (
     _query_template_ownership,
     _template_belongs_to_user_db,
 )
+from app.services.agent_runtime.judge_service import JudgeService
+from app.services.agent_runtime.models import JudgeResult
 from app.services.agent_runtime.registry import RuntimeRegistry
 from app.services.agent_runtime.tool_runner import (
     ToolExecutionError,
@@ -96,6 +98,15 @@ class DocumentAgent:
                 estimated_cost_usd=0.0,
             )
         brief = _extract_document_brief(planning_result.answer, state.user_message)
+        judge_result = self._judge_plan(state, brief)
+        if judge_result is not None:
+            logger.info(
+                "Document judge: policy=%s status=%s score=%.2f",
+                self.agent_def.judge_policy_id,
+                judge_result.status,
+                judge_result.score,
+            )
+
         is_presentation = str(brief.get("doc_type") or "").lower() == "presentation"
         template_id = brand_profile.get("template_id") or None
 
@@ -254,6 +265,32 @@ class DocumentAgent:
             planner_context=state.running_summary or None,
             doc_context=doc_context,
         )
+
+    def _judge_plan(self, state: TurnGraphState, brief: dict) -> JudgeResult | None:
+        """Run the document judge against the planned document brief. Never raises."""
+
+        judge_policy_id = self.agent_def.judge_policy_id
+        if not judge_policy_id:
+            return None
+
+        plan_text = json.dumps(brief, indent=2) if isinstance(brief, dict) else str(brief)
+        research_summary = ""
+        if isinstance(getattr(state, "research_result", None), dict):
+            research_summary = str(state.research_result.get("answer", ""))[:500]
+
+        try:
+            return JudgeService(self.registry).evaluate(
+                judge_policy_id,
+                content=plan_text,
+                context={
+                    "user_question": state.user_message,
+                    "sources_summary": research_summary,
+                },
+                target_id=str(getattr(state, "turn_id", "") or ""),
+            )
+        except Exception:
+            logger.exception("Document judge failed unexpectedly; continuing")
+            return None
 
 
 def _fetch_template_grammar(

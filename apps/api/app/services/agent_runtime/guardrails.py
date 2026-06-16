@@ -43,6 +43,7 @@ class GuardrailContext:
     request_text: str | None
     plan: dict | None
     response_text: str | None
+    user_role: str = "user"
     metadata: dict = field(default_factory=dict)
 
 
@@ -119,12 +120,18 @@ class GuardrailService:
         boundary: str,
         context: GuardrailContext,
     ) -> list[GuardrailDecision]:
-        """Evaluate all enabled policies whose applies_to includes the boundary."""
+        """Evaluate enabled policies for a boundary, honoring tool selectors.
+
+        Guardrail policies can include both boundary selectors (``tool_pre``,
+        ``tool_post``, ``output``) and tool selectors (``tool:web_search``).
+        Tool selectors narrow tool boundary checks to a specific tool while
+        leaving non-tool boundaries, such as final output checks, unchanged.
+        """
 
         return [
             self.evaluate(policy.id, context)
             for policy in self.registry.guardrails.values()
-            if policy.enabled and boundary in policy.applies_to
+            if policy.enabled and _policy_applies_to_context(policy.applies_to, boundary, context)
         ]
 
     def _evaluate_check(self, check_type: str, context: GuardrailContext) -> _CheckResult:
@@ -138,6 +145,10 @@ class GuardrailService:
             return self._check_template_belongs_to_user(context)
         if check_type == "no_silent_default_template_fallback":
             return self._check_no_silent_default_template_fallback(context)
+        if check_type == "source_content_public":
+            return self._check_source_content_public(context)
+        if check_type == "role_required":
+            return self._check_role_required(context)
 
         logger.warning("Unknown guardrail check type: %s", check_type)
         return _CheckResult(action="allow", reason=f"Unknown check type {check_type}; allowing.")
@@ -193,6 +204,9 @@ class GuardrailService:
         sources = payload.get("sources") if isinstance(payload, dict) else None
         if isinstance(sources, list) and len(sources) > 0:
             return _CheckResult(action="allow", reason="Source manifest present.")
+        if context.tool_name == "read_url" and isinstance(payload, dict):
+            if payload.get("url") and payload.get("content"):
+                return _CheckResult(action="allow", reason="Single URL source content present.")
         return _CheckResult(action="block", triggered=True, reason="Tool output is missing a non-empty sources list.")
 
     def _check_template_belongs_to_user(self, context: GuardrailContext) -> _CheckResult:
@@ -228,6 +242,45 @@ class GuardrailService:
                 reason="Default template fallback attempted despite a user-selected template.",
             )
         return _CheckResult(action="allow", reason="No silent default template fallback detected.")
+
+    def _check_source_content_public(self, context: GuardrailContext) -> _CheckResult:
+        from app.services.agent_runtime.source_classifier import classify_source_content
+
+        output = context.tool_output or {}
+        if not isinstance(output, dict):
+            return _CheckResult(action="allow", reason="No structured source output to classify.")
+
+        sources = output.get("sources") or []
+        if not sources:
+            content = str(output.get("content") or "")
+            url = str(output.get("url") or "")
+            if content:
+                sources = [{"url": url, "content": content}]
+
+        for source in sources:
+            if not isinstance(source, dict):
+                continue
+            result = classify_source_content(
+                str(source.get("url") or ""),
+                str(source.get("content") or ""),
+            )
+            if not result.is_public:
+                return _CheckResult(
+                    action="block",
+                    triggered=True,
+                    reason=f"source_not_public:{result.reason}",
+                )
+        return _CheckResult(action="allow", reason="Source content appears public.")
+
+    def _check_role_required(self, context: GuardrailContext) -> _CheckResult:
+        required = (context.tool_input or {}).get("_required_roles", [])
+        if required and context.user_role not in required:
+            return _CheckResult(
+                action="block",
+                triggered=True,
+                reason=f"role_required:{required}",
+            )
+        return _CheckResult(action="allow", reason="Role requirement satisfied.")
 
 
 def _extract_url(context: GuardrailContext) -> str | None:
@@ -379,6 +432,24 @@ def max_boundary_action(decisions: list[GuardrailDecision]) -> GuardrailAction:
     for decision in decisions:
         result = _more_restrictive_action(result, decision.action)
     return result
+
+
+def _policy_applies_to_context(
+    applies_to: list[str],
+    boundary: str,
+    context: GuardrailContext,
+) -> bool:
+    if boundary not in applies_to:
+        return False
+    if not boundary.startswith("tool_"):
+        return True
+
+    tool_selectors = [selector for selector in applies_to if selector.startswith("tool:")]
+    if not tool_selectors:
+        return True
+    if not context.tool_name:
+        return False
+    return f"tool:{context.tool_name}" in tool_selectors
 
 
 def _query_template_ownership(db, template_id: str, user_id: str) -> bool:

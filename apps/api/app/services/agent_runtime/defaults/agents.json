@@ -4,7 +4,13 @@
     "name": "Orchestrator",
     "role": "Owns the user goal and routes work to agents and tools.",
     "prompt_template_id": "prompt.orchestrator.default",
-    "allowed_tools": ["answer_directly", "web_search", "read_url", "generate_document"],
+    "allowed_tools": [
+      "answer_directly",
+      "web_search",
+      "read_url",
+      "generate_document",
+      "admin_override_judge"
+    ],
     "model_policy_id": "model.fast",
     "guardrail_policy_ids": [],
     "max_iterations": 3,
@@ -17,7 +23,11 @@
     "name": "Direct Answer Agent",
     "role": "Answers clear low-risk turns, optionally with bounded web context.",
     "prompt_template_id": "prompt.direct_answer.default",
-    "allowed_tools": ["web_search", "read_url"],
+    "allowed_tools": [
+      "web_search",
+      "read_url",
+      "memory_read"
+    ],
     "model_policy_id": "model.fast",
     "guardrail_policy_ids": [],
     "max_iterations": 1,
@@ -30,9 +40,14 @@
     "name": "Research Lead",
     "role": "Controls the deep research subtree and its adaptive budget.",
     "prompt_template_id": "prompt.research_lead.default",
-    "allowed_tools": ["web_search", "read_url"],
+    "allowed_tools": [
+      "web_search",
+      "read_url"
+    ],
     "model_policy_id": "model.executive",
-    "guardrail_policy_ids": ["tool.output_sanitize"],
+    "guardrail_policy_ids": [
+      "tool.output_sanitize"
+    ],
     "judge_policy_id": "research_judge",
     "max_iterations": 3,
     "max_tool_calls": 12,
@@ -44,9 +59,14 @@
     "name": "Document Lead",
     "role": "Controls document and presentation generation workflows.",
     "prompt_template_id": "prompt.document_lead.default",
-    "allowed_tools": ["generate_document", "render_pptx"],
+    "allowed_tools": [
+      "generate_document",
+      "render_pptx"
+    ],
     "model_policy_id": "model.executive",
-    "guardrail_policy_ids": ["document.template_ownership"],
+    "guardrail_policy_ids": [
+      "document.template_ownership"
+    ],
     "judge_policy_id": "document_judge",
     "max_iterations": 3,
     "max_tool_calls": 6,
@@ -72,9 +92,14 @@
     "name": "Source Scout",
     "role": "Searches the web for candidate sources for a single research sub-query.",
     "prompt_template_id": "prompt.source_scout.default",
-    "allowed_tools": ["web_search"],
+    "allowed_tools": [
+      "web_search"
+    ],
     "model_policy_id": "model.fast",
-    "guardrail_policy_ids": ["tool.ssrf_prevention", "tool.output_sanitize"],
+    "guardrail_policy_ids": [
+      "tool.ssrf_prevention",
+      "tool.output_sanitize"
+    ],
     "judge_policy_id": null,
     "max_iterations": 1,
     "max_tool_calls": 5,
@@ -86,9 +111,14 @@
     "name": "Source Reader",
     "role": "Reads and extracts the full text content from a known source URL.",
     "prompt_template_id": "prompt.source_reader.default",
-    "allowed_tools": ["read_url"],
+    "allowed_tools": [
+      "read_url"
+    ],
     "model_policy_id": "model.fast",
-    "guardrail_policy_ids": ["tool.ssrf_prevention", "tool.output_sanitize"],
+    "guardrail_policy_ids": [
+      "tool.ssrf_prevention",
+      "tool.output_sanitize"
+    ],
     "judge_policy_id": null,
     "max_iterations": 1,
     "max_tool_calls": 5,
@@ -114,7 +144,9 @@
     "name": "Research Synthesizer",
     "role": "Synthesizes extracted evidence claims and source context into a clear research answer.",
     "prompt_template_id": "prompt.research_synthesizer.default",
-    "allowed_tools": [],
+    "allowed_tools": [
+      "memory_read"
+    ],
     "model_policy_id": "model.executive",
     "guardrail_policy_ids": [],
     "judge_policy_id": "research_judge",
@@ -142,7 +174,9 @@
     "name": "Content Strategist",
     "role": "Plans the document brief: title, doc_type, subtitle, and outline from the user goal and brand profile.",
     "prompt_template_id": "prompt.content_strategist.default",
-    "allowed_tools": [],
+    "allowed_tools": [
+      "memory_read"
+    ],
     "model_policy_id": "model.executive",
     "guardrail_policy_ids": [],
     "judge_policy_id": "document_judge",

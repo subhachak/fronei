@@ -38,7 +38,7 @@ def invoke_with_policy_fallback(
     policy: ModelPolicy,
     invoke_fn: Callable[[RouteDecision], Any],
 ) -> Any:
-    """Invoke with primary and policy fallbacks, validating every candidate."""
+    """Invoke with primary and policy fallbacks for retryable provider failures."""
 
     validate_model_policy(policy)
     candidates = [policy.primary_model, *policy.fallback_models]
@@ -48,8 +48,33 @@ def invoke_with_policy_fallback(
             return invoke_fn(route_for_model(policy, model, remaining_fallbacks=candidates[index + 1 :]))
         except Exception as exc:
             last_error = exc
-            if index == len(candidates) - 1:
+            if index == len(candidates) - 1 or not _is_retryable_model_error(exc):
                 break
     if last_error is not None:
         raise last_error
     raise ModelPolicyViolation(f"Model policy {policy.id!r} has no candidate models")
+
+
+def _is_retryable_model_error(exc: Exception) -> bool:
+    if isinstance(exc, (TimeoutError, ConnectionError)):
+        return True
+    name = exc.__class__.__name__.lower()
+    message = str(exc).lower()
+    retryable_markers = (
+        "ratelimit",
+        "rate_limit",
+        "timeout",
+        "connection",
+        "serviceunavailable",
+        "service_unavailable",
+        "internalserver",
+        "internal_server",
+        "overloaded",
+        "temporarily unavailable",
+        "429",
+        "500",
+        "502",
+        "503",
+        "504",
+    )
+    return any(marker in name or marker in message for marker in retryable_markers)

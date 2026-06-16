@@ -9,7 +9,7 @@ from app.services.agent_runtime.model_fallback import invoke_with_policy_fallbac
 from app.services.agent_runtime.output_sanitizer import sanitize_text
 from app.services.agent_runtime.registry import RuntimeRegistry
 from app.services.agent_runtime.tool_runner import ToolCallResult, ToolRunner
-from app.services.agent_runtime.tracing import AgentRunTrace, AgentTrace
+from app.services.agent_runtime.tracing import AgentRunTrace, AgentStepTrace, AgentTrace
 
 
 logger = logging.getLogger(__name__)
@@ -82,23 +82,10 @@ class SubAgentRunner:
         if self.trace and self.trace_run:
             with self.trace.step(self.trace_run, "model", input_summary=message) as step:
                 result = invoke_with_policy_fallback(self.model_policy, _call)
-                answer = getattr(result, "answer", None)
-                if isinstance(answer, str):
-                    result.answer = sanitize_text(answer)
-                step.model_used = getattr(result, "model_used", None)
-                step.output_summary = str(getattr(result, "answer", "") or "")[:500]
-                step.cost_usd = float(getattr(result, "estimated_cost_usd", 0.0) or 0.0)
-                if self.budget_guard:
-                    self.budget_guard.record_cost(step.cost_usd)
-                return result
+                return self._record_and_return(result, step)
 
         result = invoke_with_policy_fallback(self.model_policy, _call)
-        answer = getattr(result, "answer", None)
-        if isinstance(answer, str):
-            result.answer = sanitize_text(answer)
-        if self.budget_guard:
-            self.budget_guard.record_cost(float(getattr(result, "estimated_cost_usd", 0.0) or 0.0))
-        return result
+        return self._record_and_return(result)
 
     def invoke_json(self, messages: list[dict[str, str]]) -> Any:
         from app.services.llm_gateway import invoke_llm_json
@@ -113,22 +100,22 @@ class SubAgentRunner:
         if self.trace and self.trace_run:
             with self.trace.step(self.trace_run, "model", input_summary=summary) as step:
                 result = invoke_with_policy_fallback(self.model_policy, _call)
-                answer = getattr(result, "answer", None)
-                if isinstance(answer, str):
-                    result.answer = sanitize_text(answer)
-                step.model_used = getattr(result, "model_used", None)
-                step.output_summary = str(getattr(result, "answer", "") or "")[:500]
-                step.cost_usd = float(getattr(result, "estimated_cost_usd", 0.0) or 0.0)
-                if self.budget_guard:
-                    self.budget_guard.record_cost(step.cost_usd)
-                return result
+                return self._record_and_return(result, step)
 
         result = invoke_with_policy_fallback(self.model_policy, _call)
+        return self._record_and_return(result)
+
+    def _record_and_return(self, result: Any, step: AgentStepTrace | None = None) -> Any:
         answer = getattr(result, "answer", None)
         if isinstance(answer, str):
             result.answer = sanitize_text(answer)
+        cost = float(getattr(result, "estimated_cost_usd", 0.0) or 0.0)
+        if step is not None:
+            step.model_used = getattr(result, "model_used", None)
+            step.output_summary = str(getattr(result, "answer", "") or "")[:500]
+            step.cost_usd = cost
         if self.budget_guard:
-            self.budget_guard.record_cost(float(getattr(result, "estimated_cost_usd", 0.0) or 0.0))
+            self.budget_guard.record_cost(cost)
         return result
 
     def run_tool(

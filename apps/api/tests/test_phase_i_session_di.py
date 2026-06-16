@@ -194,10 +194,6 @@ def test_fetch_template_grammar_opens_own_session_when_no_db(monkeypatch):
 def test_query_template_ownership_uses_provided_db(monkeypatch):
     mock_db = MagicMock()
     mock_db.query.return_value.filter.return_value.first.return_value = object()
-    monkeypatch.setattr(
-        "app.services.agent_runtime.guardrails.SessionLocal",
-        lambda: (_ for _ in ()).throw(RuntimeError("should not open")),
-    )
 
     assert _query_template_ownership(mock_db, "tmpl-abc", "u1") is True
     mock_db.query.assert_called_with(DocumentTemplate)

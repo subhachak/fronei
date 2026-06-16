@@ -285,8 +285,8 @@ def _fetch_template_grammar(
     from app.db.models import SessionLocal
 
     try:
-        with SessionLocal() as db:
-            return _call(db)
+        with SessionLocal() as new_db:
+            return _call(new_db)
     except Exception:
         if template_id:
             logger.warning(

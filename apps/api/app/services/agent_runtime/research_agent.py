@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any, Callable
@@ -36,7 +37,9 @@ MAX_CRAWL_SOURCES = 3
 MAX_CLAIMS_PER_SOURCE = 5
 SUFFICIENCY_MIN_CLAIMS = 2
 SUFFICIENCY_MIN_SOURCES = 2
+QUERY_DECOMPOSITION_TIMEOUT_SECONDS = 10.0
 ProgressSink = Callable[[str, str, dict[str, Any]], None]
+_OPTIONAL_SUBAGENT_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="optional-research-agent")
 
 
 @dataclass
@@ -204,7 +207,8 @@ class ResearchAgent:
         fallback = _extract_queries(decision.plan, state.user_message)
         try:
             agent = SubAgentRunner("query_decomposer", self.registry)
-            result = agent.invoke(
+            future = _OPTIONAL_SUBAGENT_EXECUTOR.submit(
+                agent.invoke,
                 message=state.user_message,
                 history=[],
                 system_prompt=(
@@ -214,7 +218,10 @@ class ResearchAgent:
                     "web search queries that together fully cover the question. "
                     "Output ONLY valid JSON with no other text."
                 ),
+                request_timeout_s=min(QUERY_DECOMPOSITION_TIMEOUT_SECONDS, 10.0),
+                max_tokens_override=700,
             )
+            result = future.result(timeout=QUERY_DECOMPOSITION_TIMEOUT_SECONDS)
             raw = strip_json_fence((getattr(result, "answer", "") or "").strip())
             queries = [
                 str(query)
@@ -222,6 +229,13 @@ class ResearchAgent:
                 if query
             ][:MAX_SEARCH_QUERIES]
             state.research_queries = queries if queries else fallback
+        except FutureTimeoutError:
+            logger.warning(
+                "Query decomposition timed out after %.1fs; using fallback queries for %r",
+                QUERY_DECOMPOSITION_TIMEOUT_SECONDS,
+                state.user_message[:80],
+            )
+            state.research_queries = fallback
         except Exception as exc:
             logger.warning(
                 "Query decomposition failed; using fallback queries for %r: %s: %s",

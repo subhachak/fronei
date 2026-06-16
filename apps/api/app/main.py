@@ -7,6 +7,7 @@ from app.config import check_production_config, get_settings
 from app.db.models import SessionLocal, engine, init_db
 from app.db.schema_check import check_schema_version
 from app.routers.admin import router as admin_router
+from app.routers.agent_v3 import router as agent_v3_router
 from app.routers.analytics import router as analytics_router
 from app.routers.chat import router as chat_router
 from app.routers.conversations import mark_stale_conversation_turns, router as conversations_router
@@ -60,6 +61,7 @@ def health() -> dict:
 
 app.include_router(analytics_router)
 app.include_router(admin_router)
+app.include_router(agent_v3_router)
 app.include_router(chat_router)
 app.include_router(conversations_router)
 app.include_router(documents_router)

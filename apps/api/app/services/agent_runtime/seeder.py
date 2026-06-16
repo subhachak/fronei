@@ -137,6 +137,7 @@ def seed_registry_from_defaults(db) -> dict[str, int]:
         "tools": 0,
         "guardrails": 0,
     }
+    # TODO Phase L+: seed judges.json into DB once judge policy rows are added.
     if db.query(DBAgentDefinition).count() == 0:
         counts["agents"] = _seed_agents(db)
     if db.query(DBPromptTemplate).count() == 0:

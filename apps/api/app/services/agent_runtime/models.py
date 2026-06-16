@@ -176,6 +176,29 @@ class GuardrailPolicy(BaseModel):
     version: str = "1.0.0"
 
 
+class JudgePolicy(BaseModel):
+    """Configuration for an LLM-as-judge evaluation pass."""
+
+    id: str
+    name: str
+    target_type: JudgeTargetType
+    model_policy_id: str
+    criteria: list[str]
+    pass_threshold: float = Field(default=0.75, ge=0.0, le=1.0)
+    repair_threshold: float = Field(default=0.50, ge=0.0, le=1.0)
+    max_repair_iterations: int = 1
+    enabled: bool = True
+    version: str = "1.0.0"
+
+    @field_validator("repair_threshold", mode="after")
+    @classmethod
+    def _repair_below_pass(cls, value: float, info) -> float:
+        pass_thresh = info.data.get("pass_threshold", 0.75)
+        if value > pass_thresh:
+            raise ValueError("repair_threshold must be <= pass_threshold")
+        return value
+
+
 class ToolDefinition(BaseModel):
     id: str
     name: str

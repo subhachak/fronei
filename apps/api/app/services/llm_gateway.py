@@ -246,13 +246,14 @@ def _call_model(
     msgs: list[dict],
     max_tokens: int,
     enable_native_search: bool,
+    request_timeout_s: float | None = None,
 ) -> object:
     """Call the model, retrying Gemini without grounding if the tool is rejected."""
     kwargs: dict = {
         "model": model,
         "messages": msgs,
         "max_tokens": max_tokens,
-        "timeout": NON_STREAM_REQUEST_TIMEOUT_S,
+        "timeout": request_timeout_s or NON_STREAM_REQUEST_TIMEOUT_S,
     }
     if _supports_temperature(model):
         kwargs["temperature"] = 0.2
@@ -437,9 +438,11 @@ def invoke_llm(
     planner_context: str | None = None,
     doc_context: str | None = None,
     artifact_context: str | None = None,
+    request_timeout_s: float | None = None,
+    max_tokens_override: int | None = None,
 ) -> LLMResult:
     msgs = _build_messages(message, history or [], deep_research, web_context, planner_context, doc_context, artifact_context)
-    max_tokens = DEEP_RESEARCH_MAX_COMPLETION_TOKENS if deep_research else MAX_COMPLETION_TOKENS
+    max_tokens = max_tokens_override or (DEEP_RESEARCH_MAX_COMPLETION_TOKENS if deep_research else MAX_COMPLETION_TOKENS)
     models_to_try = _order_by_circuit([route.primary_model, *route.fallbacks])
     errors: list[str] = []
     started = time.perf_counter()
@@ -447,7 +450,7 @@ def invoke_llm(
     for model in models_to_try:
         provider = provider_for_model(model)
         try:
-            response = _call_model(model, msgs, max_tokens, enable_native_search)
+            response = _call_model(model, msgs, max_tokens, enable_native_search, request_timeout_s)
         except Exception as exc:
             err = f"{model}: {exc}"
             errors.append(err)

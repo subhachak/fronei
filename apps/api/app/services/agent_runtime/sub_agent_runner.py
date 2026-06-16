@@ -77,6 +77,9 @@ class SubAgentRunner:
         if self.budget_guard:
             self.budget_guard.check_model_call()
 
+        kwargs.setdefault("request_timeout_s", max(5.0, float(self.model_policy.timeout_ms) / 1000.0))
+        kwargs.setdefault("max_tokens_override", self.model_policy.max_output_tokens)
+
         def _call(route):
             return invoke_llm(message=message, route=route, **kwargs)
 

@@ -5,15 +5,26 @@ import { IconMenu2, IconX } from '@tabler/icons-react'
 import { Button } from './ui/button'
 
 interface ShellProps {
-  sidebar: React.ReactNode
+  sidebar: React.ReactNode | ((controls: SidebarControls) => React.ReactNode)
   conversation: React.ReactNode
   workPane?: React.ReactNode
   workPaneOpen?: boolean
 }
 
+type SidebarControls = {
+  collapsed: boolean
+  onToggleCollapse: () => void
+}
+
 export function Shell({ sidebar, conversation, workPane, workPaneOpen = false }: ShellProps) {
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [drawerOpen, setDrawerOpen] = useState(false)
+  const onToggleCollapse = () => setSidebarOpen(v => !v)
+  const renderSidebar = (collapsed: boolean) => (
+    typeof sidebar === 'function'
+      ? sidebar({ collapsed, onToggleCollapse })
+      : sidebar
+  )
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -43,7 +54,7 @@ export function Shell({ sidebar, conversation, workPane, workPaneOpen = false }:
         aria-label="Navigation"
         data-collapsed={!sidebarOpen}
       >
-        {sidebar}
+        {renderSidebar(!sidebarOpen)}
       </aside>
 
       {drawerOpen && (
@@ -60,7 +71,7 @@ export function Shell({ sidebar, conversation, workPane, workPaneOpen = false }:
                 <IconX className="h-4 w-4" />
               </Button>
             </div>
-            {sidebar}
+            {renderSidebar(false)}
           </aside>
         </div>
       )}

@@ -27,7 +27,7 @@ def _turn_graph_debug(settings, message: str, **fields: Any) -> None:
         for key, value in fields.items()
         if value is not None
     }
-    logger.info("turn_graph_debug %s %s", message, json.dumps(safe_fields, default=str, sort_keys=True))
+    logger.warning("turn_graph_debug %s %s", message, json.dumps(safe_fields, default=str, sort_keys=True))
 
 
 def run_turn_graph_shell(

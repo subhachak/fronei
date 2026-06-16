@@ -141,7 +141,9 @@ def test_document_agent_includes_research_context_in_doc_context(monkeypatch):
     state.research_result = {"answer": "Key finding: AI adoption is accelerating."}
 
     def capture_llm(**kwargs):
-        captured["doc_context"] = kwargs.get("doc_context")
+        doc_context = kwargs.get("doc_context")
+        if doc_context is not None:
+            captured["doc_context"] = doc_context
         return _llm("# Report body")
 
     monkeypatch.setattr(
@@ -161,7 +163,9 @@ def test_document_agent_presentation_with_grammar_context(monkeypatch):
     captured = {}
 
     def capture_llm(**kwargs):
-        captured["doc_context"] = kwargs.get("doc_context")
+        doc_context = kwargs.get("doc_context")
+        if doc_context is not None:
+            captured["doc_context"] = doc_context
         return _llm("# Deck\n## Slide 1")
 
     monkeypatch.setattr(

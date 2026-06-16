@@ -1,0 +1,38 @@
+[
+  {
+    "id": "research_judge",
+    "name": "Research Quality Judge",
+    "target_type": "research",
+    "model_policy_id": "model.executive",
+    "criteria": [
+      "The answer directly and completely addresses the user's question.",
+      "Every factual claim is grounded in one of the cited sources.",
+      "Contradictions or knowledge gaps are explicitly noted.",
+      "No facts are asserted that cannot be traced to the source material.",
+      "The answer is written at an appropriate level of depth for the question."
+    ],
+    "pass_threshold": 0.75,
+    "repair_threshold": 0.50,
+    "max_repair_iterations": 1,
+    "enabled": true,
+    "version": "1.0.0"
+  },
+  {
+    "id": "document_judge",
+    "name": "Document Quality Judge",
+    "target_type": "document",
+    "model_policy_id": "model.executive",
+    "criteria": [
+      "The document structure matches the requested format and length.",
+      "Every section directly supports the stated document goal.",
+      "Claims are grounded in the provided evidence or research context.",
+      "The tone and language are appropriate for the intended audience.",
+      "No placeholder text, incomplete sections, or contradictory instructions remain."
+    ],
+    "pass_threshold": 0.75,
+    "repair_threshold": 0.50,
+    "max_repair_iterations": 1,
+    "enabled": true,
+    "version": "1.0.0"
+  }
+]

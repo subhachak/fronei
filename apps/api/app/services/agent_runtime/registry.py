@@ -6,7 +6,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import TypeVar
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.db.models import SessionLocal
 from app.services.agent_runtime.db_models import (
@@ -19,6 +19,7 @@ from app.services.agent_runtime.db_models import (
 from app.services.agent_runtime.models import (
     AgentDefinition,
     GuardrailPolicy,
+    JudgePolicy,
     ModelPolicy,
     PromptTemplate,
     ToolDefinition,
@@ -43,6 +44,7 @@ class RuntimeRegistry(BaseModel):
     prompts: dict[str, PromptTemplate]
     guardrails: dict[str, GuardrailPolicy]
     tools: dict[str, ToolDefinition]
+    judges: dict[str, JudgePolicy] = Field(default_factory=dict)
 
     def validate_references(self) -> None:
         missing: list[str] = []
@@ -57,6 +59,8 @@ class RuntimeRegistry(BaseModel):
             for policy_id in agent.guardrail_policy_ids:
                 if policy_id not in self.guardrails:
                     missing.append(f"agent {agent.id} guardrail {policy_id}")
+            if agent.judge_policy_id and agent.judge_policy_id not in self.judges:
+                missing.append(f"agent {agent.id} judge {agent.judge_policy_id}")
 
         for tool in self.tools.values():
             for agent_id in tool.allowed_agent_ids:
@@ -65,6 +69,10 @@ class RuntimeRegistry(BaseModel):
             for policy_id in tool.guardrail_policy_ids:
                 if policy_id not in self.guardrails:
                     missing.append(f"tool {tool.id} guardrail {policy_id}")
+
+        for judge in self.judges.values():
+            if judge.model_policy_id not in self.model_policies:
+                missing.append(f"judge {judge.id} model_policy {judge.model_policy_id}")
 
         if missing:
             raise ValueError("Invalid runtime registry references: " + ", ".join(missing))
@@ -83,6 +91,9 @@ class RuntimeRegistry(BaseModel):
 
     def guardrail(self, policy_id: str) -> GuardrailPolicy:
         return _get(self.guardrails, policy_id, "guardrail policy")
+
+    def judge(self, policy_id: str) -> JudgePolicy:
+        return _get(self.judges, policy_id, "judge policy")
 
 
 def _is_future_agent(agent_id: str) -> bool:
@@ -213,6 +224,7 @@ def _registry_from_rows(
             )
             for row in guardrails
         },
+        judges=_load_judges_from_files(),
     )
     registry.validate_references()
     return registry
@@ -249,9 +261,17 @@ def _load_from_files() -> RuntimeRegistry:
         prompts=_load_list("prompts.json", PromptTemplate),
         guardrails=_load_list("guardrails.json", GuardrailPolicy),
         tools=_load_list("tools.json", ToolDefinition),
+        judges=_load_judges_from_files(),
     )
     registry.validate_references()
     return registry
+
+
+def _load_judges_from_files() -> dict[str, JudgePolicy]:
+    path = DEFAULTS_DIR / "judges.json"
+    if not path.exists():
+        return {}
+    return _load_list("judges.json", JudgePolicy)
 
 
 @lru_cache(maxsize=1)
@@ -281,4 +301,5 @@ def runtime_registry_payload(registry: RuntimeRegistry | None = None) -> dict[st
         "prompts": [item.model_dump(mode="json") for item in registry.prompts.values()],
         "guardrails": [item.model_dump(mode="json") for item in registry.guardrails.values()],
         "tools": [item.model_dump(mode="json") for item in registry.tools.values()],
+        "judges": [item.model_dump(mode="json") for item in registry.judges.values()],
     }

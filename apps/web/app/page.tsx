@@ -5502,6 +5502,7 @@ export default function Home() {
     setLiveAssistantId(null)
     setActiveTurnId(null)
     setActiveTurnNotice(null)
+    pollingTurnRef.current = null
     try {
       const detail: ConversationDetail = await apiFetch(`/conversations/${id}`).then(r => r.json())
       const activeTurn = detail.active_turn
@@ -5653,6 +5654,7 @@ export default function Home() {
     setLiveAssistantId(null)
     setActiveTurnId(null)
     setActiveTurnNotice(null)
+    pollingTurnRef.current = null
   }
 
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null)
@@ -5956,6 +5958,7 @@ export default function Home() {
     setSubCompletions(new Map())
     setLiveAssistantId(null)
     setActiveTurnId(null)
+    pollingTurnRef.current = null
     if (convId && turnId) {
       setActiveTurnNotice({ convId, turnId, status: 'cancelled', message: 'Turn cancelled.', userMessage: lastSentRef.current })
     }
@@ -5994,6 +5997,7 @@ export default function Home() {
     setLiveAssistantId(null)
     setActiveTurnId(null)
     setActiveTurnNotice(null)
+    pollingTurnRef.current = null
     setError('')
     setAttachError('')
 
@@ -6545,6 +6549,9 @@ export default function Home() {
     setSubCompletions(new Map())
     setPipelineTs(Date.now())
     setLiveAssistantId(tempAsstId)
+    setActiveTurnId(null)
+    setActiveTurnNotice(null)
+    pollingTurnRef.current = null
     setError('')
     const clientRequestId = newClientRequestId()
 
@@ -6593,6 +6600,9 @@ export default function Home() {
     setSubCompletions(new Map())
     setPipelineTs(Date.now())
     setLiveAssistantId(tempAsstId)
+    setActiveTurnId(null)
+    setActiveTurnNotice(null)
+    pollingTurnRef.current = null
     setError('')
     const clientRequestId = newClientRequestId()
 

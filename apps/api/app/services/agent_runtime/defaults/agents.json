@@ -1,0 +1,56 @@
+[
+  {
+    "id": "orchestrator",
+    "name": "Orchestrator",
+    "role": "Owns the user goal and routes work to agents and tools.",
+    "prompt_template_id": "prompt.orchestrator.default",
+    "allowed_tools": ["answer_directly", "web_search", "read_url", "generate_document"],
+    "model_policy_id": "model.fast",
+    "guardrail_policy_ids": [],
+    "max_iterations": 3,
+    "max_tool_calls": 6,
+    "enabled": true,
+    "version": "1.0.0"
+  },
+  {
+    "id": "direct_answer_agent",
+    "name": "Direct Answer Agent",
+    "role": "Answers clear low-risk turns, optionally with bounded web context.",
+    "prompt_template_id": "prompt.direct_answer.default",
+    "allowed_tools": ["web_search", "read_url"],
+    "model_policy_id": "model.fast",
+    "guardrail_policy_ids": [],
+    "max_iterations": 1,
+    "max_tool_calls": 2,
+    "enabled": true,
+    "version": "1.0.0"
+  },
+  {
+    "id": "research_lead",
+    "name": "Research Lead",
+    "role": "Controls the deep research subtree and its adaptive budget.",
+    "prompt_template_id": "prompt.research_lead.default",
+    "allowed_tools": ["web_search", "read_url"],
+    "model_policy_id": "model.executive",
+    "guardrail_policy_ids": ["tool.output_sanitize"],
+    "judge_policy_id": "research_judge",
+    "max_iterations": 3,
+    "max_tool_calls": 12,
+    "enabled": true,
+    "version": "1.0.0"
+  },
+  {
+    "id": "document_lead",
+    "name": "Document Lead",
+    "role": "Controls document and presentation generation workflows.",
+    "prompt_template_id": "prompt.document_lead.default",
+    "allowed_tools": ["generate_document"],
+    "model_policy_id": "model.executive",
+    "guardrail_policy_ids": ["document.template_ownership"],
+    "judge_policy_id": "document_judge",
+    "max_iterations": 3,
+    "max_tool_calls": 6,
+    "enabled": true,
+    "version": "1.0.0"
+  }
+]

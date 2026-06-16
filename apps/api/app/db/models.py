@@ -186,6 +186,63 @@ class ConversationTurn(Base):
     )
 
 
+class GuardrailEvent(Base):
+    __tablename__ = "guardrail_events"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    policy_id: Mapped[str] = mapped_column(Text, nullable=False)
+    boundary: Mapped[str] = mapped_column(Text, nullable=False)
+    action: Mapped[str] = mapped_column(Text, nullable=False)
+    triggered_checks_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    user_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    tenant_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    tool_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    turn_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    conversation_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class AgentGoal(Base):
+    __tablename__ = "goals"
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    tenant_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    conversation_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    turn_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    parent_goal_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    supersedes_goal_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    superseded_by_goal_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    objective: Mapped[str] = mapped_column(Text, nullable=False)
+    quality_mode: Mapped[str] = mapped_column(String(32), nullable=False, default="standard")
+    budget_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="created")
+    active_policy: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    lock_owner: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    lock_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class AgentRunLog(Base):
+    __tablename__ = "agent_runs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    goal_id: Mapped[str] = mapped_column(String(128), ForeignKey("goals.id"), nullable=False, index=True)
+    agent_id: Mapped[str] = mapped_column(Text, nullable=False)
+    parent_run_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="created")
+    failure_code: Mapped[str | None] = mapped_column(Text, nullable=True)
+    failure_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    total_cost_usd: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    latency_ms: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
 class RequestLog(Base):
     __tablename__ = "request_logs"
 

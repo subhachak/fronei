@@ -1,8 +1,13 @@
+from types import SimpleNamespace
+
+import app.services.web_context as web_context
 from app.services.web_context import (
+    WebSource,
     extract_html_document,
     extract_text_from_pdf,
     extract_text_from_html,
     normalize_text,
+    search_web_sources,
 )
 
 
@@ -53,3 +58,50 @@ def test_extract_text_from_pdf_reads_pages():
     text = extract_text_from_pdf(content)
     assert "PDF research content" in text
     assert "Page 1" in text
+
+
+def test_search_web_sources_prefers_you_before_tavily(monkeypatch):
+    monkeypatch.setattr(
+        web_context,
+        "get_settings",
+        lambda: SimpleNamespace(you_api_key="you-key", tavily_api_key="tavily-key", brave_api_key=None),
+    )
+    calls: list[str] = []
+
+    def fake_you(query, recency=None):
+        calls.append("You.com")
+        return [WebSource("You result", "https://you.example", "content")]
+
+    def fake_tavily(query, recency=None):
+        calls.append("Tavily")
+        return [WebSource("Tavily result", "https://tavily.example", "content")]
+
+    monkeypatch.setattr(web_context, "you_search", fake_you)
+    monkeypatch.setattr(web_context, "tavily_search", fake_tavily)
+
+    provider, sources = search_web_sources("agent search")
+
+    assert provider == "You.com"
+    assert sources[0].url == "https://you.example"
+    assert calls == ["You.com"]
+
+
+def test_search_web_sources_falls_back_to_tavily_when_you_empty(monkeypatch):
+    monkeypatch.setattr(
+        web_context,
+        "get_settings",
+        lambda: SimpleNamespace(you_api_key="you-key", tavily_api_key="tavily-key", brave_api_key=None),
+    )
+    calls: list[str] = []
+    monkeypatch.setattr(web_context, "you_search", lambda query, recency=None: calls.append("You.com") or [])
+    monkeypatch.setattr(
+        web_context,
+        "tavily_search",
+        lambda query, recency=None: calls.append("Tavily") or [WebSource("T", "https://t.example", "content")],
+    )
+
+    provider, sources = search_web_sources("agent search")
+
+    assert provider == "Tavily"
+    assert sources[0].url == "https://t.example"
+    assert calls == ["You.com", "Tavily"]

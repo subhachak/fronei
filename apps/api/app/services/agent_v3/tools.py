@@ -24,18 +24,39 @@ def safe_filename(title: str, suffix: str) -> str:
 
 @dataclass
 class AgentV3Tools:
+    you_api_key: str | None = None
     tavily_api_key: str | None = None
 
     @classmethod
     def from_settings(cls) -> "AgentV3Tools":
-        return cls(tavily_api_key=get_settings().tavily_api_key)
+        settings = get_settings()
+        return cls(you_api_key=settings.you_api_key, tavily_api_key=settings.tavily_api_key)
 
     def search_web(self, query: str, max_results: int = 6) -> tuple[list[Source], ToolCall]:
         started = time.perf_counter()
         tool = ToolCall(name="web_search", input={"query": query, "max_results": max_results})
+        if not self.you_api_key and not self.tavily_api_key:
+            tool.ok = False
+            tool.error = "YOU_API_KEY / TAVILY_API_KEY is not configured"
+            tool.latency_ms = int((time.perf_counter() - started) * 1000)
+            return [], tool
+
+        errors: list[str] = []
+        if self.you_api_key:
+            try:
+                sources = self._search_you(query, max_results)
+                if sources:
+                    tool.output = {"provider": "You.com", "source_count": len(sources)}
+                    return sources, tool
+                errors.append("You.com returned no results")
+            except Exception as exc:
+                logger.warning("agent_v3 You.com web_search failed: %s", exc)
+                errors.append(f"You.com: {exc}")
+
         if not self.tavily_api_key:
             tool.ok = False
-            tool.error = "TAVILY_API_KEY is not configured"
+            tool.error = "; ".join(errors) or "TAVILY_API_KEY is not configured"
+            tool.output = {"provider": "You.com" if self.you_api_key else "", "source_count": 0}
             tool.latency_ms = int((time.perf_counter() - started) * 1000)
             return [], tool
 
@@ -63,15 +84,46 @@ class AgentV3Tools:
                 for item in payload.get("results", [])
                 if isinstance(item, dict)
             ]
-            tool.output = {"source_count": len(sources)}
+            tool.output = {"provider": "Tavily", "source_count": len(sources)}
             return sources, tool
         except Exception as exc:
             logger.warning("agent_v3 web_search failed: %s", exc)
             tool.ok = False
-            tool.error = str(exc)
+            tool.error = "; ".join([*errors, f"Tavily: {exc}"])
             return [], tool
         finally:
             tool.latency_ms = int((time.perf_counter() - started) * 1000)
+
+    def _search_you(self, query: str, max_results: int) -> list[Source]:
+        response = httpx.get(
+            "https://api.ydc-index.io/search",
+            headers={"X-API-Key": self.you_api_key or ""},
+            params={"query": query, "num_web_results": max_results},
+            timeout=20,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        results = payload.get("hits") or payload.get("results") or payload.get("web_results") or []
+        sources: list[Source] = []
+        for item in results[:max_results]:
+            if not isinstance(item, dict):
+                continue
+            url = str(item.get("url") or item.get("link") or "")
+            snippets = item.get("snippets") or item.get("highlights") or []
+            if isinstance(snippets, list):
+                snippet = " ".join(str(part) for part in snippets)
+            else:
+                snippet = str(snippets or "")
+            snippet = snippet or str(item.get("description") or item.get("snippet") or item.get("content") or "")
+            if url:
+                sources.append(
+                    Source(
+                        title=str(item.get("title") or ""),
+                        url=url,
+                        snippet=snippet,
+                    )
+                )
+        return sources
 
     def extract_urls(self, urls: list[str], max_chars_per_source: int = 2500) -> tuple[list[Source], ToolCall]:
         started = time.perf_counter()

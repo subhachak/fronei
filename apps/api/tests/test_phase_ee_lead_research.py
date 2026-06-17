@@ -607,13 +607,53 @@ def test_technical_architecture_binds_architecture_cards():
 
 
 def test_deep_technical_reader_uses_large_source_cap():
-    from app.services.agent_v3.research_subtree import ResearchPlan, _read_cap_for_batch
+    from app.services.agent_v3.research_subtree import ResearchPlan, _max_parallel_read_batches_for, _read_cap_for_batch
 
     plan = ResearchPlan(research_profile="technical_architecture")
 
     assert _read_cap_for_batch(["https://arxiv.org/abs/2501.12345"], plan) == 14000
     assert _read_cap_for_batch(["https://github.com/example/repo"], plan) == 10000
     assert _read_cap_for_batch(["https://example.com/post"], plan) == 6500
+    assert _max_parallel_read_batches_for("regular") == 4
+    assert _max_parallel_read_batches_for("deep") == 6
+
+
+def test_technical_architecture_ranker_prioritizes_primary_technical_sources():
+    from app.services.agent_v3.research_subtree import ResearchPlan, rank_sources
+
+    plan = ResearchPlan(
+        research_profile="technical_architecture",
+        questions=["agentic document generation architecture workflow implementation"],
+    )
+    sources = [
+        Source(
+            title="Generic overview of agentic document generation",
+            url="https://medium.com/example/agentic-document-generation-overview",
+            snippet="agentic document generation architecture workflow implementation overview",
+        ),
+        Source(
+            title="Agentic document generation architecture paper",
+            url="https://arxiv.org/abs/2501.12345",
+            snippet="agentic document generation architecture workflow implementation evaluation",
+        ),
+        Source(
+            title="AgentDeck implementation repository",
+            url="https://github.com/example/agentdeck",
+            snippet="agentic document generation architecture workflow implementation source code",
+        ),
+        Source(
+            title="PptxGenJS documentation",
+            url="https://gitbrent.github.io/PptxGenJS/docs/api/presentation",
+            snippet="presentation generation implementation renderer workflow documentation",
+        ),
+    ]
+
+    ranked = rank_sources(sources, plan)
+    top_types = [item.source_type for item in ranked[:3]]
+
+    assert "academic" in top_types
+    assert "repository" in top_types
+    assert ranked[0].source_type in {"academic", "repository", "documentation"}
 
 
 def test_runtime_routes_deep_to_lead_loop(monkeypatch):

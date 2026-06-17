@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from app.config import get_settings
 
@@ -18,6 +19,8 @@ class ModelResponse:
     cost_usd: float = 0.0
     model_role: str = ""
     preferred_model: str = ""
+    attempted_models: list[str] = field(default_factory=list)
+    failed_model_attempts: list[dict[str, str]] = field(default_factory=list)
 
 
 def _configure_keys() -> None:
@@ -100,6 +103,40 @@ def telemetry_for_role(
     return payload
 
 
+def telemetry_for_response(response: object) -> dict[str, object]:
+    """Model route details safe to attach to progress events."""
+
+    model_role = str(getattr(response, "model_role", "") or "")
+    model_used = str(getattr(response, "model_used", "") or "")
+    preferred_model = str(getattr(response, "preferred_model", "") or "")
+    attempted_models = list(getattr(response, "attempted_models", []) or [])
+    failed_model_attempts = list(getattr(response, "failed_model_attempts", []) or [])
+    payload: dict[str, object] = telemetry_for_role(
+        model_role,
+        model_used=model_used,
+    )
+    if preferred_model:
+        payload["preferred_model"] = preferred_model
+    if attempted_models:
+        payload["attempted_models"] = attempted_models
+    if failed_model_attempts:
+        payload["failed_model_attempts"] = failed_model_attempts
+    payload["model_fallback_used"] = bool(
+        preferred_model
+        and model_used
+        and preferred_model not in model_used
+        and model_used not in preferred_model
+    )
+    return payload
+
+
+def _safe_error_text(exc: Exception) -> str:
+    text = str(exc)
+    text = re.sub(r"sk-[A-Za-z0-9_\-]{12,}", "sk-***", text)
+    text = re.sub(r"(api[_-]?key['\"]?\s*[:=]\s*)['\"]?[^,'\"\s]+", r"\1***", text, flags=re.IGNORECASE)
+    return text[:500]
+
+
 def complete(
     messages: list[dict[str, str]],
     *,
@@ -116,7 +153,10 @@ def complete(
 
     last_error: Exception | None = None
     preferred = preferred_model or model_for_role(role, quality_mode=quality_mode)
+    attempted_models: list[str] = []
+    failed_model_attempts: list[dict[str, str]] = []
     for model in _candidate_models(preferred):
+        attempted_models.append(model)
         started = time.perf_counter()
         try:
             response = completion(
@@ -137,9 +177,18 @@ def complete(
                 cost_usd=cost,
                 model_role=role or "",
                 preferred_model=preferred or "",
+                attempted_models=attempted_models,
+                failed_model_attempts=failed_model_attempts,
             )
         except Exception as exc:  # pragma: no cover - exact provider failures vary.
             last_error = exc
+            failed_model_attempts.append(
+                {
+                    "model": model,
+                    "error_type": exc.__class__.__name__,
+                    "error": _safe_error_text(exc),
+                }
+            )
             logger.warning("agent_v3 model call failed for %s role=%s: %s", model, role or "default", exc)
             continue
     raise RuntimeError(f"agent_v3 model call failed for all candidates: {last_error}")

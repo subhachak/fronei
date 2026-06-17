@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 MAX_PARALLEL_SEARCH_WORKERS = 8
 MAX_PARALLEL_READ_BATCHES = 4
+MAX_PARALLEL_READ_BATCHES_DEEP = 6
 MAX_URLS_PER_READ_BATCH = 6
 
 ResearchProfile = Literal[
@@ -2264,9 +2265,27 @@ def rank_sources(sources: list[Source], plan: ResearchPlan) -> list[RankedSource
         technical_density = score_technical_density(source) if plan.research_profile == "technical_architecture" else 0.0
         content_bonus = 0.08 if source.content else 0.0
         if plan.research_profile == "technical_architecture":
+            type_bonus = {
+                "academic": 0.18,
+                "repository": 0.17,
+                "documentation": 0.14,
+                "pdf": 0.13,
+                "primary": 0.08,
+                "news": -0.04,
+            }.get(source_type, 0.0)
+            host = urlparse(source.url or "").netloc.lower()
+            if "medium.com" in host or "substack.com" in host:
+                type_bonus -= 0.08
             score = max(
                 0.0,
-                min(1.0, (authority * 0.25) + (relevance * 0.30) + (technical_density * 0.40) + content_bonus),
+                min(
+                    1.0,
+                    (authority * 0.20)
+                    + (relevance * 0.24)
+                    + (technical_density * 0.38)
+                    + type_bonus
+                    + content_bonus,
+                ),
             )
         else:
             score = max(0.0, min(1.0, (authority * 0.45) + (relevance * 0.45) + content_bonus))
@@ -2299,11 +2318,28 @@ def _select_diverse_ranked_sources(
     if limit <= 0:
         return []
     host_cap = 5 if research_level == "deep" else 2
-    type_targets = {"academic": 6, "repository": 6, "documentation": 6, "primary": 5, "pdf": 4}
+    type_targets = {"academic": 8, "repository": 8, "documentation": 8, "primary": 5, "pdf": 6}
+    type_minimums = {"academic": 4, "repository": 4, "documentation": 4, "pdf": 2} if research_level == "deep" else {}
     selected: list[RankedSource] = []
     host_counts: dict[str, int] = {}
     type_counts: dict[str, int] = {}
+
+    for source_type, minimum in type_minimums.items():
+        for item in ranked:
+            if len(selected) >= limit or type_counts.get(source_type, 0) >= minimum:
+                break
+            if item.source_type != source_type:
+                continue
+            host = urlparse(item.source.url or "").netloc.lower()
+            if host_counts.get(host, 0) >= host_cap:
+                continue
+            selected.append(item)
+            host_counts[host] = host_counts.get(host, 0) + 1
+            type_counts[source_type] = type_counts.get(source_type, 0) + 1
+
     for item in ranked:
+        if item in selected:
+            continue
         host = urlparse(item.source.url or "").netloc.lower()
         source_type = item.source_type
         if host_counts.get(host, 0) >= host_cap:
@@ -2427,6 +2463,10 @@ def _chunk_urls(urls: list[str], *, size: int) -> list[list[str]]:
         if chunk:
             chunks.append(chunk)
     return chunks
+
+
+def _max_parallel_read_batches_for(research_level: str) -> int:
+    return MAX_PARALLEL_READ_BATCHES_DEEP if research_level == "deep" else MAX_PARALLEL_READ_BATCHES
 
 
 def _read_cap_for_batch(urls: list[str], plan: ResearchPlan | None) -> int:
@@ -2983,14 +3023,21 @@ class LeadResearchAgent:
             }
             extracted_by_url: dict[str, Source] = {}
             read_batches = _chunk_urls(read_urls, size=MAX_URLS_PER_READ_BATCH)
-            read_batches = read_batches[: min(MAX_PARALLEL_READ_BATCHES, self.ledger.remaining_tool_calls())]
+            max_read_batches = _max_parallel_read_batches_for(self.request.research_level)
+            read_batches = read_batches[: min(max_read_batches, self.ledger.remaining_tool_calls())]
             self._progress(
                 "source_reader",
                 f"Reading {sum(len(batch) for batch in read_batches)} selected source page(s).",
-                {"urls": read_urls, "batch_count": len(read_batches)},
+                {
+                    "urls": read_urls,
+                    "batch_count": len(read_batches),
+                    "max_parallel_read_batches": max_read_batches,
+                    "max_urls_per_read_batch": MAX_URLS_PER_READ_BATCH,
+                    "read_ceiling": max_read_batches * MAX_URLS_PER_READ_BATCH,
+                },
             )
             if read_batches:
-                max_read_workers = max(1, min(MAX_PARALLEL_READ_BATCHES, len(read_batches)))
+                max_read_workers = max(1, min(max_read_batches, len(read_batches)))
                 with ThreadPoolExecutor(max_workers=max_read_workers) as executor:
                     futures = {
                         executor.submit(self.tools.extract_urls, batch, max_chars_per_source=_read_cap_for_batch(batch, state.plan)): batch
@@ -3192,11 +3239,7 @@ class LeadResearchAgent:
             f"Synthesis used {model_response.model_used or 'the configured synthesis model'}.",
             {
                 "agent_id": "synthesis_agent",
-                **model_client.telemetry_for_role(
-                    "synthesis",
-                    quality_mode=self.request.quality_mode,
-                    model_used=model_response.model_used,
-                ),
+                **model_client.telemetry_for_response(model_response),
                 "latency_ms": model_response.latency_ms,
                 "cost_usd": model_response.cost_usd,
                 "budget_ledger": self.ledger.model_dump(mode="json"),
@@ -3306,11 +3349,7 @@ class LeadResearchAgent:
             "research_repair_model",
             f"Repair used {repaired.model_used or 'the configured repair model'}.",
             {
-                **model_client.telemetry_for_role(
-                    "repair",
-                    quality_mode=self.request.quality_mode,
-                    model_used=repaired.model_used,
-                ),
+                **model_client.telemetry_for_response(repaired),
                 "latency_ms": repaired.latency_ms,
                 "cost_usd": repaired.cost_usd,
                 "budget_ledger": self.ledger.model_dump(mode="json"),

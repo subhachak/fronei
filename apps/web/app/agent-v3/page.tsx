@@ -33,6 +33,10 @@ type QualityMode = 'draft' | 'standard' | 'executive'
 type OutputFormat = 'chat' | 'markdown' | 'docx'
 type MobileView = 'work' | 'library' | 'context'
 type MobileNavItem = [MobileView, LucideIcon, string]
+type PendingDelete =
+  | { type: 'workspace'; workspaceId: string }
+  | { type: 'conversation'; workspaceId: string; conversationId: string }
+  | null
 
 type ProgressEvent = {
   stage: string
@@ -94,6 +98,7 @@ type Conversation = {
   createdAt: string
   updatedAt: string
   turns: WorkItem[]
+  isDraft?: boolean
   turnCount?: number
   artifactCount?: number
   sourceCount?: number
@@ -154,6 +159,7 @@ export default function AgentV3Page() {
   const [expandedWorkspaceIds, setExpandedWorkspaceIds] = useState<Record<string, boolean>>({})
   const [editingWorkspaceId, setEditingWorkspaceId] = useState<string | null>(null)
   const [editingWorkspaceName, setEditingWorkspaceName] = useState('')
+  const [pendingDelete, setPendingDelete] = useState<PendingDelete>(null)
   const eventsRef = useRef<ProgressEvent[]>([])
   const chatScrollRef = useRef<HTMLDivElement | null>(null)
   const activeRunConversationIdRef = useRef<string | null>(null)
@@ -342,34 +348,45 @@ export default function AgentV3Page() {
     setExpandedWorkspaceIds(prev => ({ ...prev, [workspace.id]: true }))
     setEditingWorkspaceId(workspace.id)
     setEditingWorkspaceName(workspace.name)
-    await createConversation(workspace.id, 'New conversation')
+    createConversation(workspace.id, 'New conversation')
   }
 
   async function deleteWorkspace(workspaceId: string) {
     if (workspaces.length <= 1) return
-    if (!window.confirm('Delete this workspace and all conversations inside it?')) return
     const response = await authorizedFetch(`/agent-v3/workspaces/${workspaceId}`, { method: 'DELETE' })
     if (!response.ok) {
       setError(await response.text() || 'Could not delete workspace')
       return
     }
+    setPendingDelete(null)
     await loadWorkspaces()
   }
 
-  async function createConversation(workspaceId: string, titleOverride?: string) {
-    const title = titleOverride || 'New conversation'
-    const response = await authorizedFetch(`/agent-v3/workspaces/${workspaceId}/conversations`, {
-      method: 'POST',
-      body: JSON.stringify({ title }),
-    })
-    if (!response.ok) {
-      setError(await response.text() || 'Could not create conversation')
-      return
+  function createConversation(workspaceId: string, titleOverride?: string) {
+    const now = new Date().toISOString()
+    const conversation: Conversation = {
+      id: draftConversationId(),
+      title: titleOverride || 'New conversation',
+      createdAt: now,
+      updatedAt: now,
+      turns: [],
+      isDraft: true,
+      turnCount: 0,
+      artifactCount: 0,
+      sourceCount: 0,
+      totalLatencyMs: 0,
+      totalCostUsd: 0,
     }
-    const conversation = mapConversation(await response.json())
     setWorkspaces(prev => prev.map(workspace => (
       workspace.id === workspaceId
-        ? { ...workspace, updatedAt: conversation.updatedAt, conversations: [conversation, ...workspace.conversations] }
+        ? {
+          ...workspace,
+          updatedAt: conversation.updatedAt,
+          conversations: [
+            conversation,
+            ...workspace.conversations.filter(item => !item.isDraft),
+          ],
+        }
         : workspace
     )))
     setActiveWorkspaceId(workspaceId)
@@ -383,12 +400,33 @@ export default function AgentV3Page() {
   }
 
   async function deleteConversation(workspaceId: string, conversationId: string) {
-    if (!window.confirm('Delete this conversation?')) return
+    const target = workspaces
+      .find(item => item.id === workspaceId)
+      ?.conversations.find(item => item.id === conversationId)
+    if (target?.isDraft) {
+      setPendingDelete(null)
+      setWorkspaces(prev => prev.map(workspace => (
+        workspace.id === workspaceId
+          ? { ...workspace, conversations: workspace.conversations.filter(conversation => conversation.id !== conversationId) }
+          : workspace
+      )))
+      if (activeConversationId === conversationId) {
+        const nextConversation = workspaces
+          .find(item => item.id === workspaceId)
+          ?.conversations.find(item => item.id !== conversationId)
+        setActiveConversationId(nextConversation?.id || null)
+        eventsRef.current = []
+        setEvents([])
+        setResult(null)
+      }
+      return
+    }
     const response = await authorizedFetch(`/agent-v3/conversations/${conversationId}`, { method: 'DELETE' })
     if (!response.ok) {
       setError(await response.text() || 'Could not delete conversation')
       return
     }
+    setPendingDelete(null)
     setWorkspaces(prev => prev.map(workspace => (
       workspace.id === workspaceId
         ? { ...workspace, updatedAt: new Date().toISOString(), conversations: workspace.conversations.filter(conversation => conversation.id !== conversationId) }
@@ -444,7 +482,6 @@ export default function AgentV3Page() {
   }
 
   async function ensureActiveConversation(seedMessage: string): Promise<string> {
-    if (activeConversation) return activeConversation.id
     let workspace = activeWorkspace
     if (!workspace) {
       const response = await authorizedFetch('/agent-v3/workspaces', {
@@ -456,6 +493,7 @@ export default function AgentV3Page() {
       setWorkspaces(prev => [workspace as Workspace, ...prev])
       setActiveWorkspaceId(workspace.id)
     }
+    if (activeConversation && !activeConversation.isDraft) return activeConversation.id
     const response = await authorizedFetch(`/agent-v3/workspaces/${workspace.id}/conversations`, {
       method: 'POST',
       body: JSON.stringify({ title: titleFromMessage(seedMessage) }),
@@ -464,7 +502,13 @@ export default function AgentV3Page() {
     const conversation = mapConversation(await response.json())
     setWorkspaces(prev => prev.map(item => (
       item.id === workspace.id
-        ? { ...item, updatedAt: conversation.updatedAt, conversations: [conversation, ...item.conversations] }
+        ? {
+          ...item,
+          updatedAt: conversation.updatedAt,
+          conversations: activeConversation?.isDraft
+            ? item.conversations.map(existing => existing.id === activeConversation.id ? conversation : existing)
+            : [conversation, ...item.conversations],
+        }
         : item
     )))
     setActiveConversationId(conversation.id)
@@ -557,6 +601,10 @@ export default function AgentV3Page() {
             onStartEditingWorkspace={startEditingWorkspace}
             onEditingWorkspaceNameChange={setEditingWorkspaceName}
             onSaveWorkspaceName={saveWorkspaceName}
+            pendingDelete={pendingDelete}
+            onRequestDeleteWorkspace={workspaceId => setPendingDelete({ type: 'workspace', workspaceId })}
+            onRequestDeleteConversation={(workspaceId, conversationId) => setPendingDelete({ type: 'conversation', workspaceId, conversationId })}
+            onCancelDelete={() => setPendingDelete(null)}
           />
         </aside>
 
@@ -674,6 +722,10 @@ function StudioLibrary({
   onStartEditingWorkspace,
   onEditingWorkspaceNameChange,
   onSaveWorkspaceName,
+  pendingDelete,
+  onRequestDeleteWorkspace,
+  onRequestDeleteConversation,
+  onCancelDelete,
 }: {
   workspaces: Workspace[]
   activeWorkspaceId: string | null
@@ -690,6 +742,10 @@ function StudioLibrary({
   onStartEditingWorkspace: (workspace: Workspace) => void
   onEditingWorkspaceNameChange: (value: string) => void
   onSaveWorkspaceName: (workspaceId: string) => void
+  pendingDelete: PendingDelete
+  onRequestDeleteWorkspace: (workspaceId: string) => void
+  onRequestDeleteConversation: (workspaceId: string, conversationId: string) => void
+  onCancelDelete: () => void
 }) {
   return (
     <>
@@ -751,12 +807,20 @@ function StudioLibrary({
                   <button type="button" onClick={() => onCreateConversation(workspace.id)} aria-label="New conversation" title="New conversation">
                     <MessageSquare size={14} />
                   </button>
-                  <button type="button" onClick={() => onDeleteWorkspace(workspace.id)} aria-label="Delete workspace" title="Delete workspace" disabled={workspaces.length <= 1}>
+                  <button type="button" onClick={() => onRequestDeleteWorkspace(workspace.id)} aria-label="Delete workspace" title="Delete workspace" disabled={workspaces.length <= 1}>
                     <Trash2 size={14} />
                   </button>
                 </div>
                 <span className={styles.workspaceMeta}>{workspace.conversations.length} conv | {turnCount} turns</span>
               </div>
+              {pendingDelete?.type === 'workspace' && pendingDelete.workspaceId === workspace.id && (
+                <InlineDeleteConfirm
+                  title="Delete workspace?"
+                  description="All conversations and artifacts inside it will be removed."
+                  onCancel={onCancelDelete}
+                  onConfirm={() => onDeleteWorkspace(workspace.id)}
+                />
+              )}
               {expanded && (
               <div className={styles.conversationList}>
                 {workspace.conversations.map(conversation => (
@@ -769,17 +833,29 @@ function StudioLibrary({
                       <MessageSquare size={15} />
                       <span className={styles.conversationText}>
                         <span>{conversation.title}</span>
-                        <small>{conversation.turnCount || conversation.turns.length} turns | {formatRelativeTime(conversation.updatedAt)}</small>
+                        <small>
+                          {conversation.isDraft
+                            ? 'Draft | not saved yet'
+                            : `${conversation.turnCount || conversation.turns.length} turns | ${formatRelativeTime(conversation.updatedAt)}`}
+                        </small>
                       </span>
                     </button>
                     <button
                       type="button"
                       className={styles.deleteConversationButton}
-                      onClick={() => onDeleteConversation(workspace.id, conversation.id)}
+                      onClick={() => onRequestDeleteConversation(workspace.id, conversation.id)}
                       aria-label="Delete conversation"
                     >
                       <Trash2 size={13} />
                     </button>
+                    {pendingDelete?.type === 'conversation' && pendingDelete.conversationId === conversation.id && (
+                      <InlineDeleteConfirm
+                        title="Delete conversation?"
+                        description="This removes the chat turns and any generated artifacts."
+                        onCancel={onCancelDelete}
+                        onConfirm={() => onDeleteConversation(workspace.id, conversation.id)}
+                      />
+                    )}
                   </div>
                 ))}
               </div>
@@ -789,6 +865,31 @@ function StudioLibrary({
         })}
       </div>
     </>
+  )
+}
+
+function InlineDeleteConfirm({
+  title,
+  description,
+  onCancel,
+  onConfirm,
+}: {
+  title: string
+  description: string
+  onCancel: () => void
+  onConfirm: () => void
+}) {
+  return (
+    <div className={styles.inlineConfirm} role="alertdialog" aria-label={title}>
+      <div>
+        <p className={styles.inlineConfirmTitle}>{title}</p>
+        <p className={styles.inlineConfirmText}>{description}</p>
+      </div>
+      <div className={styles.inlineConfirmActions}>
+        <button type="button" className={styles.inlineCancelButton} onClick={onCancel}>Cancel</button>
+        <button type="button" className={styles.inlineDeleteButton} onClick={onConfirm}>Delete</button>
+      </div>
+    </div>
   )
 }
 
@@ -1344,6 +1445,13 @@ function humanizeStage(stage: string): string {
 function titleFromMessage(message: string): string {
   const cleaned = message.replace(/\s+/g, ' ').trim()
   return cleaned.length > 72 ? `${cleaned.slice(0, 72)}...` : cleaned || 'Untitled work'
+}
+
+function draftConversationId(): string {
+  const random = typeof crypto !== 'undefined' && 'randomUUID' in crypto
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(16).slice(2)}`
+  return `draft-${random}`
 }
 
 function uniqueWorkspaceName(baseName: string, workspaces: Workspace[], excludeWorkspaceId?: string): string {

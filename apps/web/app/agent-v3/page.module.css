@@ -511,6 +511,62 @@
   color: #9a5b4c;
 }
 
+.inlineConfirm {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 10px;
+  border-top: 1px solid #ead7ce;
+  background: #fff7f3;
+  padding: 10px 12px 12px;
+}
+
+.workspaceSummary + .inlineConfirm {
+  border-top: 1px solid #ead7ce;
+}
+
+.inlineConfirmTitle,
+.inlineConfirmText {
+  margin: 0;
+}
+
+.inlineConfirmTitle {
+  color: #6e3329;
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.inlineConfirmText {
+  color: #7a6258;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.inlineConfirmActions {
+  display: flex;
+  gap: 8px;
+}
+
+.inlineCancelButton,
+.inlineDeleteButton {
+  min-height: 30px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding: 0 12px;
+  font-size: 11px;
+  font-weight: 850;
+}
+
+.inlineCancelButton {
+  border-color: #d8cdbc;
+  background: #fffdf8;
+  color: #53615a;
+}
+
+.inlineDeleteButton {
+  background: #8b3a2d;
+  color: #fff;
+}
+
 .rotatedClosed {
   transform: rotate(-90deg);
 }

@@ -3850,6 +3850,9 @@ def _domain_discovery_workers(request: AgentV3Request, profile: ResearchProfile,
 
 
 def _compact_search_subject(message: str) -> str:
+    subject_phrase = _extract_search_subject_phrase(message)
+    if subject_phrase:
+        return subject_phrase
     tokens = [
         token
         for token in re.findall(r"[a-z0-9.]{2,}", (message or "").lower())
@@ -3892,6 +3895,80 @@ def _compact_search_subject(message: str) -> str:
     ]
     cleaned = " ".join(_dedupe(tokens)[:16])
     return cleaned[:140] or (message or "")[:110] or "research topic"
+
+
+def _extract_search_subject_phrase(message: str) -> str:
+    """Extract the object of study, not the deliverable shape.
+
+    Domain-discovery workers need compact topic queries. User requests often
+    include broad deliverable facets first ("system architecture, workflows,
+    LLM integration mechanisms of X"). In those cases, search should target X
+    and let contract workers cover the facets separately.
+    """
+
+    text = " ".join((message or "").lower().split())
+    if not text:
+        return ""
+    text = re.sub(r"[“”\"'`]", "", text)
+    text = re.sub(r"\b(ai|llm)\b", lambda match: match.group(1), text)
+    candidates: list[str] = []
+    for match in re.finditer(
+        r"\b(?:of|about|on|into|for)\s+(.+?)(?=\b(?:including|covering|include|ensure|output|final|create|generate|write|produce)\b|[.;:]|$)",
+        text,
+    ):
+        phrase = match.group(1).strip()
+        if phrase:
+            candidates.append(phrase)
+    for phrase in reversed(candidates):
+        cleaned = _clean_search_subject_phrase(phrase)
+        if _subject_phrase_is_useful(cleaned):
+            return cleaned[:140]
+    return ""
+
+
+def _clean_search_subject_phrase(phrase: str) -> str:
+    phrase = re.sub(r"\b(the|a|an)\b", " ", phrase)
+    phrase = re.sub(r"\b(like|such as|including)\b", " ", phrase)
+    phrase = re.sub(
+        r"\b(system architecture|architecture|system design|components|workflows?|workflow|mechanisms?|integration|explaining|explaining)\b",
+        " ",
+        phrase,
+    )
+    phrase = re.sub(r"[^a-z0-9.+#/-]+", " ", phrase)
+    tokens = [
+        token
+        for token in phrase.split()
+        if token
+        and token
+        not in {
+            "and",
+            "or",
+            "of",
+            "for",
+            "to",
+            "in",
+            "with",
+            "platforms" if len(phrase.split()) <= 2 else "",
+        }
+    ]
+    return " ".join(_dedupe(tokens)).strip()
+
+
+def _subject_phrase_is_useful(phrase: str) -> bool:
+    tokens = phrase.split()
+    if len(tokens) < 2:
+        return False
+    generic = {
+        "system",
+        "architecture",
+        "design",
+        "components",
+        "workflows",
+        "workflow",
+        "mechanisms",
+        "integration",
+    }
+    return any(token not in generic for token in tokens)
 
 
 def _longform_timeout_s() -> int:

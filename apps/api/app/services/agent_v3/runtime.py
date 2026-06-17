@@ -4,6 +4,7 @@ import time
 from collections.abc import Iterator
 
 from app.services.agent_v3 import model_client
+from app.services.agent_v3.orchestrator import OrchestratorDecision, decide as orchestrator_decide
 from app.services.agent_v3.models import (
     AgentV3Request,
     AgentV3Result,
@@ -26,7 +27,9 @@ class AgentV3Runtime:
     def run_stream(self, request: AgentV3Request, *, user_id: str) -> Iterator[StreamEnvelope]:
         turn_id = new_id("turn")
         started = time.perf_counter()
-        route = request.force_route or self._route(request)
+        decision = orchestrator_decide(request)
+        request = self._apply_decision(request, decision)
+        route = decision.route
         goal = Goal(
             user_id=user_id,
             conversation_id=request.conversation_id,
@@ -43,11 +46,21 @@ class AgentV3Runtime:
             events.append(event)
             return event
 
-        first = progress("orchestrator", f"Fresh runtime selected the {route} route.", route=route)
+        first = progress(
+            "orchestrator",
+            f"Fresh orchestrator selected the {route} route.",
+            route=route,
+            confidence=decision.confidence,
+            reason=decision.reason,
+            source=decision.source,
+            model_used=decision.model_used,
+        )
         yield StreamEnvelope(type="progress", data=first.model_dump(mode="json"))
 
         try:
-            if route == "direct":
+            if route == "clarify":
+                result = self._run_clarify(request, goal, turn_id, events, decision)
+            elif route == "direct":
                 event = progress("direct_answer", "Drafting a direct response.")
                 yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
                 result = self._run_direct(request, goal, turn_id, events, progress)
@@ -83,7 +96,7 @@ class AgentV3Runtime:
                 event = progress("document", "Composing a standalone document artifact.")
                 yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
                 result = self._run_document(request, goal, turn_id, events, progress, sources=[])
-            else:
+            elif route == "research_document":
                 event = progress("research", "Searching before writing the document.")
                 yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
                 sources, search_call = self.tools.search_web(request.message, max_results=8)
@@ -108,6 +121,18 @@ class AgentV3Runtime:
                     research_answer=research_response.text,
                 )
                 result.tool_calls = [search_call, read_call]
+            else:
+                result = self._run_clarify(
+                    request,
+                    goal,
+                    turn_id,
+                    events,
+                    OrchestratorDecision(
+                        route="clarify",
+                        reason="Unknown route selected.",
+                        clarification_question="Can you clarify what you want me to do?",
+                    ),
+                )
             result.latency_ms = int((time.perf_counter() - started) * 1000)
             result.events = events
             yield StreamEnvelope(type="result", data=result.model_dump(mode="json"))
@@ -119,30 +144,33 @@ class AgentV3Runtime:
             )
             yield StreamEnvelope(type="done", data={"turn_id": turn_id, "failed": True})
 
-    def _route(self, request: AgentV3Request) -> RouteName:
-        text = request.message.lower()
-        asks_doc = any(term in text for term in ["document", "report", "docx", "memo", "briefing", "deck", "ppt"])
-        asks_research = any(
-            term in text
-            for term in [
-                "research",
-                "sources",
-                "current",
-                "latest",
-                "market",
-                "compare",
-                "benchmark",
-                "recent",
-                "citations",
-            ]
+    def _apply_decision(self, request: AgentV3Request, decision: OrchestratorDecision) -> AgentV3Request:
+        updates = {}
+        if decision.output_format in {"chat", "markdown", "docx"}:
+            updates["output_format"] = decision.output_format
+        if decision.rewritten_request:
+            updates["message"] = decision.rewritten_request
+        return request.model_copy(update=updates) if updates else request
+
+    def _run_clarify(
+        self,
+        request,
+        goal,
+        turn_id,
+        events,
+        decision: OrchestratorDecision,
+    ) -> AgentV3Result:
+        question = decision.clarification_question or "Can you clarify what you want me to do?"
+        return AgentV3Result(
+            turn_id=turn_id,
+            goal=goal,
+            answer=question,
+            route="clarify",
+            model_used=decision.model_used,
+            events=events,
+            latency_ms=decision.latency_ms,
+            cost_usd=decision.cost_usd,
         )
-        if asks_research and asks_doc:
-            return "research_document"
-        if asks_research:
-            return "research"
-        if asks_doc or request.output_format in {"docx", "markdown"}:
-            return "document"
-        return "direct"
 
     def _run_direct(self, request, goal, turn_id, events, progress) -> AgentV3Result:
         response = model_client.simple_completion(

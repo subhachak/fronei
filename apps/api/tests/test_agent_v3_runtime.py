@@ -35,9 +35,28 @@ class FakeTools(AgentV3Tools):
 def _patch_completion(monkeypatch, text="# Answer\n\nDone."):
     from app.services.agent_v3 import model_client
 
+    def fake_complete(messages, *, preferred_model=None, timeout_s=30, max_tokens=1200):
+        user_payload = messages[-1]["content"]
+        lowered = user_payload.lower()
+        if "research" in lowered and ("report" in lowered or "docx" in lowered):
+            route = "research_document"
+        elif "research" in lowered:
+            route = "research"
+        elif "report" in lowered or "docx" in lowered:
+            route = "document"
+        else:
+            route = "direct"
+        return SimpleNamespace(
+            text=json.dumps({"route": route, "confidence": 0.91, "reason": "test decision"}),
+            model_used="fake-orchestrator",
+            latency_ms=2,
+            cost_usd=0.0,
+        )
+
     def fake_simple_completion(system, user, *, max_tokens=1200):
         return SimpleNamespace(text=text, model_used="fake-model", latency_ms=3, cost_usd=0.0)
 
+    monkeypatch.setattr(model_client, "complete", fake_complete)
     monkeypatch.setattr(model_client, "simple_completion", fake_simple_completion)
 
 
@@ -65,6 +84,58 @@ def test_agent_v3_direct_stream(monkeypatch):
     result = envelopes[3].data
     assert result["route"] == "direct"
     assert result["answer"] == "Plain answer."
+    assert envelopes[1].data["data"]["model_used"] == "fake-orchestrator"
+
+
+def test_agent_v3_clarify_route(monkeypatch):
+    from app.services.agent_v3 import model_client
+
+    def fake_complete(messages, *, preferred_model=None, timeout_s=30, max_tokens=1200):
+        return SimpleNamespace(
+            text=json.dumps(
+                {
+                    "route": "clarify",
+                    "confidence": 0.87,
+                    "reason": "Needs a target.",
+                    "clarification_question": "What should I research?",
+                }
+            ),
+            model_used="fake-orchestrator",
+            latency_ms=2,
+            cost_usd=0.0,
+        )
+
+    monkeypatch.setattr(model_client, "complete", fake_complete)
+    runtime = AgentV3Runtime(tools=FakeTools())
+
+    envelopes = _collect_stream(runtime, AgentV3Request(message="Research it."))
+
+    result = next(e.data for e in envelopes if e.type == "result")
+    assert result["route"] == "clarify"
+    assert result["answer"] == "What should I research?"
+    assert not result["tool_calls"]
+
+
+def test_agent_v3_orchestrator_falls_back_to_heuristic(monkeypatch):
+    from app.services.agent_v3 import model_client
+
+    def fail_complete(*args, **kwargs):
+        raise RuntimeError("model unavailable")
+
+    monkeypatch.setattr(model_client, "complete", fail_complete)
+
+    def fake_simple_completion(system, user, *, max_tokens=1200):
+        return SimpleNamespace(text="Fallback answer.", model_used="fake-model", latency_ms=3, cost_usd=0.0)
+
+    monkeypatch.setattr(model_client, "simple_completion", fake_simple_completion)
+    runtime = AgentV3Runtime(tools=FakeTools())
+
+    envelopes = _collect_stream(runtime, AgentV3Request(message="Research current AI governance trends."))
+
+    progress = [e.data for e in envelopes if e.type == "progress"]
+    assert progress[0]["data"]["source"] == "heuristic"
+    result = next(e.data for e in envelopes if e.type == "result")
+    assert result["route"] == "research"
 
 
 def test_agent_v3_research_streams_milestones(monkeypatch):

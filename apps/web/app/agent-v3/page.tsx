@@ -1297,6 +1297,7 @@ function TurnPair({
 }
 
 function LiveTurn({ message, events }: { message: string; events: ProgressEvent[] }) {
+  const latestMessage = plainCommentary(events).at(-1) || 'I’m getting oriented and deciding the best way to handle this.'
   return (
     <div className={styles.turnExchange}>
       <div className={styles.userBubble}>
@@ -1305,11 +1306,16 @@ function LiveTurn({ message, events }: { message: string; events: ProgressEvent[
       </div>
       <div className={styles.assistantBubble}>
         <div className={styles.assistantHeader}>
-          <span className={styles.companionMark}><Sparkles size={16} /></span>
+          <span className={`${styles.companionMark} ${styles.companionMarkActive}`}><Sparkles size={16} /></span>
           <div>
             <p className={styles.companionTitle}>Fronei</p>
-            <p className={styles.companionText}>I’ll keep you posted in plain English while the work runs.</p>
+            <p className={styles.companionText}>{latestMessage}</p>
           </div>
+        </div>
+        <div className={styles.workPulse} aria-label="Fronei is actively working">
+          <span />
+          <span />
+          <span />
         </div>
         <RollingCommentary events={events} />
       </div>
@@ -1330,10 +1336,20 @@ function RollingCommentary({ events }: { events: ProgressEvent[] }) {
         </div>
       )}
       {visibleEvents.map((message, index) => (
-        <div key={`${message}-${index}`} className={styles.rollingEvent}>
+        <div
+          key={`${message}-${index}`}
+          className={`${styles.rollingEvent} ${index === visibleEvents.length - 1 ? styles.rollingEventActive : ''}`}
+        >
           <span className={styles.liveDot} />
           <div>
             <p className={styles.rollingMessage}>{message}</p>
+            {index === visibleEvents.length - 1 && (
+              <span className={styles.activeEllipsis} aria-hidden="true">
+                <span />
+                <span />
+                <span />
+              </span>
+            )}
           </div>
         </div>
       ))}

@@ -732,11 +732,111 @@
   margin-top: 7px;
 }
 
+.companionMarkActive {
+  animation: companionPulse 1.8s ease-in-out infinite;
+}
+
+.workPulse {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  overflow: hidden;
+  margin: -2px 0 18px 50px;
+  max-width: 220px;
+}
+
+.workPulse span {
+  height: 4px;
+  background: linear-gradient(90deg, rgba(20, 97, 82, 0.18), rgba(20, 97, 82, 0.72), rgba(20, 97, 82, 0.18));
+  transform-origin: left center;
+  animation: workPulse 1.25s ease-in-out infinite;
+}
+
+.workPulse span:nth-child(2) {
+  animation-delay: 0.16s;
+}
+
+.workPulse span:nth-child(3) {
+  animation-delay: 0.32s;
+}
+
+.rollingEventActive .liveDot {
+  animation: dotPulse 1.4s ease-in-out infinite;
+}
+
+.activeEllipsis {
+  display: inline-flex;
+  gap: 5px;
+  margin-top: 8px;
+}
+
+.activeEllipsis span {
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: #146152;
+  opacity: 0.35;
+  animation: ellipsisPulse 1.2s ease-in-out infinite;
+}
+
+.activeEllipsis span:nth-child(2) {
+  animation-delay: 0.16s;
+}
+
+.activeEllipsis span:nth-child(3) {
+  animation-delay: 0.32s;
+}
+
 .rollingMessage {
   margin: 0;
   color: #53615a;
   font-size: 14px;
   line-height: 1.5;
+}
+
+@keyframes companionPulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(20, 97, 82, 0.24);
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgba(20, 97, 82, 0);
+  }
+}
+
+@keyframes workPulse {
+  0%,
+  100% {
+    opacity: 0.32;
+    transform: scaleX(0.35);
+  }
+  50% {
+    opacity: 1;
+    transform: scaleX(1);
+  }
+}
+
+@keyframes dotPulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 7px rgba(20, 97, 82, 0.1);
+  }
+  50% {
+    box-shadow: 0 0 0 11px rgba(20, 97, 82, 0.02);
+  }
+}
+
+@keyframes ellipsisPulse {
+  0%,
+  100% {
+    opacity: 0.3;
+    transform: translateY(0);
+  }
+  50% {
+    opacity: 1;
+    transform: translateY(-2px);
+  }
 }
 
 .emptyState {
@@ -1455,5 +1555,14 @@
 
   .composerDock {
     padding: 14px 32px 18px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .companionMarkActive,
+  .workPulse span,
+  .rollingEventActive .liveDot,
+  .activeEllipsis span {
+    animation: none;
   }
 }

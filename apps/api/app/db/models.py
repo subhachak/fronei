@@ -291,6 +291,68 @@ class AgentTraceRow(Base):
     )
 
 
+class AgentV3Turn(Base):
+    __tablename__ = "agent_v3_turns"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    conversation_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    objective: Mapped[str] = mapped_column(Text, nullable=False)
+    route: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    quality_mode: Mapped[str] = mapped_column(String(32), nullable=False, default="standard")
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="running", index=True)
+    answer: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    model_used: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    sources_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    latency_ms: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    cost_usd: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class AgentV3Event(Base):
+    __tablename__ = "agent_v3_events"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    turn_id: Mapped[str] = mapped_column(String(64), ForeignKey("agent_v3_turns.id", ondelete="CASCADE"), nullable=False, index=True)
+    stage: Mapped[str] = mapped_column(String(64), nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    data_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class AgentV3ToolCall(Base):
+    __tablename__ = "agent_v3_tool_calls"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    turn_id: Mapped[str] = mapped_column(String(64), ForeignKey("agent_v3_turns.id", ondelete="CASCADE"), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    input_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    output_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    ok: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    latency_ms: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class AgentV3Artifact(Base):
+    __tablename__ = "agent_v3_artifacts"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    turn_id: Mapped[str] = mapped_column(String(64), ForeignKey("agent_v3_turns.id", ondelete="CASCADE"), nullable=False, index=True)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    filename: Mapped[str] = mapped_column(Text, nullable=False)
+    mime_type: Mapped[str] = mapped_column(Text, nullable=False)
+    base64_data: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
 class RequestLog(Base):
     __tablename__ = "request_logs"
 

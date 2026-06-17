@@ -3,8 +3,12 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from app.auth import get_current_user_id
+from app.db.models import AgentV3Artifact, AgentV3Event, AgentV3ToolCall, AgentV3Turn, Base
 from app.main import app
 from app.services.agent_v3.models import AgentV3Request, Source
 from app.services.agent_v3.runtime import AgentV3Runtime
@@ -39,6 +43,16 @@ def _patch_completion(monkeypatch, text="# Answer\n\nDone."):
 
 def _collect_stream(runtime: AgentV3Runtime, request: AgentV3Request):
     return list(runtime.run_stream(request, user_id="u1"))
+
+
+def _sqlite_session():
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine)
+    return sessionmaker(bind=engine)
 
 
 def test_agent_v3_direct_stream(monkeypatch):
@@ -87,6 +101,10 @@ def test_agent_v3_research_document_creates_artifact(monkeypatch):
 
 def test_agent_v3_api_stream(monkeypatch):
     _patch_completion(monkeypatch, "API answer.")
+    from app.services.agent_v3 import persistence
+
+    Session = _sqlite_session()
+    monkeypatch.setattr(persistence, "SessionLocal", Session)
     app.dependency_overrides[get_current_user_id] = lambda: "u1"
     try:
         with TestClient(app) as client:
@@ -94,6 +112,42 @@ def test_agent_v3_api_stream(monkeypatch):
         assert response.status_code == 200
         assert "event: result" in response.text
         assert "API answer." in response.text
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_agent_v3_stream_persists_turn_events_tools_and_artifacts(monkeypatch):
+    _patch_completion(monkeypatch, "## Durable report\n\nDone.")
+    from app.services.agent_v3 import persistence
+
+    Session = _sqlite_session()
+    monkeypatch.setattr(persistence, "SessionLocal", Session)
+    app.dependency_overrides[get_current_user_id] = lambda: "u1"
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/agent-v3/turns/stream",
+                json={
+                    "message": "Research current AI governance trends and create a docx report.",
+                    "output_format": "docx",
+                },
+            )
+            assert response.status_code == 200
+            result_frame = [chunk for chunk in response.text.split("\n\n") if chunk.startswith("event: result")][0]
+            result_payload = json.loads(result_frame.split("data: ", 1)[1])
+            turn_id = result_payload["turn_id"]
+
+            stored = client.get(f"/agent-v3/turns/{turn_id}")
+            assert stored.status_code == 200
+            stored_payload = stored.json()
+            assert stored_payload["turn_id"] == turn_id
+            assert stored_payload["artifacts"][0]["filename"].endswith(".docx")
+
+        with Session() as db:
+            assert db.get(AgentV3Turn, turn_id).status == "completed"
+            assert db.query(AgentV3Event).filter(AgentV3Event.turn_id == turn_id).count() >= 4
+            assert db.query(AgentV3ToolCall).filter(AgentV3ToolCall.turn_id == turn_id).count() == 2
+            assert db.query(AgentV3Artifact).filter(AgentV3Artifact.turn_id == turn_id).count() == 1
     finally:
         app.dependency_overrides.clear()
 

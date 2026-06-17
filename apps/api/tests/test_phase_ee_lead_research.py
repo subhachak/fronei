@@ -109,6 +109,7 @@ def test_domain_discovery_queries_use_clean_subjects():
 
     assert queries
     assert all(not query.startswith("and a ") for query in queries)
+    assert all("system architecture ai agent workflows" not in query for query in queries)
     assert any("agentic presentation generation platforms gamma" in query for query in queries)
     assert any("site:arxiv.org" in query for query in queries)
 
@@ -759,13 +760,19 @@ def test_deep_document_writer_generates_sections_individually(monkeypatch):
     )
 
     draft = write_document(request, plan, sources=[], research_answer="Research answer [S1].", evidence=evidence)
+    calls_by_heading = {}
+    for call in calls:
+        for line in call["user"].splitlines():
+            if line.startswith("Current section"):
+                calls_by_heading[line.split(":", 1)[1].strip()] = call
+                break
 
     assert len(calls) == len(plan.sections)
     assert draft.markdown.startswith("# Architecture")
     assert "## 1. Executive Summary" in draft.markdown
     assert "## 2. System Architecture" in draft.markdown
     assert "### 2.1 Existing subsection" in draft.markdown
-    assert calls[0]["max_tokens"] < calls[1]["max_tokens"]
+    assert calls_by_heading["Executive Summary"]["max_tokens"] < calls_by_heading["System Architecture"]["max_tokens"]
     assert all(call["role"] == "document_writer" for call in calls)
     assert draft.latency_ms == 60
 

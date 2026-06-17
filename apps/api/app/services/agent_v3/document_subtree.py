@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -44,6 +46,17 @@ class DocumentJudgeResult(BaseModel):
     score: float = 1.0
     issues: list[str] = Field(default_factory=list)
     repair_instruction: str = ""
+
+
+@dataclass
+class SectionWriteResult:
+    index: int
+    markdown: str
+    model_used: str
+    latency_ms: int
+    cost_usd: float
+    attempted_models: list[str]
+    failed_model_attempts: list[dict[str, str]]
 
 
 PLAN_PROMPT = """You are the Agent v3 document planner.
@@ -195,39 +208,40 @@ def _write_document_by_section(
     attempted_models: list[str] = []
     failed_model_attempts: list[dict[str, str]] = []
     timeout_s = max(30, int(get_settings().agent_v3_longform_timeout_s or 180))
+    max_workers = _document_writer_concurrency(len(sections))
     outline = "\n".join(f"{idx + 1}. {heading}" for idx, heading in enumerate(sections))
-    prior_context = ""
-    for index, heading in enumerate(sections):
-        depth = _section_depth(heading, index=index, total=len(sections), request=request)
-        context = _section_source_context(heading, evidence=evidence, sources=sources, max_chars=_section_context_chars(depth))
-        prompt = _section_writer_prompt(
-            request,
-            plan,
-            section_heading=heading,
-            section_index=index,
-            section_depth=depth,
-            outline=outline,
-            research_answer=research_answer,
-            source_context_text=context,
-            prior_context=prior_context,
-            repair_instruction=repair_instruction,
-        )
-        response = model_client.simple_completion(
-            "You are the Agent v3 document section writer. Write only the requested section in markdown.",
-            prompt,
-            max_tokens=_section_token_budget(depth, request=request),
-            role="document_writer",
-            quality_mode=request.quality_mode,
-            timeout_s=timeout_s,
-        )
-        section_md = _normalize_section_markdown(heading, response.text, section_number=index + 1)
-        written_sections.append(section_md)
-        prior_context = section_md[-1800:]
-        model_used = response.model_used or model_used
-        latency_ms += response.latency_ms
-        cost_usd += response.cost_usd
-        attempted_models.extend([model for model in response.attempted_models if model not in attempted_models])
-        failed_model_attempts.extend(response.failed_model_attempts)
+    results: list[SectionWriteResult | None] = [None] * len(sections)
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [
+            executor.submit(
+                _write_one_section,
+                request,
+                plan,
+                sections=sections,
+                section_heading=heading,
+                section_index=index,
+                outline=outline,
+                sources=sources,
+                evidence=evidence,
+                research_answer=research_answer,
+                repair_instruction=repair_instruction,
+                timeout_s=timeout_s,
+            )
+            for index, heading in enumerate(sections)
+        ]
+        for future in as_completed(futures):
+            result = future.result()
+            results[result.index] = result
+
+    for result in results:
+        if result is None:
+            continue
+        written_sections.append(result.markdown)
+        model_used = result.model_used or model_used
+        latency_ms += result.latency_ms
+        cost_usd += result.cost_usd
+        attempted_models.extend([model for model in result.attempted_models if model not in attempted_models])
+        failed_model_attempts.extend(result.failed_model_attempts)
     return DocumentDraft(
         markdown=f"# {plan.title.strip() or 'Document'}\n\n" + "\n\n".join(written_sections).strip(),
         model_used=model_used,
@@ -238,6 +252,67 @@ def _write_document_by_section(
         attempted_models=attempted_models,
         failed_model_attempts=failed_model_attempts,
     )
+
+
+def _write_one_section(
+    request: AgentV3Request,
+    plan: DocumentPlan,
+    *,
+    sections: list[str],
+    section_heading: str,
+    section_index: int,
+    outline: str,
+    sources: list[Source],
+    evidence: EvidencePack | None,
+    research_answer: str | None,
+    repair_instruction: str | None,
+    timeout_s: int,
+) -> SectionWriteResult:
+    depth = _section_depth(section_heading, index=section_index, total=len(sections), request=request)
+    context = _section_source_context(section_heading, evidence=evidence, sources=sources, max_chars=_section_context_chars(depth))
+    prompt = _section_writer_prompt(
+        request,
+        plan,
+        section_heading=section_heading,
+        section_index=section_index,
+        section_depth=depth,
+        outline=outline,
+        research_answer=research_answer,
+        source_context_text=context,
+        prior_context=_neighbor_section_context(sections, section_index),
+        repair_instruction=repair_instruction,
+    )
+    response = model_client.simple_completion(
+        "You are the Agent v3 document section writer. Write only the requested section in markdown.",
+        prompt,
+        max_tokens=_section_token_budget(depth, request=request),
+        role="document_writer",
+        quality_mode=request.quality_mode,
+        timeout_s=timeout_s,
+    )
+    return SectionWriteResult(
+        index=section_index,
+        markdown=_normalize_section_markdown(section_heading, response.text, section_number=section_index + 1),
+        model_used=response.model_used,
+        latency_ms=response.latency_ms,
+        cost_usd=response.cost_usd,
+        attempted_models=list(response.attempted_models),
+        failed_model_attempts=list(response.failed_model_attempts),
+    )
+
+
+def _document_writer_concurrency(section_count: int) -> int:
+    configured = int(get_settings().agent_v3_document_writer_concurrency or 1)
+    return max(1, min(section_count, configured))
+
+
+def _neighbor_section_context(sections: list[str], index: int) -> str:
+    hints: list[str] = []
+    if index > 0:
+        hints.append(f"Previous planned section: {sections[index - 1]}")
+    if index + 1 < len(sections):
+        hints.append(f"Next planned section: {sections[index + 1]}")
+    return "\n".join(hints)
 
 
 def judge_document(draft: DocumentDraft, plan: DocumentPlan, *, source_count: int) -> DocumentJudgeResult:

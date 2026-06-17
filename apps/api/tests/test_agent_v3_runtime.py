@@ -45,6 +45,7 @@ def _patch_completion(monkeypatch, text="# Answer\n\nDone."):
                         "questions": ["What is changing?", "What evidence supports it?"],
                         "search_queries": [message, f"{message} evidence"],
                         "max_sources": 5,
+                        "min_evidence_items": 1,
                     }
                 ),
                 model_used="fake-research-planner",
@@ -212,6 +213,151 @@ def test_agent_v3_research_streams_milestones(monkeypatch):
     assert result["sources"][0]["url"] == "https://example.com"
     provider_events = [e.data for e in envelopes if e.type == "progress" and e.data["stage"] == "search_worker_provider"]
     assert provider_events[0]["data"]["provider"] == "FakeSearch"
+
+
+def test_agent_v3_research_registry_exposes_agent_team():
+    from app.services.agent_v3.research_subtree import get_research_registry
+
+    registry = get_research_registry()
+
+    assert set(registry.agents) == {
+        "research_lead",
+        "search_worker",
+        "source_ranker",
+        "source_reader",
+        "deep_link_agent",
+        "evidence_binder",
+        "gap_agent",
+        "synthesis_agent",
+        "research_judge",
+        "claim_verifier",
+        "repair_agent",
+    }
+    assert registry.agent("search_worker").allowed_tools == ["web_search"]
+    assert registry.agent("source_reader").allowed_tools == ["read_url"]
+    assert registry.prompt_for("research_lead").id == "research.lead.v1"
+
+
+def test_agent_v3_research_public_url_guardrail_filters_private_sources():
+    from app.services.agent_v3.research_subtree import is_public_source_url
+
+    assert is_public_source_url("https://example.com/report")
+    assert not is_public_source_url("http://127.0.0.1/private")
+    assert not is_public_source_url("http://10.0.0.4/private")
+    assert not is_public_source_url("file:///tmp/secret")
+
+
+def test_agent_v3_research_emits_agentic_goal_guardrail_and_judge_events(monkeypatch):
+    _patch_completion(monkeypatch, "Research answer [S1].")
+    runtime = AgentV3Runtime(tools=FakeTools())
+
+    envelopes = _collect_stream(runtime, AgentV3Request(message="Research current AI governance trends."))
+
+    progress = [e.data for e in envelopes if e.type == "progress"]
+    by_stage = {event["stage"]: event for event in progress}
+    assert by_stage["research_registry"]["data"]["agent_count"] == 11
+    assert "judge_before_publish" in by_stage["research_goal"]["data"]["goal"]["guardrails"]
+    assert by_stage["research_planning"]["data"]["agent_id"] == "research_lead"
+    assert by_stage["source_ranker"]["data"]["agent_id"] == "source_ranker"
+    assert by_stage["deep_link_agent"]["data"]["agent_id"] == "deep_link_agent"
+    assert by_stage["evidence_binder"]["data"]["agent_id"] == "evidence_binder"
+    assert by_stage["claim_verifier"]["data"]["agent_id"] == "claim_verifier"
+    assert by_stage["research_judge_result"]["data"]["status"] in {"pass", "repair", "fail"}
+    assert "score" in by_stage["research_judge_result"]["data"]
+
+
+def test_agent_v3_research_source_ranking_and_deep_link_helpers():
+    from app.services.agent_v3.research_subtree import (
+        ResearchPlan,
+        SearchWorkerPlan,
+        classify_source_type,
+        extract_deep_link_candidates,
+        rank_sources,
+    )
+
+    plan = ResearchPlan(
+        questions=["What is the official policy?"],
+        workers=[SearchWorkerPlan(question="What is the official policy?", query="official policy")],
+    )
+    sources = [
+        Source(title="Blog", url="https://example.com/post", snippet="Opinion"),
+        Source(title="Government PDF", url="https://agency.gov/report.pdf", snippet="Official policy"),
+    ]
+
+    ranked = rank_sources(sources, plan)
+
+    assert ranked[0].source.url == "https://agency.gov/report.pdf"
+    assert classify_source_type("https://agency.gov/report.pdf") == "pdf"
+    links = extract_deep_link_candidates(
+        [
+            Source(
+                title="Parent",
+                url="https://example.com/a",
+                content="See [source](https://example.com/b) and https://127.0.0.1/secret",
+            )
+        ],
+        max_links=3,
+    )
+    assert [link.url for link in links] == ["https://example.com/b"]
+
+
+def test_agent_v3_research_repair_loop_runs_when_judge_requests_repair(monkeypatch):
+    from app.services.agent_v3 import model_client
+
+    def fake_complete(messages, *, preferred_model=None, timeout_s=30, max_tokens=1200):
+        if "research lead" in messages[0]["content"].lower():
+            user_payload = json.loads(messages[-1]["content"])
+            message = user_payload["message"]
+            return SimpleNamespace(
+                text=json.dumps(
+                    {
+                        "questions": ["What changed?"],
+                        "workers": [
+                            {
+                                "question": "What changed?",
+                                "query": message,
+                                "rationale": "Need current evidence.",
+                                "max_results": 3,
+                            }
+                        ],
+                        "max_sources": 3,
+                        "min_evidence_items": 1,
+                        "judge_threshold": 0.72,
+                        "repair_iterations": 1,
+                    }
+                ),
+                model_used="fake-research-planner",
+                latency_ms=2,
+                cost_usd=0.0,
+            )
+        return SimpleNamespace(
+            text=json.dumps({"route": "research", "confidence": 0.91, "reason": "test decision"}),
+            model_used="fake-orchestrator",
+            latency_ms=2,
+            cost_usd=0.0,
+        )
+
+    responses = iter(
+        [
+            "This is a long answer with useful structure but no citation marker. It explains the research finding in enough detail to avoid the short-answer penalty.",
+            "This is a repaired answer with useful structure and a clear citation marker [S1]. It explains the research finding in enough detail.",
+        ]
+    )
+
+    def fake_simple_completion(system, user, *, max_tokens=1200):
+        return SimpleNamespace(text=next(responses), model_used="fake-model", latency_ms=3, cost_usd=0.0)
+
+    monkeypatch.setattr(model_client, "complete", fake_complete)
+    monkeypatch.setattr(model_client, "simple_completion", fake_simple_completion)
+    runtime = AgentV3Runtime(tools=FakeTools())
+
+    envelopes = _collect_stream(runtime, AgentV3Request(message="Research current AI governance trends."))
+
+    stages = [e.data["stage"] for e in envelopes if e.type == "progress"]
+    assert "research_repair" in stages
+    assert "research_repair_result" in stages
+    result = next(e.data for e in envelopes if e.type == "result")
+    assert "repaired answer" in result["answer"]
 
 
 def test_agent_v3_web_search_prefers_tavily_provider(monkeypatch):
@@ -448,7 +594,16 @@ def test_agent_v3_stream_persists_turn_events_tools_and_artifacts(monkeypatch, t
         with Session() as db:
             assert db.get(AgentV3Turn, turn_id).status == "completed"
             assert db.query(AgentV3Event).filter(AgentV3Event.turn_id == turn_id).count() >= 4
-            assert db.query(AgentV3ToolCall).filter(AgentV3ToolCall.turn_id == turn_id).count() == 4
+            tool_names = [
+                row.name
+                for row in db.query(AgentV3ToolCall)
+                .filter(AgentV3ToolCall.turn_id == turn_id)
+                .order_by(AgentV3ToolCall.created_at.asc())
+                .all()
+            ]
+            assert tool_names.count("web_search") >= 2
+            assert "read_url" in tool_names
+            assert tool_names[-1] == "make_docx_artifact"
             artifact = db.query(AgentV3Artifact).filter(AgentV3Artifact.turn_id == turn_id).one()
             assert artifact.base64_data == ""
             assert artifact.storage_path

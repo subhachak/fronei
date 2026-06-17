@@ -27,7 +27,7 @@ class AgentV3Tools:
     you_api_key: str | None = None
     tavily_api_key: str | None = None
     nimble_api_key: str | None = None
-    nimble_api_endpoint: str = "https://api.webit.live/api/v1/realtime/serp"
+    nimble_api_endpoint: str = "https://sdk.nimbleway.com/v1/search"
 
     @classmethod
     def from_settings(cls) -> "AgentV3Tools":
@@ -145,24 +145,20 @@ class AgentV3Tools:
     def _search_nimble(self, query: str, max_results: int) -> list[Source]:
         payload = {
             "query": query,
-            "search_engine": "google_search",
             "country": "US",
             "locale": "en",
-            "parse": True,
+            "focus": "general",
+            "max_results": max_results,
+            "search_depth": "lite",
+            "include_answer": False,
+            "output_format": "markdown",
         }
-        response = httpx.get(
+        response = httpx.post(
             self.nimble_api_endpoint,
             headers={"Content-Type": "application/json", "Authorization": _nimble_auth_header(self.nimble_api_key or "")},
-            params=payload,
+            json=payload,
             timeout=20,
         )
-        if response.status_code == 405:
-            response = httpx.post(
-                self.nimble_api_endpoint,
-                headers={"Content-Type": "application/json", "Authorization": _nimble_auth_header(self.nimble_api_key or "")},
-                json=payload,
-                timeout=20,
-            )
         response.raise_for_status()
         data = response.json()
         sources: list[Source] = []

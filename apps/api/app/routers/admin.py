@@ -66,7 +66,7 @@ from app.services.llm_gateway import (
 )
 from app.services.rate_limit import check_rate_limit
 from app.services.router import choose_route, load_policy
-from app.services.web_context import test_brave_connection, test_tavily_connection, test_you_connection
+from app.services.web_context import test_nimble_connection, test_tavily_connection, test_you_connection
 
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -1743,9 +1743,9 @@ def providers(admin: AdminPrincipal = Depends(require_admin)) -> dict:
                     "testable": True,
                 },
                 {
-                    "name": "Brave", "key": "BRAVE_API_KEY",
-                    "configured": bool(settings.brave_api_key),
-                    "key_hint": _key_hint(settings.brave_api_key),
+                    "name": "Nimble", "key": "NIMBLE_API_KEY",
+                    "configured": bool(settings.nimble_api_key),
+                    "key_hint": _key_hint(settings.nimble_api_key),
                     "testable": True,
                 },
             ],
@@ -1767,8 +1767,8 @@ def providers_test(body: ProviderTestRequest, admin: AdminPrincipal = Depends(re
         result = test_you_connection()
     elif provider == "Tavily":
         result = test_tavily_connection()
-    elif provider == "Brave":
-        result = test_brave_connection()
+    elif provider == "Nimble":
+        result = test_nimble_connection()
     else:
         raise HTTPException(status_code=400, detail=f"Unknown or non-testable provider '{provider}'.")
 

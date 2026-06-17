@@ -219,6 +219,54 @@ def test_agent_v3_web_search_prefers_you_provider(monkeypatch):
     assert post_calls == []
 
 
+def test_agent_v3_web_search_falls_back_to_nimble(monkeypatch):
+    import app.services.agent_v3.tools as tools_module
+
+    def fake_get(*args, **kwargs):
+        url = str(args[0])
+        if "ydc-index" not in url:
+            class NimbleResponse:
+                status_code = 200
+
+                def raise_for_status(self):
+                    return None
+
+                def json(self):
+                    return {
+                        "parsing": {
+                            "entities": {
+                                "SearchResult": [
+                                    {
+                                        "title": "Nimble result",
+                                        "url": "https://nimble.example/result",
+                                        "description": "Nimble snippet",
+                                    }
+                                ]
+                            }
+                        }
+                    }
+
+            return NimbleResponse()
+
+        class EmptyYouResponse:
+            status_code = 200
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"hits": []}
+
+        return EmptyYouResponse()
+    monkeypatch.setattr(tools_module.httpx, "get", fake_get)
+
+    sources, call = AgentV3Tools(you_api_key="you-key", nimble_api_key="nimble-key").search_web("query")
+
+    assert call.ok
+    assert call.output["provider"] == "Nimble"
+    assert sources[0].url == "https://nimble.example/result"
+
+
 def test_agent_v3_research_document_creates_artifact(monkeypatch):
     _patch_completion(monkeypatch, "## Report\n\n- Finding")
     runtime = AgentV3Runtime(tools=FakeTools())

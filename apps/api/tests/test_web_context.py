@@ -64,7 +64,7 @@ def test_search_web_sources_prefers_you_before_tavily(monkeypatch):
     monkeypatch.setattr(
         web_context,
         "get_settings",
-        lambda: SimpleNamespace(you_api_key="you-key", tavily_api_key="tavily-key", brave_api_key=None),
+        lambda: SimpleNamespace(you_api_key="you-key", tavily_api_key="tavily-key", nimble_api_key=None),
     )
     calls: list[str] = []
 
@@ -90,7 +90,7 @@ def test_search_web_sources_falls_back_to_tavily_when_you_empty(monkeypatch):
     monkeypatch.setattr(
         web_context,
         "get_settings",
-        lambda: SimpleNamespace(you_api_key="you-key", tavily_api_key="tavily-key", brave_api_key=None),
+        lambda: SimpleNamespace(you_api_key="you-key", tavily_api_key="tavily-key", nimble_api_key=None),
     )
     calls: list[str] = []
     monkeypatch.setattr(web_context, "you_search", lambda query, recency=None: calls.append("You.com") or [])
@@ -105,3 +105,29 @@ def test_search_web_sources_falls_back_to_tavily_when_you_empty(monkeypatch):
     assert provider == "Tavily"
     assert sources[0].url == "https://t.example"
     assert calls == ["You.com", "Tavily"]
+
+
+def test_search_web_sources_falls_back_to_nimble_when_you_and_tavily_empty(monkeypatch):
+    monkeypatch.setattr(
+        web_context,
+        "get_settings",
+        lambda: SimpleNamespace(
+            you_api_key="you-key",
+            tavily_api_key="tavily-key",
+            nimble_api_key="nimble-key",
+        ),
+    )
+    calls: list[str] = []
+    monkeypatch.setattr(web_context, "you_search", lambda query, recency=None: calls.append("You.com") or [])
+    monkeypatch.setattr(web_context, "tavily_search", lambda query, recency=None: calls.append("Tavily") or [])
+    monkeypatch.setattr(
+        web_context,
+        "nimble_search",
+        lambda query, recency=None: calls.append("Nimble") or [WebSource("N", "https://n.example", "content")],
+    )
+
+    provider, sources = search_web_sources("agent search")
+
+    assert provider == "Nimble"
+    assert sources[0].url == "https://n.example"
+    assert calls == ["You.com", "Tavily", "Nimble"]

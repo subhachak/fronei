@@ -126,5 +126,9 @@ class AgentV3WorkspaceCreate(BaseModel):
     name: str = Field(default="New workspace", min_length=1, max_length=160)
 
 
+class AgentV3WorkspaceUpdate(BaseModel):
+    name: str = Field(min_length=1, max_length=160)
+
+
 class AgentV3ConversationCreate(BaseModel):
     title: str = Field(default="New conversation", min_length=1, max_length=180)

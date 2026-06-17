@@ -49,6 +49,17 @@ class AgentV3Tools:
                 return [], tool
 
             errors: list[str] = []
+            if self.tavily_api_key:
+                try:
+                    sources = self._search_tavily(query, max_results)
+                    if sources:
+                        tool.output = {"provider": "Tavily", "source_count": len(sources)}
+                        return sources, tool
+                    errors.append("Tavily returned no results")
+                except Exception as exc:
+                    logger.warning("agent_v3 web_search failed: %s", exc)
+                    errors.append(f"Tavily: {exc}")
+
             if self.you_api_key:
                 try:
                     sources = self._search_you(query, max_results)
@@ -59,39 +70,6 @@ class AgentV3Tools:
                 except Exception as exc:
                     logger.warning("agent_v3 You.com web_search failed: %s", exc)
                     errors.append(f"You.com: {exc}")
-
-            if self.tavily_api_key:
-                try:
-                    response = httpx.post(
-                        "https://api.tavily.com/search",
-                        json={
-                            "api_key": self.tavily_api_key,
-                            "query": query,
-                            "max_results": max_results,
-                            "search_depth": "advanced",
-                            "include_answer": False,
-                            "include_raw_content": False,
-                        },
-                        timeout=20,
-                    )
-                    response.raise_for_status()
-                    payload = response.json()
-                    sources = [
-                        Source(
-                            title=str(item.get("title") or ""),
-                            url=str(item.get("url") or ""),
-                            snippet=str(item.get("content") or item.get("snippet") or ""),
-                        )
-                        for item in payload.get("results", [])
-                        if isinstance(item, dict)
-                    ]
-                    if sources:
-                        tool.output = {"provider": "Tavily", "source_count": len(sources)}
-                        return sources, tool
-                    errors.append("Tavily returned no results")
-                except Exception as exc:
-                    logger.warning("agent_v3 web_search failed: %s", exc)
-                    errors.append(f"Tavily: {exc}")
 
             if self.nimble_api_key:
                 try:
@@ -135,6 +113,31 @@ class AgentV3Tools:
                     )
                 )
         return sources
+
+    def _search_tavily(self, query: str, max_results: int) -> list[Source]:
+        response = httpx.post(
+            "https://api.tavily.com/search",
+            json={
+                "api_key": self.tavily_api_key,
+                "query": query,
+                "max_results": max_results,
+                "search_depth": "advanced",
+                "include_answer": False,
+                "include_raw_content": False,
+            },
+            timeout=20,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        return [
+            Source(
+                title=str(item.get("title") or ""),
+                url=str(item.get("url") or ""),
+                snippet=str(item.get("content") or item.get("snippet") or ""),
+            )
+            for item in payload.get("results", [])
+            if isinstance(item, dict)
+        ]
 
     def _search_nimble(self, query: str, max_results: int) -> list[Source]:
         payload = {

@@ -151,6 +151,9 @@ export default function AgentV3Page() {
   const [mobileView, setMobileView] = useState<MobileView>('work')
   const [traceOpen, setTraceOpen] = useState(false)
   const [visibleTurnCount, setVisibleTurnCount] = useState(INITIAL_VISIBLE_TURNS)
+  const [expandedWorkspaceIds, setExpandedWorkspaceIds] = useState<Record<string, boolean>>({})
+  const [editingWorkspaceId, setEditingWorkspaceId] = useState<string | null>(null)
+  const [editingWorkspaceName, setEditingWorkspaceName] = useState('')
   const eventsRef = useRef<ProgressEvent[]>([])
   const chatScrollRef = useRef<HTMLDivElement | null>(null)
   const activeRunConversationIdRef = useRef<string | null>(null)
@@ -201,6 +204,12 @@ export default function AgentV3Page() {
     setWorkspaces(next)
     const selectedWorkspace = next.find(workspace => workspace.conversations.some(conversation => conversation.id === selectConversationId)) || next[0] || null
     const selectedConversation = selectedWorkspace?.conversations.find(conversation => conversation.id === selectConversationId) || selectedWorkspace?.conversations[0] || null
+    setExpandedWorkspaceIds(prev => {
+      const nextExpanded = { ...prev }
+      if (selectedWorkspace && nextExpanded[selectedWorkspace.id] === undefined) nextExpanded[selectedWorkspace.id] = true
+      if (!selectedWorkspace && next[0] && nextExpanded[next[0].id] === undefined) nextExpanded[next[0].id] = true
+      return nextExpanded
+    })
     setActiveWorkspaceId(selectedWorkspace?.id || null)
     setActiveConversationId(selectedConversation?.id || null)
     if (selectedConversation) await loadConversationTurns(selectedConversation.id, INITIAL_VISIBLE_TURNS)
@@ -318,8 +327,7 @@ export default function AgentV3Page() {
   }
 
   async function createWorkspace() {
-    const name = window.prompt('Workspace name', 'New workspace')?.trim()
-    if (!name) return
+    const name = uniqueWorkspaceName('New workspace', workspaces)
     const response = await authorizedFetch('/agent-v3/workspaces', {
       method: 'POST',
       body: JSON.stringify({ name }),
@@ -331,6 +339,9 @@ export default function AgentV3Page() {
     const workspace = mapWorkspace({ ...(await response.json()), conversations: [] })
     setWorkspaces(prev => [workspace, ...prev])
     setActiveWorkspaceId(workspace.id)
+    setExpandedWorkspaceIds(prev => ({ ...prev, [workspace.id]: true }))
+    setEditingWorkspaceId(workspace.id)
+    setEditingWorkspaceName(workspace.name)
     await createConversation(workspace.id, 'New conversation')
   }
 
@@ -346,8 +357,7 @@ export default function AgentV3Page() {
   }
 
   async function createConversation(workspaceId: string, titleOverride?: string) {
-    const title = titleOverride || window.prompt('Conversation title', 'New conversation')?.trim()
-    if (!title) return
+    const title = titleOverride || 'New conversation'
     const response = await authorizedFetch(`/agent-v3/workspaces/${workspaceId}/conversations`, {
       method: 'POST',
       body: JSON.stringify({ title }),
@@ -364,6 +374,7 @@ export default function AgentV3Page() {
     )))
     setActiveWorkspaceId(workspaceId)
     setActiveConversationId(conversation.id)
+    setExpandedWorkspaceIds(prev => ({ ...prev, [workspaceId]: true }))
     setVisibleTurnCount(INITIAL_VISIBLE_TURNS)
     setMessage('')
     setEvents([])
@@ -394,6 +405,42 @@ export default function AgentV3Page() {
         setResult(null)
       }
     }
+  }
+
+  function toggleWorkspace(workspaceId: string) {
+    setExpandedWorkspaceIds(prev => ({ ...prev, [workspaceId]: !prev[workspaceId] }))
+  }
+
+  function startEditingWorkspace(workspace: Workspace) {
+    setEditingWorkspaceId(workspace.id)
+    setEditingWorkspaceName(workspace.name)
+    setExpandedWorkspaceIds(prev => ({ ...prev, [workspace.id]: true }))
+  }
+
+  async function saveWorkspaceName(workspaceId: string) {
+    const workspace = workspaces.find(item => item.id === workspaceId)
+    if (!workspace) return
+    const name = uniqueWorkspaceName(editingWorkspaceName || workspace.name, workspaces, workspaceId)
+    setEditingWorkspaceId(null)
+    setEditingWorkspaceName('')
+    if (name === workspace.name) return
+    const response = await authorizedFetch(`/agent-v3/workspaces/${workspaceId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ name }),
+    })
+    if (!response.ok) {
+      setError(await response.text() || 'Could not rename workspace')
+      return
+    }
+    const updated = mapWorkspace(await response.json())
+    setWorkspaces(prev => prev.map(item => (
+      item.id === workspaceId
+        ? { ...item, name: updated.name, updatedAt: updated.updatedAt, conversations: updated.conversations.map(nextConversation => {
+          const existing = item.conversations.find(conversation => conversation.id === nextConversation.id)
+          return existing ? { ...nextConversation, turns: existing.turns } : nextConversation
+        }) }
+        : item
+    )))
   }
 
   async function ensureActiveConversation(seedMessage: string): Promise<string> {
@@ -503,6 +550,13 @@ export default function AgentV3Page() {
             onCreateConversation={createConversation}
             onDeleteConversation={deleteConversation}
             onSelectConversation={selectConversation}
+            expandedWorkspaceIds={expandedWorkspaceIds}
+            editingWorkspaceId={editingWorkspaceId}
+            editingWorkspaceName={editingWorkspaceName}
+            onToggleWorkspace={toggleWorkspace}
+            onStartEditingWorkspace={startEditingWorkspace}
+            onEditingWorkspaceNameChange={setEditingWorkspaceName}
+            onSaveWorkspaceName={saveWorkspaceName}
           />
         </aside>
 
@@ -613,6 +667,13 @@ function StudioLibrary({
   onCreateConversation,
   onDeleteConversation,
   onSelectConversation,
+  expandedWorkspaceIds,
+  editingWorkspaceId,
+  editingWorkspaceName,
+  onToggleWorkspace,
+  onStartEditingWorkspace,
+  onEditingWorkspaceNameChange,
+  onSaveWorkspaceName,
 }: {
   workspaces: Workspace[]
   activeWorkspaceId: string | null
@@ -622,6 +683,13 @@ function StudioLibrary({
   onCreateConversation: (workspaceId: string) => void
   onDeleteConversation: (workspaceId: string, conversationId: string) => void
   onSelectConversation: (workspaceId: string, conversationId: string) => void
+  expandedWorkspaceIds: Record<string, boolean>
+  editingWorkspaceId: string | null
+  editingWorkspaceName: string
+  onToggleWorkspace: (workspaceId: string) => void
+  onStartEditingWorkspace: (workspace: Workspace) => void
+  onEditingWorkspaceNameChange: (value: string) => void
+  onSaveWorkspaceName: (workspaceId: string) => void
 }) {
   return (
     <>
@@ -630,7 +698,7 @@ function StudioLibrary({
           <p className={styles.overline}>Studio</p>
           <h1 className={styles.sectionTitle}>Workspaces</h1>
         </div>
-        <button type="button" className={styles.iconButton} onClick={onCreateWorkspace} aria-label="Create workspace">
+        <button type="button" className={styles.iconButton} onClick={onCreateWorkspace} aria-label="Create workspace" title="Create workspace">
           <Plus size={16} />
         </button>
       </div>
@@ -642,27 +710,54 @@ function StudioLibrary({
           </div>
         )}
         {workspaces.map((workspace, index) => {
-          const expanded = workspace.id === activeWorkspaceId || index === 0
+          const expanded = expandedWorkspaceIds[workspace.id] ?? index === 0
           const turnCount = workspace.conversations.reduce((total, conversation) => total + (conversation.turnCount || conversation.turns.length), 0)
           return (
-            <details key={workspace.id} className={styles.workspaceGroup} open={expanded}>
-              <summary className={styles.workspaceSummary}>
-                <span className={styles.workspaceSummaryMain}>
-                  <Folder size={15} />
-                  <span className={styles.workspaceName}>{workspace.name}</span>
-                </span>
-                <span className={styles.workspaceMeta}>{workspace.conversations.length} conv | {turnCount} turns</span>
-              </summary>
-              <div className={styles.workspaceActions}>
-                <button type="button" onClick={() => onCreateConversation(workspace.id)}>
-                  <Plus size={13} /> Conversation
+            <section key={workspace.id} className={`${styles.workspaceGroup} ${workspace.id === activeWorkspaceId ? styles.workspaceGroupActive : ''}`}>
+              <div className={styles.workspaceSummary}>
+                <button
+                  type="button"
+                  className={styles.workspaceToggle}
+                  onClick={() => onToggleWorkspace(workspace.id)}
+                  aria-label={expanded ? 'Collapse workspace' : 'Expand workspace'}
+                  title={expanded ? 'Collapse workspace' : 'Expand workspace'}
+                >
+                  <ChevronDown size={16} className={expanded ? '' : styles.rotatedClosed} />
                 </button>
-                {workspaces.length > 1 && (
-                  <button type="button" onClick={() => onDeleteWorkspace(workspace.id)}>
-                    <Trash2 size={13} /> Delete
+                <div
+                  className={styles.workspaceTitleButton}
+                  onClick={() => onStartEditingWorkspace(workspace)}
+                  title="Rename workspace"
+                >
+                  <Folder size={15} />
+                  {editingWorkspaceId === workspace.id ? (
+                    <input
+                      value={editingWorkspaceName}
+                      onChange={event => onEditingWorkspaceNameChange(event.target.value)}
+                      onBlur={() => onSaveWorkspaceName(workspace.id)}
+                      onKeyDown={event => {
+                        if (event.key === 'Enter') event.currentTarget.blur()
+                        if (event.key === 'Escape') event.currentTarget.blur()
+                      }}
+                      className={styles.workspaceNameInput}
+                      autoFocus
+                      onClick={event => event.stopPropagation()}
+                    />
+                  ) : (
+                    <span className={styles.workspaceName}>{workspace.name}</span>
+                  )}
+                </div>
+                <div className={styles.workspaceTileActions}>
+                  <button type="button" onClick={() => onCreateConversation(workspace.id)} aria-label="New conversation" title="New conversation">
+                    <MessageSquare size={14} />
                   </button>
-                )}
+                  <button type="button" onClick={() => onDeleteWorkspace(workspace.id)} aria-label="Delete workspace" title="Delete workspace" disabled={workspaces.length <= 1}>
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+                <span className={styles.workspaceMeta}>{workspace.conversations.length} conv | {turnCount} turns</span>
               </div>
+              {expanded && (
               <div className={styles.conversationList}>
                 {workspace.conversations.map(conversation => (
                   <div key={conversation.id} className={`${styles.conversationItemWrap} ${conversation.id === activeConversationId ? styles.conversationItemActive : ''}`}>
@@ -688,7 +783,8 @@ function StudioLibrary({
                   </div>
                 ))}
               </div>
-            </details>
+              )}
+            </section>
           )
         })}
       </div>
@@ -1248,4 +1344,19 @@ function humanizeStage(stage: string): string {
 function titleFromMessage(message: string): string {
   const cleaned = message.replace(/\s+/g, ' ').trim()
   return cleaned.length > 72 ? `${cleaned.slice(0, 72)}...` : cleaned || 'Untitled work'
+}
+
+function uniqueWorkspaceName(baseName: string, workspaces: Workspace[], excludeWorkspaceId?: string): string {
+  const base = baseName.replace(/\s+/g, ' ').trim() || 'New workspace'
+  const existing = new Set(
+    workspaces
+      .filter(workspace => workspace.id !== excludeWorkspaceId)
+      .map(workspace => workspace.name.toLowerCase()),
+  )
+  if (!existing.has(base.toLowerCase())) return base
+  for (let index = 2; index < 1000; index += 1) {
+    const candidate = `${base} ${index}`
+    if (!existing.has(candidate.toLowerCase())) return candidate
+  }
+  return `${base} ${Date.now().toString().slice(-4)}`
 }

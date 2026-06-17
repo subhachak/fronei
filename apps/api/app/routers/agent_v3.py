@@ -12,6 +12,7 @@ from app.services.agent_v3.models import (
     AgentV3Request,
     AgentV3Result,
     AgentV3WorkspaceCreate,
+    AgentV3WorkspaceUpdate,
     Goal,
     ProgressEvent,
     StreamEnvelope,
@@ -74,6 +75,18 @@ def list_agent_v3_workspaces(user_id: str = CurrentUser) -> dict:
 @router.post("/workspaces")
 def create_agent_v3_workspace(payload: AgentV3WorkspaceCreate, user_id: str = CurrentUser) -> dict:
     workspace = persistence.create_workspace(user_id, payload.name)
+    return workspace.model_dump(mode="json")
+
+
+@router.patch("/workspaces/{workspace_id}")
+def update_agent_v3_workspace(
+    workspace_id: str,
+    payload: AgentV3WorkspaceUpdate,
+    user_id: str = CurrentUser,
+) -> dict:
+    workspace = persistence.update_workspace(user_id, workspace_id, payload.name)
+    if workspace is None:
+        raise HTTPException(status_code=404, detail="Workspace not found")
     return workspace.model_dump(mode="json")
 
 

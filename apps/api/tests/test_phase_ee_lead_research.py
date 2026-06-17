@@ -717,7 +717,7 @@ def test_deep_document_writer_generates_sections_individually(monkeypatch):
                 heading = line.split(":", 1)[1].strip()
                 break
         return ModelResponse(
-            text=f"## {heading}\n\nDetailed content for {heading}. [S1]",
+            text=f"## {heading}\n\n### Existing subsection\n\nDetailed content for {heading}. [S1]",
             model_used="test-model",
             latency_ms=10,
             cost_usd=0.001,
@@ -761,7 +761,10 @@ def test_deep_document_writer_generates_sections_individually(monkeypatch):
     draft = write_document(request, plan, sources=[], research_answer="Research answer [S1].", evidence=evidence)
 
     assert len(calls) == len(plan.sections)
-    assert "## System Architecture" in draft.markdown
+    assert draft.markdown.startswith("# Architecture")
+    assert "## 1. Executive Summary" in draft.markdown
+    assert "## 2. System Architecture" in draft.markdown
+    assert "### 2.1 Existing subsection" in draft.markdown
     assert calls[0]["max_tokens"] < calls[1]["max_tokens"]
     assert all(call["role"] == "document_writer" for call in calls)
     assert draft.latency_ms == 60

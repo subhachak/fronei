@@ -220,7 +220,7 @@ def _write_document_by_section(
             quality_mode=request.quality_mode,
             timeout_s=timeout_s,
         )
-        section_md = _normalize_section_markdown(heading, response.text)
+        section_md = _normalize_section_markdown(heading, response.text, section_number=index + 1)
         written_sections.append(section_md)
         prior_context = section_md[-1800:]
         model_used = response.model_used or model_used
@@ -229,7 +229,7 @@ def _write_document_by_section(
         attempted_models.extend([model for model in response.attempted_models if model not in attempted_models])
         failed_model_attempts.extend(response.failed_model_attempts)
     return DocumentDraft(
-        markdown="\n\n".join(written_sections).strip(),
+        markdown=f"# {plan.title.strip() or 'Document'}\n\n" + "\n\n".join(written_sections).strip(),
         model_used=model_used,
         latency_ms=latency_ms,
         cost_usd=cost_usd,
@@ -464,14 +464,30 @@ def _section_terms(heading: str) -> list[str]:
     ]
 
 
-def _normalize_section_markdown(heading: str, markdown: str) -> str:
+def _normalize_section_markdown(heading: str, markdown: str, *, section_number: int) -> str:
     text = (markdown or "").strip()
     heading_text = heading.strip()
+    canonical_heading = f"## {section_number}. {heading_text}"
     if not text:
-        return f"## {heading_text}\n\nNo evidence-backed content was generated for this section."
-    if re.match(r"^#{1,3}\s+", text):
-        return text
-    return f"## {heading_text}\n\n{text}"
+        return f"{canonical_heading}\n\nNo evidence-backed content was generated for this section."
+    lines = text.splitlines()
+    normalized: list[str] = [canonical_heading]
+    subheading_index = 0
+    skipped_first_heading = False
+    for line in lines:
+        if re.match(r"^#{1,6}\s+", line):
+            if not skipped_first_heading:
+                skipped_first_heading = True
+                continue
+            subheading_index += 1
+            title = re.sub(r"^#{1,6}\s+", "", line).strip()
+            title = re.sub(r"^\d+(?:\.\d+)*\.?\s+", "", title).strip()
+            if title:
+                normalized.append(f"### {section_number}.{subheading_index} {title}")
+            continue
+        normalized.append(line)
+    body = "\n".join(normalized).strip()
+    return body or f"{canonical_heading}\n\nNo evidence-backed content was generated for this section."
 
 
 def _minimum_document_chars(plan: DocumentPlan) -> int:

@@ -737,8 +737,8 @@ def test_deep_document_writer_generates_sections_individually(monkeypatch):
     plan = DocumentPlan(
         title="Architecture",
         sections=[
-            "Executive Summary",
-            "System Architecture",
+            "1. Executive Summary",
+            "2. System Architecture",
             "Agent Workflows",
             "Evidence Binder",
             "Failure Modes",
@@ -771,8 +771,10 @@ def test_deep_document_writer_generates_sections_individually(monkeypatch):
     assert draft.markdown.startswith("# Architecture")
     assert "## 1. Executive Summary" in draft.markdown
     assert "## 2. System Architecture" in draft.markdown
+    assert "## 1. 1. Executive Summary" not in draft.markdown
+    assert "## 2. 2. System Architecture" not in draft.markdown
     assert "### 2.1 Existing subsection" in draft.markdown
-    assert calls_by_heading["Executive Summary"]["max_tokens"] < calls_by_heading["System Architecture"]["max_tokens"]
+    assert calls_by_heading["1. Executive Summary"]["max_tokens"] < calls_by_heading["2. System Architecture"]["max_tokens"]
     assert all(call["role"] == "document_writer" for call in calls)
     assert draft.latency_ms == 60
 

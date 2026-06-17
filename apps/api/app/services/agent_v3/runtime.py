@@ -83,6 +83,11 @@ class AgentV3Runtime:
             reason=decision.reason,
             source=decision.source,
             model_used=decision.model_used,
+            **model_client.telemetry_for_role(
+                "orchestrator",
+                quality_mode=request.quality_mode,
+                model_used=decision.model_used,
+            ),
             available_routes=decision.available_routes,
             available_tools=decision.available_tools,
             fallback_reason=decision.fallback_reason,
@@ -267,6 +272,11 @@ class AgentV3Runtime:
             guardrails=plan.guardrails,
             source=plan.source,
             model_used=plan.model_used,
+            **model_client.telemetry_for_role(
+                "research_planner",
+                quality_mode=request.quality_mode,
+                model_used=plan.model_used,
+            ),
             fallback_reason=plan.fallback_reason,
             agent_id="research_lead",
             budget_ledger=ledger.model_dump(mode="json"),
@@ -513,17 +523,33 @@ class AgentV3Runtime:
             "Synthesizing source-grounded answer from evidence.",
             agent_id="synthesis_agent",
             prompt_template_id=registry.agent("synthesis_agent").prompt_template_id,
+            **model_client.telemetry_for_role("synthesis", quality_mode=request.quality_mode),
             budget_ledger=ledger.model_dump(mode="json"),
         )
         yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
         response = synthesize_answer(request, plan, evidence)
         ledger.record_model_call(cost_usd=response.cost_usd, latency_ms=response.latency_ms)
+        event = progress(
+            "synthesis_result",
+            f"Synthesis used {response.model_used or 'the configured synthesis model'}.",
+            agent_id="synthesis_agent",
+            **model_client.telemetry_for_role(
+                "synthesis",
+                quality_mode=request.quality_mode,
+                model_used=response.model_used,
+            ),
+            latency_ms=response.latency_ms,
+            cost_usd=response.cost_usd,
+            budget_ledger=ledger.model_dump(mode="json"),
+        )
+        yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
         judge = judge_research(request, plan, evidence, response.text)
         event = progress(
             "research_judge",
             "Checking research quality before publishing.",
             agent_id="research_judge",
             prompt_template_id=registry.agent("research_judge").prompt_template_id,
+            **model_client.telemetry_for_role("research_judge", quality_mode=request.quality_mode),
         )
         yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
         event = progress(
@@ -545,6 +571,11 @@ class AgentV3Runtime:
             agent_id="claim_verifier",
             prompt_template_id=registry.agent("claim_verifier").prompt_template_id,
             verification=verification.model_dump(mode="json"),
+            **model_client.telemetry_for_role(
+                "citation_verifier",
+                quality_mode="standard",
+                model_used=getattr(verification, "model_used", ""),
+            ),
             budget_ledger=ledger.model_dump(mode="json"),
         )
         yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
@@ -562,6 +593,7 @@ class AgentV3Runtime:
                 prompt_template_id=registry.agent("repair_agent").prompt_template_id,
                 repair_instruction=judge.repair_instruction,
                 issues=judge.issues,
+                **model_client.telemetry_for_role("repair", quality_mode=request.quality_mode),
                 budget_ledger=ledger.model_dump(mode="json"),
             )
             yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
@@ -583,6 +615,11 @@ class AgentV3Runtime:
                 issues=repaired_judge.issues,
                 can_publish=repaired_judge.can_publish,
                 agent_id="repair_agent",
+                **model_client.telemetry_for_role(
+                    "repair",
+                    quality_mode=request.quality_mode,
+                    model_used=repaired.model_used,
+                ),
                 budget_ledger=ledger.model_dump(mode="json"),
             )
             yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
@@ -721,6 +758,8 @@ class AgentV3Runtime:
             "You are Fronei v3, a concise and helpful assistant. Answer directly.",
             user_prompt,
             max_tokens=900,
+            role="direct_answer",
+            quality_mode=request.quality_mode,
         )
         return AgentV3Result(
             turn_id=turn_id,
@@ -728,6 +767,11 @@ class AgentV3Runtime:
             answer=response.text,
             route=goal.route,
             model_used=response.model_used,
+            **model_client.telemetry_for_role(
+                "direct_answer",
+                quality_mode=request.quality_mode,
+                model_used=response.model_used,
+            ),
             events=events,
             latency_ms=response.latency_ms,
             cost_usd=response.cost_usd,
@@ -764,13 +808,32 @@ class AgentV3Runtime:
             sections=plan.sections,
             source=plan.source,
             model_used=plan.model_used,
+            **model_client.telemetry_for_role(
+                "document_planner",
+                quality_mode=request.quality_mode,
+                model_used=plan.model_used,
+            ),
             fallback_reason=plan.fallback_reason,
         )
         yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
 
         event = progress("document_writer", "Writing document draft.", plan_title=plan.title)
+        event.data.update(model_client.telemetry_for_role("document_writer", quality_mode=request.quality_mode))
         yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
         draft = write_document(request, plan, sources=sources, research_answer=research_answer, evidence=evidence)
+        event = progress(
+            "document_writer_result",
+            f"Document writer used {draft.model_used or 'the configured document writer model'}.",
+            plan_title=plan.title,
+            **model_client.telemetry_for_role(
+                "document_writer",
+                quality_mode=request.quality_mode,
+                model_used=draft.model_used,
+            ),
+            latency_ms=draft.latency_ms,
+            cost_usd=draft.cost_usd,
+        )
+        yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
 
         event = progress("document_judge", "Checking document draft.", plan_title=plan.title)
         yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))

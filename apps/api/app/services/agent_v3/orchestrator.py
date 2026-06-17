@@ -111,6 +111,8 @@ def decide_with_options(
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_payload},
             ],
+            role="orchestrator",
+            quality_mode=request.quality_mode,
             max_tokens=400,
             timeout_s=18,
         )

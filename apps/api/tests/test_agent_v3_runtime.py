@@ -36,7 +36,7 @@ class FakeTools(AgentV3Tools):
 def _patch_completion(monkeypatch, text="# Answer\n\nDone."):
     from app.services.agent_v3 import model_client
 
-    def fake_complete(messages, *, preferred_model=None, timeout_s=30, max_tokens=1200):
+    def fake_complete(messages, *, preferred_model=None, role=None, quality_mode="standard", timeout_s=30, max_tokens=1200):
         if "research lead" in messages[0]["content"].lower():
             user_payload = json.loads(messages[-1]["content"])
             message = user_payload["message"]
@@ -84,7 +84,7 @@ def _patch_completion(monkeypatch, text="# Answer\n\nDone."):
             cost_usd=0.0,
         )
 
-    def fake_simple_completion(system, user, *, max_tokens=1200):
+    def fake_simple_completion(system, user, *, max_tokens=1200, **kwargs):
         return SimpleNamespace(text=text, model_used="fake-model", latency_ms=3, cost_usd=0.0)
 
     monkeypatch.setattr(model_client, "complete", fake_complete)
@@ -130,7 +130,7 @@ def test_agent_v3_direct_stream(monkeypatch):
 def test_agent_v3_clarify_route(monkeypatch):
     from app.services.agent_v3 import model_client
 
-    def fake_complete(messages, *, preferred_model=None, timeout_s=30, max_tokens=1200):
+    def fake_complete(messages, *, preferred_model=None, role=None, quality_mode="standard", timeout_s=30, max_tokens=1200):
         return SimpleNamespace(
             text=json.dumps(
                 {
@@ -164,7 +164,7 @@ def test_agent_v3_orchestrator_falls_back_to_heuristic(monkeypatch):
 
     monkeypatch.setattr(model_client, "complete", fail_complete)
 
-    def fake_simple_completion(system, user, *, max_tokens=1200):
+    def fake_simple_completion(system, user, *, max_tokens=1200, **kwargs):
         return SimpleNamespace(text="Fallback answer.", model_used="fake-model", latency_ms=3, cost_usd=0.0)
 
     monkeypatch.setattr(model_client, "simple_completion", fake_simple_completion)
@@ -327,7 +327,7 @@ def test_agent_v3_research_source_ranking_and_deep_link_helpers():
 def test_agent_v3_research_repair_loop_runs_when_judge_requests_repair(monkeypatch):
     from app.services.agent_v3 import model_client
 
-    def fake_complete(messages, *, preferred_model=None, timeout_s=30, max_tokens=1200):
+    def fake_complete(messages, *, preferred_model=None, role=None, quality_mode="standard", timeout_s=30, max_tokens=1200):
         if "research lead" in messages[0]["content"].lower():
             user_payload = json.loads(messages[-1]["content"])
             message = user_payload["message"]
@@ -367,7 +367,7 @@ def test_agent_v3_research_repair_loop_runs_when_judge_requests_repair(monkeypat
         ]
     )
 
-    def fake_simple_completion(system, user, *, max_tokens=1200):
+    def fake_simple_completion(system, user, *, max_tokens=1200, **kwargs):
         return SimpleNamespace(text=next(responses), model_used="fake-model", latency_ms=3, cost_usd=0.0)
 
     monkeypatch.setattr(model_client, "complete", fake_complete)
@@ -785,7 +785,7 @@ def test_agent_v3_conversation_context_connects_followup_turns(monkeypatch, tmp_
     monkeypatch.setattr(persistence, "SessionLocal", Session)
     captured_prompts: list[str] = []
 
-    def fake_complete(messages, *, preferred_model=None, timeout_s=30, max_tokens=1200):
+    def fake_complete(messages, *, preferred_model=None, role=None, quality_mode="standard", timeout_s=30, max_tokens=1200):
         return SimpleNamespace(
             text=json.dumps({"route": "direct", "confidence": 0.9, "reason": "direct test"}),
             model_used="fake-orchestrator",
@@ -795,7 +795,7 @@ def test_agent_v3_conversation_context_connects_followup_turns(monkeypatch, tmp_
 
     answers = iter(["First answer about gateway limits.", "Follow-up answer using prior context."])
 
-    def fake_simple_completion(system, user, *, max_tokens=1200):
+    def fake_simple_completion(system, user, *, max_tokens=1200, **kwargs):
         captured_prompts.append(user)
         return SimpleNamespace(text=next(answers), model_used="fake-model", latency_ms=1, cost_usd=0.0)
 
@@ -842,7 +842,7 @@ def test_agent_v3_workspace_context_is_shared_across_conversations(monkeypatch, 
     monkeypatch.setattr(persistence, "SessionLocal", Session)
     captured_prompts: list[str] = []
 
-    def fake_complete(messages, *, preferred_model=None, timeout_s=30, max_tokens=1200):
+    def fake_complete(messages, *, preferred_model=None, role=None, quality_mode="standard", timeout_s=30, max_tokens=1200):
         return SimpleNamespace(
             text=json.dumps({"route": "direct", "confidence": 0.9, "reason": "direct test"}),
             model_used="fake-orchestrator",
@@ -852,7 +852,7 @@ def test_agent_v3_workspace_context_is_shared_across_conversations(monkeypatch, 
 
     answers = iter(["Shared workspace context about platform modernization.", "Second conversation answer."])
 
-    def fake_simple_completion(system, user, *, max_tokens=1200):
+    def fake_simple_completion(system, user, *, max_tokens=1200, **kwargs):
         captured_prompts.append(user)
         return SimpleNamespace(text=next(answers), model_used="fake-model", latency_ms=1, cost_usd=0.0)
 
@@ -927,10 +927,26 @@ def test_agent_v3_research_level_budgets_are_distinct():
     assert deep.repair_iterations > regular.repair_iterations
 
 
+def test_agent_v3_model_role_routing(monkeypatch):
+    from app.config import get_settings
+    from app.services.agent_v3 import model_client
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "agent_v3_synthesis_model", "sonnet-test")
+    monkeypatch.setattr(settings, "agent_v3_synthesis_model_executive", "opus-test")
+    monkeypatch.setattr(settings, "agent_v3_research_planner_model", "planner-test")
+    monkeypatch.setattr(settings, "agent_v3_brief_model", "brief-test")
+
+    assert model_client.model_for_role("synthesis", quality_mode="standard") == "sonnet-test"
+    assert model_client.model_for_role("synthesis", quality_mode="executive") == "opus-test"
+    assert model_client.model_for_role("research_planner") == "planner-test"
+    assert model_client.model_for_role("research_brief") == "brief-test"
+
+
 def test_agent_v3_deep_research_requires_confirmation(monkeypatch):
     from app.services.agent_v3 import model_client
 
-    def fake_complete(messages, *, preferred_model=None, timeout_s=30, max_tokens=1200):
+    def fake_complete(messages, *, preferred_model=None, role=None, quality_mode="standard", timeout_s=30, max_tokens=1200):
         return SimpleNamespace(
             text=json.dumps(
                 {

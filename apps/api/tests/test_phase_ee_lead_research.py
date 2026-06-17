@@ -379,10 +379,12 @@ def test_technical_architecture_synthesis_uses_report_budget(monkeypatch):
 
     captured = {}
 
-    def fake_simple_completion(system, user, *, max_tokens=1200):
+    def fake_simple_completion(system, user, *, max_tokens=1200, **kwargs):
         captured["system"] = system
         captured["user"] = user
         captured["max_tokens"] = max_tokens
+        captured["role"] = kwargs.get("role")
+        captured["quality_mode"] = kwargs.get("quality_mode")
         return model_client.ModelResponse(text="ok", model_used="fake", latency_ms=1, cost_usd=0.0)
 
     monkeypatch.setattr(model_client, "simple_completion", fake_simple_completion)
@@ -417,6 +419,8 @@ def test_technical_architecture_synthesis_uses_report_budget(monkeypatch):
     synthesize_answer(request, plan, evidence)
 
     assert captured["max_tokens"] >= 5000
+    assert captured["role"] == "synthesis"
+    assert captured["quality_mode"] == "standard"
     assert "Typed evidence claims" in captured["user"]
     assert "implementation/implementation_detail" in captured["user"]
     assert "Derive the section structure from the evidence" in captured["user"]

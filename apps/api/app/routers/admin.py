@@ -23,6 +23,7 @@ from app.db.models import (
     AgentGoal,
     AgentRunLog,
     AgentStep,
+    AgentV3Workspace,
     Conversation,
     ConversationMessage,
     ConversationTurn,
@@ -48,6 +49,7 @@ from app.db.models import (
     set_global_budget_config,
     set_turn_runtime_config,
 )
+from app.services.agent_v3 import persistence as agent_v3_persistence
 from app.services.document_templates import template_path_for_row
 from app.services.agent_runtime.db_models import DBPromptTemplate
 from app.services.agent_runtime.fixtures import PromptFixtureRunner
@@ -1084,6 +1086,57 @@ def _guardrail_event_row(row: GuardrailEvent) -> dict:
         "reason": row.reason,
         "tool_name": row.tool_name,
         "created_at": _fmt(row.created_at),
+    }
+
+
+@router.get("/agent-v3/workspaces")
+def admin_agent_v3_workspaces(
+    user_id: str | None = Query(default=None),
+    admin: AdminPrincipal = Depends(require_admin),
+) -> dict:
+    """Read Agent v3 workspace summaries across users.
+
+    User-facing Agent v3 endpoints always filter by the authenticated user.
+    This admin-only view intentionally rolls up all users unless user_id is
+    provided.
+    """
+    if user_id:
+        return {
+            "users": [
+                {
+                    "user_id": user_id,
+                    "workspaces": [
+                        workspace.model_dump(mode="json")
+                        for workspace in agent_v3_persistence.list_workspaces(user_id, ensure_default=False)
+                    ],
+                }
+            ]
+        }
+
+    db = SessionLocal()
+    try:
+        user_ids = [
+            row[0]
+            for row in (
+                db.query(AgentV3Workspace.user_id)
+                .distinct()
+                .order_by(AgentV3Workspace.user_id.asc())
+                .all()
+            )
+        ]
+    finally:
+        db.close()
+    return {
+        "users": [
+            {
+                "user_id": uid,
+                "workspaces": [
+                    workspace.model_dump(mode="json")
+                    for workspace in agent_v3_persistence.list_workspaces(uid, ensure_default=False)
+                ],
+            }
+            for uid in user_ids
+        ]
     }
 
 

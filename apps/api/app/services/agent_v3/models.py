@@ -76,7 +76,9 @@ class Artifact(BaseModel):
     kind: Literal["markdown", "docx"]
     filename: str
     mime_type: str
-    base64_data: str
+    base64_data: str = ""
+    download_url: str | None = None
+    size_bytes: int = 0
 
 
 class AgentV3Result(BaseModel):
@@ -97,3 +99,32 @@ class AgentV3Result(BaseModel):
 class StreamEnvelope(BaseModel):
     type: Literal["start", "progress", "result", "error", "done"]
     data: dict[str, Any] = Field(default_factory=dict)
+
+
+class AgentV3ConversationSummary(BaseModel):
+    id: str
+    workspace_id: str
+    title: str
+    created_at: datetime
+    updated_at: datetime
+    turn_count: int = 0
+    artifact_count: int = 0
+    source_count: int = 0
+    total_latency_ms: int = 0
+    total_cost_usd: float = 0.0
+
+
+class AgentV3WorkspaceSummary(BaseModel):
+    id: str
+    name: str
+    created_at: datetime
+    updated_at: datetime
+    conversations: list[AgentV3ConversationSummary] = Field(default_factory=list)
+
+
+class AgentV3WorkspaceCreate(BaseModel):
+    name: str = Field(default="New workspace", min_length=1, max_length=160)
+
+
+class AgentV3ConversationCreate(BaseModel):
+    title: str = Field(default="New conversation", min_length=1, max_length=180)

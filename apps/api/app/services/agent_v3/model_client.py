@@ -202,6 +202,7 @@ def simple_completion(
     preferred_model: str | None = None,
     role: str | None = None,
     quality_mode: str = "standard",
+    timeout_s: int = 30,
 ) -> ModelResponse:
     return complete(
         [
@@ -212,4 +213,5 @@ def simple_completion(
         preferred_model=preferred_model,
         role=role,
         quality_mode=quality_mode,
+        timeout_s=timeout_s,
     )

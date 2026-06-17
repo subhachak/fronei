@@ -39,6 +39,7 @@ class Settings(BaseSettings):
     agent_v3_citation_verifier_model: str = "openrouter/qwen/qwen3.7-max"
     agent_v3_document_planner_model: str = "openrouter/qwen/qwen3.7-max"
     agent_v3_document_writer_model: str = "claude-sonnet-4-6"
+    agent_v3_longform_timeout_s: int = 180
     clerk_issuer: str = ""
     # Required in production. When unset, JWT audience verification (`verify_aud`)
     # is disabled in app/auth.py — acceptable for local dev only.

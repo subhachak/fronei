@@ -63,6 +63,54 @@ def test_technical_architecture_queries_are_provider_friendly():
     )
     assert plan.workers[0].discovery_domain == "academic"
     assert any(worker.rationale.startswith("Profile-level anchor") for worker in plan.workers)
+    assert any(worker.rationale.startswith("Cover open contract cells") for worker in plan.workers)
+
+
+def test_deep_worker_plan_preserves_contract_workers_with_discovery_workers():
+    from app.services.agent_v3.research_subtree import CoverageCell, CoverageContract, plan_from_contract
+
+    contract = CoverageContract(
+        cells=[
+            CoverageCell(subject=f"System component {index}", dimension="implementation pattern")
+            for index in range(12)
+        ]
+    )
+
+    plan = plan_from_contract(
+        AgentV3Request(
+            message="Conduct deep research and generate a detailed architectural report explaining system design, components, and workflows of agentic deep research AI.",
+            research_level="deep",
+        ),
+        contract,
+    )
+
+    assert len(plan.workers) == 10
+    assert sum(1 for worker in plan.workers if worker.discovery_domain) >= 2
+    assert sum(1 for worker in plan.workers if worker.rationale.startswith("Cover open contract cells")) >= 6
+
+
+def test_domain_discovery_queries_use_clean_subjects():
+    from app.services.agent_v3.research_subtree import (
+        _domain_discovery_workers,
+        research_budget_for,
+    )
+
+    request = AgentV3Request(
+        message=(
+            "Conduct deep research and generate a detailed architectural report on "
+            "the system architecture, AI agent workflows, and LLM integration "
+            "mechanisms of agentic presentation generation platforms like Gamma."
+        ),
+        research_level="deep",
+    )
+
+    workers = _domain_discovery_workers(request, "technical_architecture", research_budget_for(request))
+    queries = [worker.query for worker in workers]
+
+    assert queries
+    assert all(not query.startswith("and a ") for query in queries)
+    assert any("agentic presentation generation platforms gamma" in query for query in queries)
+    assert any("site:arxiv.org" in query for query in queries)
 
 
 def test_coverage_contract_fallback_has_cells(monkeypatch):
@@ -651,6 +699,72 @@ def test_deep_document_writer_uses_expansive_budget_and_floor():
 
     assert _document_writer_token_budget(request, research_answer="Research answer") == 10000
     assert judge_document(short_draft, plan, source_count=1).status == "repair"
+
+
+def test_deep_document_writer_generates_sections_individually(monkeypatch):
+    from app.services.agent_v3 import model_client
+    from app.services.agent_v3.document_subtree import DocumentPlan, write_document
+    from app.services.agent_v3.model_client import ModelResponse
+    from app.services.agent_v3.research_subtree import EvidenceItem, EvidencePack
+
+    calls = []
+
+    def fake_simple_completion(system, user, **kwargs):
+        calls.append({"system": system, "user": user, **kwargs})
+        heading = "Generated section"
+        for line in user.splitlines():
+            if line.startswith("Current section"):
+                heading = line.split(":", 1)[1].strip()
+                break
+        return ModelResponse(
+            text=f"## {heading}\n\nDetailed content for {heading}. [S1]",
+            model_used="test-model",
+            latency_ms=10,
+            cost_usd=0.001,
+            model_role=kwargs.get("role", ""),
+            preferred_model="test-model",
+            attempted_models=["test-model"],
+        )
+
+    monkeypatch.setattr(model_client, "simple_completion", fake_simple_completion)
+
+    request = AgentV3Request(
+        message="Conduct deep research and generate a detailed architectural report on agentic deep research AI.",
+        research_level="deep",
+        output_format="docx",
+    )
+    plan = DocumentPlan(
+        title="Architecture",
+        sections=[
+            "Executive Summary",
+            "System Architecture",
+            "Agent Workflows",
+            "Evidence Binder",
+            "Failure Modes",
+            "Recommendations",
+        ],
+    )
+    evidence = EvidencePack(
+        items=[
+            EvidenceItem(
+                source_id="S1",
+                title="Architecture paper",
+                url="https://arxiv.org/html/2501.12345",
+                evidence="Agent workflows use planner executor loops, evidence binders, and judge repair gates.",
+                question="Agent workflows",
+                source_type="academic",
+            )
+        ],
+        coverage=1.0,
+    )
+
+    draft = write_document(request, plan, sources=[], research_answer="Research answer [S1].", evidence=evidence)
+
+    assert len(calls) == len(plan.sections)
+    assert "## System Architecture" in draft.markdown
+    assert calls[0]["max_tokens"] < calls[1]["max_tokens"]
+    assert all(call["role"] == "document_writer" for call in calls)
+    assert draft.latency_ms == 60
 
 
 def test_deep_document_planner_preserves_long_context_and_sections():

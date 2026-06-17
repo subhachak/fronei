@@ -1,5 +1,8 @@
 .root {
-  min-height: 100vh;
+  height: 100vh;
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
   background: #f4f1ea;
   color: #162033;
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -26,10 +29,14 @@
 }
 
 .shell {
+  display: flex;
+  flex-direction: column;
   width: 100%;
   max-width: 1500px;
-  min-height: 100vh;
+  height: 100%;
+  min-height: 0;
   margin: 0 auto;
+  overflow: hidden;
 }
 
 .mobileTop {
@@ -198,8 +205,11 @@
 .libraryPane,
 .workPane,
 .contextPane {
-  min-height: calc(100vh - 64px);
+  flex: 1;
+  min-height: 0;
   flex-direction: column;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 .libraryPane {
@@ -224,6 +234,7 @@
   flex: 1;
   flex-direction: column;
   gap: 16px;
+  overflow-y: visible;
   padding: 16px 16px 112px;
 }
 
@@ -556,14 +567,6 @@
   text-transform: uppercase;
 }
 
-.resultText {
-  margin: 8px 0 0;
-  color: #273348;
-  font-size: 14px;
-  line-height: 1.75;
-  white-space: pre-wrap;
-}
-
 .artifactRow,
 .chipRow {
   display: flex;
@@ -705,6 +708,121 @@
   white-space: nowrap;
 }
 
+.markdownResult {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  margin-top: 8px;
+  color: #273348;
+  font-size: 14px;
+  line-height: 1.75;
+}
+
+.markdownResult > * {
+  min-width: 0;
+  margin: 0;
+}
+
+.markdownResult h1,
+.markdownResult h2,
+.markdownResult h3 {
+  color: #162033;
+  font-weight: 850;
+  letter-spacing: 0;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.markdownResult h1 {
+  font-size: 24px;
+}
+
+.markdownResult h2 {
+  font-size: 19px;
+}
+
+.markdownResult h3 {
+  font-size: 16px;
+}
+
+.markdownResult p,
+.markdownResult li,
+.markdownResult a {
+  overflow-wrap: anywhere;
+}
+
+.markdownResult ul,
+.markdownResult ol {
+  display: grid;
+  gap: 8px;
+  padding-left: 22px;
+}
+
+.markdownResult a {
+  color: #205d51;
+  font-weight: 700;
+  text-decoration: underline;
+  text-decoration-color: rgba(32, 93, 81, 0.32);
+  text-underline-offset: 3px;
+}
+
+.markdownResult strong {
+  color: #162033;
+  font-weight: 850;
+}
+
+.markdownResult code {
+  border: 1px solid #ded6c9;
+  background: #f8f1e6;
+  color: #6d4a19;
+  font-family: "SF Mono", "Roboto Mono", ui-monospace, monospace;
+  font-size: 0.92em;
+  padding: 1px 5px;
+}
+
+.markdownResult pre {
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid #ded6c9;
+  background: #162033;
+  color: #f8f6f0;
+  padding: 14px;
+}
+
+.markdownResult pre code {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 0;
+}
+
+.markdownResult table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.markdownResult th,
+.markdownResult td {
+  border: 1px solid #ded6c9;
+  padding: 8px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.markdownResult th {
+  background: #ebe4d8;
+  color: #162033;
+}
+
+.markdownResult blockquote {
+  border-left: 3px solid #c8bba8;
+  color: #53615a;
+  padding-left: 12px;
+}
+
 .spin {
   animation: spin 1s linear infinite;
 }
@@ -762,7 +880,10 @@
   .workPane,
   .contextPane {
     display: flex;
-    min-height: 100vh;
+    height: 100vh;
+    height: 100dvh;
+    min-height: 0;
+    overflow: hidden;
   }
 
   .libraryPane,

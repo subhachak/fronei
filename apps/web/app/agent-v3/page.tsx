@@ -1,6 +1,7 @@
 'use client'
 
 import { useAuth } from '@clerk/nextjs'
+import DOMPurify from 'dompurify'
 import {
   Archive,
   ArrowUpRight,
@@ -18,6 +19,7 @@ import {
   Sparkles,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
+import { marked } from 'marked'
 import { useEffect, useMemo, useState } from 'react'
 import styles from './page.module.css'
 
@@ -488,7 +490,7 @@ function Timeline({
         {result && (
           <div className={styles.resultBox}>
             <p className={styles.resultLabel}>Result</p>
-            <p className={styles.resultText}>{result.answer}</p>
+            <MarkdownResult content={result.answer} />
             {result.artifacts?.length ? (
               <div className={styles.artifactRow}>
                 {result.artifacts.map(artifact => (
@@ -626,6 +628,11 @@ function ContextRail({
       </div>
     </>
   )
+}
+
+function MarkdownResult({ content }: { content: string }) {
+  const html = useMemo(() => DOMPurify.sanitize(marked.parse(content || '') as string), [content])
+  return <div className={styles.markdownResult} dangerouslySetInnerHTML={{ __html: html }} />
 }
 
 function buildConfidenceCues(events: ProgressEvent[], result: AgentResult | null): string[] {

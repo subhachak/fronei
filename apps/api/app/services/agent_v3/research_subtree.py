@@ -847,6 +847,8 @@ def generate_research_brief(request: AgentV3Request) -> ResearchBrief:
                     ),
                 },
             ],
+            role="research_brief",
+            quality_mode=request.quality_mode,
             max_tokens=600,
             timeout_s=15,
         )
@@ -973,6 +975,8 @@ def generate_coverage_contract(request: AgentV3Request, brief: ResearchBrief) ->
                     ),
                 },
             ],
+            role="coverage_contract",
+            quality_mode=request.quality_mode,
             max_tokens=1000,
             timeout_s=20,
         )
@@ -1236,6 +1240,8 @@ def reflect(request: AgentV3Request, state: ResearchStateStore) -> ReflectionDec
                     ),
                 },
             ],
+            role="reflection",
+            quality_mode=request.quality_mode,
             max_tokens=500,
             timeout_s=15,
         )
@@ -1295,6 +1301,8 @@ def verify_citations_semantically(answer: str, evidence: EvidencePack) -> Citati
                     ),
                 },
             ],
+            role="citation_verifier",
+            quality_mode="standard",
             max_tokens=700,
             timeout_s=20,
         )
@@ -1435,6 +1443,8 @@ def plan_research(request: AgentV3Request) -> ResearchPlan:
                     ),
                 },
             ],
+            role="research_planner",
+            quality_mode=request.quality_mode,
             max_tokens=600,
             timeout_s=20,
         )
@@ -2168,6 +2178,8 @@ def synthesize_answer(request: AgentV3Request, plan: ResearchPlan, evidence: Evi
             f"Known gaps:\n{json.dumps(evidence.gaps, ensure_ascii=False)}"
         ),
         max_tokens=_synthesis_token_budget(request, plan),
+        role="synthesis",
+        quality_mode=request.quality_mode,
     )
 
 
@@ -2234,6 +2246,8 @@ def repair_research_answer(
             f"Research questions:\n{json.dumps(plan.questions, ensure_ascii=False)}"
         ),
         max_tokens=_synthesis_token_budget(request, plan),
+        role="repair",
+        quality_mode=request.quality_mode,
     )
 
 
@@ -2627,13 +2641,57 @@ class LeadResearchAgent:
             "Research team is ready.",
             {"registry": registry.public_summary(), "agent_count": len(registry.agents), "mode": "lead_loop"},
         )
-        self._progress("research_brief", "Scoping the research objective.", {"agent_id": "research_lead"})
+        self._progress(
+            "research_brief",
+            "Scoping the research objective.",
+            {
+                "agent_id": "research_lead",
+                **model_client.telemetry_for_role("research_brief", quality_mode=self.request.quality_mode),
+            },
+        )
         brief = generate_research_brief(self.request)
         self.ledger.record_model_call(cost_usd=brief.cost_usd, latency_ms=brief.latency_ms)
+        self._progress(
+            "research_brief_result",
+            f"Research brief used {brief.model_used or 'the configured brief model'}.",
+            {
+                "agent_id": "research_lead",
+                **model_client.telemetry_for_role(
+                    "research_brief",
+                    quality_mode=self.request.quality_mode,
+                    model_used=brief.model_used,
+                ),
+                "source": brief.source,
+                "latency_ms": brief.latency_ms,
+                "cost_usd": brief.cost_usd,
+            },
+        )
 
-        self._progress("coverage_contract", "Building the evidence coverage matrix.", {"agent_id": "research_lead"})
+        self._progress(
+            "coverage_contract",
+            "Building the evidence coverage matrix.",
+            {
+                "agent_id": "research_lead",
+                **model_client.telemetry_for_role("coverage_contract", quality_mode=self.request.quality_mode),
+            },
+        )
         contract = generate_coverage_contract(self.request, brief)
         self.ledger.record_model_call(cost_usd=contract.cost_usd, latency_ms=contract.latency_ms)
+        self._progress(
+            "coverage_contract_result",
+            f"Coverage contract used {contract.model_used or 'the configured contract model'}.",
+            {
+                "agent_id": "research_lead",
+                **model_client.telemetry_for_role(
+                    "coverage_contract",
+                    quality_mode=self.request.quality_mode,
+                    model_used=contract.model_used,
+                ),
+                "source": contract.source,
+                "latency_ms": contract.latency_ms,
+                "cost_usd": contract.cost_usd,
+            },
+        )
 
         plan = plan_from_contract(self.request, contract, self.budget)
         goal = create_research_goal(self.request)
@@ -2682,6 +2740,11 @@ class LeadResearchAgent:
                 {
                     "decision": decision.model_dump(mode="json"),
                     "targeted_queries": decision.targeted_queries,
+                    **model_client.telemetry_for_role(
+                        "reflection",
+                        quality_mode=self.request.quality_mode,
+                        model_used=decision.model_used,
+                    ),
                     "budget_ledger": self.ledger.model_dump(mode="json"),
                 },
             )
@@ -3114,9 +3177,31 @@ class LeadResearchAgent:
                 "repaired": False,
                 "repair_attempts": 0,
             }
-        self._progress("synthesis", "Writing one coherent answer from the evidence.", {"agent_id": "synthesis_agent"})
+        self._progress(
+            "synthesis",
+            "Writing one coherent answer from the evidence.",
+            {
+                "agent_id": "synthesis_agent",
+                **model_client.telemetry_for_role("synthesis", quality_mode=self.request.quality_mode),
+            },
+        )
         model_response = synthesize_answer(self.request, state.plan, state.evidence)
         self.ledger.record_model_call(cost_usd=model_response.cost_usd, latency_ms=model_response.latency_ms)
+        self._progress(
+            "synthesis_result",
+            f"Synthesis used {model_response.model_used or 'the configured synthesis model'}.",
+            {
+                "agent_id": "synthesis_agent",
+                **model_client.telemetry_for_role(
+                    "synthesis",
+                    quality_mode=self.request.quality_mode,
+                    model_used=model_response.model_used,
+                ),
+                "latency_ms": model_response.latency_ms,
+                "cost_usd": model_response.cost_usd,
+                "budget_ledger": self.ledger.model_dump(mode="json"),
+            },
+        )
         answer = model_response.text
 
         citation_result = verify_citations_semantically(answer, state.evidence)
@@ -3125,7 +3210,15 @@ class LeadResearchAgent:
         self._progress(
             "citation_verification",
             "Verified answer citations against source text.",
-            {"agent_id": "claim_verifier", "verification": citation_result.model_dump(mode="json")},
+            {
+                "agent_id": "claim_verifier",
+                "verification": citation_result.model_dump(mode="json"),
+                **model_client.telemetry_for_role(
+                    "citation_verifier",
+                    quality_mode="standard",
+                    model_used=citation_result.model_used,
+                ),
+            },
         )
         repaired = False
         repair_attempts = 0
@@ -3193,7 +3286,14 @@ class LeadResearchAgent:
         }
 
     def _repair_answer(self, state: ResearchStateStore, answer: str, instruction: str):
-        self._progress("research_repair", "Repairing the answer before publishing.", {"repair_instruction": instruction})
+        self._progress(
+            "research_repair",
+            "Repairing the answer before publishing.",
+            {
+                "repair_instruction": instruction,
+                **model_client.telemetry_for_role("repair", quality_mode=self.request.quality_mode),
+            },
+        )
         fake_judge = ResearchJudgeResult(
             status="repair",
             score=0.6,
@@ -3202,6 +3302,20 @@ class LeadResearchAgent:
         )
         repaired = repair_research_answer(self.request, state.plan, state.evidence, answer, fake_judge)
         self.ledger.record_model_call(cost_usd=repaired.cost_usd, latency_ms=repaired.latency_ms)
+        self._progress(
+            "research_repair_model",
+            f"Repair used {repaired.model_used or 'the configured repair model'}.",
+            {
+                **model_client.telemetry_for_role(
+                    "repair",
+                    quality_mode=self.request.quality_mode,
+                    model_used=repaired.model_used,
+                ),
+                "latency_ms": repaired.latency_ms,
+                "cost_usd": repaired.cost_usd,
+                "budget_ledger": self.ledger.model_dump(mode="json"),
+            },
+        )
         return repaired
 
     def _mark_attempts_for_open_cells(self, state: ResearchStateStore) -> None:

@@ -81,6 +81,8 @@ def plan_document(
                     ),
                 },
             ],
+            role="document_planner",
+            quality_mode=request.quality_mode,
             max_tokens=600,
             timeout_s=20,
         )
@@ -123,6 +125,8 @@ def write_document(
         "You are the Agent v3 document writer. Produce only the document body in markdown.",
         prompt,
         max_tokens=_document_writer_token_budget(request, research_answer=research_answer),
+        role="document_writer",
+        quality_mode=request.quality_mode,
     )
     return DocumentDraft(
         markdown=response.text,

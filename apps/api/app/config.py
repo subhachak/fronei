@@ -23,6 +23,22 @@ class Settings(BaseSettings):
     nimble_api_endpoint: str = "https://sdk.nimbleway.com/v1/search"
     planner_model: str = "openrouter/qwen/qwen3.7-max"
     planner_fallback_models: str = "claude-sonnet-4-6,gemini/gemini-2.5-flash"
+    # Agent v3 uses explicit per-role model routing. Cheap/fast stages can use
+    # the planner model, while quality-critical long-form stages can be pinned
+    # to stronger models without changing the legacy planner.
+    agent_v3_orchestrator_model: str = "openrouter/qwen/qwen3.7-max"
+    agent_v3_direct_model: str = "openrouter/qwen/qwen3.7-max"
+    agent_v3_brief_model: str = "openrouter/qwen/qwen3.7-max"
+    agent_v3_contract_model: str = "openrouter/qwen/qwen3.7-max"
+    agent_v3_research_planner_model: str = "claude-sonnet-4-6"
+    agent_v3_reflection_model: str = "claude-sonnet-4-6"
+    agent_v3_synthesis_model: str = "claude-sonnet-4-6"
+    agent_v3_synthesis_model_executive: str = "claude-opus-4-8"
+    agent_v3_judge_model: str = "claude-sonnet-4-6"
+    agent_v3_repair_model: str = "claude-sonnet-4-6"
+    agent_v3_citation_verifier_model: str = "openrouter/qwen/qwen3.7-max"
+    agent_v3_document_planner_model: str = "openrouter/qwen/qwen3.7-max"
+    agent_v3_document_writer_model: str = "claude-sonnet-4-6"
     clerk_issuer: str = ""
     # Required in production. When unset, JWT audience verification (`verify_aud`)
     # is disabled in app/auth.py — acceptable for local dev only.

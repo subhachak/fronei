@@ -16,6 +16,8 @@ class ModelResponse:
     model_used: str
     latency_ms: int
     cost_usd: float = 0.0
+    model_role: str = ""
+    preferred_model: str = ""
 
 
 def _configure_keys() -> None:
@@ -39,10 +41,71 @@ def _candidate_models(preferred: str | None = None) -> list[str]:
     return models or ["gpt-4.1-mini"]
 
 
+def model_for_role(role: str | None, *, quality_mode: str = "standard") -> str | None:
+    """Return the preferred Agent v3 model for a role.
+
+    This is intentionally small and config-backed: the runtime can route
+    quality-critical stages to stronger models while still falling back through
+    the global planner chain when a provider is unavailable.
+    """
+
+    if not role:
+        return None
+    settings = get_settings()
+    normalized = role.strip().lower().replace("-", "_")
+    if normalized == "synthesis":
+        if quality_mode == "executive":
+            return settings.agent_v3_synthesis_model_executive or settings.agent_v3_synthesis_model
+        return settings.agent_v3_synthesis_model
+    role_to_setting = {
+        "orchestrator": "agent_v3_orchestrator_model",
+        "direct": "agent_v3_direct_model",
+        "direct_answer": "agent_v3_direct_model",
+        "research_brief": "agent_v3_brief_model",
+        "brief": "agent_v3_brief_model",
+        "coverage_contract": "agent_v3_contract_model",
+        "contract": "agent_v3_contract_model",
+        "research_planner": "agent_v3_research_planner_model",
+        "lead_research": "agent_v3_research_planner_model",
+        "reflection": "agent_v3_reflection_model",
+        "citation_verifier": "agent_v3_citation_verifier_model",
+        "claim_verifier": "agent_v3_citation_verifier_model",
+        "judge": "agent_v3_judge_model",
+        "research_judge": "agent_v3_judge_model",
+        "document_judge": "agent_v3_judge_model",
+        "repair": "agent_v3_repair_model",
+        "repair_agent": "agent_v3_repair_model",
+        "document_planner": "agent_v3_document_planner_model",
+        "document_writer": "agent_v3_document_writer_model",
+    }
+    setting_name = role_to_setting.get(normalized)
+    return str(getattr(settings, setting_name, "") or "") if setting_name else None
+
+
+def telemetry_for_role(
+    role: str | None,
+    *,
+    quality_mode: str = "standard",
+    model_used: str | None = None,
+) -> dict[str, str]:
+    """Small payload used by progress events to expose model routing."""
+
+    preferred = model_for_role(role, quality_mode=quality_mode) or ""
+    payload = {
+        "model_role": role or "",
+        "preferred_model": preferred,
+    }
+    if model_used:
+        payload["actual_model"] = model_used
+    return payload
+
+
 def complete(
     messages: list[dict[str, str]],
     *,
     preferred_model: str | None = None,
+    role: str | None = None,
+    quality_mode: str = "standard",
     timeout_s: int = 30,
     max_tokens: int = 1200,
 ) -> ModelResponse:
@@ -52,7 +115,8 @@ def complete(
     from litellm import completion
 
     last_error: Exception | None = None
-    for model in _candidate_models(preferred_model):
+    preferred = preferred_model or model_for_role(role, quality_mode=quality_mode)
+    for model in _candidate_models(preferred):
         started = time.perf_counter()
         try:
             response = completion(
@@ -71,19 +135,32 @@ def complete(
                 model_used=str(getattr(response, "model", None) or model),
                 latency_ms=latency_ms,
                 cost_usd=cost,
+                model_role=role or "",
+                preferred_model=preferred or "",
             )
         except Exception as exc:  # pragma: no cover - exact provider failures vary.
             last_error = exc
-            logger.warning("agent_v3 model call failed for %s: %s", model, exc)
+            logger.warning("agent_v3 model call failed for %s role=%s: %s", model, role or "default", exc)
             continue
     raise RuntimeError(f"agent_v3 model call failed for all candidates: {last_error}")
 
 
-def simple_completion(system: str, user: str, *, max_tokens: int = 1200) -> ModelResponse:
+def simple_completion(
+    system: str,
+    user: str,
+    *,
+    max_tokens: int = 1200,
+    preferred_model: str | None = None,
+    role: str | None = None,
+    quality_mode: str = "standard",
+) -> ModelResponse:
     return complete(
         [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ],
         max_tokens=max_tokens,
+        preferred_model=preferred_model,
+        role=role,
+        quality_mode=quality_mode,
     )

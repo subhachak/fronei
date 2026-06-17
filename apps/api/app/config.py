@@ -19,7 +19,8 @@ class Settings(BaseSettings):
     openrouter_api_key: str | None = None
     you_api_key: str | None = None
     tavily_api_key: str | None = None
-    brave_api_key: str | None = None
+    nimble_api_key: str | None = None
+    nimble_api_endpoint: str = "https://api.webit.live/api/v1/realtime/serp"
     planner_model: str = "openrouter/qwen/qwen3.7-max"
     planner_fallback_models: str = "claude-sonnet-4-6,gemini/gemini-2.5-flash"
     clerk_issuer: str = ""

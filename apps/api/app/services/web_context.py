@@ -28,7 +28,7 @@ class WebSource:
 class WebContextResult:
     context: str | None
     status: str
-    provider: str       # "You.com" | "Tavily" | "Brave" | "DuckDuckGo" | "" (URL-only crawl)
+    provider: str       # "You.com" | "Tavily" | "Nimble" | "DuckDuckGo" | "" (URL-only crawl)
     sources_count: int
     search_query: str | None
 
@@ -234,7 +234,6 @@ def crawl_url(url: str) -> WebSource | None:
 
 
 _TAVILY_TIME_RANGE = {"day": "day", "week": "week", "month": "month", "year": "year"}
-_BRAVE_FRESHNESS = {"day": "pd", "week": "pw", "month": "pm", "year": "py"}
 _DDGS_TIMELIMIT = {"day": "d", "week": "w", "month": "m", "year": "y"}
 
 
@@ -305,39 +304,66 @@ def tavily_search(query: str, recency: str | None = None) -> list[WebSource]:
     return sources
 
 
-def brave_search(query: str, recency: str | None = None) -> list[WebSource]:
+def nimble_search(query: str, recency: str | None = None) -> list[WebSource]:
     settings = get_settings()
-    if not settings.brave_api_key:
+    if not settings.nimble_api_key:
         return []
-    headers = {
-        "Accept": "application/json",
-        "Accept-Encoding": "gzip",
-        "X-Subscription-Token": settings.brave_api_key,
+    headers = {"Content-Type": "application/json", "Authorization": _nimble_auth_header(settings.nimble_api_key)}
+    payload = {
+        "query": query,
+        "search_engine": "google_search",
+        "country": "US",
+        "locale": "en",
+        "parse": True,
     }
-    params = {"q": query, "count": MAX_SEARCH_RESULTS, "text_decorations": False}
-    if recency in _BRAVE_FRESHNESS:
-        params["freshness"] = _BRAVE_FRESHNESS[recency]
     try:
         with httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS) as client:
             response = client.get(
-                "https://api.search.brave.com/res/v1/web/search",
+                settings.nimble_api_endpoint,
                 headers=headers,
-                params=params,
+                params=payload,
             )
+            if response.status_code == 405:
+                response = client.post(settings.nimble_api_endpoint, headers=headers, json=payload)
             response.raise_for_status()
         data = response.json()
     except Exception:
         return []
     sources: list[WebSource] = []
-    for item in data.get("web", {}).get("results", [])[:MAX_SEARCH_RESULTS]:
-        url = item.get("url", "")
-        title = item.get("title", source_title(url))
-        description = item.get("description", "")
-        snippets = " ".join(item.get("extra_snippets", []))
-        content = f"{description} {snippets}".strip()
+    for item in _nimble_result_items(data)[:MAX_SEARCH_RESULTS]:
+        if not isinstance(item, dict):
+            continue
+        url = item.get("url") or item.get("link") or item.get("href") or ""
+        title = item.get("title") or source_title(url)
+        snippets = item.get("snippets") or item.get("extra_snippets") or []
+        if isinstance(snippets, list):
+            snippet = " ".join(str(part) for part in snippets)
+        else:
+            snippet = str(snippets or "")
+        content = snippet or item.get("description") or item.get("snippet") or item.get("content") or ""
         if url and content:
             sources.append(WebSource(title=title, url=url, content=normalize_text(content)[:MAX_SOURCE_CHARS]))
     return sources
+
+
+def _nimble_auth_header(api_key: str) -> str:
+    if api_key.lower().startswith(("bearer ", "basic ")):
+        return api_key
+    return f"Bearer {api_key}"
+
+
+def _nimble_result_items(data: dict) -> list[dict]:
+    parsing = data.get("parsing") if isinstance(data.get("parsing"), dict) else {}
+    entities = parsing.get("entities") if isinstance(parsing.get("entities"), dict) else {}
+    for key in ("SearchResult", "OrganicResult", "organic_results", "search_results", "results"):
+        value = entities.get(key)
+        if isinstance(value, list):
+            return value
+    for key in ("organic_results", "search_results", "results", "items"):
+        value = data.get(key)
+        if isinstance(value, list):
+            return value
+    return []
 
 
 def test_tavily_connection() -> dict:
@@ -384,25 +410,19 @@ def test_you_connection() -> dict:
         return {"success": False, "latency_ms": int((time.perf_counter() - started) * 1000), "error": str(exc)[:300]}
 
 
-def test_brave_connection() -> dict:
-    """Minimal live ping to verify the Brave key works. Used by the admin Providers tab."""
+def test_nimble_connection() -> dict:
+    """Minimal live ping to verify the Nimble key works. Used by the admin Providers tab."""
     settings = get_settings()
-    if not settings.brave_api_key:
-        return {"success": False, "error": "BRAVE_API_KEY not configured."}
-    headers = {
-        "Accept": "application/json",
-        "Accept-Encoding": "gzip",
-        "X-Subscription-Token": settings.brave_api_key,
-    }
-    params = {"q": "ping", "count": 1}
+    if not settings.nimble_api_key:
+        return {"success": False, "error": "NIMBLE_API_KEY not configured."}
+    headers = {"Content-Type": "application/json", "Authorization": _nimble_auth_header(settings.nimble_api_key)}
+    payload = {"query": "ping", "search_engine": "google_search", "country": "US", "locale": "en", "parse": True}
     started = time.perf_counter()
     try:
         with httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS) as client:
-            response = client.get(
-                "https://api.search.brave.com/res/v1/web/search",
-                headers=headers,
-                params=params,
-            )
+            response = client.get(settings.nimble_api_endpoint, headers=headers, params=payload)
+            if response.status_code == 405:
+                response = client.post(settings.nimble_api_endpoint, headers=headers, json=payload)
             response.raise_for_status()
         return {"success": True, "latency_ms": int((time.perf_counter() - started) * 1000)}
     except httpx.HTTPStatusError as exc:
@@ -439,8 +459,8 @@ def search_web_sources(query: str, recency: str | None = None) -> tuple[str, lis
         providers.append(("You.com", you_search))
     if settings.tavily_api_key:
         providers.append(("Tavily", tavily_search))
-    if settings.brave_api_key:
-        providers.append(("Brave", brave_search))
+    if settings.nimble_api_key:
+        providers.append(("Nimble", nimble_search))
     providers.append(("DuckDuckGo", ddg_search))
 
     for provider, fn in providers:
@@ -470,7 +490,7 @@ def gather_web_context(query: str, enable_search: bool, recency: str | None = No
 
     if not sources:
         if enable_search and not search_provider:
-            status = "Web search requested — no key configured (TAVILY_API_KEY / BRAVE_API_KEY) and DuckDuckGo returned no results."
+            status = "Web search requested — no key configured (YOU_API_KEY / TAVILY_API_KEY / NIMBLE_API_KEY) and DuckDuckGo returned no results."
         elif enable_search:
             status = f"Web search via {search_provider} returned no results."
         else:

@@ -26,70 +26,87 @@ def safe_filename(title: str, suffix: str) -> str:
 class AgentV3Tools:
     you_api_key: str | None = None
     tavily_api_key: str | None = None
+    nimble_api_key: str | None = None
+    nimble_api_endpoint: str = "https://api.webit.live/api/v1/realtime/serp"
 
     @classmethod
     def from_settings(cls) -> "AgentV3Tools":
         settings = get_settings()
-        return cls(you_api_key=settings.you_api_key, tavily_api_key=settings.tavily_api_key)
+        return cls(
+            you_api_key=settings.you_api_key,
+            tavily_api_key=settings.tavily_api_key,
+            nimble_api_key=settings.nimble_api_key,
+            nimble_api_endpoint=settings.nimble_api_endpoint,
+        )
 
     def search_web(self, query: str, max_results: int = 6) -> tuple[list[Source], ToolCall]:
         started = time.perf_counter()
         tool = ToolCall(name="web_search", input={"query": query, "max_results": max_results})
-        if not self.you_api_key and not self.tavily_api_key:
-            tool.ok = False
-            tool.error = "YOU_API_KEY / TAVILY_API_KEY is not configured"
-            tool.latency_ms = int((time.perf_counter() - started) * 1000)
-            return [], tool
-
-        errors: list[str] = []
-        if self.you_api_key:
-            try:
-                sources = self._search_you(query, max_results)
-                if sources:
-                    tool.output = {"provider": "You.com", "source_count": len(sources)}
-                    return sources, tool
-                errors.append("You.com returned no results")
-            except Exception as exc:
-                logger.warning("agent_v3 You.com web_search failed: %s", exc)
-                errors.append(f"You.com: {exc}")
-
-        if not self.tavily_api_key:
-            tool.ok = False
-            tool.error = "; ".join(errors) or "TAVILY_API_KEY is not configured"
-            tool.output = {"provider": "You.com" if self.you_api_key else "", "source_count": 0}
-            tool.latency_ms = int((time.perf_counter() - started) * 1000)
-            return [], tool
-
         try:
-            response = httpx.post(
-                "https://api.tavily.com/search",
-                json={
-                    "api_key": self.tavily_api_key,
-                    "query": query,
-                    "max_results": max_results,
-                    "search_depth": "advanced",
-                    "include_answer": False,
-                    "include_raw_content": False,
-                },
-                timeout=20,
-            )
-            response.raise_for_status()
-            payload = response.json()
-            sources = [
-                Source(
-                    title=str(item.get("title") or ""),
-                    url=str(item.get("url") or ""),
-                    snippet=str(item.get("content") or item.get("snippet") or ""),
-                )
-                for item in payload.get("results", [])
-                if isinstance(item, dict)
-            ]
-            tool.output = {"provider": "Tavily", "source_count": len(sources)}
-            return sources, tool
-        except Exception as exc:
-            logger.warning("agent_v3 web_search failed: %s", exc)
+            if not self.you_api_key and not self.tavily_api_key and not self.nimble_api_key:
+                tool.ok = False
+                tool.error = "YOU_API_KEY / TAVILY_API_KEY / NIMBLE_API_KEY is not configured"
+                return [], tool
+
+            errors: list[str] = []
+            if self.you_api_key:
+                try:
+                    sources = self._search_you(query, max_results)
+                    if sources:
+                        tool.output = {"provider": "You.com", "source_count": len(sources)}
+                        return sources, tool
+                    errors.append("You.com returned no results")
+                except Exception as exc:
+                    logger.warning("agent_v3 You.com web_search failed: %s", exc)
+                    errors.append(f"You.com: {exc}")
+
+            if self.tavily_api_key:
+                try:
+                    response = httpx.post(
+                        "https://api.tavily.com/search",
+                        json={
+                            "api_key": self.tavily_api_key,
+                            "query": query,
+                            "max_results": max_results,
+                            "search_depth": "advanced",
+                            "include_answer": False,
+                            "include_raw_content": False,
+                        },
+                        timeout=20,
+                    )
+                    response.raise_for_status()
+                    payload = response.json()
+                    sources = [
+                        Source(
+                            title=str(item.get("title") or ""),
+                            url=str(item.get("url") or ""),
+                            snippet=str(item.get("content") or item.get("snippet") or ""),
+                        )
+                        for item in payload.get("results", [])
+                        if isinstance(item, dict)
+                    ]
+                    if sources:
+                        tool.output = {"provider": "Tavily", "source_count": len(sources)}
+                        return sources, tool
+                    errors.append("Tavily returned no results")
+                except Exception as exc:
+                    logger.warning("agent_v3 web_search failed: %s", exc)
+                    errors.append(f"Tavily: {exc}")
+
+            if self.nimble_api_key:
+                try:
+                    sources = self._search_nimble(query, max_results)
+                    if sources:
+                        tool.output = {"provider": "Nimble", "source_count": len(sources)}
+                        return sources, tool
+                    errors.append("Nimble returned no results")
+                except Exception as exc:
+                    logger.warning("agent_v3 Nimble web_search failed: %s", exc)
+                    errors.append(f"Nimble: {exc}")
+
             tool.ok = False
-            tool.error = "; ".join([*errors, f"Tavily: {exc}"])
+            tool.error = "; ".join(errors) or "No web search provider returned results"
+            tool.output = {"source_count": 0}
             return [], tool
         finally:
             tool.latency_ms = int((time.perf_counter() - started) * 1000)
@@ -110,6 +127,50 @@ class AgentV3Tools:
                 continue
             url = str(item.get("url") or item.get("link") or "")
             snippets = item.get("snippets") or item.get("highlights") or []
+            if isinstance(snippets, list):
+                snippet = " ".join(str(part) for part in snippets)
+            else:
+                snippet = str(snippets or "")
+            snippet = snippet or str(item.get("description") or item.get("snippet") or item.get("content") or "")
+            if url:
+                sources.append(
+                    Source(
+                        title=str(item.get("title") or ""),
+                        url=url,
+                        snippet=snippet,
+                    )
+                )
+        return sources
+
+    def _search_nimble(self, query: str, max_results: int) -> list[Source]:
+        payload = {
+            "query": query,
+            "search_engine": "google_search",
+            "country": "US",
+            "locale": "en",
+            "parse": True,
+        }
+        response = httpx.get(
+            self.nimble_api_endpoint,
+            headers={"Content-Type": "application/json", "Authorization": _nimble_auth_header(self.nimble_api_key or "")},
+            params=payload,
+            timeout=20,
+        )
+        if response.status_code == 405:
+            response = httpx.post(
+                self.nimble_api_endpoint,
+                headers={"Content-Type": "application/json", "Authorization": _nimble_auth_header(self.nimble_api_key or "")},
+                json=payload,
+                timeout=20,
+            )
+        response.raise_for_status()
+        data = response.json()
+        sources: list[Source] = []
+        for item in _nimble_result_items(data)[:max_results]:
+            if not isinstance(item, dict):
+                continue
+            url = str(item.get("url") or item.get("link") or item.get("href") or "")
+            snippets = item.get("snippets") or item.get("extra_snippets") or []
             if isinstance(snippets, list):
                 snippet = " ".join(str(part) for part in snippets)
             else:
@@ -218,3 +279,23 @@ def source_context(sources: list[Source]) -> str:
         body = source.content or source.snippet
         lines.append(f"[S{idx}] {source.title}\nURL: {source.url}\n{body[:2500]}")
     return "\n\n".join(lines)
+
+
+def _nimble_auth_header(api_key: str) -> str:
+    if api_key.lower().startswith(("bearer ", "basic ")):
+        return api_key
+    return f"Bearer {api_key}"
+
+
+def _nimble_result_items(data: dict) -> list[dict]:
+    parsing = data.get("parsing") if isinstance(data.get("parsing"), dict) else {}
+    entities = parsing.get("entities") if isinstance(parsing.get("entities"), dict) else {}
+    for key in ("SearchResult", "OrganicResult", "organic_results", "search_results", "results"):
+        value = entities.get(key)
+        if isinstance(value, list):
+            return value
+    for key in ("organic_results", "search_results", "results", "items"):
+        value = data.get(key)
+        if isinstance(value, list):
+            return value
+    return []

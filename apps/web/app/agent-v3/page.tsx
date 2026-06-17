@@ -3,7 +3,6 @@
 import { useAuth } from '@clerk/nextjs'
 import DOMPurify from 'dompurify'
 import {
-  Archive,
   ArrowUpRight,
   BookOpen,
   CheckCircle2,
@@ -11,12 +10,16 @@ import {
   Clock3,
   Download,
   FileText,
+  Folder,
   Library,
   Loader2,
+  MessageSquare,
   PanelRight,
+  Plus,
   Search,
   Send,
   Sparkles,
+  Trash2,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { marked } from 'marked'
@@ -24,7 +27,9 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import styles from './page.module.css'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
-const LIBRARY_KEY = 'fronei-agent-v3-studio-library'
+const STUDIO_KEY = 'fronei-agent-v3-studio-workspaces'
+const LEGACY_LIBRARY_KEY = 'fronei-agent-v3-studio-library'
+const INITIAL_VISIBLE_TURNS = 6
 
 type QualityMode = 'draft' | 'standard' | 'executive'
 type OutputFormat = 'chat' | 'markdown' | 'docx'
@@ -76,6 +81,22 @@ type WorkItem = {
   sourceCount: number
 }
 
+type Conversation = {
+  id: string
+  title: string
+  createdAt: string
+  updatedAt: string
+  turns: WorkItem[]
+}
+
+type Workspace = {
+  id: string
+  name: string
+  createdAt: string
+  updatedAt: string
+  conversations: Conversation[]
+}
+
 const SUGGESTIONS = [
   'Research RBI digital lending guidelines and create a concise briefing note.',
   'Compare You.com, Tavily, and Nimble as search providers for source-grounded research.',
@@ -91,31 +112,49 @@ export default function AgentV3Page() {
   const [result, setResult] = useState<AgentResult | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [running, setRunning] = useState(false)
-  const [library, setLibrary] = useState<WorkItem[]>([])
+  const [workspaces, setWorkspaces] = useState<Workspace[]>([])
+  const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(null)
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(null)
   const [mobileView, setMobileView] = useState<MobileView>('work')
   const [traceOpen, setTraceOpen] = useState(false)
-  const [selectedWorkId, setSelectedWorkId] = useState<string | null>(null)
+  const [visibleTurnCount, setVisibleTurnCount] = useState(INITIAL_VISIBLE_TURNS)
   const eventsRef = useRef<ProgressEvent[]>([])
+  const chatScrollRef = useRef<HTMLDivElement | null>(null)
 
   const canRun = useMemo(() => isLoaded && isSignedIn && message.trim().length > 0 && !running, [isLoaded, isSignedIn, message, running])
   const activeEvents = useMemo(() => events.filter(event => !['tool_selection', 'tool_result'].includes(event.stage)), [events])
   const confidenceCues = useMemo(() => buildConfidenceCues(events, result), [events, result])
-  const latestArtifact = result?.artifacts?.[0] || library.find(item => item.artifacts.length)?.artifacts[0]
+  const activeWorkspace = useMemo(() => workspaces.find(workspace => workspace.id === activeWorkspaceId) || workspaces[0] || null, [activeWorkspaceId, workspaces])
+  const activeConversation = useMemo(
+    () => activeWorkspace?.conversations.find(conversation => conversation.id === activeConversationId) || activeWorkspace?.conversations[0] || null,
+    [activeConversationId, activeWorkspace],
+  )
+  const activeTurns = activeConversation?.turns || []
+  const visibleTurns = activeTurns.slice(Math.max(0, activeTurns.length - visibleTurnCount))
+  const latestTurn = activeTurns.at(-1) || null
+  const latestArtifact = result?.artifacts?.[0] || latestTurn?.artifacts?.[0]
   const sources = result?.sources || []
-  const selectedWork = selectedWorkId ? library.find(item => item.id === selectedWorkId) || null : null
 
   useEffect(() => {
     try {
-      const raw = localStorage.getItem(LIBRARY_KEY)
-      if (raw) setLibrary(JSON.parse(raw))
+      const raw = localStorage.getItem(STUDIO_KEY)
+      const legacyRaw = localStorage.getItem(LEGACY_LIBRARY_KEY)
+      const next = raw ? JSON.parse(raw) as Workspace[] : bootstrapWorkspaces(legacyRaw)
+      setWorkspaces(next)
+      setActiveWorkspaceId(next[0]?.id || null)
+      setActiveConversationId(next[0]?.conversations[0]?.id || null)
     } catch {}
   }, [])
 
   useEffect(() => {
     try {
-      localStorage.setItem(LIBRARY_KEY, JSON.stringify(library.slice(0, 20)))
+      if (workspaces.length) localStorage.setItem(STUDIO_KEY, JSON.stringify(workspaces))
     } catch {}
-  }, [library])
+  }, [workspaces])
+
+  useEffect(() => {
+    chatScrollRef.current?.scrollTo({ top: chatScrollRef.current.scrollHeight, behavior: 'smooth' })
+  }, [visibleTurns.length, running, result?.turn_id, events.length])
 
   async function run() {
     if (!canRun) return
@@ -124,9 +163,9 @@ export default function AgentV3Page() {
     setResult(null)
     setError(null)
     setRunning(true)
-    setSelectedWorkId(null)
     setTraceOpen(false)
     setMobileView('work')
+    ensureActiveConversation(message)
     try {
       const token = await getToken()
       const response = await fetch(`${API_BASE}/agent-v3/turns/stream`, {
@@ -177,40 +216,130 @@ export default function AgentV3Page() {
       const next = data as AgentResult
       setResult(next)
       setTraceOpen(false)
-      setLibrary(prev => [
-        {
-          id: next.turn_id,
-          title: titleFromMessage(message),
-          route: next.route,
-          createdAt: new Date().toISOString(),
-          completedAt: new Date().toISOString(),
-          message,
-          qualityMode,
-          outputFormat,
-          events: eventsRef.current,
-          result: next,
-          artifacts: next.artifacts || [],
-          sourceCount: next.sources?.length || 0,
-        },
-        ...prev.filter(item => item.id !== next.turn_id),
-      ].slice(0, 20))
+      appendTurnToActiveConversation({
+        id: next.turn_id,
+        title: titleFromMessage(message),
+        route: next.route,
+        createdAt: new Date().toISOString(),
+        completedAt: new Date().toISOString(),
+        message,
+        qualityMode,
+        outputFormat,
+        events: eventsRef.current,
+        result: next,
+        artifacts: next.artifacts || [],
+        sourceCount: next.sources?.length || 0,
+      })
     } else if (eventType === 'error') {
       setError(data.message || 'Agent v3 failed')
     }
   }
 
-  function selectWork(item: WorkItem) {
+  function selectConversation(workspaceId: string, conversationId: string) {
     if (running) return
-    setSelectedWorkId(item.id)
-    setMessage(item.message || item.title)
-    eventsRef.current = item.events || []
+    const workspace = workspaces.find(item => item.id === workspaceId)
+    const conversation = workspace?.conversations.find(item => item.id === conversationId)
+    const lastTurn = conversation?.turns.at(-1)
+    setActiveWorkspaceId(workspaceId)
+    setActiveConversationId(conversationId)
+    setVisibleTurnCount(INITIAL_VISIBLE_TURNS)
+    setMessage('')
+    eventsRef.current = lastTurn?.events || []
     setEvents(eventsRef.current)
-    setResult(item.result || null)
+    setResult(lastTurn?.result || null)
     setError(null)
     setTraceOpen(false)
     setMobileView('work')
-    if (item.qualityMode) setQualityMode(item.qualityMode)
-    if (item.outputFormat) setOutputFormat(item.outputFormat)
+    if (lastTurn?.qualityMode) setQualityMode(lastTurn.qualityMode)
+    if (lastTurn?.outputFormat) setOutputFormat(lastTurn.outputFormat)
+  }
+
+  function createWorkspace() {
+    const name = window.prompt('Workspace name', 'New workspace')?.trim()
+    if (!name) return
+    const workspace = newWorkspace(name)
+    setWorkspaces(prev => [workspace, ...prev])
+    setActiveWorkspaceId(workspace.id)
+    setActiveConversationId(workspace.conversations[0].id)
+    setVisibleTurnCount(INITIAL_VISIBLE_TURNS)
+    setMessage('')
+    setEvents([])
+    eventsRef.current = []
+    setResult(null)
+  }
+
+  function deleteWorkspace(workspaceId: string) {
+    if (workspaces.length <= 1) return
+    if (!window.confirm('Delete this workspace and all conversations inside it?')) return
+    setWorkspaces(prev => {
+      const next = prev.filter(workspace => workspace.id !== workspaceId)
+      if (activeWorkspaceId === workspaceId) {
+        setActiveWorkspaceId(next[0]?.id || null)
+        setActiveConversationId(next[0]?.conversations[0]?.id || null)
+      }
+      return next
+    })
+  }
+
+  function createConversation(workspaceId: string) {
+    const title = window.prompt('Conversation title', 'New conversation')?.trim()
+    if (!title) return
+    const conversation = newConversation(title)
+    setWorkspaces(prev => prev.map(workspace => (
+      workspace.id === workspaceId
+        ? { ...workspace, updatedAt: new Date().toISOString(), conversations: [conversation, ...workspace.conversations] }
+        : workspace
+    )))
+    setActiveWorkspaceId(workspaceId)
+    setActiveConversationId(conversation.id)
+    setVisibleTurnCount(INITIAL_VISIBLE_TURNS)
+    setMessage('')
+    setEvents([])
+    eventsRef.current = []
+    setResult(null)
+  }
+
+  function deleteConversation(workspaceId: string, conversationId: string) {
+    if (!window.confirm('Delete this conversation?')) return
+    setWorkspaces(prev => prev.map(workspace => {
+      if (workspace.id !== workspaceId) return workspace
+      const conversations = workspace.conversations.filter(conversation => conversation.id !== conversationId)
+      const nextConversations = conversations.length ? conversations : [newConversation('New conversation')]
+      if (activeConversationId === conversationId) setActiveConversationId(nextConversations[0].id)
+      return { ...workspace, updatedAt: new Date().toISOString(), conversations: nextConversations }
+    }))
+  }
+
+  function ensureActiveConversation(seedMessage: string) {
+    if (activeWorkspace && activeConversation) return
+    const workspace = newWorkspace('Personal workspace', titleFromMessage(seedMessage))
+    setWorkspaces(prev => [workspace, ...prev])
+    setActiveWorkspaceId(workspace.id)
+    setActiveConversationId(workspace.conversations[0].id)
+  }
+
+  function appendTurnToActiveConversation(turn: WorkItem) {
+    setWorkspaces(prev => {
+      const workspaceId = activeWorkspaceId || prev[0]?.id
+      const conversationId = activeConversationId || prev[0]?.conversations[0]?.id
+      return prev.map(workspace => {
+        if (workspace.id !== workspaceId) return workspace
+        return {
+          ...workspace,
+          updatedAt: turn.completedAt || turn.createdAt,
+          conversations: workspace.conversations.map(conversation => (
+            conversation.id === conversationId
+              ? {
+                ...conversation,
+                title: conversation.turns.length ? conversation.title : turn.title,
+                updatedAt: turn.completedAt || turn.createdAt,
+                turns: [...conversation.turns.filter(item => item.id !== turn.id), turn],
+              }
+              : conversation
+          )),
+        }
+      })
+    })
   }
 
   function downloadArtifact(artifact: Artifact) {
@@ -243,19 +372,28 @@ export default function AgentV3Page() {
 
         <aside className={`${styles.libraryPane} ${mobileView === 'library' ? styles.mobileVisible : styles.mobileHidden}`}>
           <StudioLibrary
-            library={library}
-            latestArtifact={latestArtifact}
-            selectedWorkId={selectedWorkId}
-            onSelectWork={selectWork}
-            downloadArtifact={downloadArtifact}
+            workspaces={workspaces}
+            activeWorkspaceId={activeWorkspace?.id || null}
+            activeConversationId={activeConversation?.id || null}
+            onCreateWorkspace={createWorkspace}
+            onDeleteWorkspace={deleteWorkspace}
+            onCreateConversation={createConversation}
+            onDeleteConversation={deleteConversation}
+            onSelectConversation={selectConversation}
           />
         </aside>
 
         <section className={`${styles.workPane} ${mobileView === 'work' ? styles.mobileVisible : styles.mobileHidden}`}>
           <WorkbenchHeader running={running} result={result} />
-          <div className={styles.workScroll}>
+          <div className={styles.workScroll} ref={chatScrollRef}>
+            {activeTurns.length > visibleTurns.length && (
+              <button type="button" className={styles.loadOlderButton} onClick={() => setVisibleTurnCount(count => count + INITIAL_VISIBLE_TURNS)}>
+                Load older turns
+              </button>
+            )}
             <Timeline
-              message={message}
+              draftMessage={message}
+              turns={visibleTurns}
               events={activeEvents}
               running={running}
               result={result}
@@ -266,6 +404,9 @@ export default function AgentV3Page() {
               downloadArtifact={downloadArtifact}
             />
             {error && <div className={styles.errorBox}>{error}</div>}
+            {!result && !running && activeTurns.length === 0 && <SuggestionStrip suggestions={SUGGESTIONS} setMessage={setMessage} />}
+          </div>
+          <div className={styles.composerDock}>
             <Composer
               message={message}
               setMessage={setMessage}
@@ -277,7 +418,6 @@ export default function AgentV3Page() {
               canRun={canRun}
               run={run}
             />
-            {!result && !running && events.length === 0 && <SuggestionStrip suggestions={SUGGESTIONS} setMessage={setMessage} />}
           </div>
         </section>
 
@@ -287,7 +427,7 @@ export default function AgentV3Page() {
             events={events}
             sources={sources}
             latestArtifact={latestArtifact}
-            selectedWork={selectedWork}
+            activeConversation={activeConversation}
             currentMessage={message}
             downloadArtifact={downloadArtifact}
           />
@@ -334,77 +474,92 @@ function MobileTopBar({ mobileView, setMobileView, running }: { mobileView: Mobi
 }
 
 function StudioLibrary({
-  library,
-  latestArtifact,
-  selectedWorkId,
-  onSelectWork,
-  downloadArtifact,
+  workspaces,
+  activeWorkspaceId,
+  activeConversationId,
+  onCreateWorkspace,
+  onDeleteWorkspace,
+  onCreateConversation,
+  onDeleteConversation,
+  onSelectConversation,
 }: {
-  library: WorkItem[]
-  latestArtifact?: Artifact
-  selectedWorkId: string | null
-  onSelectWork: (item: WorkItem) => void
-  downloadArtifact: (artifact: Artifact) => void
+  workspaces: Workspace[]
+  activeWorkspaceId: string | null
+  activeConversationId: string | null
+  onCreateWorkspace: () => void
+  onDeleteWorkspace: (workspaceId: string) => void
+  onCreateConversation: (workspaceId: string) => void
+  onDeleteConversation: (workspaceId: string, conversationId: string) => void
+  onSelectConversation: (workspaceId: string, conversationId: string) => void
 }) {
   return (
     <>
       <div className={styles.sectionHeader}>
         <div>
           <p className={styles.overline}>Studio</p>
-          <h1 className={styles.sectionTitle}>Work library</h1>
+          <h1 className={styles.sectionTitle}>Workspaces</h1>
         </div>
-        <span className={styles.sectionIcon}><Archive size={16} /></span>
+        <button type="button" className={styles.iconButton} onClick={onCreateWorkspace} aria-label="Create workspace">
+          <Plus size={16} />
+        </button>
       </div>
 
-      {latestArtifact && (
-        <button
-          type="button"
-          onClick={() => downloadArtifact(latestArtifact)}
-          className={styles.artifactButton}
-        >
-          <span className={styles.artifactIcon}><Download size={16} /></span>
-          <span className={styles.minZero}>
-            <span className={styles.truncateStrong}>{latestArtifact.filename}</span>
-            <span className={styles.mutedSmall}>Latest artifact</span>
-          </span>
-        </button>
-      )}
-
       <div className={styles.libraryList}>
-        {library.length === 0 && (
+        {workspaces.length === 0 && (
           <div className={styles.emptyState}>
-            Finished work will appear here.
+            Create a workspace to begin.
           </div>
         )}
-        {library.map(item => (
-          <button
-            key={item.id}
-            type="button"
-            onClick={() => onSelectWork(item)}
-            className={`${styles.workCard} ${selectedWorkId === item.id ? styles.workCardActive : ''}`}
-          >
-            <div className={styles.cardRowTop}>
-              <span className={styles.cardIcon}><FileText size={16} /></span>
-              <div className={styles.minZero}>
-                <p className={styles.cardTitle}>{item.title}</p>
-                <p className={styles.cardMeta}>{item.route} | {item.sourceCount} sources | {formatRelativeTime(item.completedAt || item.createdAt)}</p>
+        {workspaces.map((workspace, index) => {
+          const expanded = workspace.id === activeWorkspaceId || index === 0
+          const turnCount = workspace.conversations.reduce((total, conversation) => total + conversation.turns.length, 0)
+          return (
+            <details key={workspace.id} className={styles.workspaceGroup} open={expanded}>
+              <summary className={styles.workspaceSummary}>
+                <span className={styles.workspaceSummaryMain}>
+                  <Folder size={15} />
+                  <span className={styles.workspaceName}>{workspace.name}</span>
+                </span>
+                <span className={styles.workspaceMeta}>{workspace.conversations.length} conv | {turnCount} turns</span>
+              </summary>
+              <div className={styles.workspaceActions}>
+                <button type="button" onClick={() => onCreateConversation(workspace.id)}>
+                  <Plus size={13} /> Conversation
+                </button>
+                {workspaces.length > 1 && (
+                  <button type="button" onClick={() => onDeleteWorkspace(workspace.id)}>
+                    <Trash2 size={13} /> Delete
+                  </button>
+                )}
               </div>
-            </div>
-            {item.artifacts.length > 0 && (
-              <button
-                type="button"
-                onClick={event => {
-                  event.stopPropagation()
-                  downloadArtifact(item.artifacts[0])
-                }}
-                className={styles.secondaryButton}
-              >
-                <Download size={14} />
-                Download
-              </button>
-            )}
-          </button>
-        ))}
+              <div className={styles.conversationList}>
+                {workspace.conversations.map(conversation => (
+                  <div key={conversation.id} className={`${styles.conversationItemWrap} ${conversation.id === activeConversationId ? styles.conversationItemActive : ''}`}>
+                    <button
+                      type="button"
+                      className={styles.conversationItem}
+                      onClick={() => onSelectConversation(workspace.id, conversation.id)}
+                    >
+                      <MessageSquare size={15} />
+                      <span className={styles.conversationText}>
+                        <span>{conversation.title}</span>
+                        <small>{conversation.turns.length} turns | {formatRelativeTime(conversation.updatedAt)}</small>
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      className={styles.deleteConversationButton}
+                      onClick={() => onDeleteConversation(workspace.id, conversation.id)}
+                      aria-label="Delete conversation"
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </details>
+          )
+        })}
       </div>
     </>
   )
@@ -507,7 +662,8 @@ function SuggestionStrip({ suggestions, setMessage }: { suggestions: string[]; s
 }
 
 function Timeline({
-  message,
+  draftMessage,
+  turns,
   events,
   running,
   result,
@@ -517,7 +673,8 @@ function Timeline({
   eventChips,
   downloadArtifact,
 }: {
-  message: string
+  draftMessage: string
+  turns: WorkItem[]
   events: ProgressEvent[]
   running: boolean
   result: AgentResult | null
@@ -529,61 +686,44 @@ function Timeline({
 }) {
   return (
     <section className={styles.chatThread}>
-      <div className={styles.userBubble}>
-        <p className={styles.bubbleLabel}>You</p>
-        <p className={styles.userText}>{message}</p>
-      </div>
-
-      <div className={styles.assistantBubble}>
-        <div className={styles.assistantHeader}>
-          <span className={styles.companionMark}><Sparkles size={16} /></span>
-          <div>
-            <p className={styles.companionTitle}>Fronei</p>
-            <p className={styles.companionText}>
-              {running ? 'Working through the route, tools, and evidence.' : result ? 'Here is the finished response.' : 'Ready when you are.'}
-            </p>
+      {turns.length === 0 && !running && !result && (
+        <div className={styles.assistantBubble}>
+          <div className={styles.assistantHeader}>
+            <span className={styles.companionMark}><Sparkles size={16} /></span>
+            <div>
+              <p className={styles.companionTitle}>Fronei</p>
+              <p className={styles.companionText}>Start a task and I will keep the work visible here.</p>
+            </div>
           </div>
+          <p className={styles.emptyAssistantText}>This conversation is empty.</p>
         </div>
+      )}
 
-        {running && (
-          <RollingCommentary events={events} eventChips={eventChips} />
-        )}
+      {turns.map(turn => (
+        <TurnPair key={turn.id} turn={turn} downloadArtifact={downloadArtifact} />
+      ))}
 
-        {!running && result && (
-          <>
-            {confidenceCues.length > 0 && (
-              <div className={styles.cueGrid}>
-                {confidenceCues.map(cue => (
-                  <div key={cue} className={styles.cueCard}>
-                    <CheckCircle2 size={16} />
-                    {cue}
-                  </div>
-                ))}
-              </div>
-            )}
-            <MarkdownResult content={result.answer} />
-            {result.artifacts?.length ? (
-              <div className={styles.artifactRow}>
-                {result.artifacts.map(artifact => (
-                  <button
-                    key={artifact.filename}
-                    type="button"
-                    onClick={() => downloadArtifact(artifact)}
-                    className={styles.darkButton}
-                  >
-                    <Download size={16} />
-                    {artifact.filename}
-                  </button>
-                ))}
-              </div>
-            ) : null}
-          </>
-        )}
+      {running && (
+        <LiveTurn message={draftMessage} events={events} eventChips={eventChips} />
+      )}
 
-        {!running && !result && (
-          <p className={styles.emptyAssistantText}>Start a task and I will keep the work visible here.</p>
-        )}
-      </div>
+      {!running && result && turns.length === 0 && (
+        <TurnPair
+          turn={{
+            id: result.turn_id,
+            title: titleFromMessage(draftMessage),
+            route: result.route,
+            createdAt: new Date().toISOString(),
+            message: draftMessage,
+            events,
+            result,
+            artifacts: result.artifacts || [],
+            sourceCount: result.sources?.length || 0,
+          }}
+          confidenceCues={confidenceCues}
+          downloadArtifact={downloadArtifact}
+        />
+      )}
 
       {(events.length > 0 || result) && (
         <button
@@ -615,6 +755,81 @@ function Timeline({
         </div>
       )}
     </section>
+  )
+}
+
+function TurnPair({
+  turn,
+  confidenceCues,
+  downloadArtifact,
+}: {
+  turn: WorkItem
+  confidenceCues?: string[]
+  downloadArtifact: (artifact: Artifact) => void
+}) {
+  return (
+    <>
+      <div className={styles.userBubble}>
+        <p className={styles.bubbleLabel}>You</p>
+        <p className={styles.userText}>{turn.message || turn.title}</p>
+      </div>
+      <div className={styles.assistantBubble}>
+        <div className={styles.assistantHeader}>
+          <span className={styles.companionMark}><Sparkles size={16} /></span>
+          <div>
+            <p className={styles.companionTitle}>Fronei</p>
+            <p className={styles.companionText}>Completed as {turn.route}.</p>
+          </div>
+        </div>
+        {confidenceCues?.length ? (
+          <div className={styles.cueGrid}>
+            {confidenceCues.map(cue => (
+              <div key={cue} className={styles.cueCard}>
+                <CheckCircle2 size={16} />
+                {cue}
+              </div>
+            ))}
+          </div>
+        ) : null}
+        <MarkdownResult content={turn.result?.answer || ''} />
+        {turn.artifacts.length ? (
+          <div className={styles.artifactRow}>
+            {turn.artifacts.map(artifact => (
+              <button
+                key={artifact.filename}
+                type="button"
+                onClick={() => downloadArtifact(artifact)}
+                className={styles.darkButton}
+              >
+                <Download size={16} />
+                {artifact.filename}
+              </button>
+            ))}
+          </div>
+        ) : null}
+      </div>
+    </>
+  )
+}
+
+function LiveTurn({ message, events, eventChips }: { message: string; events: ProgressEvent[]; eventChips: (event: ProgressEvent) => string[] }) {
+  return (
+    <>
+      <div className={styles.userBubble}>
+        <p className={styles.bubbleLabel}>You</p>
+        <p className={styles.userText}>{message}</p>
+      </div>
+      <div className={styles.assistantBubble}>
+        <div className={styles.assistantHeader}>
+          <span className={styles.companionMark}><Sparkles size={16} /></span>
+          <div>
+            <p className={styles.companionTitle}>Fronei</p>
+            <p className={styles.companionText}>Working through the route, tools, providers, and evidence.</p>
+          </div>
+        </div>
+        <RollingCommentary events={events} eventChips={eventChips} />
+      </div>
+    </>
   )
 }
 
@@ -654,7 +869,7 @@ function ContextRail({
   events,
   sources,
   latestArtifact,
-  selectedWork,
+  activeConversation,
   currentMessage,
   downloadArtifact,
 }: {
@@ -662,12 +877,12 @@ function ContextRail({
   events: ProgressEvent[]
   sources: Source[]
   latestArtifact?: Artifact
-  selectedWork: WorkItem | null
+  activeConversation: Conversation | null
   currentMessage: string
   downloadArtifact: (artifact: Artifact) => void
 }) {
   const providerEvents = events.filter(event => event.stage === 'search_worker_provider')
-  const workSummary = buildWorkSummary({ result, events, sources, selectedWork, currentMessage })
+  const workSummary = buildWorkSummary({ result, events, sources, activeConversation, currentMessage })
   return (
     <>
       <div className={styles.sectionHeaderPlain}>
@@ -782,25 +997,26 @@ function buildWorkSummary({
   result,
   events,
   sources,
-  selectedWork,
+  activeConversation,
   currentMessage,
 }: {
   result: AgentResult | null
   events: ProgressEvent[]
   sources: Source[]
-  selectedWork: WorkItem | null
+  activeConversation: Conversation | null
   currentMessage: string
 }) {
   const cost = estimateCost(events)
-  const timeMs = result?.latency_ms || estimateDurationMs(events, selectedWork)
+  const latestTurn = activeConversation?.turns.at(-1) || null
+  const timeMs = result?.latency_ms || estimateDurationMs(events, latestTurn)
   return {
-    title: selectedWork?.title || titleFromMessage(currentMessage),
-    turns: result || selectedWork ? '1' : '0',
-    route: result?.route || selectedWork?.route || 'not routed',
+    title: activeConversation?.title || titleFromMessage(currentMessage),
+    turns: String(activeConversation?.turns.length || 0),
+    route: result?.route || latestTurn?.route || 'not routed',
     time: timeMs ? formatDuration(timeMs) : 'waiting',
     budget: cost ? `$${cost.toFixed(4)}` : 'not reported',
-    sources: String(sources.length || selectedWork?.sourceCount || 0),
-    events: String(events.length || selectedWork?.events?.length || 0),
+    sources: String(sources.length || latestTurn?.sourceCount || 0),
+    events: String(events.length || latestTurn?.events?.length || 0),
   }
 }
 
@@ -827,6 +1043,56 @@ function estimateDurationMs(events: ProgressEvent[], selectedWork: WorkItem | nu
   const start = new Date(first).getTime()
   const end = new Date(last).getTime()
   return Number.isFinite(start) && Number.isFinite(end) && end > start ? end - start : 0
+}
+
+function bootstrapWorkspaces(legacyRaw: string | null): Workspace[] {
+  const now = new Date().toISOString()
+  try {
+    const legacy = legacyRaw ? JSON.parse(legacyRaw) as WorkItem[] : []
+    if (Array.isArray(legacy) && legacy.length > 0) {
+      return [{
+        id: newId('workspace'),
+        name: 'Imported studio',
+        createdAt: now,
+        updatedAt: legacy[0]?.completedAt || legacy[0]?.createdAt || now,
+        conversations: [{
+          id: newId('conversation'),
+          title: 'Imported work',
+          createdAt: now,
+          updatedAt: legacy[0]?.completedAt || legacy[0]?.createdAt || now,
+          turns: legacy,
+        }],
+      }]
+    }
+  } catch {}
+  return [newWorkspace('Personal workspace')]
+}
+
+function newWorkspace(name: string, conversationTitle = 'New conversation'): Workspace {
+  const now = new Date().toISOString()
+  return {
+    id: newId('workspace'),
+    name,
+    createdAt: now,
+    updatedAt: now,
+    conversations: [newConversation(conversationTitle)],
+  }
+}
+
+function newConversation(title: string): Conversation {
+  const now = new Date().toISOString()
+  return {
+    id: newId('conversation'),
+    title,
+    createdAt: now,
+    updatedAt: now,
+    turns: [],
+  }
+}
+
+function newId(prefix: string): string {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return `${prefix}_${crypto.randomUUID()}`
+  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2)}`
 }
 
 function formatDuration(ms: number): string {

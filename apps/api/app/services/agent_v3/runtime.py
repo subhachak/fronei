@@ -183,6 +183,45 @@ class AgentV3Runtime:
         return output or [], call
 
     def _run_research_subtree(self, request: AgentV3Request, progress):
+        if request.research_level == "deep":
+            from queue import Empty, Queue
+            from threading import Thread
+
+            from app.services.agent_v3.research_subtree import lead_research_loop
+
+            event_queue: Queue[ProgressEvent | object] = Queue()
+            done = object()
+            result_holder: dict[str, object] = {}
+
+            def lead_progress(stage: str, message: str, data: dict):
+                event = progress(stage, message, **data)
+                event_queue.put(event)
+
+            def run_lead_loop() -> None:
+                try:
+                    result_holder["result"] = lead_research_loop(request, self.tool_registry.tools, lead_progress)
+                except BaseException as exc:  # pragma: no cover - defensive streaming bridge.
+                    result_holder["error"] = exc
+                finally:
+                    event_queue.put(done)
+
+            thread = Thread(target=run_lead_loop, name="agent-v3-lead-research", daemon=True)
+            thread.start()
+            while True:
+                try:
+                    item = event_queue.get(timeout=0.25)
+                except Empty:
+                    if not thread.is_alive():
+                        break
+                    continue
+                if item is done:
+                    break
+                yield StreamEnvelope(type="progress", data=item.model_dump(mode="json"))
+            thread.join(timeout=1)
+            if "error" in result_holder:
+                raise result_holder["error"]  # type: ignore[misc]
+            return result_holder["result"]
+
         research_started = time.perf_counter()
         registry = get_research_registry()
         research_goal = create_research_goal(request)

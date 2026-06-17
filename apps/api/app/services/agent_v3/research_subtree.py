@@ -4,13 +4,14 @@ import json
 import logging
 import re
 from ipaddress import ip_address
+from collections.abc import Callable
 from typing import Any, Literal
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, field_validator
 
 from app.services.agent_v3 import model_client
-from app.services.agent_v3.models import AgentV3Request, Source, new_id
+from app.services.agent_v3.models import AgentV3Request, Source, ToolCall, new_id
 
 logger = logging.getLogger(__name__)
 
@@ -233,6 +234,8 @@ class EvidenceItem(BaseModel):
     relevance: float = 0.5
     confidence: float = 0.5
     authority: float = 0.5
+    supports_cells: list[str] = Field(default_factory=list)
+    quoted_text: str = ""
 
 
 class EvidencePack(BaseModel):
@@ -282,6 +285,123 @@ class ResearchFeedbackLoop(BaseModel):
     final_score: float = 1.0
 
 
+class ResearchBrief(BaseModel):
+    objective: str
+    audience: str = "general business"
+    scope_in: list[str] = Field(default_factory=list)
+    scope_out: list[str] = Field(default_factory=list)
+    success_criteria: list[str] = Field(default_factory=list)
+    output_type: str = "answer"
+    assumptions: list[str] = Field(default_factory=list)
+    research_level: str = "regular"
+    quality_mode: str = "standard"
+    model_used: str = ""
+    latency_ms: int = 0
+    cost_usd: float = 0.0
+    source: str = "llm"
+    fallback_reason: str | None = None
+
+
+class CoverageCell(BaseModel):
+    cell_id: str = Field(default_factory=lambda: new_id("cell"))
+    dimension: str
+    subject: str
+    required: bool = True
+    status: Literal["empty", "partial", "filled", "not_applicable"] = "empty"
+    evidence_ids: list[str] = Field(default_factory=list)
+    confidence: float = 0.0
+    notes: str = ""
+    attempts: int = 0
+
+
+class CoverageContract(BaseModel):
+    cells: list[CoverageCell] = Field(default_factory=list)
+    dimensions: list[str] = Field(default_factory=list)
+    subjects: list[str] = Field(default_factory=list)
+    model_used: str = ""
+    latency_ms: int = 0
+    cost_usd: float = 0.0
+    source: str = "llm"
+    fallback_reason: str | None = None
+
+    def coverage_ratio(self) -> float:
+        required = [cell for cell in self.cells if cell.required and cell.status != "not_applicable"]
+        if not required:
+            return 1.0
+        filled = [cell for cell in required if cell.status in {"filled", "partial"}]
+        return len(filled) / len(required)
+
+    def open_cells(self) -> list[CoverageCell]:
+        return [cell for cell in self.cells if cell.required and cell.status == "empty"]
+
+    def partial_cells(self) -> list[CoverageCell]:
+        return [cell for cell in self.cells if cell.required and cell.status == "partial"]
+
+
+class ResearchStateStore(BaseModel):
+    brief: ResearchBrief
+    contract: CoverageContract
+    plan: ResearchPlan
+    evidence: EvidencePack = Field(default_factory=EvidencePack)
+    source_inventory: list[str] = Field(default_factory=list)
+    query_history: list[str] = Field(default_factory=list)
+    all_sources: list[Source] = Field(default_factory=list)
+    all_tool_calls: list[ToolCall] = Field(default_factory=list)
+    iteration: int = 0
+    budget_ledger: ResearchBudgetLedger = Field(default_factory=lambda: ResearchBudgetLedger(budget=ResearchBudget()))
+
+    def add_sources(self, sources: list[Source]) -> list[Source]:
+        new_sources: list[Source] = []
+        for source in sources:
+            if source.url and source.url not in self.source_inventory:
+                self.source_inventory.append(source.url)
+                self.all_sources.append(source)
+                new_sources.append(source)
+        return new_sources
+
+    def add_queries(self, queries: list[str]) -> None:
+        for query in queries:
+            cleaned = " ".join(str(query or "").split())
+            if cleaned and cleaned not in self.query_history:
+                self.query_history.append(cleaned)
+
+
+class ReflectionDecision(BaseModel):
+    sufficient: bool = False
+    open_dimensions: list[str] = Field(default_factory=list)
+    open_subjects: list[str] = Field(default_factory=list)
+    targeted_queries: list[str] = Field(default_factory=list)
+    terminate_reason: str | None = None
+    coverage_ratio: float = 0.0
+    next_action: Literal["continue", "publish", "stop_with_gaps"] = "continue"
+    model_used: str = ""
+    latency_ms: int = 0
+    cost_usd: float = 0.0
+    source: str = "llm"
+
+
+class JudgeVerdict(BaseModel):
+    can_publish: bool = True
+    repair_needed: bool = False
+    repair_instruction: str = ""
+    specific_gaps: list[str] = Field(default_factory=list)
+    score: float = 1.0
+    issues: list[str] = Field(default_factory=list)
+    next_action: Literal["publish", "repair_answer", "research_more", "stop_with_gaps"] = "publish"
+
+
+class CitationVerification(BaseModel):
+    verified_claims: int = 0
+    unsupported_claims: list[str] = Field(default_factory=list)
+    hallucinated_citations: list[str] = Field(default_factory=list)
+    repair_needed: bool = False
+    repair_instruction: str = ""
+    model_used: str = ""
+    latency_ms: int = 0
+    cost_usd: float = 0.0
+    source: str = "llm"
+
+
 PLAN_PROMPT = """You are the Agent v3 research lead.
 
 Create a compact multi-agent research plan for the user request. Return only JSON:
@@ -313,6 +433,75 @@ REPAIR_PROMPT = """You are the Agent v3 repair agent.
 Revise the answer according to the judge feedback. Preserve useful content, add
 source citations where evidence supports a claim, and be transparent about gaps.
 Return only the improved answer.
+"""
+
+
+BRIEF_PROMPT = """You are the Fronei research briefing agent.
+
+Convert the user request into a compact, frozen research brief. Return only JSON:
+{
+  "objective": "precise one-sentence research objective",
+  "audience": "intended audience",
+  "scope_in": ["2-4 topics, entities, or dimensions explicitly in scope"],
+  "scope_out": ["0-2 things explicitly out of scope"],
+  "success_criteria": ["2-4 measurable conditions that define complete research"],
+  "output_type": "answer|report|comparison|briefing",
+  "assumptions": ["0-2 assumptions the research makes"]
+}
+Infer carefully from the request. Do not invent facts.
+"""
+
+
+COVERAGE_CONTRACT_PROMPT = """You are the Fronei coverage contract agent.
+
+Given a research brief, generate the evidence matrix that defines when research is complete.
+For comparison or vendor research, subjects are the entities being compared and dimensions are the attributes.
+For topic research, subjects are major subtopics and dimensions are analytical angles.
+
+Return only JSON:
+{
+  "subjects": ["2-6 subjects"],
+  "dimensions": ["3-7 dimensions"],
+  "cells": [
+    {"dimension": "dimension name", "subject": "subject name", "required": true}
+  ]
+}
+Generate one cell per dimension × subject combination. Mark required=false only when obviously not applicable.
+"""
+
+
+REFLECTION_PROMPT = """You are the Fronei lead research agent.
+
+Review the current research state and decide whether to continue or terminate.
+Return only JSON:
+{
+  "sufficient": true|false,
+  "open_dimensions": ["dimensions not yet covered"],
+  "open_subjects": ["subjects not yet covered"],
+  "targeted_queries": ["2-5 specific search queries to close remaining gaps; empty if sufficient"],
+  "terminate_reason": "reason to stop if sufficient=true or budget exhausted",
+  "coverage_ratio": 0.0-1.0,
+  "next_action": "continue|publish|stop_with_gaps"
+}
+Be specific in targeted_queries. Prefer site-specific queries for vendor docs, pricing, compliance, APIs, and official pages.
+If a cell has repeated targeted attempts and still has no public evidence, stop with an explicit gap rather than hallucinating.
+"""
+
+
+CITATION_VERIFICATION_PROMPT = """You are the Fronei citation verification agent.
+
+You will be given a synthesized answer and an evidence pack. For each factual claim with a [S#] citation, verify:
+1. The source [S#] exists in the evidence pack.
+2. The quoted source text supports the specific claim.
+
+Return only JSON:
+{
+  "verified_claims": 0,
+  "unsupported_claims": ["claims where citation does not support the claim"],
+  "hallucinated_citations": ["S# references that appear in the answer but are not in the evidence pack"],
+  "repair_needed": true|false,
+  "repair_instruction": "specific repair instruction if needed"
+}
 """
 
 
@@ -528,6 +717,401 @@ def create_research_goal(request: AgentV3Request) -> ResearchGoal:
             "citation_required_for_claims",
             "judge_before_publish",
         ],
+    )
+
+
+def generate_research_brief(request: AgentV3Request) -> ResearchBrief:
+    try:
+        response = model_client.complete(
+            [
+                {"role": "system", "content": BRIEF_PROMPT},
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "message": request.message,
+                            "conversation_context": request.conversation_context[-3000:] if request.conversation_context else "",
+                            "quality_mode": request.quality_mode,
+                            "research_level": request.research_level,
+                            "output_format": request.output_format,
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            ],
+            max_tokens=600,
+            timeout_s=15,
+        )
+        payload = _parse_json(response.text)
+        brief = ResearchBrief.model_validate(payload)
+        brief.objective = brief.objective or request.message
+        brief.research_level = request.research_level if request.research_level != "auto" else "regular"
+        brief.quality_mode = request.quality_mode
+        brief.model_used = response.model_used
+        brief.latency_ms = response.latency_ms
+        brief.cost_usd = response.cost_usd
+        brief.source = "llm"
+        return brief
+    except Exception as exc:
+        logger.warning("agent_v3 brief generation failed; using fallback: %s", exc)
+        return ResearchBrief(
+            objective=request.message,
+            scope_in=[request.message[:160]],
+            success_criteria=["Answer the user's question with source-grounded evidence."],
+            research_level=request.research_level if request.research_level != "auto" else "regular",
+            quality_mode=request.quality_mode,
+            source="heuristic",
+            fallback_reason=str(exc),
+        )
+
+
+def generate_coverage_contract(request: AgentV3Request, brief: ResearchBrief) -> CoverageContract:
+    try:
+        response = model_client.complete(
+            [
+                {"role": "system", "content": COVERAGE_CONTRACT_PROMPT},
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {"message": request.message, "brief": brief.model_dump(mode="json")},
+                        ensure_ascii=False,
+                    ),
+                },
+            ],
+            max_tokens=1000,
+            timeout_s=20,
+        )
+        payload = _parse_json(response.text)
+        subjects = [str(item) for item in (payload.get("subjects") or []) if str(item).strip()][:6]
+        dimensions = [str(item) for item in (payload.get("dimensions") or []) if str(item).strip()][:7]
+        cells = [
+            CoverageCell.model_validate(cell)
+            for cell in payload.get("cells", [])
+            if isinstance(cell, dict)
+        ]
+        if subjects:
+            cells = [cell for cell in cells if cell.subject in subjects]
+        if dimensions:
+            cells = [cell for cell in cells if cell.dimension in dimensions]
+        cells = cells[:42]
+        if not cells:
+            raise ValueError("empty coverage contract")
+        if not subjects:
+            subjects = _dedupe([cell.subject for cell in cells])[:6]
+        if not dimensions:
+            dimensions = _dedupe([cell.dimension for cell in cells])[:7]
+        return CoverageContract(
+            cells=cells,
+            subjects=subjects,
+            dimensions=dimensions,
+            model_used=response.model_used,
+            latency_ms=response.latency_ms,
+            cost_usd=response.cost_usd,
+            source="llm",
+        )
+    except Exception as exc:
+        logger.warning("agent_v3 coverage contract failed; using fallback: %s", exc)
+        criteria = brief.success_criteria or [brief.objective]
+        subjects = _derive_fallback_subjects(request.message, brief)
+        dimensions = _derive_fallback_dimensions(criteria)
+        cells = [
+            CoverageCell(subject=subject, dimension=dimension, required=True)
+            for subject in subjects
+            for dimension in dimensions
+        ][:24]
+        return CoverageContract(
+            cells=cells or [CoverageCell(subject=brief.objective[:80], dimension="coverage")],
+            subjects=subjects or [brief.objective[:80]],
+            dimensions=dimensions or ["coverage"],
+            source="heuristic",
+            fallback_reason=str(exc),
+        )
+
+
+def plan_from_contract(
+    request: AgentV3Request,
+    contract: CoverageContract,
+    budget: ResearchBudget | None = None,
+) -> ResearchPlan:
+    budget = budget or research_budget_for(request)
+    open_cells = contract.open_cells()
+    workers: list[SearchWorkerPlan] = []
+    for subject in _dedupe([cell.subject for cell in open_cells]):
+        subject_cells = [cell for cell in open_cells if cell.subject == subject]
+        dimensions = _dedupe([cell.dimension for cell in subject_cells])[:4]
+        query = _targeted_query(subject, dimensions, request.message)
+        workers.append(
+            SearchWorkerPlan(
+                question=f"Research {subject}: {', '.join(dimensions)}",
+                query=query,
+                rationale=f"Cover open contract cells for {subject}.",
+                max_results=4,
+            )
+        )
+        if len(workers) >= budget.max_search_workers:
+            break
+    if not workers:
+        workers = _fallback_plan(request, create_research_goal(request)).workers
+    return ResearchPlan(
+        questions=[worker.question for worker in workers],
+        search_queries=[worker.query for worker in workers],
+        workers=workers,
+        max_sources=budget.max_sources,
+        min_evidence_items=budget.min_evidence_items,
+        judge_threshold=budget.judge_threshold,
+        repair_iterations=budget.repair_iterations,
+        guardrails=create_research_goal(request).guardrails,
+        source="contract",
+    )
+
+
+def plan_from_targeted_queries(targeted_queries: list[str], state: ResearchStateStore) -> ResearchPlan:
+    new_queries = [
+        " ".join(query.split())
+        for query in targeted_queries
+        if query and " ".join(query.split()) not in state.query_history
+    ][: state.budget_ledger.budget.max_search_workers]
+    if not new_queries:
+        return state.plan
+    workers = [
+        SearchWorkerPlan(
+            question=f"Follow-up: {query}",
+            query=query[:220],
+            rationale="Lead agent targeted follow-up to fill coverage gaps.",
+            max_results=4,
+        )
+        for query in new_queries
+    ]
+    return ResearchPlan(
+        questions=[worker.question for worker in workers],
+        search_queries=[worker.query for worker in workers],
+        workers=workers,
+        max_sources=state.plan.max_sources,
+        min_evidence_items=state.plan.min_evidence_items,
+        judge_threshold=state.plan.judge_threshold,
+        repair_iterations=state.plan.repair_iterations,
+        guardrails=state.plan.guardrails,
+        source="reflection",
+    )
+
+
+def update_contract_from_evidence(state: ResearchStateStore) -> None:
+    for cell in state.contract.cells:
+        if not cell.required or cell.status == "not_applicable":
+            continue
+        matches: list[EvidenceItem] = []
+        for item in state.evidence.items:
+            if _evidence_supports_cell(item, cell):
+                matches.append(item)
+        if not matches:
+            if cell.status not in {"partial", "filled"}:
+                cell.status = "empty"
+                cell.evidence_ids = []
+                cell.confidence = 0.0
+            continue
+        cell.evidence_ids = [item.source_id for item in matches]
+        cell.confidence = max(item.confidence for item in matches)
+        cell.status = "filled" if len(matches) >= 2 or cell.confidence >= 0.72 else "partial"
+        for item in matches:
+            if cell.cell_id not in item.supports_cells:
+                item.supports_cells.append(cell.cell_id)
+
+
+def reflect(request: AgentV3Request, state: ResearchStateStore) -> ReflectionDecision:
+    open_cells = state.contract.open_cells()
+    partial_cells = state.contract.partial_cells()
+    coverage = state.contract.coverage_ratio()
+    if not open_cells and coverage >= 1.0:
+        return ReflectionDecision(
+            sufficient=True,
+            terminate_reason="Coverage contract fully satisfied.",
+            coverage_ratio=coverage,
+            next_action="publish",
+            source="heuristic",
+        )
+    if state.budget_ledger.stopped:
+        return ReflectionDecision(
+            sufficient=True,
+            terminate_reason=state.budget_ledger.stop_reason or "budget exhausted",
+            coverage_ratio=coverage,
+            next_action="stop_with_gaps" if open_cells else "publish",
+            source="heuristic",
+        )
+    exhausted_cells = [cell for cell in open_cells if cell.attempts >= _max_attempts_per_cell(request)]
+    if open_cells and len(exhausted_cells) == len(open_cells):
+        return ReflectionDecision(
+            sufficient=True,
+            open_dimensions=_dedupe([cell.dimension for cell in open_cells]),
+            open_subjects=_dedupe([cell.subject for cell in open_cells]),
+            terminate_reason="Remaining cells have already had targeted follow-up attempts.",
+            coverage_ratio=coverage,
+            next_action="stop_with_gaps",
+            source="heuristic",
+        )
+    try:
+        response = model_client.complete(
+            [
+                {"role": "system", "content": REFLECTION_PROMPT},
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "objective": state.brief.objective,
+                            "coverage_ratio": coverage,
+                            "open_cells": [
+                                {"subject": cell.subject, "dimension": cell.dimension, "attempts": cell.attempts}
+                                for cell in open_cells[:14]
+                            ],
+                            "partial_cells": [
+                                {"subject": cell.subject, "dimension": cell.dimension, "notes": cell.notes}
+                                for cell in partial_cells[:8]
+                            ],
+                            "queries_already_tried": state.query_history[-10:],
+                            "source_count": len(state.source_inventory),
+                            "iteration": state.iteration,
+                            "budget_remaining": {
+                                "tool_calls": state.budget_ledger.remaining_tool_calls(),
+                                "source_reads": state.budget_ledger.remaining_source_reads(),
+                            },
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            ],
+            max_tokens=500,
+            timeout_s=15,
+        )
+        payload = _parse_json(response.text)
+        decision = ReflectionDecision.model_validate(payload)
+        decision.coverage_ratio = coverage
+        decision.model_used = response.model_used
+        decision.latency_ms = response.latency_ms
+        decision.cost_usd = response.cost_usd
+        decision.source = "llm"
+        if decision.sufficient and decision.next_action == "continue":
+            decision.next_action = "publish" if not open_cells else "stop_with_gaps"
+        return decision
+    except Exception as exc:
+        logger.warning("agent_v3 reflection failed; using deterministic follow-up: %s", exc)
+        queries = [_targeted_query(cell.subject, [cell.dimension], request.message) for cell in open_cells[:4]]
+        return ReflectionDecision(
+            sufficient=not queries,
+            open_dimensions=_dedupe([cell.dimension for cell in open_cells]),
+            open_subjects=_dedupe([cell.subject for cell in open_cells]),
+            targeted_queries=queries,
+            terminate_reason=f"Reflection agent failed: {exc}" if not queries else None,
+            coverage_ratio=coverage,
+            next_action="continue" if queries else "stop_with_gaps",
+            source="heuristic",
+        )
+
+
+def verify_citations_semantically(answer: str, evidence: EvidencePack) -> CitationVerification:
+    if not answer or not evidence.items:
+        return CitationVerification(source="skipped")
+    evidence_index = {
+        item.source_id: f"[{item.source_id}] {item.title}\nURL: {item.url}\nEvidence: {item.evidence[:500]}"
+        for item in evidence.items
+    }
+    cited_ids = set(re.findall(r"\[(S\d+)\]", answer))
+    hallucinated = sorted(cited_ids - set(evidence_index))
+    if not cited_ids:
+        return CitationVerification(
+            repair_needed=True,
+            repair_instruction="The answer contains no [S#] citations. Add citations for factual claims.",
+            source="heuristic",
+        )
+    try:
+        response = model_client.complete(
+            [
+                {"role": "system", "content": CITATION_VERIFICATION_PROMPT},
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "answer": answer[:3500],
+                            "evidence_pack": list(evidence_index.values()),
+                            "hallucinated_citations_detected": hallucinated,
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            ],
+            max_tokens=700,
+            timeout_s=20,
+        )
+        payload = _parse_json(response.text)
+        result = CitationVerification.model_validate(payload)
+        result.hallucinated_citations = sorted(set(result.hallucinated_citations) | set(hallucinated))
+        result.repair_needed = bool(result.repair_needed or result.unsupported_claims or result.hallucinated_citations)
+        if result.repair_needed and not result.repair_instruction:
+            result.repair_instruction = _citation_repair_instruction(result)
+        result.model_used = response.model_used
+        result.latency_ms = response.latency_ms
+        result.cost_usd = response.cost_usd
+        result.source = "llm"
+        return result
+    except Exception as exc:
+        logger.warning("agent_v3 citation verification failed; using heuristic fallback: %s", exc)
+        return CitationVerification(
+            hallucinated_citations=hallucinated,
+            repair_needed=bool(hallucinated),
+            repair_instruction="Remove or fix hallucinated citation markers." if hallucinated else "",
+            source="heuristic",
+        )
+
+
+def judge_research_final(request: AgentV3Request, state: ResearchStateStore, answer: str) -> JudgeVerdict:
+    issues: list[str] = []
+    score = 0.35
+    if state.evidence.items:
+        score += min(0.20, 0.035 * len(state.evidence.items))
+    coverage = state.contract.coverage_ratio()
+    score += coverage * 0.25
+    citation_count = len(re.findall(r"\[S\d+\]", answer or ""))
+    if citation_count:
+        score += min(0.15, 0.035 * citation_count)
+    else:
+        issues.append("No source citations in answer.")
+    if len(answer or "") < 250:
+        score -= 0.10
+        issues.append("Answer too short for deep research.")
+    open_cells = state.contract.open_cells()
+    if open_cells:
+        score -= min(0.18, 0.025 * len(open_cells))
+        issues.append(
+            f"{len(open_cells)} required coverage cell(s) remain empty: "
+            + ", ".join(f"{cell.subject}/{cell.dimension}" for cell in open_cells[:5])
+        )
+    if state.evidence.contradictions:
+        score -= 0.05
+        issues.append("Contradictions in evidence should be surfaced.")
+    score = max(0.0, min(1.0, score))
+    threshold = state.plan.judge_threshold or 0.78
+    if score >= threshold and not open_cells:
+        return JudgeVerdict(can_publish=True, repair_needed=False, score=score, issues=issues, next_action="publish")
+    if open_cells and not state.budget_ledger.stopped and state.iteration < _max_iterations_for(request):
+        return JudgeVerdict(
+            can_publish=False,
+            repair_needed=False,
+            score=score,
+            issues=issues,
+            specific_gaps=[f"{cell.subject}/{cell.dimension}" for cell in open_cells[:8]],
+            next_action="research_more",
+        )
+    repair_instruction = " ".join(issues) or "Improve the answer with better citation use and explicit caveats."
+    if open_cells:
+        repair_instruction += " Explicitly disclose unresolved public-evidence gaps: " + "; ".join(
+            f"{cell.subject} {cell.dimension}" for cell in open_cells[:6]
+        )
+    return JudgeVerdict(
+        can_publish=score >= max(0.55, threshold - 0.20),
+        repair_needed=True,
+        repair_instruction=repair_instruction,
+        specific_gaps=[f"{cell.subject}/{cell.dimension}" for cell in open_cells[:8]],
+        score=score,
+        issues=issues,
+        next_action="repair_answer" if score >= 0.45 else "stop_with_gaps",
     )
 
 
@@ -787,6 +1371,352 @@ def verify_claims(answer: str, evidence: EvidencePack) -> ClaimVerification:
     )
 
 
+class LeadResearchAgent:
+    """Lead-agent controller for deep research.
+
+    Workers collect and read sources, but this lead owns the research state,
+    coverage contract, budget ledger, reflection loop, and publish decision.
+    """
+
+    def __init__(
+        self,
+        request: AgentV3Request,
+        tools: Any,
+        progress: Callable[[str, str, dict[str, Any]], None] | None = None,
+    ):
+        self.request = request
+        self.tools = tools
+        self.progress = progress or (lambda _stage, _message, _data: None)
+        self.budget = research_budget_for(request)
+        self.ledger = ResearchBudgetLedger(budget=self.budget)
+
+    def run(self) -> dict[str, Any]:
+        registry = get_research_registry()
+        self._progress(
+            "research_registry",
+            "Research team is ready.",
+            {"registry": registry.public_summary(), "agent_count": len(registry.agents), "mode": "lead_loop"},
+        )
+        self._progress("research_brief", "Scoping the research objective.", {"agent_id": "research_lead"})
+        brief = generate_research_brief(self.request)
+        self.ledger.record_model_call(cost_usd=brief.cost_usd, latency_ms=brief.latency_ms)
+
+        self._progress("coverage_contract", "Building the evidence coverage matrix.", {"agent_id": "research_lead"})
+        contract = generate_coverage_contract(self.request, brief)
+        self.ledger.record_model_call(cost_usd=contract.cost_usd, latency_ms=contract.latency_ms)
+
+        plan = plan_from_contract(self.request, contract, self.budget)
+        goal = create_research_goal(self.request)
+        state = ResearchStateStore(brief=brief, contract=contract, plan=plan, budget_ledger=self.ledger)
+        self._progress(
+            "research_goal",
+            "Lead research goal and safety limits are set.",
+            {
+                "goal": goal.model_dump(mode="json"),
+                "brief": brief.model_dump(mode="json"),
+                "contract": contract.model_dump(mode="json"),
+                "budget_ledger": self.ledger.model_dump(mode="json"),
+            },
+        )
+
+        for iteration in range(1, _max_iterations_for(self.request) + 1):
+            if self.ledger.stopped:
+                break
+            state.iteration = iteration
+            self._dispatch_worker_wave(state)
+            state.evidence = bind_evidence(
+                state.all_sources,
+                plan=state.plan,
+                max_items=self.budget.max_sources + self.budget.max_deep_links,
+            )
+            update_contract_from_evidence(state)
+            self._progress(
+                "coverage_check",
+                f"Coverage is {state.contract.coverage_ratio():.0%}; {len(state.contract.open_cells())} cell(s) remain open.",
+                {
+                    "coverage_ratio": state.contract.coverage_ratio(),
+                    "open_cells": [cell.model_dump(mode="json") for cell in state.contract.open_cells()[:10]],
+                    "partial_cells": [cell.model_dump(mode="json") for cell in state.contract.partial_cells()[:8]],
+                    "iteration": iteration,
+                    "budget_ledger": self.ledger.model_dump(mode="json"),
+                },
+            )
+            decision = reflect(self.request, state)
+            if decision.model_used:
+                self.ledger.record_model_call(cost_usd=decision.cost_usd, latency_ms=decision.latency_ms)
+            self._progress(
+                "lead_reflection",
+                self._reflection_message(decision),
+                {
+                    "decision": decision.model_dump(mode="json"),
+                    "targeted_queries": decision.targeted_queries,
+                    "budget_ledger": self.ledger.model_dump(mode="json"),
+                },
+            )
+            if decision.next_action != "continue" or decision.sufficient or not decision.targeted_queries:
+                break
+            self._mark_attempts_for_open_cells(state)
+            state.plan = plan_from_targeted_queries(decision.targeted_queries, state)
+
+        response = self._synthesize_verify_and_judge(state)
+        feedback = ResearchFeedbackLoop(
+            judge=ResearchJudgeResult(
+                status="pass" if response["verdict"].can_publish else "repair",
+                score=response["verdict"].score,
+                issues=response["verdict"].issues,
+                repair_instruction=response["verdict"].repair_instruction,
+                can_publish=response["verdict"].can_publish,
+            ),
+            repaired=response["repaired"],
+            repair_attempts=response["repair_attempts"],
+            final_score=response["verdict"].score,
+        )
+        self._progress(
+            "research_budget",
+            "Lead research budget ledger closed.",
+            {
+                "stop_reason": self.ledger.stop_reason,
+                "coverage_ratio": state.contract.coverage_ratio(),
+                "open_cells": len(state.contract.open_cells()),
+                "evidence_items": len(state.evidence.items),
+                "iterations": state.iteration,
+                "budget_ledger": self.ledger.model_dump(mode="json"),
+            },
+        )
+        return {
+            "sources": state.all_sources,
+            "tool_calls": state.all_tool_calls,
+            "evidence": state.evidence,
+            "response": response["model_response"],
+            "plan": state.plan,
+            "feedback": feedback,
+        }
+
+    def _dispatch_worker_wave(self, state: ResearchStateStore) -> None:
+        self._progress(
+            "lead_research_dispatch",
+            f"Dispatching worker wave {state.iteration} with {len(state.plan.workers)} worker(s).",
+            {
+                "iteration": state.iteration,
+                "workers": [worker.model_dump(mode="json") for worker in state.plan.workers],
+                "agent_id": "research_lead",
+            },
+        )
+        wave_sources: list[Source] = []
+        for index, worker in enumerate(state.plan.workers, start=1):
+            if not self.ledger.can_start_tool("web_search"):
+                break
+            if worker.query in state.query_history:
+                continue
+            state.add_queries([worker.query])
+            self._progress(
+                "search_worker",
+                f"Search worker {index} is looking for evidence.",
+                {
+                    "agent_id": worker.agent_id,
+                    "worker_id": worker.worker_id,
+                    "worker_index": index,
+                    "query": worker.query,
+                    "question": worker.question,
+                    "rationale": worker.rationale,
+                },
+            )
+            sources, call = self.tools.search_web(worker.query, max_results=worker.max_results)
+            self.ledger.record_tool_call(latency_ms=call.latency_ms, sources_seen=len(sources))
+            state.all_tool_calls.append(call)
+            public_sources = [source for source in sources if is_public_source_url(source.url)]
+            added = state.add_sources(public_sources)
+            wave_sources.extend(added)
+            provider = call.output.get("provider") if isinstance(call.output, dict) else None
+            self._progress(
+                "search_worker_provider",
+                f"Search worker {index} used {provider or 'the configured search provider chain'}.",
+                {
+                    "worker_index": index,
+                    "provider": provider,
+                    "ok": call.ok,
+                    "error": call.error,
+                    "source_count": len(sources),
+                    "public_source_count": len(public_sources),
+                    "budget_ledger": self.ledger.model_dump(mode="json"),
+                },
+            )
+
+        ranked = rank_sources(wave_sources, state.plan)
+        selected = [item.source for item in ranked[: self.ledger.remaining_source_reads()]]
+        self._progress(
+            "source_ranker",
+            f"Ranked {len(wave_sources)} candidate source(s).",
+            {
+                "agent_id": "source_ranker",
+                "ranked_sources": [item.model_dump(mode="json") for item in ranked[: state.plan.max_sources]],
+            },
+        )
+        if selected and self.ledger.can_start_tool("read_url") and self.ledger.can_read_more_sources():
+            read_urls = [source.url for source in selected if source.url][: self.ledger.remaining_source_reads()]
+            self._progress("source_reader", f"Reading {len(read_urls)} selected source page(s).", {"urls": read_urls})
+            extracted, call = self.tools.extract_urls(read_urls, max_chars_per_source=3500)
+            self.ledger.record_tool_call(latency_ms=call.latency_ms, sources_read=len(read_urls))
+            state.all_tool_calls.append(call)
+            state.add_sources(extracted)
+            provider = call.output.get("provider") if isinstance(call.output, dict) else None
+            self._progress(
+                "source_reader_result",
+                "Source reader finished extracting source text.",
+                {"ok": call.ok, "error": call.error, "provider": provider, "source_count": len(extracted)},
+            )
+        self._follow_deep_links(state, [*wave_sources, *selected])
+
+    def _follow_deep_links(self, state: ResearchStateStore, sources: list[Source]) -> None:
+        if self.budget.max_deep_links <= 0 or not self.ledger.can_read_more_sources():
+            return
+        candidates = extract_deep_link_candidates(sources, max_links=self.budget.max_deep_links)
+        urls = [
+            candidate.url
+            for candidate in candidates
+            if candidate.url not in state.source_inventory and is_public_source_url(candidate.url)
+        ][: self.ledger.remaining_source_reads()]
+        self._progress(
+            "deep_link_agent",
+            f"Found {len(urls)} useful deep link(s) to inspect.",
+            {"links": [candidate.model_dump(mode="json") for candidate in candidates[: len(urls)]]},
+        )
+        if not urls or not self.ledger.can_start_tool("read_url"):
+            return
+        extracted, call = self.tools.extract_urls(urls, max_chars_per_source=2500)
+        self.ledger.record_tool_call(latency_ms=call.latency_ms, sources_read=len(urls))
+        state.all_tool_calls.append(call)
+        state.add_sources(extracted)
+
+    def _synthesize_verify_and_judge(self, state: ResearchStateStore) -> dict[str, Any]:
+        self._progress(
+            "evidence_binder",
+            f"Bound {len(state.evidence.items)} evidence item(s).",
+            {
+                "agent_id": "evidence_binder",
+                "coverage": state.evidence.coverage,
+                "coverage_contract_ratio": state.contract.coverage_ratio(),
+                "gaps": state.evidence.gaps,
+                "contradictions": state.evidence.contradictions,
+                "evidence_items": [item.model_dump(mode="json") for item in state.evidence.items],
+            },
+        )
+        if not self.ledger.can_start_model("synthesis_agent"):
+            answer = self._budget_stopped_answer(state)
+            return {
+                "model_response": model_client.ModelResponse(
+                    text=answer,
+                    model_used="budget-ledger",
+                    latency_ms=0,
+                    cost_usd=0.0,
+                ),
+                "verdict": judge_research_final(self.request, state, answer),
+                "repaired": False,
+                "repair_attempts": 0,
+            }
+        self._progress("synthesis", "Writing one coherent answer from the evidence.", {"agent_id": "synthesis_agent"})
+        model_response = synthesize_answer(self.request, state.plan, state.evidence)
+        self.ledger.record_model_call(cost_usd=model_response.cost_usd, latency_ms=model_response.latency_ms)
+        answer = model_response.text
+
+        citation_result = verify_citations_semantically(answer, state.evidence)
+        if citation_result.model_used:
+            self.ledger.record_model_call(cost_usd=citation_result.cost_usd, latency_ms=citation_result.latency_ms)
+        self._progress(
+            "citation_verification",
+            "Verified answer citations against source text.",
+            {"agent_id": "claim_verifier", "verification": citation_result.model_dump(mode="json")},
+        )
+        repaired = False
+        repair_attempts = 0
+        if citation_result.repair_needed and self.ledger.can_start_model("repair_agent"):
+            model_response = self._repair_answer(state, answer, citation_result.repair_instruction)
+            answer = model_response.text
+            repaired = True
+            repair_attempts += 1
+
+        verdict = judge_research_final(self.request, state, answer)
+        self._progress(
+            "research_judge_result",
+            f"Research judge recommends {verdict.next_action}.",
+            {"agent_id": "research_judge", "verdict": verdict.model_dump(mode="json")},
+        )
+        if verdict.next_action == "research_more" and not self.ledger.stopped:
+            state.plan = plan_from_targeted_queries(
+                [_targeted_query(cell.subject, [cell.dimension], self.request.message) for cell in state.contract.open_cells()[:4]],
+                state,
+            )
+            self._mark_attempts_for_open_cells(state)
+            self._dispatch_worker_wave(state)
+            state.evidence = bind_evidence(
+                state.all_sources,
+                plan=state.plan,
+                max_items=self.budget.max_sources + self.budget.max_deep_links,
+            )
+            update_contract_from_evidence(state)
+            model_response = synthesize_answer(self.request, state.plan, state.evidence)
+            self.ledger.record_model_call(cost_usd=model_response.cost_usd, latency_ms=model_response.latency_ms)
+            answer = model_response.text
+            verdict = judge_research_final(self.request, state, answer)
+        if verdict.repair_needed and state.plan.repair_iterations > repair_attempts and self.ledger.can_start_model("repair_agent"):
+            model_response = self._repair_answer(state, answer, verdict.repair_instruction)
+            repaired = True
+            repair_attempts += 1
+            verdict = judge_research_final(self.request, state, model_response.text)
+        return {
+            "model_response": model_response,
+            "verdict": verdict,
+            "repaired": repaired,
+            "repair_attempts": repair_attempts,
+        }
+
+    def _repair_answer(self, state: ResearchStateStore, answer: str, instruction: str):
+        self._progress("research_repair", "Repairing the answer before publishing.", {"repair_instruction": instruction})
+        fake_judge = ResearchJudgeResult(
+            status="repair",
+            score=0.6,
+            repair_instruction=instruction,
+            can_publish=False,
+        )
+        repaired = repair_research_answer(self.request, state.plan, state.evidence, answer, fake_judge)
+        self.ledger.record_model_call(cost_usd=repaired.cost_usd, latency_ms=repaired.latency_ms)
+        return repaired
+
+    def _mark_attempts_for_open_cells(self, state: ResearchStateStore) -> None:
+        for cell in state.contract.open_cells():
+            cell.attempts += 1
+
+    def _budget_stopped_answer(self, state: ResearchStateStore) -> str:
+        open_cells = state.contract.open_cells()
+        gap_text = ""
+        if open_cells:
+            gap_text = "\n\nUnresolved public-evidence gaps:\n" + "\n".join(
+                f"- {cell.subject} / {cell.dimension}" for cell in open_cells[:10]
+            )
+        return (
+            "I gathered evidence but stopped before synthesis because the research budget was exhausted"
+            f" ({self.ledger.stop_reason or 'budget stopped'}).{gap_text}"
+        )
+
+    def _reflection_message(self, decision: ReflectionDecision) -> str:
+        if decision.next_action == "publish":
+            return "Lead researcher judged the evidence sufficient."
+        if decision.next_action == "stop_with_gaps":
+            return "Lead researcher stopped with explicit unresolved gaps."
+        return "Lead researcher found gaps and prepared targeted follow-up searches."
+
+    def _progress(self, stage: str, message: str, data: dict[str, Any] | None = None) -> None:
+        self.progress(stage, message, data or {})
+
+
+def lead_research_loop(
+    request: AgentV3Request,
+    tools: Any,
+    progress: Callable[[str, str, dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
+    return LeadResearchAgent(request, tools, progress).run()
+
+
 def classify_source_type(url: str) -> str:
     parsed = urlparse(url or "")
     path = parsed.path.lower()
@@ -910,6 +1840,77 @@ def _normalize_plan(plan: ResearchPlan, request: AgentV3Request, goal: ResearchG
     for worker in plan.workers:
         worker.max_results = max(1, min(5, int(worker.max_results or 4)))
     return plan
+
+
+def _derive_fallback_subjects(message: str, brief: ResearchBrief) -> list[str]:
+    scoped = [item for item in brief.scope_in if len(item.strip()) > 1]
+    if scoped:
+        return _dedupe(scoped)[:4]
+    candidates = re.split(r"\b(?:vs\.?|versus|and|,|/)\b", message, flags=re.IGNORECASE)
+    subjects = [candidate.strip(" .:-") for candidate in candidates if 2 <= len(candidate.strip()) <= 80]
+    if len(subjects) >= 2 and any(token in message.lower() for token in ("compare", " vs", "versus")):
+        return _dedupe(subjects)[:4]
+    return [brief.objective[:80] or message[:80]]
+
+
+def _derive_fallback_dimensions(criteria: list[str]) -> list[str]:
+    text = " ".join(criteria).lower()
+    standard = []
+    for dimension in ("capabilities", "pricing", "security", "data quality", "risks", "recent developments"):
+        if dimension.split()[0] in text:
+            standard.append(dimension)
+    if standard:
+        return _dedupe(standard)[:5]
+    return ["capabilities", "evidence", "risks"]
+
+
+def _targeted_query(subject: str, dimensions: list[str], original: str) -> str:
+    subject = " ".join(str(subject or "").split())
+    dims = " ".join(_dedupe([str(dim) for dim in dimensions])[:4])
+    base = f"{subject} {dims}".strip()
+    if subject and any(token in subject.lower() for token in ("tavily", "nimble", "you.com", "youcom")):
+        return f"{base} official docs pricing security API enterprise".strip()[:220]
+    return f"{base} {original}".strip()[:220]
+
+
+def _evidence_supports_cell(item: EvidenceItem, cell: CoverageCell) -> bool:
+    haystack = f"{item.title} {item.url} {item.evidence}".lower()
+    subject_tokens = _meaningful_tokens(cell.subject)
+    dimension_tokens = _meaningful_tokens(cell.dimension)
+    subject_hit = any(token in haystack for token in subject_tokens) if subject_tokens else False
+    dimension_hit = any(token in haystack for token in dimension_tokens) if dimension_tokens else False
+    if subject_hit and dimension_hit:
+        return True
+    if subject_hit and cell.dimension.lower() in {"evidence", "coverage", "capabilities"}:
+        return True
+    return False
+
+
+def _meaningful_tokens(value: str) -> list[str]:
+    return [
+        token
+        for token in re.findall(r"[a-z0-9.]{3,}", value.lower())
+        if token not in {"the", "and", "for", "with", "from", "about", "latest", "research"}
+    ]
+
+
+def _max_attempts_per_cell(request: AgentV3Request) -> int:
+    if request.quality_mode == "executive":
+        return 4
+    return 3 if request.research_level == "deep" else 1
+
+
+def _max_iterations_for(request: AgentV3Request) -> int:
+    return 4 if request.quality_mode == "executive" else 3
+
+
+def _citation_repair_instruction(result: CitationVerification) -> str:
+    parts: list[str] = []
+    if result.unsupported_claims:
+        parts.append("Correct or remove unsupported claims: " + "; ".join(result.unsupported_claims[:3]))
+    if result.hallucinated_citations:
+        parts.append("Remove or fix hallucinated citation markers: " + ", ".join(result.hallucinated_citations[:6]))
+    return " ".join(parts) or "Repair citation support."
 
 
 def _dedupe(values: list[str]) -> list[str]:

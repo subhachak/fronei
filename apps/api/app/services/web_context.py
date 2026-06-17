@@ -311,20 +311,23 @@ def nimble_search(query: str, recency: str | None = None) -> list[WebSource]:
     headers = {"Content-Type": "application/json", "Authorization": _nimble_auth_header(settings.nimble_api_key)}
     payload = {
         "query": query,
-        "search_engine": "google_search",
         "country": "US",
         "locale": "en",
-        "parse": True,
+        "focus": "general",
+        "max_results": MAX_SEARCH_RESULTS,
+        "search_depth": "lite",
+        "include_answer": False,
+        "output_format": "markdown",
     }
+    if recency in {"hour", "day", "week", "month", "year"}:
+        payload["time_range"] = recency
     try:
         with httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS) as client:
-            response = client.get(
+            response = client.post(
                 settings.nimble_api_endpoint,
                 headers=headers,
-                params=payload,
+                json=payload,
             )
-            if response.status_code == 405:
-                response = client.post(settings.nimble_api_endpoint, headers=headers, json=payload)
             response.raise_for_status()
         data = response.json()
     except Exception:
@@ -416,13 +419,19 @@ def test_nimble_connection() -> dict:
     if not settings.nimble_api_key:
         return {"success": False, "error": "NIMBLE_API_KEY not configured."}
     headers = {"Content-Type": "application/json", "Authorization": _nimble_auth_header(settings.nimble_api_key)}
-    payload = {"query": "ping", "search_engine": "google_search", "country": "US", "locale": "en", "parse": True}
+    payload = {
+        "query": "ping",
+        "country": "US",
+        "locale": "en",
+        "focus": "general",
+        "max_results": 1,
+        "search_depth": "lite",
+        "include_answer": False,
+    }
     started = time.perf_counter()
     try:
         with httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS) as client:
-            response = client.get(settings.nimble_api_endpoint, headers=headers, params=payload)
-            if response.status_code == 405:
-                response = client.post(settings.nimble_api_endpoint, headers=headers, json=payload)
+            response = client.post(settings.nimble_api_endpoint, headers=headers, json=payload)
             response.raise_for_status()
         return {"success": True, "latency_ms": int((time.perf_counter() - started) * 1000)}
     except httpx.HTTPStatusError as exc:

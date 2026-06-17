@@ -14,9 +14,19 @@ from app.services.agent_v3.document_subtree import (
 from app.services.agent_v3.orchestrator import OrchestratorDecision, decide_with_options
 from app.services.agent_v3.research_subtree import (
     EvidencePack,
+    ResearchFeedbackLoop,
     bind_evidence,
+    build_gap_followup_workers,
+    create_research_goal,
+    extract_deep_link_candidates,
+    get_research_registry,
+    is_public_source_url,
+    judge_research,
+    rank_sources,
     plan_research,
+    repair_research_answer,
     synthesize_answer,
+    verify_claims,
 )
 from app.services.agent_v3.models import (
     AgentV3Request,
@@ -163,41 +173,75 @@ class AgentV3Runtime:
         return output or [], call
 
     def _run_research_subtree(self, request: AgentV3Request, progress):
+        registry = get_research_registry()
+        research_goal = create_research_goal(request)
+        event = progress(
+            "research_registry",
+            "Research team is ready.",
+            registry=registry.public_summary(),
+            agent_count=len(registry.agents),
+        )
+        yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
+        event = progress(
+            "research_goal",
+            "Research goal and safety limits are set.",
+            goal=research_goal.model_dump(mode="json"),
+        )
+        yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
         event = progress(
             "research_planning",
             "Planning focused research questions.",
             available_tools=self.tool_registry.tool_names_for_route("research"),
+            agent_id="research_lead",
+            prompt_template_id=registry.agent("research_lead").prompt_template_id,
         )
         yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
         plan = plan_research(request)
         event = progress(
             "research_plan",
-            f"Research plan ready with {len(plan.search_queries)} search worker(s).",
+            f"Research plan ready with {len(plan.workers)} search worker(s).",
             questions=plan.questions,
             search_queries=plan.search_queries,
+            workers=[worker.model_dump(mode="json") for worker in plan.workers],
             max_sources=plan.max_sources,
+            min_evidence_items=plan.min_evidence_items,
+            judge_threshold=plan.judge_threshold,
+            repair_iterations=plan.repair_iterations,
+            guardrails=plan.guardrails,
             source=plan.source,
             model_used=plan.model_used,
             fallback_reason=plan.fallback_reason,
+            agent_id="research_lead",
+        )
+        yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
+        event = progress(
+            "research_guardrails",
+            "Research guardrails are active.",
+            guardrails=plan.guardrails,
+            max_sources=plan.max_sources,
+            max_workers=len(plan.workers),
         )
         yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
 
         search_sources: list[Source] = []
         tool_calls = []
-        per_query_max = max(2, min(5, plan.max_sources))
-        for idx, query in enumerate(plan.search_queries, start=1):
+        for idx, worker in enumerate(plan.workers, start=1):
             event = progress(
                 "search_worker",
                 f"Search worker {idx} running.",
+                agent_id=worker.agent_id,
+                worker_id=worker.worker_id,
                 worker_index=idx,
-                query=query,
+                question=worker.question,
+                query=worker.query,
+                rationale=worker.rationale,
                 candidate_queries=plan.search_queries,
             )
             yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
             sources, call = yield from self._run_tool(
                 progress,
                 "web_search",
-                {"query": query, "max_results": per_query_max},
+                {"query": worker.query, "max_results": worker.max_results},
             )
             tool_calls.append(call)
             search_sources.extend(sources)
@@ -210,8 +254,10 @@ class AgentV3Runtime:
             event = progress(
                 "search_worker_provider",
                 provider_message,
+                agent_id=worker.agent_id,
+                worker_id=worker.worker_id,
                 worker_index=idx,
-                query=query,
+                query=worker.query,
                 provider=provider,
                 ok=call.ok,
                 source_count=len(sources),
@@ -219,18 +265,38 @@ class AgentV3Runtime:
             )
             yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
 
-        deduped = self._merge_sources(search_sources, [])
+        deduped_all = self._merge_sources(search_sources, [])
+        public_candidates = [source for source in deduped_all if is_public_source_url(source.url)]
+        blocked_source_urls = [source.url for source in deduped_all if source.url and not is_public_source_url(source.url)]
+        ranked_sources = rank_sources(public_candidates, plan)
+        deduped = [item.source for item in ranked_sources]
+        event = progress(
+            "source_ranker",
+            "Ranking source candidates.",
+            agent_id="source_ranker",
+            prompt_template_id=registry.agent("source_ranker").prompt_template_id,
+            ranked_sources=[item.model_dump(mode="json") for item in ranked_sources[: plan.max_sources]],
+        )
+        yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
         event = progress(
             "source_selection",
             f"Selected {min(len(deduped), plan.max_sources)} unique source candidate(s).",
             candidate_count=len(search_sources),
             unique_count=len(deduped),
             selected_urls=[source.url for source in deduped[: plan.max_sources]],
+            blocked_source_urls=blocked_source_urls,
+            guardrail="public_source_urls",
         )
         yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
 
         selected = deduped[: plan.max_sources]
-        event = progress("source_reader", "Reading selected source pages.", source_count=len(selected))
+        event = progress(
+            "source_reader",
+            "Reading selected source pages.",
+            agent_id="source_reader",
+            prompt_template_id=registry.agent("source_reader").prompt_template_id,
+            source_count=len(selected),
+        )
         yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
         extracted, read_call = yield from self._run_tool(
             progress,
@@ -239,23 +305,147 @@ class AgentV3Runtime:
         )
         tool_calls.append(read_call)
         merged = self._merge_sources(selected, extracted)
+        deep_link_budget = 4 if request.quality_mode == "executive" else 2 if request.quality_mode == "standard" else 0
+        deep_links = extract_deep_link_candidates(merged, max_links=deep_link_budget)
+        event = progress(
+            "deep_link_agent",
+            f"Found {len(deep_links)} useful deep link(s).",
+            agent_id="deep_link_agent",
+            prompt_template_id=registry.agent("deep_link_agent").prompt_template_id,
+            link_budget=deep_link_budget,
+            links=[link.model_dump(mode="json") for link in deep_links],
+        )
+        yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
+        if deep_links:
+            deep_extracted, deep_read_call = yield from self._run_tool(
+                progress,
+                "read_url",
+                {"urls": [link.url for link in deep_links], "max_chars_per_source": 1800},
+            )
+            tool_calls.append(deep_read_call)
+            merged = self._merge_sources(merged, deep_extracted)
 
-        evidence = bind_evidence(merged, max_items=plan.max_sources)
+        evidence = bind_evidence(merged, plan=plan, max_items=plan.max_sources)
+        if evidence.gaps:
+            followups = build_gap_followup_workers(request, plan, evidence)
+            event = progress(
+                "gap_agent",
+                f"Gap agent created {len(followups)} follow-up search worker(s).",
+                agent_id="gap_agent",
+                prompt_template_id=registry.agent("gap_agent").prompt_template_id,
+                gaps=evidence.gaps,
+                workers=[worker.model_dump(mode="json") for worker in followups],
+            )
+            yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
+            for idx, worker in enumerate(followups, start=1):
+                sources, call = yield from self._run_tool(
+                    progress,
+                    "web_search",
+                    {"query": worker.query, "max_results": worker.max_results},
+                )
+                tool_calls.append(call)
+                followup_public = [source for source in sources if is_public_source_url(source.url)]
+                followup_ranked = rank_sources(followup_public, plan)
+                followup_selected = [item.source for item in followup_ranked[: max(1, plan.min_evidence_items)]]
+                if followup_selected:
+                    followup_extracted, followup_read_call = yield from self._run_tool(
+                        progress,
+                        "read_url",
+                        {"urls": [source.url for source in followup_selected], "max_chars_per_source": 1800},
+                    )
+                    tool_calls.append(followup_read_call)
+                    merged = self._merge_sources(merged, self._merge_sources(followup_selected, followup_extracted))
+            evidence = bind_evidence(merged, plan=plan, max_items=plan.max_sources)
         event = progress(
             "evidence_binder",
             f"Bound {len(evidence.items)} evidence item(s).",
+            agent_id="evidence_binder",
+            prompt_template_id=registry.agent("evidence_binder").prompt_template_id,
+            coverage=evidence.coverage,
+            gaps=evidence.gaps,
+            contradictions=evidence.contradictions,
             evidence_items=[item.model_dump(mode="json") for item in evidence.items],
         )
         yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
 
-        event = progress("synthesis", "Synthesizing source-grounded answer from evidence.")
+        event = progress(
+            "synthesis",
+            "Synthesizing source-grounded answer from evidence.",
+            agent_id="synthesis_agent",
+            prompt_template_id=registry.agent("synthesis_agent").prompt_template_id,
+        )
         yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
-        response = synthesize_answer(request, evidence)
+        response = synthesize_answer(request, plan, evidence)
+        judge = judge_research(request, plan, evidence, response.text)
+        event = progress(
+            "research_judge",
+            "Checking research quality before publishing.",
+            agent_id="research_judge",
+            prompt_template_id=registry.agent("research_judge").prompt_template_id,
+        )
+        yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
+        event = progress(
+            "research_judge_result",
+            f"Research judge returned {judge.status}.",
+            status=judge.status,
+            score=judge.score,
+            issues=judge.issues,
+            repair_instruction=judge.repair_instruction,
+            can_publish=judge.can_publish,
+            agent_id="research_judge",
+        )
+        yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
+        verification = verify_claims(response.text, evidence)
+        event = progress(
+            "claim_verifier",
+            f"Claim verifier returned {verification.status}.",
+            agent_id="claim_verifier",
+            prompt_template_id=registry.agent("claim_verifier").prompt_template_id,
+            verification=verification.model_dump(mode="json"),
+        )
+        yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
+        if verification.status == "repair" and judge.status == "pass":
+            judge.status = "repair"
+            judge.issues.extend(verification.notes)
+            judge.repair_instruction = "Add citations to unsupported substantive claims."
+            judge.can_publish = False
+        feedback = ResearchFeedbackLoop(judge=judge, final_score=judge.score)
+        if judge.status == "repair" and plan.repair_iterations > 0:
+            event = progress(
+                "research_repair",
+                "Repairing the research answer.",
+                agent_id="repair_agent",
+                prompt_template_id=registry.agent("repair_agent").prompt_template_id,
+                repair_instruction=judge.repair_instruction,
+                issues=judge.issues,
+            )
+            yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
+            repaired = repair_research_answer(request, plan, evidence, response.text, judge)
+            repaired_judge = judge_research(request, plan, evidence, repaired.text)
+            response = repaired
+            feedback = ResearchFeedbackLoop(
+                judge=repaired_judge,
+                repaired=True,
+                repair_attempts=1,
+                final_score=repaired_judge.score,
+            )
+            event = progress(
+                "research_repair_result",
+                f"Repair complete; judge now returned {repaired_judge.status}.",
+                status=repaired_judge.status,
+                score=repaired_judge.score,
+                issues=repaired_judge.issues,
+                can_publish=repaired_judge.can_publish,
+                agent_id="repair_agent",
+            )
+            yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
         return {
             "sources": merged,
             "tool_calls": tool_calls,
             "evidence": evidence,
             "response": response,
+            "plan": plan,
+            "feedback": feedback,
         }
 
     def _apply_decision(self, request: AgentV3Request, decision: OrchestratorDecision) -> AgentV3Request:

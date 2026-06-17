@@ -47,13 +47,16 @@ class DocumentJudgeResult(BaseModel):
 
 PLAN_PROMPT = """You are the Agent v3 document planner.
 
-Create a compact document plan. Return only JSON:
+Create a document plan sized to the user request. Return only JSON:
 {
   "title": "short document title",
   "format": "markdown|docx",
   "audience": "intended audience",
-  "sections": ["4-7 concrete section headings"]
+  "sections": ["concrete section headings"]
 }
+For ordinary documents, use 4-7 sections. For deep technical reports, use 10-14
+substantive sections that preserve the important architecture, implementation,
+evidence, trade-off, failure-mode, and recommendation areas from the research.
 Prefer docx when the user asks for a downloadable report/document.
 """
 
@@ -77,9 +80,10 @@ def plan_document(
                             "conversation_context": request.conversation_context[-5000:] if request.conversation_context else "",
                             "quality_mode": request.quality_mode,
                             "output_format": request.output_format,
-                            "research_summary": (research_answer or "")[:2000],
+                            "research_summary": _planner_research_summary(request, research_answer),
                             "source_count": len(sources),
                             "evidence_count": len(evidence.items) if evidence else 0,
+                            "section_guidance": _section_guidance(request, research_answer=research_answer),
                         },
                         ensure_ascii=False,
                     ),
@@ -124,7 +128,7 @@ def write_document(
     )
     if repair_instruction:
         prompt += f"Repair instruction:\n{repair_instruction}\n\n"
-    prompt += "Write the complete document body in markdown. Use clear headings and concise paragraphs."
+    prompt += _document_writer_instruction(request, research_answer=research_answer)
     response = model_client.simple_completion(
         "You are the Agent v3 document writer. Produce only the document body in markdown.",
         prompt,
@@ -147,10 +151,12 @@ def write_document(
 def judge_document(draft: DocumentDraft, plan: DocumentPlan, *, source_count: int) -> DocumentJudgeResult:
     markdown = draft.markdown.strip()
     issues: list[str] = []
-    if len(markdown) < 300:
+    min_chars = _minimum_document_chars(plan)
+    if len(markdown) < min_chars:
         issues.append("Document is too short for the requested artifact.")
     headings = re.findall(r"^#{1,3}\s+.+$", markdown, flags=re.MULTILINE)
-    if len(headings) < max(2, min(4, len(plan.sections))):
+    min_headings = _minimum_document_headings(plan)
+    if len(headings) < min_headings:
         issues.append("Document needs clearer section headings.")
     if source_count and "[S" not in markdown:
         issues.append("Research-backed document should include source citations.")
@@ -172,11 +178,49 @@ def choose_artifact_tool(request: AgentV3Request, plan: DocumentPlan) -> str:
 
 def _document_writer_token_budget(request: AgentV3Request, *, research_answer: str | None = None) -> int:
     profile = infer_research_profile(request.message)
+    if profile == "technical_architecture" and request.research_level == "deep" and research_answer:
+        return 12000 if request.quality_mode == "executive" else 10000
     if profile == "technical_architecture" and research_answer:
-        return 7000 if request.quality_mode == "executive" else 5600
+        return 9000 if request.quality_mode == "executive" else 7600
     if research_answer and ("report" in request.message.lower() or request.output_format in {"docx", "markdown"}):
-        return 5200 if request.quality_mode == "executive" else 4000
+        return 7200 if request.quality_mode == "executive" else 6000
     return 2600 if request.quality_mode == "executive" else 2200
+
+
+def _document_writer_instruction(request: AgentV3Request, *, research_answer: str | None = None) -> str:
+    profile = infer_research_profile(request.message)
+    if profile == "technical_architecture" and request.research_level == "deep" and research_answer:
+        return (
+            "Write the complete document body in markdown. Do not summarize the research into a short memo. "
+            "Produce a deep technical report with 10-14 substantive sections, source-backed implementation detail, "
+            "named systems/examples, architecture patterns, workflow/control-flow explanations, data/state models, "
+            "tool and model boundaries, guardrails, observability, budget/latency trade-offs, failure modes, and "
+            "practical design recommendations. Include compact tables or text diagrams when they clarify the architecture. "
+            "Use citations from the research summary and sources throughout."
+        )
+    if research_answer and ("report" in request.message.lower() or request.output_format in {"docx", "markdown"}):
+        return (
+            "Write the complete document body in markdown. Produce a substantial report with clear headings, "
+            "evidence-backed findings, specific examples, caveats, and recommendations. Avoid compressing the output "
+            "into a brief summary unless the user explicitly asked for concision."
+        )
+    return "Write the complete document body in markdown. Use clear headings and complete, useful paragraphs."
+
+
+def _minimum_document_chars(plan: DocumentPlan) -> int:
+    section_count = len(plan.sections or [])
+    if section_count >= 8:
+        return 8000
+    if section_count >= 5:
+        return 4500
+    return 900
+
+
+def _minimum_document_headings(plan: DocumentPlan) -> int:
+    section_count = len(plan.sections or [])
+    if section_count >= 8:
+        return 8
+    return max(2, min(5, section_count))
 
 
 def build_artifact(tool_registry, plan: DocumentPlan, draft: DocumentDraft, tool_name: str) -> tuple[Artifact, ToolCall]:
@@ -210,8 +254,37 @@ def _normalize_plan(plan: DocumentPlan, request: AgentV3Request) -> DocumentPlan
         plan.format = "docx"
     if not plan.sections:
         plan.sections = ["Executive summary", "Key findings", "Recommended next steps"]
-    plan.sections = _dedupe(plan.sections)[:7]
+    plan.sections = _dedupe(plan.sections)[: _section_limit(request)]
     return plan
+
+
+def _planner_research_summary(request: AgentV3Request, research_answer: str | None) -> str:
+    if not research_answer:
+        return ""
+    profile = infer_research_profile(request.message)
+    if profile == "technical_architecture" and request.research_level == "deep":
+        return research_answer[:12000]
+    if request.research_level == "deep":
+        return research_answer[:8000]
+    return research_answer[:3000]
+
+
+def _section_guidance(request: AgentV3Request, *, research_answer: str | None = None) -> str:
+    profile = infer_research_profile(request.message)
+    if profile == "technical_architecture" and request.research_level == "deep" and research_answer:
+        return "Use 10-14 sections. Preserve implementation detail; do not compress the research into an executive memo."
+    if research_answer and request.research_level == "deep":
+        return "Use 7-10 sections for the deep research report."
+    return "Use 4-7 sections."
+
+
+def _section_limit(request: AgentV3Request) -> int:
+    profile = infer_research_profile(request.message)
+    if profile == "technical_architecture" and request.research_level == "deep":
+        return 14
+    if request.research_level == "deep":
+        return 10
+    return 7
 
 
 def _title_from_message(message: str) -> str:

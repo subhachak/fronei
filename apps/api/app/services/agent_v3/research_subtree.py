@@ -530,6 +530,9 @@ short overview. Include concrete components, control flow, data flow, agent
 roles, state/memory, tool boundaries, guardrails, failure handling, observability,
 latency/cost trade-offs, and implementation guidance. Prefer precise technical
 language over marketing phrasing. Include a compact text diagram when useful.
+For deep technical reports, write expansively: target 10-14 substantial sections,
+include named examples from sources, compare patterns, and avoid compressing the
+answer into an executive summary unless the user explicitly asks for brevity.
 """
 
 
@@ -1367,11 +1370,14 @@ def judge_research_final(request: AgentV3Request, state: ResearchStateStore, ans
             if claim.claim_type in {"architecture", "implementation", "tradeoff", "failure", "statistic"}
         ]
         if len(answer or "") < 4500:
-            score -= 0.18
-            issues.append("Deep technical architecture report is too short; expected a detailed multi-section report.")
-        if section_count < 8:
+            score -= 0.28
+            issues.append("Deep technical architecture report is far too short; expected a detailed multi-section report.")
+        elif len(answer or "") < 9000:
+            score -= 0.16
+            issues.append("Deep technical architecture report is still short for deep mode; expand with concrete implementation detail.")
+        if section_count < 10:
             score -= 0.12
-            issues.append("Technical architecture report lacks enough concrete sections.")
+            issues.append("Technical architecture report lacks enough concrete sections for deep mode.")
         if missing_terms:
             score -= min(0.16, 0.025 * len(missing_terms))
             issues.append("Technical architecture report misses required implementation concepts: " + ", ".join(missing_terms[:6]))
@@ -3520,7 +3526,10 @@ def _synthesis_report_contract(profile: ResearchProfile, request: AgentV3Request
             "failure handling, trade-offs, and design decisions. "
             "Add a compact ASCII or text diagram where it clarifies a component relationship or data flow. "
             "Where sources conflict or leave gaps, say so explicitly rather than filling with generic description. "
-            "Avoid restating definitions unless the definition itself contains a design decision worth citing."
+            "Avoid restating definitions unless the definition itself contains a design decision worth citing. "
+            "For deep research, target 10-14 substantive sections and enough detail to stand alone as a technical "
+            "architecture brief: concrete mechanisms, named systems, implementation patterns, trade-offs, failure "
+            "modes, and source-backed examples. Do not compress the report into a short summary."
         )
     if request.output_format in {"docx", "markdown"} or "report" in request.message.lower():
         return "Produce a structured report with clear headings, evidence-backed findings, gaps, and recommendations."
@@ -3531,9 +3540,9 @@ def _synthesis_token_budget(request: AgentV3Request, plan: ResearchPlan) -> int:
     if plan.research_profile == "technical_architecture" and request.research_level == "deep":
         # Deep technical report: needs room for 10 detailed sections with citations,
         # diagrams, trade-off tables, and implementation specifics.
-        return 8000 if request.quality_mode == "executive" else 7000
+        return 14000 if request.quality_mode == "executive" else 12000
     if request.output_format in {"docx", "markdown"} or "report" in request.message.lower():
-        return 4200 if request.quality_mode == "executive" else 3200
+        return 6500 if request.quality_mode == "executive" else 5200
     return 1800 if request.quality_mode == "executive" else 1200
 
 

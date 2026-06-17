@@ -541,7 +541,7 @@ def _section_terms(heading: str) -> list[str]:
 
 def _normalize_section_markdown(heading: str, markdown: str, *, section_number: int) -> str:
     text = (markdown or "").strip()
-    heading_text = heading.strip()
+    heading_text = re.sub(r"^\d+(?:\.\d+)*\.?\s+", "", heading.strip()).strip()
     canonical_heading = f"## {section_number}. {heading_text}"
     if not text:
         return f"{canonical_heading}\n\nNo evidence-backed content was generated for this section."

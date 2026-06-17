@@ -39,6 +39,7 @@ const MAX_COMPOSER_HEIGHT = 340
 
 type QualityMode = 'draft' | 'standard' | 'executive'
 type OutputFormat = 'chat' | 'markdown' | 'docx'
+type ResearchLevel = 'auto' | 'easy' | 'regular' | 'deep'
 type MobileView = 'work' | 'library' | 'context'
 type MobileNavItem = [MobileView, LucideIcon, string]
 type PendingDelete =
@@ -82,7 +83,17 @@ type AgentResult = {
   sources?: Source[]
   artifacts?: Artifact[]
   events?: ProgressEvent[]
+  follow_up_options?: FollowUpOption[]
   created_at?: string
+}
+
+type FollowUpOption = {
+  label: string
+  message?: string
+  force_route?: string
+  research_level?: ResearchLevel
+  confirm_deep_research?: boolean
+  output_format?: OutputFormat
 }
 
 type WorkItem = {
@@ -154,6 +165,7 @@ export default function AgentV3Page() {
   const [message, setMessage] = useState('Research the latest enterprise AI governance trends and create a concise report.')
   const [qualityMode, setQualityMode] = useState<QualityMode>('standard')
   const [outputFormat, setOutputFormat] = useState<OutputFormat>('chat')
+  const [researchLevel, setResearchLevel] = useState<ResearchLevel>('auto')
   const [events, setEvents] = useState<ProgressEvent[]>([])
   const [result, setResult] = useState<AgentResult | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -252,9 +264,9 @@ export default function AgentV3Page() {
     setResult(latest?.result || null)
   }
 
-  async function run() {
-    if (!canRun) return
-    const runMessage = message.trim()
+  async function run(option?: FollowUpOption) {
+    if (!isLoaded || !isSignedIn || running) return
+    const runMessage = (option?.message || message).trim()
     if (!runMessage) return
     activeRunMessageRef.current = runMessage
     setEvents([])
@@ -274,7 +286,10 @@ export default function AgentV3Page() {
           message: runMessage,
           conversation_id: conversationId,
           quality_mode: qualityMode,
-          output_format: outputFormat,
+          output_format: option?.output_format || outputFormat,
+          research_level: option?.research_level || researchLevel,
+          confirm_deep_research: Boolean(option?.confirm_deep_research),
+          force_route: option?.force_route || undefined,
         }),
       })
       if (!response.ok || !response.body) {
@@ -708,6 +723,7 @@ export default function AgentV3Page() {
               setTraceOpen={setTraceOpen}
               eventChips={eventChips}
               downloadArtifact={downloadArtifact}
+              onFollowUp={option => void run(option)}
             />
             {error && <div className={styles.errorBox}>{error}</div>}
             {!result && !running && activeTurns.length === 0 && <SuggestionStrip suggestions={SUGGESTIONS} setMessage={setMessage} />}
@@ -726,9 +742,11 @@ export default function AgentV3Page() {
               setQualityMode={setQualityMode}
               outputFormat={outputFormat}
               setOutputFormat={setOutputFormat}
+              researchLevel={researchLevel}
+              setResearchLevel={setResearchLevel}
               running={running}
               canRun={canRun}
-              run={run}
+              run={() => run()}
             />
           </div>
         </section>
@@ -1028,6 +1046,8 @@ function Composer({
   setQualityMode,
   outputFormat,
   setOutputFormat,
+  researchLevel,
+  setResearchLevel,
   running,
   canRun,
   run,
@@ -1038,6 +1058,8 @@ function Composer({
   setQualityMode: (mode: QualityMode) => void
   outputFormat: OutputFormat
   setOutputFormat: (format: OutputFormat) => void
+  researchLevel: ResearchLevel
+  setResearchLevel: (level: ResearchLevel) => void
   running: boolean
   canRun: boolean
   run: () => void
@@ -1060,6 +1082,7 @@ function Composer({
         <div className={styles.selectGrid}>
           <StudioSelect label="Quality" value={qualityMode} onChange={value => setQualityMode(value as QualityMode)} options={['draft', 'standard', 'executive']} />
           <StudioSelect label="Output" value={outputFormat} onChange={value => setOutputFormat(value as OutputFormat)} options={['chat', 'markdown', 'docx']} />
+          <StudioSelect label="Research" value={researchLevel} onChange={value => setResearchLevel(value as ResearchLevel)} options={['auto', 'easy', 'regular', 'deep']} />
         </div>
         <button
           type="button"
@@ -1114,6 +1137,7 @@ function Timeline({
   setTraceOpen,
   eventChips,
   downloadArtifact,
+  onFollowUp,
 }: {
   draftMessage: string
   turns: WorkItem[]
@@ -1125,6 +1149,7 @@ function Timeline({
   setTraceOpen: (open: boolean) => void
   eventChips: (event: ProgressEvent) => string[]
   downloadArtifact: (artifact: Artifact) => void | Promise<void>
+  onFollowUp: (option: FollowUpOption) => void
 }) {
   return (
     <section className={styles.chatThread}>
@@ -1142,7 +1167,7 @@ function Timeline({
       )}
 
       {turns.map(turn => (
-        <TurnPair key={turn.id} turn={turn} downloadArtifact={downloadArtifact} />
+        <TurnPair key={turn.id} turn={turn} downloadArtifact={downloadArtifact} onFollowUp={onFollowUp} />
       ))}
 
       {running && (
@@ -1164,6 +1189,7 @@ function Timeline({
           }}
           confidenceCues={confidenceCues}
           downloadArtifact={downloadArtifact}
+          onFollowUp={onFollowUp}
         />
       )}
 
@@ -1204,10 +1230,12 @@ function TurnPair({
   turn,
   confidenceCues,
   downloadArtifact,
+  onFollowUp,
 }: {
   turn: WorkItem
   confidenceCues?: string[]
   downloadArtifact: (artifact: Artifact) => void | Promise<void>
+  onFollowUp?: (option: FollowUpOption) => void
 }) {
   return (
     <div className={styles.turnExchange}>
@@ -1234,6 +1262,20 @@ function TurnPair({
           </div>
         ) : null}
         <MarkdownResult content={turn.result?.answer || ''} />
+        {turn.result?.follow_up_options?.length && onFollowUp ? (
+          <div className={styles.followUpRow}>
+            {turn.result.follow_up_options.map(option => (
+              <button
+                key={option.label}
+                type="button"
+                className={styles.followUpButton}
+                onClick={() => onFollowUp(option)}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+        ) : null}
         {turn.artifacts.length ? (
           <div className={styles.artifactRow}>
             {turn.artifacts.map(artifact => (

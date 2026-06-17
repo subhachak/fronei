@@ -835,3 +835,79 @@ def test_agent_v3_runtime_source_does_not_import_legacy_pipelines():
     ]
     for token in forbidden:
         assert token not in combined
+
+
+def test_agent_v3_research_level_budgets_are_distinct():
+    from app.services.agent_v3.research_subtree import research_budget_for
+
+    easy = research_budget_for(AgentV3Request(message="Check the latest RBI repo rate.", research_level="easy"))
+    regular = research_budget_for(AgentV3Request(message="Research RBI digital lending guidelines.", research_level="regular"))
+    deep = research_budget_for(AgentV3Request(message="Do deep research on IPL business economics.", research_level="deep"))
+
+    assert easy.max_search_workers == 1
+    assert easy.max_sources == 1
+    assert easy.max_deep_links == 0
+    assert regular.max_search_workers > easy.max_search_workers
+    assert regular.max_sources > easy.max_sources
+    assert deep.max_tool_calls > regular.max_tool_calls
+    assert deep.max_sources > regular.max_sources
+    assert deep.repair_iterations > regular.repair_iterations
+
+
+def test_agent_v3_deep_research_requires_confirmation(monkeypatch):
+    from app.services.agent_v3 import model_client
+
+    def fake_complete(messages, *, preferred_model=None, timeout_s=30, max_tokens=1200):
+        return SimpleNamespace(
+            text=json.dumps(
+                {
+                    "route": "research",
+                    "confidence": 0.93,
+                    "reason": "Broad high-stakes research.",
+                    "research_level": "deep",
+                    "requires_confirmation": True,
+                    "confirmation_message": "Deep research will take longer. Continue?",
+                }
+            ),
+            model_used="fake-orchestrator",
+            latency_ms=1,
+            cost_usd=0.0,
+        )
+
+    monkeypatch.setattr(model_client, "complete", fake_complete)
+    runtime = AgentV3Runtime(tools=FakeTools())
+
+    envelopes = _collect_stream(
+        runtime,
+        AgentV3Request(message="Do deep research on enterprise AI governance regulations."),
+    )
+
+    result = next(e.data for e in envelopes if e.type == "result")
+    assert result["route"] == "clarify"
+    assert result["answer"] == "Deep research will take longer. Continue?"
+    labels = [option["label"] for option in result["follow_up_options"]]
+    assert labels == ["Run deep research", "Use regular research", "Answer directly"]
+    assert not any(e.data.get("stage") == "research_registry" for e in envelopes if e.type == "progress")
+
+
+def test_agent_v3_confirmed_deep_research_runs_deep_budget(monkeypatch):
+    _patch_completion(monkeypatch, "Deep research answer [S1].")
+    runtime = AgentV3Runtime(tools=FakeTools())
+
+    envelopes = _collect_stream(
+        runtime,
+        AgentV3Request(
+            message="Do deep research on enterprise AI governance regulations.",
+            force_route="research",
+            research_level="deep",
+            confirm_deep_research=True,
+        ),
+    )
+
+    progress = [e.data for e in envelopes if e.type == "progress"]
+    goal_event = next(event for event in progress if event["stage"] == "research_goal")
+    assert goal_event["data"]["goal"]["research_level"] == "deep"
+    assert goal_event["data"]["budget_ledger"]["budget"]["max_sources"] == 12
+    result = next(e.data for e in envelopes if e.type == "result")
+    assert result["route"] == "research"
+    assert result["sources"]

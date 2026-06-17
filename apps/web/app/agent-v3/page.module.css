@@ -1014,6 +1014,28 @@
   margin-top: 16px;
 }
 
+.followUpRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.followUpButton {
+  border: 1px solid #cfc6b8;
+  background: #fbfaf6;
+  color: #162033;
+  font-size: 13px;
+  font-weight: 800;
+  padding: 9px 12px;
+}
+
+.followUpButton:first-child {
+  border-color: #162033;
+  background: #162033;
+  color: #fff;
+}
+
 .darkButton {
   padding: 8px 16px;
 }

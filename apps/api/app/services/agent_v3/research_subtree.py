@@ -246,6 +246,8 @@ class EvidenceItem(BaseModel):
     authority: float = 0.5
     supports_cells: list[str] = Field(default_factory=list)
     quoted_text: str = ""
+    query: str = ""
+    provider: str = ""
 
 
 class EvidencePack(BaseModel):
@@ -1342,6 +1344,8 @@ def bind_evidence(sources: list[Source], plan: ResearchPlan | None = None, max_i
                 relevance=_estimate_relevance(source, questions),
                 confidence=0.75 if source.content else 0.55,
                 authority=score_source_authority(source.url),
+                query=source.query,
+                provider=source.provider,
             )
         )
         if len(items) >= max_items:
@@ -1355,7 +1359,12 @@ def bind_evidence(sources: list[Source], plan: ResearchPlan | None = None, max_i
 
 def synthesize_answer(request: AgentV3Request, plan: ResearchPlan, evidence: EvidencePack):
     evidence_context = "\n\n".join(
-        f"[{item.source_id}] {item.title}\nQuestion: {item.question}\nURL: {item.url}\nEvidence: {item.evidence}"
+        f"[{item.source_id}] {item.title}\n"
+        f"Question: {item.question}\n"
+        f"Discovery query: {item.query or 'unknown'}\n"
+        f"Provider: {item.provider or 'unknown'}\n"
+        f"URL: {item.url}\n"
+        f"Evidence: {item.evidence}"
         for item in evidence.items
     )
     if not evidence_context:
@@ -1695,10 +1704,11 @@ class LeadResearchAgent:
             sources, call = self.tools.search_web(worker.query, max_results=worker.max_results)
             self.ledger.record_tool_call(latency_ms=call.latency_ms, sources_seen=len(sources))
             state.all_tool_calls.append(call)
+            provider = call.output.get("provider") if isinstance(call.output, dict) else ""
+            _ensure_source_provenance(sources, query=worker.query, provider=str(provider or ""))
             public_sources = [source for source in sources if is_public_source_url(source.url)]
             added = state.add_sources(public_sources)
             wave_sources.extend(added)
-            provider = call.output.get("provider") if isinstance(call.output, dict) else None
             self._progress(
                 "search_worker_provider",
                 f"Search worker {index} used {provider or 'the configured search provider chain'}.",
@@ -1721,12 +1731,27 @@ class LeadResearchAgent:
             {
                 "agent_id": "source_ranker",
                 "ranked_sources": [item.model_dump(mode="json") for item in ranked[: state.plan.max_sources]],
+                "selected_source_provenance": [
+                    {
+                        "title": source.title,
+                        "url": source.url,
+                        "query": source.query,
+                        "provider": source.provider,
+                    }
+                    for source in selected
+                ],
             },
         )
         if selected and self.ledger.can_start_tool("read_url") and self.ledger.can_read_more_sources():
             read_urls = [source.url for source in selected if source.url][: self.ledger.remaining_source_reads()]
+            provenance_by_url = {
+                source.url: {"query": source.query, "provider": source.provider}
+                for source in selected
+                if source.url
+            }
             self._progress("source_reader", f"Reading {len(read_urls)} selected source page(s).", {"urls": read_urls})
             extracted, call = self.tools.extract_urls(read_urls, max_chars_per_source=3500)
+            _apply_source_provenance(extracted, provenance_by_url)
             self.ledger.record_tool_call(latency_ms=call.latency_ms, sources_read=len(read_urls))
             state.all_tool_calls.append(call)
             state.add_sources(extracted)
@@ -1755,6 +1780,13 @@ class LeadResearchAgent:
         if not urls or not self.ledger.can_start_tool("read_url"):
             return
         extracted, call = self.tools.extract_urls(urls, max_chars_per_source=2500)
+        _apply_source_provenance(
+            extracted,
+            {
+                candidate.url: {"query": "deep-link follow-up", "provider": "Tavily Extract", "parent_url": candidate.parent_url}
+                for candidate in candidates
+            },
+        )
         self.ledger.record_tool_call(latency_ms=call.latency_ms, sources_read=len(urls))
         state.all_tool_calls.append(call)
         state.add_sources(extracted)
@@ -1972,6 +2004,23 @@ def score_technical_density(source: Source) -> float:
     return max(0.0, min(1.0, type_bonus + min(0.60, hits * 0.035) + content_bonus))
 
 
+def _ensure_source_provenance(sources: list[Source], *, query: str, provider: str) -> None:
+    for source in sources:
+        if not source.query:
+            source.query = query
+        if provider and not source.provider:
+            source.provider = provider
+
+
+def _apply_source_provenance(sources: list[Source], provenance_by_url: dict[str, dict[str, str]]) -> None:
+    for source in sources:
+        provenance = provenance_by_url.get(source.url) or {}
+        if not source.query:
+            source.query = provenance.get("query", "")
+        if not source.provider:
+            source.provider = provenance.get("provider", "")
+
+
 def _synthesis_report_contract(profile: ResearchProfile, request: AgentV3Request) -> str:
     if profile == "technical_architecture":
         return "\n".join(
@@ -2132,14 +2181,16 @@ def _tech_arch_anchor_queries(original_message: str) -> list[str]:
     if "deep research" in msg_lower or "deep_research" in msg_lower:
         return [
             "agentic deep research multi-agent architecture implementation",
-            "LLM research agent planning loop evidence retrieval site:arxiv.org OR site:github.com",
+            "LLM research agent planning loop evidence retrieval site:arxiv.org",
+            "LLM research agent planning loop evidence retrieval site:github.com",
             "autonomous research agent orchestration evidence synthesis 2024",
         ]
     if "multi-agent" in msg_lower or "multi agent" in msg_lower:
         return [
             "multi-agent LLM orchestration architecture patterns",
             "multi-agent AI system design orchestrator planner executor",
-            "agentic workflow multi-agent framework implementation site:github.com OR site:arxiv.org",
+            "agentic workflow multi-agent framework implementation site:github.com",
+            "agentic workflow multi-agent framework implementation site:arxiv.org",
         ]
     if "rag" in msg_lower or "retrieval" in msg_lower:
         return [
@@ -2150,12 +2201,14 @@ def _tech_arch_anchor_queries(original_message: str) -> list[str]:
     # Generic technical architecture fallback
     return [
         f"{original_message[:80]} architecture implementation",
-        f"{original_message[:60]} system design components site:arxiv.org OR site:github.com",
+        f"{original_message[:60]} system design components site:arxiv.org",
+        f"{original_message[:60]} system design components site:github.com",
     ]
 
 
 def _targeted_query(subject: str, dimensions: list[str], original: str) -> str:
-    subject = " ".join(str(subject or "").split())
+    raw_subject = " ".join(str(subject or "").split())
+    subject = _public_technical_subject(raw_subject) if infer_research_profile(original) == "technical_architecture" else raw_subject
     # Pick the single most specific dimension to keep the query tight
     primary_dim = dimensions[0] if dimensions else ""
     primary_dim = " ".join(str(primary_dim or "").split())
@@ -2164,7 +2217,7 @@ def _targeted_query(subject: str, dimensions: list[str], original: str) -> str:
         # Tight subject-focused query — don't pad with keyword lists.
         # The search engine needs a natural, specific query, not a keyword dump.
         # Append one grounding term to bias toward technical sources.
-        grounding = _tech_arch_grounding_term(subject)
+        grounding = _tech_arch_grounding_term(raw_subject)
         query = f"{subject} {primary_dim} {grounding}".strip()
         return query[:180]
 
@@ -2173,6 +2226,25 @@ def _targeted_query(subject: str, dimensions: list[str], original: str) -> str:
 
     base = f"{subject} {primary_dim}".strip()
     return f"{base} {original}".strip()[:220]
+
+
+def _public_technical_subject(subject: str) -> str:
+    text = subject.lower()
+    mappings = [
+        (("lead agent", "orchestration"), "multi-agent research orchestrator planner executor"),
+        (("research planning", "coverage contract"), "research agent query planning coverage evaluation"),
+        (("search worker", "provider"), "LLM search worker web retrieval provider routing"),
+        (("source reading", "deep-link"), "web research agent source extraction crawling"),
+        (("evidence binder", "citation"), "evidence grounding citation verification research agent"),
+        (("reflection", "gap", "repair"), "agent reflection gap detection repair loop"),
+        (("synthesis", "judge", "quality"), "LLM judge synthesis critic quality gate"),
+        (("runtime", "durability", "budget", "observability"), "agent runtime tracing budget ledger observability"),
+        (("guardrail", "security"), "LLM agent guardrails tool security policy"),
+    ]
+    for needles, replacement in mappings:
+        if any(needle in text for needle in needles):
+            return replacement
+    return subject
 
 
 def _tech_arch_grounding_term(subject: str) -> str:

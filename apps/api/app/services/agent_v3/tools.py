@@ -53,6 +53,7 @@ class AgentV3Tools:
                 try:
                     sources = self._search_tavily(query, max_results)
                     if sources:
+                        _annotate_search_sources(sources, query=query, provider="Tavily")
                         tool.output = {"provider": "Tavily", "source_count": len(sources)}
                         return sources, tool
                     errors.append("Tavily returned no results")
@@ -64,6 +65,7 @@ class AgentV3Tools:
                 try:
                     sources = self._search_you(query, max_results)
                     if sources:
+                        _annotate_search_sources(sources, query=query, provider="You.com")
                         tool.output = {"provider": "You.com", "source_count": len(sources)}
                         return sources, tool
                     errors.append("You.com returned no results")
@@ -75,6 +77,7 @@ class AgentV3Tools:
                 try:
                     sources = self._search_nimble(query, max_results)
                     if sources:
+                        _annotate_search_sources(sources, query=query, provider="Nimble")
                         tool.output = {"provider": "Nimble", "source_count": len(sources)}
                         return sources, tool
                     errors.append("Nimble returned no results")
@@ -278,6 +281,12 @@ def _nimble_auth_header(api_key: str) -> str:
     if api_key.lower().startswith(("bearer ", "basic ")):
         return api_key
     return f"Bearer {api_key}"
+
+
+def _annotate_search_sources(sources: list[Source], *, query: str, provider: str) -> None:
+    for source in sources:
+        source.query = query
+        source.provider = provider
 
 
 def _you_result_items(data: dict) -> list[dict]:

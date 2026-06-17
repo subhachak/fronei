@@ -54,6 +54,8 @@ class Source(BaseModel):
     url: str = ""
     snippet: str = ""
     content: str = ""
+    query: str = ""
+    provider: str = ""
 
 
 class ToolCall(BaseModel):

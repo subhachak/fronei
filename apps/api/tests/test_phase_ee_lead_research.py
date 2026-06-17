@@ -38,6 +38,31 @@ def test_technical_architecture_profile_gets_specific_contract(monkeypatch):
     assert len(contract.cells) >= 50
 
 
+def test_technical_architecture_queries_are_provider_friendly():
+    from app.services.agent_v3.research_subtree import (
+        CoverageCell,
+        CoverageContract,
+        _targeted_query,
+        _tech_arch_anchor_queries,
+        plan_from_contract,
+    )
+
+    message = "Conduct deep research on agentic deep research AI system architecture."
+    anchors = _tech_arch_anchor_queries(message)
+    assert anchors
+    assert all(" OR " not in query for query in anchors)
+
+    query = _targeted_query("Evidence binder and citation map", ["data model"], message)
+    assert "Evidence binder" not in query
+    assert "citation verification" in query
+
+    plan = plan_from_contract(
+        AgentV3Request(message=message, research_level="deep"),
+        CoverageContract(cells=[CoverageCell(subject="Evidence binder and citation map", dimension="data model")]),
+    )
+    assert plan.workers[0].rationale.startswith("Profile-level anchor")
+
+
 def test_coverage_contract_fallback_has_cells(monkeypatch):
     from app.services.agent_v3 import model_client
     from app.services.agent_v3.research_subtree import ResearchBrief, generate_coverage_contract
@@ -125,6 +150,27 @@ def test_technical_architecture_ranking_prefers_dense_sources():
 
     assert ranked[0].source.url.startswith("https://github.com")
     assert ranked[0].score > ranked[1].score
+
+
+def test_evidence_preserves_source_provenance():
+    from app.services.agent_v3.research_subtree import EvidencePack, ResearchPlan, bind_evidence
+
+    evidence = bind_evidence(
+        [
+            Source(
+                title="Agent runtime docs",
+                url="https://github.com/example/agent-runtime",
+                snippet="planner executor evidence guardrails runtime trace",
+                query="agent runtime tracing budget ledger observability",
+                provider="Tavily",
+            )
+        ],
+        ResearchPlan(research_profile="technical_architecture", questions=["runtime"]),
+    )
+
+    assert isinstance(evidence, EvidencePack)
+    assert evidence.items[0].query == "agent runtime tracing budget ledger observability"
+    assert evidence.items[0].provider == "Tavily"
 
 
 def test_reflect_sufficient_when_fully_covered(monkeypatch):

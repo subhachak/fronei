@@ -23,6 +23,9 @@ class OrchestratorDecision(BaseModel):
     latency_ms: int = 0
     cost_usd: float = 0.0
     source: str = "llm"
+    available_routes: list[str] = Field(default_factory=list)
+    available_tools: list[str] = Field(default_factory=list)
+    fallback_reason: str | None = None
 
 
 SYSTEM_PROMPT = """You are the fresh Fronei Agent v3 orchestrator.
@@ -47,6 +50,19 @@ Return only compact JSON with this schema:
 
 
 def decide(request: AgentV3Request) -> OrchestratorDecision:
+    return decide_with_options(
+        request,
+        available_routes=["direct", "clarify", "research", "document", "research_document"],
+        available_tools=[],
+    )
+
+
+def decide_with_options(
+    request: AgentV3Request,
+    *,
+    available_routes: list[str],
+    available_tools: list[str],
+) -> OrchestratorDecision:
     if request.force_route:
         return OrchestratorDecision(
             route=request.force_route,
@@ -54,6 +70,8 @@ def decide(request: AgentV3Request) -> OrchestratorDecision:
             reason="User explicitly forced the route.",
             output_format=request.output_format,
             source="forced",
+            available_routes=available_routes,
+            available_tools=available_tools,
         )
 
     user_payload = json.dumps(
@@ -61,6 +79,8 @@ def decide(request: AgentV3Request) -> OrchestratorDecision:
             "message": request.message,
             "quality_mode": request.quality_mode,
             "requested_output_format": request.output_format,
+            "available_routes": available_routes,
+            "available_tools": available_tools,
         },
         ensure_ascii=False,
     )
@@ -79,17 +99,27 @@ def decide(request: AgentV3Request) -> OrchestratorDecision:
         decision.latency_ms = response.latency_ms
         decision.cost_usd = response.cost_usd
         decision.source = "llm"
+        decision.available_routes = available_routes
+        decision.available_tools = available_tools
         if decision.route == "clarify" and not decision.clarification_question:
             decision.clarification_question = "Can you clarify what outcome you want and any constraints I should follow?"
         return decision
     except Exception as exc:
         logger.warning("agent_v3 orchestrator failed; using fallback route: %s", exc)
-        fallback = heuristic_decide(request)
+        fallback = heuristic_decide(request, available_routes=available_routes, available_tools=available_tools)
         fallback.reason = f"{fallback.reason} Orchestrator fallback after model failure."
+        fallback.fallback_reason = str(exc)
         return fallback
 
 
-def heuristic_decide(request: AgentV3Request) -> OrchestratorDecision:
+def heuristic_decide(
+    request: AgentV3Request,
+    *,
+    available_routes: list[str] | None = None,
+    available_tools: list[str] | None = None,
+) -> OrchestratorDecision:
+    available_routes = available_routes or ["direct", "clarify", "research", "document", "research_document"]
+    available_tools = available_tools or []
     text = request.message.lower()
     asks_doc = any(term in text for term in ["document", "report", "docx", "memo", "briefing", "deck", "ppt"])
     asks_research = any(
@@ -113,6 +143,8 @@ def heuristic_decide(request: AgentV3Request) -> OrchestratorDecision:
             reason="The request is too vague to execute safely.",
             clarification_question="What topic or outcome should I focus on?",
             source="heuristic",
+            available_routes=available_routes,
+            available_tools=available_tools,
         )
     if asks_research and asks_doc:
         route: RouteName = "research_document"
@@ -128,6 +160,8 @@ def heuristic_decide(request: AgentV3Request) -> OrchestratorDecision:
         reason="Deterministic fallback route based on request shape.",
         output_format=request.output_format,
         source="heuristic",
+        available_routes=available_routes,
+        available_tools=available_tools,
     )
 
 

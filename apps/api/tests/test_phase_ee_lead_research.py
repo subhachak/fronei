@@ -565,6 +565,53 @@ def test_state_add_sources_upgrades_candidate_with_read_content():
     assert state.all_sources[0].provider == "Reader"
 
 
+def test_technical_architecture_binds_architecture_cards():
+    from app.services.agent_v3.research_subtree import ResearchPlan, bind_evidence
+
+    source = Source(
+        title="PPTAgent architecture",
+        url="https://arxiv.org/abs/2501.12345",
+        content=(
+            "PPTAgent uses an orchestrator planner, generator, reviewer, and verifier workflow. "
+            "The system stores an outline, slide spec JSON, render plan, evidence pack, and citation map in state. "
+            "It renders slides with PptxGenJS and uses soffice and pdftoppm for visual verification. "
+            "The validation loop renders the artifact, inspects overflow and overlap, and repairs failed slides. "
+            "Reported PPTEval Pearson correlation was 0.71 and the visual critic improved design scores by 17.8 percent. "
+            "Failure modes include hallucination, overflow, truncation, invalid JSON, latency, and cost."
+        ),
+    )
+
+    evidence = bind_evidence(
+        [source],
+        plan=ResearchPlan(
+            research_profile="technical_architecture",
+            questions=["How do agentic PPT systems work?"],
+            search_queries=["PPTAgent architecture"],
+            min_evidence_items=1,
+        ),
+        max_items=3,
+    )
+
+    assert evidence.architecture_cards
+    card = evidence.architecture_cards[0]
+    assert card.system == "PPTAgent"
+    assert "planner" in card.agent_roles
+    assert "slide spec" in card.state_objects
+    assert "pptxgenjs" in card.tools_or_renderers
+    assert card.metrics
+    assert "overflow" in card.failure_modes
+
+
+def test_deep_technical_reader_uses_large_source_cap():
+    from app.services.agent_v3.research_subtree import ResearchPlan, _read_cap_for_batch
+
+    plan = ResearchPlan(research_profile="technical_architecture")
+
+    assert _read_cap_for_batch(["https://arxiv.org/abs/2501.12345"], plan) == 14000
+    assert _read_cap_for_batch(["https://github.com/example/repo"], plan) == 10000
+    assert _read_cap_for_batch(["https://example.com/post"], plan) == 6500
+
+
 def test_runtime_routes_deep_to_lead_loop(monkeypatch):
     from app.services.agent_v3 import research_subtree
     from app.services.agent_v3.runtime import AgentV3Runtime

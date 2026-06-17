@@ -334,6 +334,99 @@
   gap: 16px;
 }
 
+.chatThread {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.userBubble,
+.assistantBubble {
+  width: min(100%, 850px);
+  border: 1px solid #ded6c9;
+  padding: 16px;
+}
+
+.userBubble {
+  align-self: flex-end;
+  background: #ebe4d8;
+}
+
+.assistantBubble {
+  align-self: flex-start;
+  background: #fffdf8;
+  box-shadow: 0 18px 50px rgba(49, 39, 25, 0.08);
+}
+
+.bubbleLabel {
+  margin: 0 0 8px;
+  color: #79827c;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.userText,
+.emptyAssistantText {
+  margin: 0;
+  color: #273348;
+  font-size: 15px;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.emptyAssistantText {
+  color: #647069;
+}
+
+.assistantHeader {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.rollingLog {
+  display: grid;
+  gap: 12px;
+  border-left: 2px solid #d8cdbc;
+  margin-left: 17px;
+  padding-left: 18px;
+}
+
+.rollingEvent {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+}
+
+.liveDot {
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  background: #146152;
+  box-shadow: 0 0 0 7px rgba(20, 97, 82, 0.1);
+  margin-top: 7px;
+}
+
+.rollingStage {
+  margin: 0;
+  color: #205d51;
+  font-size: 12px;
+  font-weight: 850;
+  letter-spacing: 0.02em;
+}
+
+.rollingMessage {
+  margin: 3px 0 0;
+  color: #53615a;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
 .emptyState {
   border: 1px dashed #d8cdbc;
   padding: 24px 16px;
@@ -343,6 +436,8 @@
 
 .workCard,
 .contextCard,
+.artifactCard,
+.summaryDrawer,
 .composer,
 .resultBox,
 .traceEvent {
@@ -351,7 +446,20 @@
 }
 
 .workCard {
+  width: 100%;
   padding: 12px;
+  color: inherit;
+  text-align: left;
+}
+
+.workCard:hover {
+  background: #fffaf0;
+}
+
+.workCardActive {
+  border-color: #162033;
+  background: #f6efe3;
+  box-shadow: inset 3px 0 0 #162033;
 }
 
 .cardRowTop {
@@ -631,6 +739,61 @@
 
 .contextCard {
   padding: 16px;
+}
+
+.artifactCard {
+  border-color: #c8bba8;
+  background: #fff9ed;
+  padding: 16px;
+}
+
+.summaryDrawer {
+  overflow: hidden;
+  padding: 0;
+}
+
+.summaryDrawer summary {
+  cursor: pointer;
+  color: #162033;
+  font-size: 14px;
+  font-weight: 850;
+  list-style: none;
+  padding: 14px 16px;
+}
+
+.summaryDrawer summary::-webkit-details-marker {
+  display: none;
+}
+
+.summaryBody {
+  border-top: 1px solid #ebe4d8;
+  padding: 14px 16px 16px;
+}
+
+.summaryTitle {
+  display: -webkit-box;
+  margin: 0 0 12px;
+  overflow: hidden;
+  color: #162033;
+  font-size: 14px;
+  font-weight: 800;
+  line-height: 1.45;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.summaryGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px 12px;
+  color: #79827c;
+  font-size: 12px;
+}
+
+.summaryGrid strong {
+  color: #162033;
+  font-weight: 850;
+  text-align: right;
 }
 
 .contextCardHeader {

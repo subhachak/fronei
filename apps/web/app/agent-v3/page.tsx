@@ -20,7 +20,7 @@ import {
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { marked } from 'marked'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import styles from './page.module.css'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
@@ -66,6 +66,12 @@ type WorkItem = {
   title: string
   route: string
   createdAt: string
+  completedAt?: string
+  message?: string
+  qualityMode?: QualityMode
+  outputFormat?: OutputFormat
+  events?: ProgressEvent[]
+  result?: AgentResult
   artifacts: Artifact[]
   sourceCount: number
 }
@@ -88,12 +94,15 @@ export default function AgentV3Page() {
   const [library, setLibrary] = useState<WorkItem[]>([])
   const [mobileView, setMobileView] = useState<MobileView>('work')
   const [traceOpen, setTraceOpen] = useState(false)
+  const [selectedWorkId, setSelectedWorkId] = useState<string | null>(null)
+  const eventsRef = useRef<ProgressEvent[]>([])
 
   const canRun = useMemo(() => isLoaded && isSignedIn && message.trim().length > 0 && !running, [isLoaded, isSignedIn, message, running])
   const activeEvents = useMemo(() => events.filter(event => !['tool_selection', 'tool_result'].includes(event.stage)), [events])
   const confidenceCues = useMemo(() => buildConfidenceCues(events, result), [events, result])
   const latestArtifact = result?.artifacts?.[0] || library.find(item => item.artifacts.length)?.artifacts[0]
   const sources = result?.sources || []
+  const selectedWork = selectedWorkId ? library.find(item => item.id === selectedWorkId) || null : null
 
   useEffect(() => {
     try {
@@ -111,9 +120,12 @@ export default function AgentV3Page() {
   async function run() {
     if (!canRun) return
     setEvents([])
+    eventsRef.current = []
     setResult(null)
     setError(null)
     setRunning(true)
+    setSelectedWorkId(null)
+    setTraceOpen(false)
     setMobileView('work')
     try {
       const token = await getToken()
@@ -158,16 +170,25 @@ export default function AgentV3Page() {
     const eventType = eventLine?.replace('event: ', '').trim()
     const data = dataLine ? JSON.parse(dataLine.replace('data: ', '')) : {}
     if (eventType === 'progress') {
-      setEvents(prev => [...prev, data as ProgressEvent])
+      const nextEvent = data as ProgressEvent
+      eventsRef.current = [...eventsRef.current, nextEvent]
+      setEvents(eventsRef.current)
     } else if (eventType === 'result') {
       const next = data as AgentResult
       setResult(next)
+      setTraceOpen(false)
       setLibrary(prev => [
         {
           id: next.turn_id,
           title: titleFromMessage(message),
           route: next.route,
           createdAt: new Date().toISOString(),
+          completedAt: new Date().toISOString(),
+          message,
+          qualityMode,
+          outputFormat,
+          events: eventsRef.current,
+          result: next,
           artifacts: next.artifacts || [],
           sourceCount: next.sources?.length || 0,
         },
@@ -176,6 +197,20 @@ export default function AgentV3Page() {
     } else if (eventType === 'error') {
       setError(data.message || 'Agent v3 failed')
     }
+  }
+
+  function selectWork(item: WorkItem) {
+    if (running) return
+    setSelectedWorkId(item.id)
+    setMessage(item.message || item.title)
+    eventsRef.current = item.events || []
+    setEvents(eventsRef.current)
+    setResult(item.result || null)
+    setError(null)
+    setTraceOpen(false)
+    setMobileView('work')
+    if (item.qualityMode) setQualityMode(item.qualityMode)
+    if (item.outputFormat) setOutputFormat(item.outputFormat)
   }
 
   function downloadArtifact(artifact: Artifact) {
@@ -207,12 +242,30 @@ export default function AgentV3Page() {
         <MobileTopBar mobileView={mobileView} setMobileView={setMobileView} running={running} />
 
         <aside className={`${styles.libraryPane} ${mobileView === 'library' ? styles.mobileVisible : styles.mobileHidden}`}>
-          <StudioLibrary library={library} latestArtifact={latestArtifact} downloadArtifact={downloadArtifact} />
+          <StudioLibrary
+            library={library}
+            latestArtifact={latestArtifact}
+            selectedWorkId={selectedWorkId}
+            onSelectWork={selectWork}
+            downloadArtifact={downloadArtifact}
+          />
         </aside>
 
         <section className={`${styles.workPane} ${mobileView === 'work' ? styles.mobileVisible : styles.mobileHidden}`}>
           <WorkbenchHeader running={running} result={result} />
           <div className={styles.workScroll}>
+            <Timeline
+              message={message}
+              events={activeEvents}
+              running={running}
+              result={result}
+              confidenceCues={confidenceCues}
+              traceOpen={traceOpen}
+              setTraceOpen={setTraceOpen}
+              eventChips={eventChips}
+              downloadArtifact={downloadArtifact}
+            />
+            {error && <div className={styles.errorBox}>{error}</div>}
             <Composer
               message={message}
               setMessage={setMessage}
@@ -224,23 +277,20 @@ export default function AgentV3Page() {
               canRun={canRun}
               run={run}
             />
-            {error && <div className={styles.errorBox}>{error}</div>}
-            <SuggestionStrip suggestions={SUGGESTIONS} setMessage={setMessage} />
-            <Timeline
-              events={activeEvents}
-              running={running}
-              result={result}
-              confidenceCues={confidenceCues}
-              traceOpen={traceOpen}
-              setTraceOpen={setTraceOpen}
-              eventChips={eventChips}
-              downloadArtifact={downloadArtifact}
-            />
+            {!result && !running && events.length === 0 && <SuggestionStrip suggestions={SUGGESTIONS} setMessage={setMessage} />}
           </div>
         </section>
 
         <aside className={`${styles.contextPane} ${mobileView === 'context' ? styles.mobileVisible : styles.mobileHidden}`}>
-          <ContextRail result={result} events={events} sources={sources} latestArtifact={latestArtifact} downloadArtifact={downloadArtifact} />
+          <ContextRail
+            result={result}
+            events={events}
+            sources={sources}
+            latestArtifact={latestArtifact}
+            selectedWork={selectedWork}
+            currentMessage={message}
+            downloadArtifact={downloadArtifact}
+          />
         </aside>
       </div>
     </main>
@@ -286,10 +336,14 @@ function MobileTopBar({ mobileView, setMobileView, running }: { mobileView: Mobi
 function StudioLibrary({
   library,
   latestArtifact,
+  selectedWorkId,
+  onSelectWork,
   downloadArtifact,
 }: {
   library: WorkItem[]
   latestArtifact?: Artifact
+  selectedWorkId: string | null
+  onSelectWork: (item: WorkItem) => void
   downloadArtifact: (artifact: Artifact) => void
 }) {
   return (
@@ -323,25 +377,33 @@ function StudioLibrary({
           </div>
         )}
         {library.map(item => (
-          <div key={item.id} className={styles.workCard}>
+          <button
+            key={item.id}
+            type="button"
+            onClick={() => onSelectWork(item)}
+            className={`${styles.workCard} ${selectedWorkId === item.id ? styles.workCardActive : ''}`}
+          >
             <div className={styles.cardRowTop}>
               <span className={styles.cardIcon}><FileText size={16} /></span>
               <div className={styles.minZero}>
                 <p className={styles.cardTitle}>{item.title}</p>
-                <p className={styles.cardMeta}>{item.route} | {item.sourceCount} sources</p>
+                <p className={styles.cardMeta}>{item.route} | {item.sourceCount} sources | {formatRelativeTime(item.completedAt || item.createdAt)}</p>
               </div>
             </div>
             {item.artifacts.length > 0 && (
               <button
                 type="button"
-                onClick={() => downloadArtifact(item.artifacts[0])}
+                onClick={event => {
+                  event.stopPropagation()
+                  downloadArtifact(item.artifacts[0])
+                }}
                 className={styles.secondaryButton}
               >
                 <Download size={14} />
                 Download
               </button>
             )}
-          </div>
+          </button>
         ))}
       </div>
     </>
@@ -445,6 +507,7 @@ function SuggestionStrip({ suggestions, setMessage }: { suggestions: string[]; s
 }
 
 function Timeline({
+  message,
   events,
   running,
   result,
@@ -454,6 +517,7 @@ function Timeline({
   eventChips,
   downloadArtifact,
 }: {
+  message: string
   events: ProgressEvent[]
   running: boolean
   result: AgentResult | null
@@ -464,32 +528,39 @@ function Timeline({
   downloadArtifact: (artifact: Artifact) => void
 }) {
   return (
-    <section className={styles.timeline}>
-      <div className={styles.timelineMain}>
-        <div className={styles.companionRow}>
+    <section className={styles.chatThread}>
+      <div className={styles.userBubble}>
+        <p className={styles.bubbleLabel}>You</p>
+        <p className={styles.userText}>{message}</p>
+      </div>
+
+      <div className={styles.assistantBubble}>
+        <div className={styles.assistantHeader}>
           <span className={styles.companionMark}><Sparkles size={16} /></span>
           <div>
-            <p className={styles.companionTitle}>Fronei is with you.</p>
+            <p className={styles.companionTitle}>Fronei</p>
             <p className={styles.companionText}>
-              {running ? 'I am turning the task into grounded work.' : result ? 'The work is ready.' : 'Start a task when you are ready.'}
+              {running ? 'Working through the route, tools, and evidence.' : result ? 'Here is the finished response.' : 'Ready when you are.'}
             </p>
           </div>
         </div>
 
-        {confidenceCues.length > 0 && (
-          <div className={styles.cueGrid}>
-            {confidenceCues.map(cue => (
-              <div key={cue} className={styles.cueCard}>
-                <CheckCircle2 size={16} />
-                {cue}
-              </div>
-            ))}
-          </div>
+        {running && (
+          <RollingCommentary events={events} eventChips={eventChips} />
         )}
 
-        {result && (
-          <div className={styles.resultBox}>
-            <p className={styles.resultLabel}>Result</p>
+        {!running && result && (
+          <>
+            {confidenceCues.length > 0 && (
+              <div className={styles.cueGrid}>
+                {confidenceCues.map(cue => (
+                  <div key={cue} className={styles.cueCard}>
+                    <CheckCircle2 size={16} />
+                    {cue}
+                  </div>
+                ))}
+              </div>
+            )}
             <MarkdownResult content={result.answer} />
             {result.artifacts?.length ? (
               <div className={styles.artifactRow}>
@@ -506,18 +577,24 @@ function Timeline({
                 ))}
               </div>
             ) : null}
-          </div>
+          </>
+        )}
+
+        {!running && !result && (
+          <p className={styles.emptyAssistantText}>Start a task and I will keep the work visible here.</p>
         )}
       </div>
 
-      <button
-        type="button"
-        onClick={() => setTraceOpen(!traceOpen)}
-        className={styles.traceToggle}
-      >
-        <span>{events.length ? `${events.length} studio events` : 'Studio trace'}</span>
-        <ChevronDown size={16} className={traceOpen ? styles.rotated : ''} />
-      </button>
+      {(events.length > 0 || result) && (
+        <button
+          type="button"
+          onClick={() => setTraceOpen(!traceOpen)}
+          className={styles.traceToggle}
+        >
+          <span>{traceOpen ? 'Hide execution trace' : `${events.length || 0} engine events`}</span>
+          <ChevronDown size={16} className={traceOpen ? styles.rotated : ''} />
+        </button>
+      )}
 
       {traceOpen && (
         <div className={styles.traceList}>
@@ -541,20 +618,56 @@ function Timeline({
   )
 }
 
+function RollingCommentary({ events, eventChips }: { events: ProgressEvent[]; eventChips: (event: ProgressEvent) => string[] }) {
+  const visibleEvents = events.slice(-6)
+  return (
+    <div className={styles.rollingLog}>
+      {visibleEvents.length === 0 && (
+        <div className={styles.rollingEvent}>
+          <span className={styles.liveDot} />
+          <div>
+            <p className={styles.rollingStage}>Starting</p>
+            <p className={styles.rollingMessage}>Preparing the route and available tools.</p>
+          </div>
+        </div>
+      )}
+      {visibleEvents.map((event, index) => (
+        <div key={`${event.stage}-${index}`} className={styles.rollingEvent}>
+          <span className={styles.liveDot} />
+          <div>
+            <p className={styles.rollingStage}>{humanizeStage(event.stage)}</p>
+            <p className={styles.rollingMessage}>{event.message}</p>
+            {eventChips(event).length ? (
+              <div className={styles.chipRow}>
+                {eventChips(event).map(chip => <span key={chip} className={styles.traceChip}>{chip}</span>)}
+              </div>
+            ) : null}
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 function ContextRail({
   result,
   events,
   sources,
   latestArtifact,
+  selectedWork,
+  currentMessage,
   downloadArtifact,
 }: {
   result: AgentResult | null
   events: ProgressEvent[]
   sources: Source[]
   latestArtifact?: Artifact
+  selectedWork: WorkItem | null
+  currentMessage: string
   downloadArtifact: (artifact: Artifact) => void
 }) {
   const providerEvents = events.filter(event => event.stage === 'search_worker_provider')
+  const workSummary = buildWorkSummary({ result, events, sources, selectedWork, currentMessage })
   return (
     <>
       <div className={styles.sectionHeaderPlain}>
@@ -563,6 +676,21 @@ function ContextRail({
       </div>
 
       <div className={styles.contextList}>
+        <details className={styles.summaryDrawer} open>
+          <summary>Work summary</summary>
+          <div className={styles.summaryBody}>
+            <p className={styles.summaryTitle}>{workSummary.title}</p>
+            <div className={styles.summaryGrid}>
+              <span>Turns</span><strong>{workSummary.turns}</strong>
+              <span>Route</span><strong>{workSummary.route}</strong>
+              <span>Time</span><strong>{workSummary.time}</strong>
+              <span>Budget</span><strong>{workSummary.budget}</strong>
+              <span>Sources</span><strong>{workSummary.sources}</strong>
+              <span>Events</span><strong>{workSummary.events}</strong>
+            </div>
+          </div>
+        </details>
+
         <section className={styles.contextCard}>
           <div className={styles.contextCardHeader}>
             <Clock3 size={16} />
@@ -590,12 +718,13 @@ function ContextRail({
         )}
 
         {latestArtifact && (
-          <section className={styles.contextCard}>
+          <section className={styles.artifactCard}>
             <div className={styles.contextCardHeader}>
               <FileText size={16} />
-              <h3>Artifact</h3>
+              <h3>Generated document</h3>
             </div>
             <p className={styles.truncateStrong}>{latestArtifact.filename}</p>
+            <p className={styles.mutedSmall}>Saved with this work session.</p>
             <button
               type="button"
               onClick={() => downloadArtifact(latestArtifact)}
@@ -647,6 +776,83 @@ function buildConfidenceCues(events: ProgressEvent[], result: AgentResult | null
   if (judge?.data?.status) cues.push(`Document judge: ${String(judge.data.status)}`)
   if (result?.artifacts?.length) cues.push('Artifact saved to library')
   return cues.slice(0, 4)
+}
+
+function buildWorkSummary({
+  result,
+  events,
+  sources,
+  selectedWork,
+  currentMessage,
+}: {
+  result: AgentResult | null
+  events: ProgressEvent[]
+  sources: Source[]
+  selectedWork: WorkItem | null
+  currentMessage: string
+}) {
+  const cost = estimateCost(events)
+  const timeMs = result?.latency_ms || estimateDurationMs(events, selectedWork)
+  return {
+    title: selectedWork?.title || titleFromMessage(currentMessage),
+    turns: result || selectedWork ? '1' : '0',
+    route: result?.route || selectedWork?.route || 'not routed',
+    time: timeMs ? formatDuration(timeMs) : 'waiting',
+    budget: cost ? `$${cost.toFixed(4)}` : 'not reported',
+    sources: String(sources.length || selectedWork?.sourceCount || 0),
+    events: String(events.length || selectedWork?.events?.length || 0),
+  }
+}
+
+function estimateCost(events: ProgressEvent[]): number {
+  return events.reduce((total, event) => {
+    const data = event.data || {}
+    for (const key of ['cost_usd', 'estimated_cost_usd', 'total_cost_usd']) {
+      const value = data[key]
+      if (typeof value === 'number' && Number.isFinite(value)) return total + value
+      if (typeof value === 'string') {
+        const parsed = Number(value)
+        if (Number.isFinite(parsed)) return total + parsed
+      }
+    }
+    return total
+  }, 0)
+}
+
+function estimateDurationMs(events: ProgressEvent[], selectedWork: WorkItem | null): number {
+  if (selectedWork?.result?.latency_ms) return selectedWork.result.latency_ms
+  const first = events.find(event => event.created_at)?.created_at
+  const last = [...events].reverse().find(event => event.created_at)?.created_at
+  if (!first || !last) return 0
+  const start = new Date(first).getTime()
+  const end = new Date(last).getTime()
+  return Number.isFinite(start) && Number.isFinite(end) && end > start ? end - start : 0
+}
+
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)}ms`
+  const seconds = Math.round(ms / 1000)
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.floor(seconds / 60)
+  return `${minutes}m ${seconds % 60}s`
+}
+
+function formatRelativeTime(value: string): string {
+  const timestamp = new Date(value).getTime()
+  if (!Number.isFinite(timestamp)) return 'recent'
+  const seconds = Math.max(1, Math.round((Date.now() - timestamp) / 1000))
+  if (seconds < 60) return `${seconds}s ago`
+  const minutes = Math.round(seconds / 60)
+  if (minutes < 60) return `${minutes}m ago`
+  const hours = Math.round(minutes / 60)
+  if (hours < 24) return `${hours}h ago`
+  return `${Math.round(hours / 24)}d ago`
+}
+
+function humanizeStage(stage: string): string {
+  return stage
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, char => char.toUpperCase())
 }
 
 function titleFromMessage(message: string): string {

@@ -21,6 +21,7 @@ def new_id(prefix: str) -> str:
 class AgentV3Request(BaseModel):
     message: str = Field(min_length=1)
     conversation_id: str | None = None
+    conversation_context: str = ""
     quality_mode: Literal["draft", "standard", "executive"] = "standard"
     force_route: RouteName | None = None
     output_format: Literal["chat", "markdown", "docx"] = "chat"

@@ -77,6 +77,7 @@ def decide_with_options(
     user_payload = json.dumps(
         {
             "message": request.message,
+            "conversation_context": request.conversation_context[-5000:] if request.conversation_context else "",
             "quality_mode": request.quality_mode,
             "requested_output_format": request.output_format,
             "available_routes": available_routes,

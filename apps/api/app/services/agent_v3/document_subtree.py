@@ -70,6 +70,7 @@ def plan_document(
                     "content": json.dumps(
                         {
                             "message": request.message,
+                            "conversation_context": request.conversation_context[-5000:] if request.conversation_context else "",
                             "quality_mode": request.quality_mode,
                             "output_format": request.output_format,
                             "research_summary": (research_answer or "")[:2000],
@@ -108,6 +109,8 @@ def write_document(
 ) -> DocumentDraft:
     context = source_context_from_evidence(evidence) if evidence is not None else source_context(sources)
     prompt = (
+        (f"{request.conversation_context}\n\n" if request.conversation_context else "")
+        +
         f"User request:\n{request.message}\n\n"
         f"Document plan:\n{plan.model_dump_json()}\n\n"
         f"Research summary:\n{research_answer or ''}\n\n"

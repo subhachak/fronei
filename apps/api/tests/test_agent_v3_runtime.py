@@ -247,6 +247,26 @@ def test_agent_v3_research_public_url_guardrail_filters_private_sources():
     assert not is_public_source_url("file:///tmp/secret")
 
 
+def test_agent_v3_research_budget_ledger_stops_tools_but_allows_synthesis():
+    from app.services.agent_v3.research_subtree import ResearchBudget, ResearchBudgetLedger
+
+    ledger = ResearchBudgetLedger(
+        budget=ResearchBudget(
+            max_tool_calls=1,
+            max_model_calls=2,
+            max_cost_usd=1.0,
+            max_elapsed_ms=10_000,
+        )
+    )
+
+    ledger.record_tool_call(latency_ms=10, sources_seen=3)
+
+    assert ledger.stopped
+    assert ledger.stop_reason == "tool budget exhausted"
+    assert not ledger.can_start_tool("web_search")
+    assert ledger.can_start_model("synthesis_agent")
+
+
 def test_agent_v3_research_emits_agentic_goal_guardrail_and_judge_events(monkeypatch):
     _patch_completion(monkeypatch, "Research answer [S1].")
     runtime = AgentV3Runtime(tools=FakeTools())
@@ -264,6 +284,8 @@ def test_agent_v3_research_emits_agentic_goal_guardrail_and_judge_events(monkeyp
     assert by_stage["claim_verifier"]["data"]["agent_id"] == "claim_verifier"
     assert by_stage["research_judge_result"]["data"]["status"] in {"pass", "repair", "fail"}
     assert "score" in by_stage["research_judge_result"]["data"]
+    assert by_stage["research_budget"]["data"]["budget_ledger"]["model_calls"] >= 2
+    assert "max_tool_calls" in by_stage["research_goal"]["data"]["goal"]["budget"]
 
 
 def test_agent_v3_research_source_ranking_and_deep_link_helpers():
@@ -678,6 +700,124 @@ def test_agent_v3_conversation_turns_are_conversation_scoped(monkeypatch, tmp_pa
             denied = client.get(f"/agent-v3/conversations/{conversation['id']}/turns?limit=6")
             assert denied.status_code == 200
             assert denied.json()["turns"] == []
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_agent_v3_conversation_context_connects_followup_turns(monkeypatch, tmp_path):
+    from app.services.agent_v3 import model_client, persistence
+
+    _set_artifact_dir(monkeypatch, tmp_path)
+    Session = _sqlite_session()
+    monkeypatch.setattr(persistence, "SessionLocal", Session)
+    captured_prompts: list[str] = []
+
+    def fake_complete(messages, *, preferred_model=None, timeout_s=30, max_tokens=1200):
+        return SimpleNamespace(
+            text=json.dumps({"route": "direct", "confidence": 0.9, "reason": "direct test"}),
+            model_used="fake-orchestrator",
+            latency_ms=1,
+            cost_usd=0.0,
+        )
+
+    answers = iter(["First answer about gateway limits.", "Follow-up answer using prior context."])
+
+    def fake_simple_completion(system, user, *, max_tokens=1200):
+        captured_prompts.append(user)
+        return SimpleNamespace(text=next(answers), model_used="fake-model", latency_ms=1, cost_usd=0.0)
+
+    monkeypatch.setattr(model_client, "complete", fake_complete)
+    monkeypatch.setattr(model_client, "simple_completion", fake_simple_completion)
+    app.dependency_overrides[get_current_user_id] = lambda: "u1"
+    try:
+        with TestClient(app) as client:
+            workspace = client.post("/agent-v3/workspaces", json={"name": "Context workspace"}).json()
+            conversation = client.post(
+                f"/agent-v3/workspaces/{workspace['id']}/conversations",
+                json={"title": "Rate limit thread"},
+            ).json()
+            first = client.post(
+                "/agent-v3/turns/stream",
+                json={"message": "Explain API gateway rate limiting.", "conversation_id": conversation["id"]},
+            )
+            assert first.status_code == 200
+            persistence.wait_for_context_updates()
+            second = client.post(
+                "/agent-v3/turns/stream",
+                json={"message": "Make that shorter.", "conversation_id": conversation["id"]},
+            )
+            assert second.status_code == 200
+            persistence.wait_for_context_updates()
+
+        assert "First answer about gateway limits." in captured_prompts[-1]
+        assert "Explain API gateway rate limiting." in captured_prompts[-1]
+        with Session() as db:
+            row = db.get(AgentV3Conversation, conversation["id"])
+            context = json.loads(row.context_json)
+            assert context["running_summary"]
+            assert len(context["recent_turns"]) == 2
+            assert len(persistence.conversation_context_text("u1", conversation["id"])) <= 6000
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_agent_v3_workspace_context_is_shared_across_conversations(monkeypatch, tmp_path):
+    from app.services.agent_v3 import model_client, persistence
+
+    _set_artifact_dir(monkeypatch, tmp_path)
+    Session = _sqlite_session()
+    monkeypatch.setattr(persistence, "SessionLocal", Session)
+    captured_prompts: list[str] = []
+
+    def fake_complete(messages, *, preferred_model=None, timeout_s=30, max_tokens=1200):
+        return SimpleNamespace(
+            text=json.dumps({"route": "direct", "confidence": 0.9, "reason": "direct test"}),
+            model_used="fake-orchestrator",
+            latency_ms=1,
+            cost_usd=0.0,
+        )
+
+    answers = iter(["Shared workspace context about platform modernization.", "Second conversation answer."])
+
+    def fake_simple_completion(system, user, *, max_tokens=1200):
+        captured_prompts.append(user)
+        return SimpleNamespace(text=next(answers), model_used="fake-model", latency_ms=1, cost_usd=0.0)
+
+    monkeypatch.setattr(model_client, "complete", fake_complete)
+    monkeypatch.setattr(model_client, "simple_completion", fake_simple_completion)
+    app.dependency_overrides[get_current_user_id] = lambda: "u1"
+    try:
+        with TestClient(app) as client:
+            workspace = client.post("/agent-v3/workspaces", json={"name": "Shared workspace"}).json()
+            first_conversation = client.post(
+                f"/agent-v3/workspaces/{workspace['id']}/conversations",
+                json={"title": "First thread"},
+            ).json()
+            second_conversation = client.post(
+                f"/agent-v3/workspaces/{workspace['id']}/conversations",
+                json={"title": "Second thread"},
+            ).json()
+            first = client.post(
+                "/agent-v3/turns/stream",
+                json={"message": "Capture platform modernization context.", "conversation_id": first_conversation["id"]},
+            )
+            assert first.status_code == 200
+            persistence.wait_for_context_updates()
+            second = client.post(
+                "/agent-v3/turns/stream",
+                json={"message": "Use what we know in this workspace.", "conversation_id": second_conversation["id"]},
+            )
+            assert second.status_code == 200
+            persistence.wait_for_context_updates()
+
+        assert "Workspace context:" in captured_prompts[-1]
+        assert "Shared workspace context about platform modernization." in captured_prompts[-1]
+        assert "Capture platform modernization context." in captured_prompts[-1]
+        with Session() as db:
+            row = db.get(AgentV3Workspace, workspace["id"])
+            context = json.loads(row.context_json)
+            assert context["running_summary"]
+            assert len(context["recent_turns"]) == 2
     finally:
         app.dependency_overrides.clear()
 

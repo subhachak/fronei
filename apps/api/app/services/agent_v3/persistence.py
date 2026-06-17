@@ -3,6 +3,8 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -16,6 +18,7 @@ from app.db.models import (
     AgentV3Turn,
     AgentV3Workspace,
     SessionLocal,
+    User,
 )
 from app.services.agent_v3.models import (
     AgentV3ConversationSummary,
@@ -28,6 +31,11 @@ from app.services.agent_v3.models import (
     ToolCall,
     new_id,
 )
+
+logger = logging.getLogger(__name__)
+
+_CONTEXT_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="agent-v3-context")
+_PENDING_CONTEXT_FUTURES: set[Future] = set()
 
 
 def _dumps(value: Any) -> str:
@@ -52,6 +60,295 @@ def _title_from_message(message: str) -> str:
     if not cleaned:
         return "New conversation"
     return cleaned[:90].strip(" .") or "New conversation"
+
+
+def _compact_text(value: str, limit: int) -> str:
+    cleaned = " ".join((value or "").split())
+    return cleaned[:limit].rstrip()
+
+
+def _user_profile_context(db, user_id: str) -> dict:
+    user = db.query(User).filter(User.clerk_id == user_id).first()
+    profile = {"user_id": user_id}
+    if user:
+        if user.name:
+            profile["name"] = user.name
+        if user.email:
+            profile["email"] = user.email
+    return profile
+
+
+def _initial_workspace_context(db, user_id: str, workspace: AgentV3Workspace) -> dict:
+    return {
+        "version": 1,
+        "max_chars": 4000,
+        "user_profile": _user_profile_context(db, user_id),
+        "workspace": {"id": workspace.id, "name": workspace.name},
+        "conversation": {},
+        "running_summary": "",
+        "key_facts": [],
+        "recent_turns": [],
+    }
+
+
+def _initial_context(db, user_id: str, workspace: AgentV3Workspace, conversation: AgentV3Conversation | None = None) -> dict:
+    return {
+        "version": 1,
+        "max_chars": 6000,
+        "user_profile": _user_profile_context(db, user_id),
+        "workspace": {"id": workspace.id, "name": workspace.name},
+        "conversation": {"id": conversation.id, "title": conversation.title} if conversation else {},
+        "running_summary": "",
+        "key_facts": [],
+        "recent_turns": [],
+    }
+
+
+def _normalize_context(ctx: dict, *, max_chars: int = 6000) -> dict:
+    ctx = dict(ctx or {})
+    ctx["version"] = int(ctx.get("version") or 1)
+    ctx["max_chars"] = max(1200, min(12000, int(ctx.get("max_chars") or max_chars)))
+    ctx["user_profile"] = ctx.get("user_profile") if isinstance(ctx.get("user_profile"), dict) else {}
+    ctx["workspace"] = ctx.get("workspace") if isinstance(ctx.get("workspace"), dict) else {}
+    ctx["conversation"] = ctx.get("conversation") if isinstance(ctx.get("conversation"), dict) else {}
+    ctx["running_summary"] = _compact_text(str(ctx.get("running_summary") or ""), 2200)
+    facts = ctx.get("key_facts") if isinstance(ctx.get("key_facts"), list) else []
+    ctx["key_facts"] = [_compact_text(str(item), 220) for item in facts if str(item).strip()][:10]
+    turns = ctx.get("recent_turns") if isinstance(ctx.get("recent_turns"), list) else []
+    normalized_turns = []
+    for turn in turns[-8:]:
+        if not isinstance(turn, dict):
+            continue
+        normalized_turns.append(
+            {
+                "turn_id": str(turn.get("turn_id") or ""),
+                "route": str(turn.get("route") or ""),
+                "conversation": _compact_text(str(turn.get("conversation") or ""), 180),
+                "user": _compact_text(str(turn.get("user") or ""), 360),
+                "assistant": _compact_text(str(turn.get("assistant") or ""), 520),
+                "artifacts": turn.get("artifacts") if isinstance(turn.get("artifacts"), list) else [],
+                "source_count": int(turn.get("source_count") or 0),
+            }
+        )
+    ctx["recent_turns"] = normalized_turns
+    return _trim_context(ctx)
+
+
+def _render_context(ctx: dict, *, max_chars: int = 6000, label: str = "Conversation context") -> str:
+    ctx = _normalize_context(ctx, max_chars=max_chars)
+    lines = [f"{label}:"]
+    profile = ctx.get("user_profile") or {}
+    if profile:
+        display = profile.get("name") or profile.get("email") or profile.get("user_id")
+        lines.append(f"- User: {display}")
+    workspace = ctx.get("workspace") or {}
+    if workspace.get("name"):
+        lines.append(f"- Workspace: {workspace['name']}")
+    conversation = ctx.get("conversation") or {}
+    if conversation.get("title"):
+        lines.append(f"- Conversation: {conversation['title']}")
+    if ctx.get("running_summary"):
+        lines.append(f"- Running summary: {ctx['running_summary']}")
+    if ctx.get("key_facts"):
+        lines.append("- Key facts:")
+        lines.extend(f"  - {fact}" for fact in ctx["key_facts"])
+    if ctx.get("recent_turns"):
+        lines.append("- Recent turns:")
+        for turn in ctx["recent_turns"][-6:]:
+            if turn.get("conversation"):
+                lines.append(f"  - Conversation: {turn['conversation']}")
+            lines.append(f"  - User: {turn['user']}")
+            lines.append(f"    Fronei: {turn['assistant']}")
+            if turn.get("artifacts"):
+                lines.append(f"    Artifacts: {', '.join(str(item) for item in turn['artifacts'][:3])}")
+    rendered = "\n".join(lines)
+    return rendered[-max_chars:]
+
+
+def _trim_context(ctx: dict) -> dict:
+    max_chars = int(ctx.get("max_chars") or 6000)
+    while len(_render_context_no_trim(ctx)) > max_chars and ctx.get("recent_turns"):
+        ctx["recent_turns"] = ctx["recent_turns"][1:]
+    if len(_render_context_no_trim(ctx)) > max_chars and ctx.get("running_summary"):
+        ctx["running_summary"] = _compact_text(ctx["running_summary"], max(500, max_chars // 3))
+    return ctx
+
+
+def _render_context_no_trim(ctx: dict) -> str:
+    clone = dict(ctx or {})
+    lines = [
+        str(clone.get("running_summary") or ""),
+        json.dumps(clone.get("key_facts") or [], default=str),
+        json.dumps(clone.get("recent_turns") or [], default=str),
+    ]
+    return "\n".join(lines)
+
+
+def _update_context_with_result(ctx: dict, result: AgentV3Result, *, conversation_title: str | None = None) -> dict:
+    ctx = _normalize_context(ctx)
+    artifact_names = [artifact.filename for artifact in result.artifacts]
+    turn_entry = {
+        "turn_id": result.turn_id,
+        "route": result.route,
+        "user": result.goal.objective,
+        "assistant": result.answer,
+        "artifacts": artifact_names,
+        "source_count": len(result.sources),
+    }
+    if conversation_title:
+        turn_entry["conversation"] = conversation_title
+    ctx["recent_turns"] = [*ctx.get("recent_turns", []), turn_entry][-8:]
+    summary_parts = [ctx.get("running_summary") or ""]
+    summary_parts.append(f"User asked: {_compact_text(result.goal.objective, 220)}")
+    summary_parts.append(f"Fronei responded via {result.route}: {_compact_text(result.answer, 260)}")
+    if conversation_title:
+        summary_parts.append(f"Conversation: {conversation_title}")
+    if artifact_names:
+        summary_parts.append(f"Artifacts created: {', '.join(artifact_names[:3])}")
+    if result.sources:
+        summary_parts.append(f"Sources used: {len(result.sources)}")
+    ctx["running_summary"] = _compact_text(" ".join(part for part in summary_parts if part), 2200)
+    facts = list(ctx.get("key_facts") or [])
+    if artifact_names:
+        facts.append(f"Latest artifact: {artifact_names[0]}")
+    if result.route in {"research", "research_document"} and result.sources:
+        facts.append(f"Recent research used {len(result.sources)} source(s).")
+    ctx["key_facts"] = facts[-10:]
+    return _trim_context(ctx)
+
+
+def _update_context_with_snapshot(ctx: dict, snapshot: dict, *, conversation_title: str | None = None) -> dict:
+    ctx = _normalize_context(ctx)
+    artifact_names = [str(item) for item in snapshot.get("artifact_filenames") or []]
+    turn_entry = {
+        "turn_id": str(snapshot.get("turn_id") or ""),
+        "route": str(snapshot.get("route") or ""),
+        "user": _compact_text(str(snapshot.get("objective") or ""), 360),
+        "assistant": _compact_text(str(snapshot.get("answer") or ""), 520),
+        "artifacts": artifact_names,
+        "source_count": int(snapshot.get("source_count") or 0),
+    }
+    if conversation_title:
+        turn_entry["conversation"] = conversation_title
+    ctx["recent_turns"] = [*ctx.get("recent_turns", []), turn_entry][-8:]
+    summary_parts = [ctx.get("running_summary") or ""]
+    summary_parts.append(f"User asked: {_compact_text(str(snapshot.get('objective') or ''), 220)}")
+    summary_parts.append(
+        f"Fronei responded via {snapshot.get('route')}: {_compact_text(str(snapshot.get('answer') or ''), 260)}"
+    )
+    if conversation_title:
+        summary_parts.append(f"Conversation: {conversation_title}")
+    if artifact_names:
+        summary_parts.append(f"Artifacts created: {', '.join(artifact_names[:3])}")
+    if int(snapshot.get("source_count") or 0):
+        summary_parts.append(f"Sources used: {int(snapshot.get('source_count') or 0)}")
+    ctx["running_summary"] = _compact_text(" ".join(part for part in summary_parts if part), 2200)
+    facts = list(ctx.get("key_facts") or [])
+    if artifact_names:
+        facts.append(f"Latest artifact: {artifact_names[0]}")
+    if snapshot.get("route") in {"research", "research_document"} and int(snapshot.get("source_count") or 0):
+        facts.append(f"Recent research used {int(snapshot.get('source_count') or 0)} source(s).")
+    ctx["key_facts"] = facts[-10:]
+    return _trim_context(ctx)
+
+
+def _context_snapshot_from_result(result: AgentV3Result) -> dict:
+    return {
+        "turn_id": result.turn_id,
+        "user_id": result.goal.user_id,
+        "conversation_id": result.goal.conversation_id,
+        "objective": result.goal.objective,
+        "route": result.route,
+        "answer": result.answer,
+        "artifact_filenames": [artifact.filename for artifact in result.artifacts],
+        "source_count": len(result.sources),
+        "completed_at": _now().isoformat(),
+    }
+
+
+def _update_context_for_completed_turn(snapshot: dict) -> None:
+    conversation_id = str(snapshot.get("conversation_id") or "")
+    user_id = str(snapshot.get("user_id") or "")
+    if not conversation_id or not user_id:
+        return
+    db = SessionLocal()
+    try:
+        conversation = db.get(AgentV3Conversation, conversation_id)
+        if conversation is None or conversation.user_id != user_id:
+            return
+        workspace = db.get(AgentV3Workspace, conversation.workspace_id)
+        completed_at = _now()
+        conversation_ctx = _loads(conversation.context_json, {})
+        if workspace and not conversation_ctx:
+            conversation_ctx = _initial_context(db, user_id, workspace, conversation)
+        if isinstance(conversation_ctx, dict):
+            conversation_ctx.setdefault("conversation", {})
+            conversation_ctx["conversation"]["title"] = conversation.title
+            conversation.context_json = _dumps(_update_context_with_snapshot(conversation_ctx, snapshot))
+            conversation.context_updated_at = completed_at
+        if workspace and workspace.user_id == user_id:
+            workspace_ctx = _loads(workspace.context_json, {}) or _initial_workspace_context(db, user_id, workspace)
+            workspace.context_json = _dumps(
+                _update_context_with_snapshot(workspace_ctx, snapshot, conversation_title=conversation.title)
+            )
+            workspace.context_updated_at = completed_at
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("Agent v3 context update failed for turn %s", snapshot.get("turn_id"))
+    finally:
+        db.close()
+
+
+def _submit_context_update(snapshot: dict) -> None:
+    future = _CONTEXT_EXECUTOR.submit(_update_context_for_completed_turn, snapshot)
+    _PENDING_CONTEXT_FUTURES.add(future)
+
+    def _cleanup(done: Future) -> None:
+        _PENDING_CONTEXT_FUTURES.discard(done)
+        try:
+            done.result()
+        except Exception:
+            logger.exception("Agent v3 context update worker failed")
+
+    future.add_done_callback(_cleanup)
+
+
+def wait_for_context_updates(timeout_s: float = 5.0) -> None:
+    """Drain pending best-effort context updates. Intended for tests/admin checks."""
+    for future in list(_PENDING_CONTEXT_FUTURES):
+        future.result(timeout=timeout_s)
+
+
+def conversation_context_text(user_id: str, conversation_id: str | None, *, max_chars: int = 6000) -> str:
+    if not conversation_id:
+        return ""
+    db = SessionLocal()
+    try:
+        conversation = db.get(AgentV3Conversation, conversation_id)
+        if conversation is None or conversation.user_id != user_id:
+            return ""
+        workspace = db.get(AgentV3Workspace, conversation.workspace_id)
+        workspace_text = ""
+        if workspace and workspace.user_id == user_id:
+            workspace_ctx = _loads(workspace.context_json, {})
+            if not workspace_ctx:
+                workspace_ctx = _initial_workspace_context(db, user_id, workspace)
+                workspace.context_json = _dumps(workspace_ctx)
+                workspace.context_updated_at = _now()
+                db.commit()
+            workspace_text = _render_context(workspace_ctx, max_chars=max(1200, max_chars // 3), label="Workspace context")
+        ctx = _loads(conversation.context_json, {})
+        if not ctx:
+            if workspace:
+                ctx = _initial_context(db, user_id, workspace, conversation)
+                conversation.context_json = _dumps(ctx)
+                conversation.context_updated_at = _now()
+                db.commit()
+        conversation_text = _render_context(ctx, max_chars=max(1200, max_chars - len(workspace_text)), label="Conversation context")
+        return "\n\n".join(part for part in [workspace_text, conversation_text] if part)[-max_chars:]
+    finally:
+        db.close()
 
 
 def _unique_workspace_name(db, user_id: str, requested_name: str, *, exclude_workspace_id: str | None = None) -> str:
@@ -157,10 +454,15 @@ def _ensure_default_workspace(db, user_id: str) -> AgentV3Workspace:
         .first()
     )
     if workspace:
+        if not _loads(workspace.context_json, {}):
+            workspace.context_json = _dumps(_initial_workspace_context(db, user_id, workspace))
+            workspace.context_updated_at = _now()
         return workspace
     workspace = AgentV3Workspace(id=new_id("ws"), user_id=user_id, name="Personal workspace")
     db.add(workspace)
     db.flush()
+    workspace.context_json = _dumps(_initial_workspace_context(db, user_id, workspace))
+    workspace.context_updated_at = _now()
     return workspace
 
 
@@ -178,6 +480,8 @@ def ensure_conversation(user_id: str, conversation_id: str | None, seed_message:
             workspace_id=workspace.id,
             title=_title_from_message(seed_message),
         )
+        conversation.context_json = _dumps(_initial_context(db, user_id, workspace, conversation))
+        conversation.context_updated_at = _now()
         workspace.updated_at = _now()
         db.add(conversation)
         db.commit()
@@ -232,6 +536,8 @@ def create_workspace(user_id: str, name: str) -> AgentV3WorkspaceSummary:
             user_id=user_id,
             name=_unique_workspace_name(db, user_id, name),
         )
+        workspace.context_json = _dumps(_initial_workspace_context(db, user_id, workspace))
+        workspace.context_updated_at = _now()
         db.add(workspace)
         db.commit()
         db.refresh(workspace)
@@ -254,6 +560,11 @@ def update_workspace(user_id: str, workspace_id: str, name: str) -> AgentV3Works
             return None
         workspace.name = _unique_workspace_name(db, user_id, name, exclude_workspace_id=workspace_id)
         workspace.updated_at = _now()
+        ctx = _loads(workspace.context_json, {}) or _initial_workspace_context(db, user_id, workspace)
+        ctx.setdefault("workspace", {})
+        ctx["workspace"]["name"] = workspace.name
+        workspace.context_json = _dumps(ctx)
+        workspace.context_updated_at = workspace.updated_at
         db.commit()
         db.refresh(workspace)
         conversations = (
@@ -308,6 +619,8 @@ def create_conversation(user_id: str, workspace_id: str, title: str) -> AgentV3C
             created_at=now,
             updated_at=now,
         )
+        conversation.context_json = _dumps(_initial_context(db, user_id, workspace, conversation))
+        conversation.context_updated_at = now
         workspace.updated_at = now
         db.add(conversation)
         db.commit()
@@ -405,6 +718,8 @@ def append_event(event: ProgressEvent) -> None:
 
 
 def complete_turn(result: AgentV3Result) -> None:
+    context_snapshot = _context_snapshot_from_result(result)
+    should_update_context = bool(result.goal.conversation_id)
     db = SessionLocal()
     try:
         turn = db.get(AgentV3Turn, result.turn_id)
@@ -437,6 +752,11 @@ def complete_turn(result: AgentV3Result) -> None:
                 )
                 if existing_turns == 0:
                     conversation.title = _title_from_message(result.goal.objective)
+                    ctx = _loads(conversation.context_json, {})
+                    if isinstance(ctx, dict):
+                        ctx.setdefault("conversation", {})
+                        ctx["conversation"]["title"] = conversation.title
+                        conversation.context_json = _dumps(ctx)
                 conversation.updated_at = turn.completed_at
                 workspace = db.get(AgentV3Workspace, conversation.workspace_id)
                 if workspace:
@@ -478,6 +798,8 @@ def complete_turn(result: AgentV3Result) -> None:
         db.commit()
     finally:
         db.close()
+    if should_update_context:
+        _submit_context_update(context_snapshot)
 
 
 def fail_turn(turn_id: str, message: str) -> None:

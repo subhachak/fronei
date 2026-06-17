@@ -15,6 +15,7 @@ from app.services.agent_v3.orchestrator import OrchestratorDecision, decide_with
 from app.services.agent_v3.research_subtree import (
     EvidencePack,
     ResearchFeedbackLoop,
+    ResearchBudgetLedger,
     bind_evidence,
     build_gap_followup_workers,
     create_research_goal,
@@ -173,8 +174,10 @@ class AgentV3Runtime:
         return output or [], call
 
     def _run_research_subtree(self, request: AgentV3Request, progress):
+        research_started = time.perf_counter()
         registry = get_research_registry()
         research_goal = create_research_goal(request)
+        ledger = ResearchBudgetLedger(budget=research_goal.budget)
         event = progress(
             "research_registry",
             "Research team is ready.",
@@ -186,6 +189,7 @@ class AgentV3Runtime:
             "research_goal",
             "Research goal and safety limits are set.",
             goal=research_goal.model_dump(mode="json"),
+            budget_ledger=ledger.model_dump(mode="json"),
         )
         yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
         event = progress(
@@ -197,6 +201,9 @@ class AgentV3Runtime:
         )
         yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
         plan = plan_research(request)
+        if plan.model_used:
+            ledger.record_model_call(cost_usd=plan.cost_usd, latency_ms=plan.latency_ms)
+        ledger.refresh_elapsed(int((time.perf_counter() - research_started) * 1000))
         event = progress(
             "research_plan",
             f"Research plan ready with {len(plan.workers)} search worker(s).",
@@ -212,6 +219,7 @@ class AgentV3Runtime:
             model_used=plan.model_used,
             fallback_reason=plan.fallback_reason,
             agent_id="research_lead",
+            budget_ledger=ledger.model_dump(mode="json"),
         )
         yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
         event = progress(
@@ -220,12 +228,23 @@ class AgentV3Runtime:
             guardrails=plan.guardrails,
             max_sources=plan.max_sources,
             max_workers=len(plan.workers),
+            budget_ledger=ledger.model_dump(mode="json"),
         )
         yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
 
         search_sources: list[Source] = []
         tool_calls = []
         for idx, worker in enumerate(plan.workers, start=1):
+            ledger.refresh_elapsed(int((time.perf_counter() - research_started) * 1000))
+            if not ledger.can_start_tool("web_search"):
+                event = progress(
+                    "research_budget",
+                    f"Budget stopped search worker {idx}.",
+                    stop_reason=ledger.stop_reason,
+                    budget_ledger=ledger.model_dump(mode="json"),
+                )
+                yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
+                break
             event = progress(
                 "search_worker",
                 f"Search worker {idx} running.",
@@ -244,6 +263,7 @@ class AgentV3Runtime:
                 {"query": worker.query, "max_results": worker.max_results},
             )
             tool_calls.append(call)
+            ledger.record_tool_call(latency_ms=call.latency_ms, sources_seen=len(sources))
             search_sources.extend(sources)
             provider = call.output.get("provider") if isinstance(call.output, dict) else None
             provider_message = (
@@ -262,8 +282,18 @@ class AgentV3Runtime:
                 ok=call.ok,
                 source_count=len(sources),
                 error=call.error,
+                budget_ledger=ledger.model_dump(mode="json"),
             )
             yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
+            if ledger.stopped:
+                event = progress(
+                    "research_budget",
+                    "Budget stopped additional search work.",
+                    stop_reason=ledger.stop_reason,
+                    budget_ledger=ledger.model_dump(mode="json"),
+                )
+                yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
+                break
 
         deduped_all = self._merge_sources(search_sources, [])
         public_candidates = [source for source in deduped_all if is_public_source_url(source.url)]
@@ -290,22 +320,36 @@ class AgentV3Runtime:
         yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
 
         selected = deduped[: plan.max_sources]
+        if ledger.remaining_source_reads() < len(selected):
+            selected = selected[: ledger.remaining_source_reads()]
         event = progress(
             "source_reader",
             "Reading selected source pages.",
             agent_id="source_reader",
             prompt_template_id=registry.agent("source_reader").prompt_template_id,
             source_count=len(selected),
+            budget_ledger=ledger.model_dump(mode="json"),
         )
         yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
-        extracted, read_call = yield from self._run_tool(
-            progress,
-            "read_url",
-            {"urls": [source.url for source in selected if source.url]},
-        )
-        tool_calls.append(read_call)
+        extracted = []
+        if selected and ledger.can_start_tool("read_url") and ledger.can_read_more_sources():
+            extracted, read_call = yield from self._run_tool(
+                progress,
+                "read_url",
+                {"urls": [source.url for source in selected if source.url]},
+            )
+            tool_calls.append(read_call)
+            ledger.record_tool_call(latency_ms=read_call.latency_ms, sources_read=len(selected))
+        elif selected:
+            event = progress(
+                "research_budget",
+                "Budget skipped source reading.",
+                stop_reason=ledger.stop_reason,
+                budget_ledger=ledger.model_dump(mode="json"),
+            )
+            yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
         merged = self._merge_sources(selected, extracted)
-        deep_link_budget = 4 if request.quality_mode == "executive" else 2 if request.quality_mode == "standard" else 0
+        deep_link_budget = min(ledger.budget.max_deep_links, ledger.remaining_source_reads())
         deep_links = extract_deep_link_candidates(merged, max_links=deep_link_budget)
         event = progress(
             "deep_link_agent",
@@ -314,19 +358,29 @@ class AgentV3Runtime:
             prompt_template_id=registry.agent("deep_link_agent").prompt_template_id,
             link_budget=deep_link_budget,
             links=[link.model_dump(mode="json") for link in deep_links],
+            budget_ledger=ledger.model_dump(mode="json"),
         )
         yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
-        if deep_links:
+        if deep_links and ledger.can_start_tool("read_url") and ledger.can_read_more_sources():
             deep_extracted, deep_read_call = yield from self._run_tool(
                 progress,
                 "read_url",
                 {"urls": [link.url for link in deep_links], "max_chars_per_source": 1800},
             )
             tool_calls.append(deep_read_call)
+            ledger.record_tool_call(latency_ms=deep_read_call.latency_ms, sources_read=len(deep_links))
             merged = self._merge_sources(merged, deep_extracted)
+        elif deep_links:
+            event = progress(
+                "research_budget",
+                "Budget skipped deep-link reading.",
+                stop_reason=ledger.stop_reason,
+                budget_ledger=ledger.model_dump(mode="json"),
+            )
+            yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
 
         evidence = bind_evidence(merged, plan=plan, max_items=plan.max_sources)
-        if evidence.gaps:
+        if evidence.gaps and not ledger.stopped and ledger.remaining_tool_calls() >= 2:
             followups = build_gap_followup_workers(request, plan, evidence)
             event = progress(
                 "gap_agent",
@@ -335,27 +389,42 @@ class AgentV3Runtime:
                 prompt_template_id=registry.agent("gap_agent").prompt_template_id,
                 gaps=evidence.gaps,
                 workers=[worker.model_dump(mode="json") for worker in followups],
+                budget_ledger=ledger.model_dump(mode="json"),
             )
             yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
             for idx, worker in enumerate(followups, start=1):
+                if not ledger.can_start_tool("web_search"):
+                    break
                 sources, call = yield from self._run_tool(
                     progress,
                     "web_search",
                     {"query": worker.query, "max_results": worker.max_results},
                 )
                 tool_calls.append(call)
+                ledger.record_tool_call(latency_ms=call.latency_ms, sources_seen=len(sources))
                 followup_public = [source for source in sources if is_public_source_url(source.url)]
                 followup_ranked = rank_sources(followup_public, plan)
                 followup_selected = [item.source for item in followup_ranked[: max(1, plan.min_evidence_items)]]
-                if followup_selected:
+                if followup_selected and ledger.can_start_tool("read_url") and ledger.can_read_more_sources():
+                    followup_selected = followup_selected[: ledger.remaining_source_reads()]
                     followup_extracted, followup_read_call = yield from self._run_tool(
                         progress,
                         "read_url",
                         {"urls": [source.url for source in followup_selected], "max_chars_per_source": 1800},
                     )
                     tool_calls.append(followup_read_call)
+                    ledger.record_tool_call(latency_ms=followup_read_call.latency_ms, sources_read=len(followup_selected))
                     merged = self._merge_sources(merged, self._merge_sources(followup_selected, followup_extracted))
             evidence = bind_evidence(merged, plan=plan, max_items=plan.max_sources)
+        elif evidence.gaps:
+            event = progress(
+                "research_budget",
+                "Budget skipped gap follow-up search.",
+                stop_reason=ledger.stop_reason,
+                remaining_tool_calls=ledger.remaining_tool_calls(),
+                budget_ledger=ledger.model_dump(mode="json"),
+            )
+            yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
         event = progress(
             "evidence_binder",
             f"Bound {len(evidence.items)} evidence item(s).",
@@ -365,17 +434,40 @@ class AgentV3Runtime:
             gaps=evidence.gaps,
             contradictions=evidence.contradictions,
             evidence_items=[item.model_dump(mode="json") for item in evidence.items],
+            budget_ledger=ledger.model_dump(mode="json"),
         )
         yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
 
+        if not ledger.can_start_model("synthesis_agent"):
+            response = model_client.ModelResponse(
+                text=(
+                    "I gathered the available evidence, but stopped before synthesis because the research "
+                    f"budget was exhausted ({ledger.stop_reason})."
+                ),
+                model_used="budget-ledger",
+                latency_ms=0,
+                cost_usd=0.0,
+            )
+            judge = judge_research(request, plan, evidence, response.text)
+            feedback = ResearchFeedbackLoop(judge=judge, final_score=judge.score)
+            return {
+                "sources": merged,
+                "tool_calls": tool_calls,
+                "evidence": evidence,
+                "response": response,
+                "plan": plan,
+                "feedback": feedback,
+            }
         event = progress(
             "synthesis",
             "Synthesizing source-grounded answer from evidence.",
             agent_id="synthesis_agent",
             prompt_template_id=registry.agent("synthesis_agent").prompt_template_id,
+            budget_ledger=ledger.model_dump(mode="json"),
         )
         yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
         response = synthesize_answer(request, plan, evidence)
+        ledger.record_model_call(cost_usd=response.cost_usd, latency_ms=response.latency_ms)
         judge = judge_research(request, plan, evidence, response.text)
         event = progress(
             "research_judge",
@@ -393,6 +485,7 @@ class AgentV3Runtime:
             repair_instruction=judge.repair_instruction,
             can_publish=judge.can_publish,
             agent_id="research_judge",
+            budget_ledger=ledger.model_dump(mode="json"),
         )
         yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
         verification = verify_claims(response.text, evidence)
@@ -402,6 +495,7 @@ class AgentV3Runtime:
             agent_id="claim_verifier",
             prompt_template_id=registry.agent("claim_verifier").prompt_template_id,
             verification=verification.model_dump(mode="json"),
+            budget_ledger=ledger.model_dump(mode="json"),
         )
         yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
         if verification.status == "repair" and judge.status == "pass":
@@ -410,7 +504,7 @@ class AgentV3Runtime:
             judge.repair_instruction = "Add citations to unsupported substantive claims."
             judge.can_publish = False
         feedback = ResearchFeedbackLoop(judge=judge, final_score=judge.score)
-        if judge.status == "repair" and plan.repair_iterations > 0:
+        if judge.status == "repair" and plan.repair_iterations > 0 and ledger.can_start_model("repair_agent"):
             event = progress(
                 "research_repair",
                 "Repairing the research answer.",
@@ -418,9 +512,11 @@ class AgentV3Runtime:
                 prompt_template_id=registry.agent("repair_agent").prompt_template_id,
                 repair_instruction=judge.repair_instruction,
                 issues=judge.issues,
+                budget_ledger=ledger.model_dump(mode="json"),
             )
             yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
             repaired = repair_research_answer(request, plan, evidence, response.text, judge)
+            ledger.record_model_call(cost_usd=repaired.cost_usd, latency_ms=repaired.latency_ms)
             repaired_judge = judge_research(request, plan, evidence, repaired.text)
             response = repaired
             feedback = ResearchFeedbackLoop(
@@ -437,8 +533,24 @@ class AgentV3Runtime:
                 issues=repaired_judge.issues,
                 can_publish=repaired_judge.can_publish,
                 agent_id="repair_agent",
+                budget_ledger=ledger.model_dump(mode="json"),
             )
             yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
+        elif judge.status == "repair" and plan.repair_iterations > 0:
+            event = progress(
+                "research_budget",
+                "Budget skipped repair.",
+                stop_reason=ledger.stop_reason,
+                budget_ledger=ledger.model_dump(mode="json"),
+            )
+            yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
+        event = progress(
+            "research_budget",
+            "Research budget ledger closed.",
+            stop_reason=ledger.stop_reason,
+            budget_ledger=ledger.model_dump(mode="json"),
+        )
+        yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
         return {
             "sources": merged,
             "tool_calls": tool_calls,
@@ -477,9 +589,12 @@ class AgentV3Runtime:
         )
 
     def _run_direct(self, request, goal, turn_id, events, progress) -> AgentV3Result:
+        user_prompt = request.message
+        if request.conversation_context:
+            user_prompt = f"{request.conversation_context}\n\nCurrent user request:\n{request.message}"
         response = model_client.simple_completion(
             "You are Fronei v3, a concise and helpful assistant. Answer directly.",
-            request.message,
+            user_prompt,
             max_tokens=900,
         )
         return AgentV3Result(

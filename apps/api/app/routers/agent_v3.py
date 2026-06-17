@@ -37,7 +37,12 @@ def stream_agent_v3_turn(request: AgentV3Request, user_id: str = CurrentUser) ->
 
     runtime = AgentV3Runtime()
     conversation = persistence.ensure_conversation(user_id, request.conversation_id, request.message)
-    request = request.model_copy(update={"conversation_id": conversation.id})
+    request = request.model_copy(
+        update={
+            "conversation_id": conversation.id,
+            "conversation_context": persistence.conversation_context_text(user_id, conversation.id),
+        }
+    )
 
     def generate():
         turn_id: str | None = None

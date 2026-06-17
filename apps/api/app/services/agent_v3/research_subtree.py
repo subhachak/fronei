@@ -17,8 +17,8 @@ from app.services.agent_v3.models import AgentV3Request, Source, ToolCall, new_i
 
 logger = logging.getLogger(__name__)
 
-MAX_PARALLEL_SEARCH_WORKERS = 4
-MAX_PARALLEL_READ_BATCHES = 3
+MAX_PARALLEL_SEARCH_WORKERS = 8
+MAX_PARALLEL_READ_BATCHES = 4
 MAX_URLS_PER_READ_BATCH = 6
 
 ResearchProfile = Literal[
@@ -95,6 +95,7 @@ class ResearchAgentRegistry(BaseModel):
 
 class ResearchBudget(BaseModel):
     max_search_workers: int = 3
+    max_results_per_worker: int = 4
     max_sources: int = 6
     min_evidence_items: int = 2
     repair_iterations: int = 1
@@ -215,6 +216,7 @@ class SearchWorkerPlan(BaseModel):
     query: str
     rationale: str = ""
     max_results: int = 4
+    discovery_domain: Literal["general", "academic", "repository", "documentation", "news", "primary"] = "general"
 
     @field_validator("question", "query", mode="before")
     @classmethod
@@ -423,7 +425,14 @@ class ResearchStateStore(BaseModel):
     def add_sources(self, sources: list[Source]) -> list[Source]:
         new_sources: list[Source] = []
         for source in sources:
-            if source.url and source.url not in self.source_inventory:
+            if not source.url:
+                continue
+            if source.url in self.source_inventory:
+                existing = next((item for item in self.all_sources if item.url == source.url), None)
+                if existing is not None:
+                    _merge_source_detail(existing, source)
+                continue
+            if source.url:
                 self.source_inventory.append(source.url)
                 self.all_sources.append(source)
                 new_sources.append(source)
@@ -742,6 +751,7 @@ def research_budget_for(request: AgentV3Request) -> ResearchBudget:
     if request.research_level == "easy":
         return ResearchBudget(
             max_search_workers=1,
+            max_results_per_worker=3,
             max_sources=1,
             min_evidence_items=1,
             repair_iterations=0,
@@ -754,19 +764,21 @@ def research_budget_for(request: AgentV3Request) -> ResearchBudget:
         )
     if request.research_level == "deep":
         return ResearchBudget(
-            max_search_workers=6,
-            max_sources=18,
-            min_evidence_items=8,
+            max_search_workers=10,
+            max_results_per_worker=12,
+            max_sources=32,
+            min_evidence_items=14,
             repair_iterations=2,
             judge_threshold=0.78,
-            max_tool_calls=36,
-            max_model_calls=14,
-            max_cost_usd=0.50,
-            max_elapsed_ms=300_000,
-            max_deep_links=12,
+            max_tool_calls=72,
+            max_model_calls=24,
+            max_cost_usd=1.25,
+            max_elapsed_ms=600_000,
+            max_deep_links=28,
         )
     return ResearchBudget(
         max_search_workers=3,
+        max_results_per_worker=6,
         max_sources=6,
         min_evidence_items=2,
         repair_iterations=1,
@@ -1009,7 +1021,7 @@ def plan_from_contract(
                 question=f"Research {subject}: {', '.join(dimensions)}",
                 query=query,
                 rationale=f"Cover open contract cells for {subject}.",
-                max_results=4,
+                max_results=budget.max_results_per_worker,
             )
         )
         if len(workers) >= budget.max_search_workers:
@@ -1030,12 +1042,20 @@ def plan_from_contract(
                 question=f"Anchor: {q}",
                 query=q,
                 rationale="Profile-level anchor to seed technically dense sources.",
-                max_results=5,
+                max_results=budget.max_results_per_worker,
+                discovery_domain=_domain_for_query(q),
             )
             for q in anchor_queries
             if q not in existing_queries
         ]
         workers = (anchor_workers + workers)[: budget.max_search_workers]
+
+    if request.research_level == "deep":
+        existing_queries = {w.query for w in workers}
+        domain_workers = [
+            worker for worker in _domain_discovery_workers(request, profile, budget) if worker.query not in existing_queries
+        ]
+        workers = (domain_workers + workers)[: budget.max_search_workers]
 
     return ResearchPlan(
         research_profile=profile,
@@ -1437,9 +1457,9 @@ def build_research_plan_preview(request: AgentV3Request) -> dict[str, Any]:
         "output_format": request.output_format,
         "estimated_duration": "Ready in a few minutes",
         "workflow": [
-            {"label": "Research websites", "description": "Search, read, and self-evaluate source candidates before spending the full read budget."},
-            {"label": "Analyze results", "description": "Bind evidence into typed claims, check coverage, and retry weak worker results."},
-            {"label": "Create report", "description": "Synthesize a cited answer or document from the verified evidence pack."},
+            {"label": "Research websites", "description": "Run domain-specific discovery lanes and build a broad source candidate inventory."},
+            {"label": "Analyze results", "description": "Rank sources, follow reference links, bind typed evidence, and retry weak worker results."},
+            {"label": "Create report", "description": "Synthesize, fact-check, and tighten the final answer from verified evidence."},
         ],
         "investigate": investigate,
         "source_strategy": source_strategy,
@@ -1493,10 +1513,14 @@ def _plan_preview_investigation_items(
 
 def _plan_preview_source_strategy(profile: ResearchProfile, plan: ResearchPlan) -> list[str]:
     base = [
+        "Domain-specific discovery lanes across academic, repository, docs, primary, and general web sources",
         "Web search across the configured provider chain",
+        "Candidate source inventory before expensive page reading",
         "Source reading for high-value pages and documents",
+        "Source graph expansion from high-value references and repository/docs links",
         "Worker self-evaluation and retry for weak result sets",
         "Typed claim extraction with citation provenance",
+        "Fact-check/rewrite pass to replace vague claims with named-source specifics",
     ]
     if profile == "technical_architecture":
         base.extend(["Academic papers, GitHub repositories, framework docs, and engineering write-ups", "Implementation trade-offs, failure modes, and runtime patterns"])
@@ -2001,10 +2025,53 @@ def rank_sources(sources: list[Source], plan: ResearchPlan) -> list[RankedSource
     return ranked
 
 
+def _select_diverse_ranked_sources(
+    ranked: list[RankedSource],
+    *,
+    limit: int,
+    research_level: str,
+) -> list[Source]:
+    if limit <= 0:
+        return []
+    host_cap = 5 if research_level == "deep" else 2
+    type_targets = {"academic": 6, "repository": 6, "documentation": 6, "primary": 5, "pdf": 4}
+    selected: list[RankedSource] = []
+    host_counts: dict[str, int] = {}
+    type_counts: dict[str, int] = {}
+    for item in ranked:
+        host = urlparse(item.source.url or "").netloc.lower()
+        source_type = item.source_type
+        if host_counts.get(host, 0) >= host_cap:
+            continue
+        if research_level == "deep" and source_type in type_targets and type_counts.get(source_type, 0) >= type_targets[source_type]:
+            continue
+        selected.append(item)
+        host_counts[host] = host_counts.get(host, 0) + 1
+        type_counts[source_type] = type_counts.get(source_type, 0) + 1
+        if len(selected) >= limit:
+            break
+    if len(selected) < limit:
+        selected_urls = {item.source.url for item in selected}
+        for item in ranked:
+            if item.source.url in selected_urls:
+                continue
+            selected.append(item)
+            if len(selected) >= limit:
+                break
+    return [item.source for item in selected[:limit]]
+
+
 def extract_deep_link_candidates(sources: list[Source], *, max_links: int = 4) -> list[DeepLinkCandidate]:
     candidates: list[DeepLinkCandidate] = []
     seen: set[str] = set()
     for source in sources:
+        for candidate in _domain_specific_link_candidates(source):
+            if candidate.url == source.url or candidate.url in seen or not is_public_source_url(candidate.url):
+                continue
+            seen.add(candidate.url)
+            candidates.append(candidate)
+            if len(candidates) >= max_links:
+                return candidates
         text = f"{source.snippet}\n{source.content}"
         for url in _extract_urls_from_text(text):
             if url == source.url or url in seen or not is_public_source_url(url):
@@ -2020,6 +2087,57 @@ def extract_deep_link_candidates(sources: list[Source], *, max_links: int = 4) -
             if len(candidates) >= max_links:
                 return candidates
     return candidates
+
+
+def _domain_specific_link_candidates(source: Source) -> list[DeepLinkCandidate]:
+    url = source.url or ""
+    parsed = urlparse(url)
+    host = parsed.netloc.lower()
+    candidates: list[DeepLinkCandidate] = []
+    if "arxiv.org" in host:
+        arxiv_id = _arxiv_id_from_url(url)
+        if arxiv_id:
+            candidates.extend(
+                [
+                    DeepLinkCandidate(url=f"https://arxiv.org/pdf/{arxiv_id}", parent_url=url, reason="arXiv PDF for full paper text."),
+                    DeepLinkCandidate(url=f"https://arxiv.org/html/{arxiv_id}", parent_url=url, reason="arXiv HTML paper view when available."),
+                ]
+            )
+    if "github.com" in host:
+        parts = [part for part in parsed.path.split("/") if part]
+        if len(parts) >= 2:
+            repo = f"https://github.com/{parts[0]}/{parts[1]}"
+            candidates.extend(
+                [
+                    DeepLinkCandidate(url=f"{repo}/blob/main/README.md", parent_url=url, reason="Repository README for implementation context."),
+                    DeepLinkCandidate(url=f"{repo}/tree/main/docs", parent_url=url, reason="Repository docs folder for architecture details."),
+                ]
+            )
+    return candidates
+
+
+def _arxiv_id_from_url(url: str) -> str:
+    match = re.search(r"arxiv\.org/(?:abs|pdf|html)/([0-9]{4}\.[0-9]{4,5}(?:v\d+)?)", url)
+    return match.group(1) if match else ""
+
+
+def _source_inventory_summary(sources: list[Source]) -> dict[str, Any]:
+    by_type: dict[str, int] = {}
+    by_host: dict[str, int] = {}
+    for source in sources:
+        source_type = classify_source_type(source.url)
+        by_type[source_type] = by_type.get(source_type, 0) + 1
+        host = urlparse(source.url or "").netloc.lower() or "unknown"
+        by_host[host] = by_host.get(host, 0) + 1
+    top_hosts = [
+        {"host": host, "count": count}
+        for host, count in sorted(by_host.items(), key=lambda item: item[1], reverse=True)[:12]
+    ]
+    return {
+        "total": len([source for source in sources if source.url]),
+        "by_type": by_type,
+        "top_hosts": top_hosts,
+    }
 
 
 def build_gap_followup_workers(request: AgentV3Request, plan: ResearchPlan, evidence: EvidencePack) -> list[SearchWorkerPlan]:
@@ -2197,6 +2315,27 @@ def verify_claims(answer: str, evidence: EvidencePack) -> ClaimVerification:
         unsupported_claims=unsupported,
         notes=notes,
     )
+
+
+def _specificity_rewrite_issues(answer: str) -> list[str]:
+    text = answer or ""
+    issues: list[str] = []
+    hedged_patterns = [
+        r"\b(?:many|some|several|various)\s+(?:systems|sources|providers|teams|organizations)\b",
+        r"\b(?:may|might|could|can)\s+(?:help|support|enable|improve|reduce)\b",
+        r"\b(?:it is important|it is crucial|it should be noted)\b",
+        r"\b(?:generally|typically|often|commonly)\b",
+    ]
+    for pattern in hedged_patterns:
+        if re.search(pattern, text, flags=re.IGNORECASE):
+            issues.append(f"Hedged language matched: {pattern}")
+    uncited_substantive = 0
+    for sentence in re.split(r"(?<=[.!?])\s+", text):
+        if _looks_like_substantive_claim(sentence) and "[S" not in sentence:
+            uncited_substantive += 1
+    if uncited_substantive >= 3:
+        issues.append(f"{uncited_substantive} substantive sentence(s) lack direct source citations.")
+    return issues[:10]
 
 
 class LeadResearchAgent:
@@ -2476,7 +2615,22 @@ class LeadResearchAgent:
                     )
 
         ranked = rank_sources(wave_sources, state.plan)
-        selected = [item.source for item in ranked[: self.ledger.remaining_source_reads()]]
+        selected = _select_diverse_ranked_sources(
+            ranked,
+            limit=self.ledger.remaining_source_reads(),
+            research_level=self.request.research_level,
+        )
+        inventory = _source_inventory_summary(state.all_sources)
+        self._progress(
+            "source_inventory",
+            f"Built a candidate inventory with {inventory['total']} source candidate(s).",
+            {
+                "inventory": inventory,
+                "candidate_count": inventory["total"],
+                "read_budget_remaining": self.ledger.remaining_source_reads(),
+                "tool_budget_remaining": self.ledger.remaining_tool_calls(),
+            },
+        )
         self._progress(
             "source_ranker",
             f"Ranked {len(wave_sources)} candidate source(s).",
@@ -2574,7 +2728,7 @@ class LeadResearchAgent:
                         "report": report.model_dump(mode="json"),
                     },
                 )
-        self._follow_deep_links(state, [*wave_sources, *selected])
+        self._expand_source_graph(state, selected)
 
     def _follow_deep_links(self, state: ResearchStateStore, sources: list[Source]) -> None:
         if self.budget.max_deep_links <= 0 or not self.ledger.can_read_more_sources():
@@ -2603,6 +2757,70 @@ class LeadResearchAgent:
         self.ledger.record_tool_call(latency_ms=call.latency_ms, sources_read=len(urls))
         state.all_tool_calls.append(call)
         state.add_sources(extracted)
+
+    def _expand_source_graph(self, state: ResearchStateStore, seeds: list[Source]) -> None:
+        if self.budget.max_deep_links <= 0 or not self.ledger.can_read_more_sources():
+            return
+        max_depth = 2 if self.request.research_level == "deep" else 1
+        frontier = [source for source in seeds if source.url]
+        followed: set[str] = set()
+        for depth in range(1, max_depth + 1):
+            if not frontier or not self.ledger.can_read_more_sources() or not self.ledger.can_start_tool("read_url"):
+                break
+            candidate_limit = min(self.ledger.remaining_source_reads(), max(1, self.budget.max_deep_links - len(followed)))
+            candidates = extract_deep_link_candidates(frontier, max_links=candidate_limit)
+            urls = [
+                candidate.url
+                for candidate in candidates
+                if candidate.url not in followed
+                and candidate.url not in state.source_inventory
+                and is_public_source_url(candidate.url)
+            ][: self.ledger.remaining_source_reads()]
+            self._progress(
+                "source_graph_expansion",
+                f"Following source graph layer {depth}: {len(urls)} reference link(s).",
+                {
+                    "depth": depth,
+                    "candidate_count": len(candidates),
+                    "selected_count": len(urls),
+                    "links": [candidate.model_dump(mode="json") for candidate in candidates[: len(urls)]],
+                    "inventory": _source_inventory_summary(state.all_sources),
+                },
+            )
+            if not urls:
+                break
+            provenance_by_url = {
+                candidate.url: {
+                    "query": f"source graph layer {depth}",
+                    "provider": "source_graph",
+                    "parent_url": candidate.parent_url,
+                }
+                for candidate in candidates
+            }
+            try:
+                extracted, call = self.tools.extract_urls(urls, max_chars_per_source=3000)
+            except Exception as exc:
+                logger.warning("agent_v3 source graph expansion failed at depth=%d: %s", depth, exc)
+                extracted = []
+                call = ToolCall(name="read_url", input={"urls": urls}, output={}, ok=False, error=str(exc))
+            _apply_source_provenance(extracted, provenance_by_url)
+            self.ledger.record_tool_call(latency_ms=call.latency_ms, sources_read=len(urls))
+            state.all_tool_calls.append(call)
+            state.add_sources(extracted)
+            followed.update(urls)
+            frontier = extracted
+            self._progress(
+                "source_graph_result",
+                f"Source graph layer {depth} added {len(extracted)} readable source(s).",
+                {
+                    "depth": depth,
+                    "ok": call.ok,
+                    "error": call.error,
+                    "source_count": len(extracted),
+                    "inventory": _source_inventory_summary(state.all_sources),
+                    "budget_ledger": self.ledger.model_dump(mode="json"),
+                },
+            )
 
     def _synthesize_verify_and_judge(self, state: ResearchStateStore) -> dict[str, Any]:
         self._progress(
@@ -2649,6 +2867,27 @@ class LeadResearchAgent:
         repair_attempts = 0
         if citation_result.repair_needed and self.ledger.can_start_model("repair_agent"):
             model_response = self._repair_answer(state, answer, citation_result.repair_instruction)
+            answer = model_response.text
+            repaired = True
+            repair_attempts += 1
+
+        specificity_issues = _specificity_rewrite_issues(answer)
+        self._progress(
+            "fact_check_rewrite",
+            "Fact-checking the draft and tightening vague claims.",
+            {
+                "agent_id": "claim_verifier",
+                "issue_count": len(specificity_issues),
+                "issues": specificity_issues[:8],
+            },
+        )
+        if specificity_issues and self.ledger.can_start_model("repair_agent"):
+            instruction = (
+                "Replace vague or hedged claims with named-source specifics using [S#] citations. "
+                "If the evidence does not support a specific version, disclose the gap plainly. "
+                "Issues to fix: " + "; ".join(specificity_issues[:8])
+            )
+            model_response = self._repair_answer(state, answer, instruction)
             answer = model_response.text
             repaired = True
             repair_attempts += 1
@@ -2837,6 +3076,20 @@ def _apply_source_provenance(sources: list[Source], provenance_by_url: dict[str,
             source.provider = provenance.get("provider", "")
 
 
+def _merge_source_detail(existing: Source, incoming: Source) -> None:
+    """Upgrade a discovered candidate with read-page detail without losing provenance."""
+    if incoming.title and (not existing.title or len(incoming.title) > len(existing.title)):
+        existing.title = incoming.title
+    if incoming.snippet and not existing.snippet:
+        existing.snippet = incoming.snippet
+    if incoming.content and len(incoming.content) > len(existing.content or ""):
+        existing.content = incoming.content
+    if incoming.query and not existing.query:
+        existing.query = incoming.query
+    if incoming.provider and not existing.provider:
+        existing.provider = incoming.provider
+
+
 def _synthesis_report_contract(profile: ResearchProfile, request: AgentV3Request) -> str:
     if profile == "technical_architecture":
         return (
@@ -2914,7 +3167,7 @@ def _fallback_plan(request: AgentV3Request, goal: ResearchGoal | None = None) ->
         question=request.message,
         query=request.message,
         rationale=rationale,
-        max_results=min(5, goal.budget.max_sources),
+        max_results=goal.budget.max_results_per_worker,
     )
     return ResearchPlan(
         goal_id=goal.id,
@@ -2945,7 +3198,7 @@ def _normalize_plan(plan: ResearchPlan, request: AgentV3Request, goal: ResearchG
                 question=plan.questions[idx] if idx < len(plan.questions) else query,
                 query=query,
                 rationale="LLM-selected focused research worker.",
-                max_results=min(5, goal.budget.max_sources),
+                max_results=goal.budget.max_results_per_worker,
             )
             for idx, query in enumerate(queries)
         ]
@@ -2963,7 +3216,7 @@ def _normalize_plan(plan: ResearchPlan, request: AgentV3Request, goal: ResearchG
     plan.guardrails = plan.guardrails or goal.guardrails
     plan.goal_id = plan.goal_id or goal.id
     for worker in plan.workers:
-        worker.max_results = max(1, min(5, int(worker.max_results or 4)))
+        worker.max_results = max(1, min(goal.budget.max_results_per_worker, int(worker.max_results or goal.budget.max_results_per_worker)))
     return plan
 
 
@@ -3024,6 +3277,81 @@ def _tech_arch_anchor_queries(original_message: str) -> list[str]:
         f"{original_message[:60]} system design components site:arxiv.org",
         f"{original_message[:60]} system design components site:github.com",
     ]
+
+
+def _domain_discovery_workers(request: AgentV3Request, profile: ResearchProfile, budget: ResearchBudget) -> list[SearchWorkerPlan]:
+    subject = _compact_search_subject(request.message)
+    workers: list[SearchWorkerPlan] = []
+    specs: list[tuple[str, str, str, str]] = []
+    if profile in {"technical_architecture", "academic_literature"}:
+        specs.extend(
+            [
+                ("academic", f"{subject} site:arxiv.org", "Find academic papers and cited research."),
+                ("academic", f"{subject} site:semanticscholar.org", "Find citation graph and related academic work."),
+                ("repository", f"{subject} site:github.com implementation", "Find open implementations, repositories, and README architecture notes."),
+                ("documentation", f"{subject} documentation architecture implementation", "Find framework docs and engineering references."),
+            ]
+        )
+    elif profile == "vendor_comparison":
+        specs.extend(
+            [
+                ("primary", f"{subject} official docs pricing security", "Find vendor-owned product, pricing, and security pages."),
+                ("documentation", f"{subject} API docs integration guide", "Find implementation documentation."),
+                ("general", f"{subject} comparison review limitations", "Find external comparisons and caveats."),
+            ]
+        )
+    elif profile == "regulatory":
+        specs.extend(
+            [
+                ("primary", f"{subject} regulator official guidance", "Find regulator and government material."),
+                ("news", f"{subject} latest update analysis", "Find recent developments and practitioner commentary."),
+            ]
+        )
+    else:
+        specs.extend(
+            [
+                ("primary", f"{subject} official source documentation", "Find primary sources where available."),
+                ("general", f"{subject} analysis evidence recent", "Find broad supporting sources."),
+            ]
+        )
+    for domain, query, rationale in specs:
+        workers.append(
+            SearchWorkerPlan(
+                question=f"Domain lane: {domain} evidence for {subject}",
+                query=query[:220],
+                rationale=rationale,
+                max_results=budget.max_results_per_worker,
+                discovery_domain=domain,  # type: ignore[arg-type]
+            )
+        )
+    return workers[: max(0, min(4, budget.max_search_workers))]
+
+
+def _compact_search_subject(message: str) -> str:
+    cleaned = re.sub(
+        r"\b(?:conduct|perform|do|deep|regular|easy|research|generate|create|detailed|comprehensive|report|explaining|explain)\b",
+        " ",
+        message or "",
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(r"[\"'`]", " ", cleaned)
+    cleaned = " ".join(cleaned.split())
+    return cleaned[:110] or (message or "")[:110] or "research topic"
+
+
+def _domain_for_query(query: str) -> Literal["general", "academic", "repository", "documentation", "news", "primary"]:
+    lower = (query or "").lower()
+    if "arxiv" in lower or "semanticscholar" in lower or "paper" in lower:
+        return "academic"
+    if "github" in lower or "repo" in lower:
+        return "repository"
+    if "docs" in lower or "documentation" in lower or "api" in lower:
+        return "documentation"
+    if "official" in lower or "regulator" in lower or "government" in lower:
+        return "primary"
+    if "latest" in lower or "news" in lower or "recent" in lower:
+        return "news"
+    return "general"
 
 
 def _targeted_query(subject: str, dimensions: list[str], original: str) -> str:

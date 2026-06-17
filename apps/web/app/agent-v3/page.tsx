@@ -34,7 +34,7 @@ const MIN_LEFT_RAIL_WIDTH = 220
 const MAX_LEFT_RAIL_WIDTH = 420
 const MIN_RIGHT_RAIL_WIDTH = 260
 const MAX_RIGHT_RAIL_WIDTH = 480
-const MIN_COMPOSER_HEIGHT = 132
+const MIN_COMPOSER_HEIGHT = 152
 const MAX_COMPOSER_HEIGHT = 340
 
 type QualityMode = 'draft' | 'standard' | 'executive'
@@ -170,7 +170,7 @@ export default function AgentV3Page() {
   const [pendingDelete, setPendingDelete] = useState<PendingDelete>(null)
   const [leftRailWidth, setLeftRailWidth] = useState(280)
   const [rightRailWidth, setRightRailWidth] = useState(340)
-  const [composerHeight, setComposerHeight] = useState(176)
+  const [composerHeight, setComposerHeight] = useState(168)
   const [leftRailCollapsed, setLeftRailCollapsed] = useState(false)
   const [rightRailCollapsed, setRightRailCollapsed] = useState(false)
   const eventsRef = useRef<ProgressEvent[]>([])
@@ -1210,7 +1210,7 @@ function TurnPair({
   downloadArtifact: (artifact: Artifact) => void | Promise<void>
 }) {
   return (
-    <>
+    <div className={styles.turnExchange}>
       <div className={styles.userBubble}>
         <p className={styles.bubbleLabel}>You</p>
         <p className={styles.userText}>{turn.message || turn.title}</p>
@@ -1250,13 +1250,13 @@ function TurnPair({
           </div>
         ) : null}
       </div>
-    </>
+    </div>
   )
 }
 
 function LiveTurn({ message, events }: { message: string; events: ProgressEvent[] }) {
   return (
-    <>
+    <div className={styles.turnExchange}>
       <div className={styles.userBubble}>
         <p className={styles.bubbleLabel}>You</p>
         <p className={styles.userText}>{message}</p>
@@ -1271,7 +1271,7 @@ function LiveTurn({ message, events }: { message: string; events: ProgressEvent[
         </div>
         <RollingCommentary events={events} />
       </div>
-    </>
+    </div>
   )
 }
 

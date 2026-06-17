@@ -239,6 +239,12 @@ def choose_research_level(request: AgentV3Request, route: RouteName) -> Literal[
 
 
 def _normalize_research_decision(request: AgentV3Request, decision: OrchestratorDecision) -> OrchestratorDecision:
+    text = request.message.lower()
+    asks_research = "research" in text or decision.route in {"research", "research_document"}
+    asks_doc = any(term in text for term in ["document", "report", "docx", "memo", "briefing", "deck", "ppt"])
+    if decision.route == "research" and asks_research and asks_doc:
+        decision.route = "research_document"
+        decision.output_format = decision.output_format or request.output_format
     if request.research_level in {"easy", "regular", "deep"}:
         decision.research_level = request.research_level  # type: ignore[assignment]
     elif decision.route in {"research", "research_document"}:

@@ -18,6 +18,26 @@ def test_generate_research_brief_fallback(monkeypatch):
     assert brief.fallback_reason is not None
 
 
+def test_technical_architecture_profile_gets_specific_contract(monkeypatch):
+    from app.services.agent_v3 import model_client
+    from app.services.agent_v3.research_subtree import generate_coverage_contract, generate_research_brief
+
+    monkeypatch.setattr(model_client, "complete", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("offline")))
+
+    request = AgentV3Request(
+        message="Conduct deep research and generate a detailed architectural report explaining system design, components, and workflows of agentic deep research AI.",
+        research_level="deep",
+    )
+    brief = generate_research_brief(request)
+    contract = generate_coverage_contract(request, brief)
+
+    assert brief.research_profile == "technical_architecture"
+    assert "Lead agent and orchestration" in contract.subjects
+    assert "Guardrails and security controls" in contract.subjects
+    assert "data model" in contract.dimensions
+    assert len(contract.cells) >= 50
+
+
 def test_coverage_contract_fallback_has_cells(monkeypatch):
     from app.services.agent_v3 import model_client
     from app.services.agent_v3.research_subtree import ResearchBrief, generate_coverage_contract
@@ -78,6 +98,33 @@ def test_plan_from_contract_generates_workers():
     assert plan.workers
     assert any("Tavily" in worker.question for worker in plan.workers)
     assert any("Nimble" in worker.question for worker in plan.workers)
+
+
+def test_technical_architecture_ranking_prefers_dense_sources():
+    from app.services.agent_v3.research_subtree import ResearchPlan, rank_sources
+
+    plan = ResearchPlan(
+        research_profile="technical_architecture",
+        questions=["agentic deep research architecture implementation"],
+    )
+    sources = [
+        Source(
+            title="What is Agentic AI?",
+            url="https://example.com/agentic-ai-overview",
+            snippet="Agentic AI transforms passive LLMs into autonomous agents.",
+        ),
+        Source(
+            title="Agent Research System README",
+            url="https://github.com/example/agent-research-system",
+            snippet="Architecture components workflow orchestrator evidence schema judge guardrails trace runtime.",
+            content="Planner executor critic evidence binder coverage contract MCP tools retries queues budget ledger.",
+        ),
+    ]
+
+    ranked = rank_sources(sources, plan)
+
+    assert ranked[0].source.url.startswith("https://github.com")
+    assert ranked[0].score > ranked[1].score
 
 
 def test_reflect_sufficient_when_fully_covered(monkeypatch):
@@ -181,6 +228,45 @@ def test_lead_research_loop_returns_expected_shape(monkeypatch):
     assert set(result) == {"sources", "tool_calls", "evidence", "response", "plan", "feedback"}
     assert result["response"].text
     assert result["tool_calls"]
+
+
+def test_technical_architecture_synthesis_uses_report_budget(monkeypatch):
+    from app.services.agent_v3 import model_client
+    from app.services.agent_v3.research_subtree import EvidenceItem, EvidencePack, ResearchPlan, synthesize_answer
+
+    captured = {}
+
+    def fake_simple_completion(system, user, *, max_tokens=1200):
+        captured["system"] = system
+        captured["user"] = user
+        captured["max_tokens"] = max_tokens
+        return model_client.ModelResponse(text="ok", model_used="fake", latency_ms=1, cost_usd=0.0)
+
+    monkeypatch.setattr(model_client, "simple_completion", fake_simple_completion)
+    request = AgentV3Request(
+        message="Conduct deep research and generate a detailed architectural report explaining system design, components, and workflows of agentic deep research AI.",
+        research_level="deep",
+    )
+    plan = ResearchPlan(
+        research_profile="technical_architecture",
+        questions=["architecture"],
+    )
+    evidence = EvidencePack(
+        items=[
+            EvidenceItem(
+                source_id="S1",
+                title="Agent architecture",
+                url="https://github.com/example/agent-research",
+                evidence="orchestrator planner workflow evidence schema guardrails runtime trace",
+            )
+        ]
+    )
+
+    synthesize_answer(request, plan, evidence)
+
+    assert captured["max_tokens"] >= 5000
+    assert "Reference architecture and component map" in captured["user"]
+    assert "real architectural report" in captured["system"]
 
 
 def test_runtime_routes_deep_to_lead_loop(monkeypatch):

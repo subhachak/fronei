@@ -191,6 +191,7 @@ def test_agent_v3_research_streams_milestones(monkeypatch):
 def test_agent_v3_web_search_prefers_you_provider(monkeypatch):
     import app.services.agent_v3.tools as tools_module
 
+    get_calls: list = []
     post_calls: list = []
 
     class FakeResponse:
@@ -199,16 +200,22 @@ def test_agent_v3_web_search_prefers_you_provider(monkeypatch):
 
         def json(self):
             return {
-                "hits": [
-                    {
-                        "title": "You result",
-                        "url": "https://you.example/result",
-                        "snippets": ["You.com snippet"],
-                    }
-                ]
+                "results": {
+                    "web": [
+                        {
+                            "title": "You result",
+                            "url": "https://you.example/result",
+                            "snippets": ["You.com snippet"],
+                        }
+                    ]
+                }
             }
 
-    monkeypatch.setattr(tools_module.httpx, "get", lambda *args, **kwargs: FakeResponse())
+    def fake_get(*args, **kwargs):
+        get_calls.append((args, kwargs))
+        return FakeResponse()
+
+    monkeypatch.setattr(tools_module.httpx, "get", fake_get)
     monkeypatch.setattr(tools_module.httpx, "post", lambda *args, **kwargs: post_calls.append((args, kwargs)))
 
     sources, call = AgentV3Tools(you_api_key="you-key", tavily_api_key="tavily-key").search_web("query")
@@ -216,6 +223,8 @@ def test_agent_v3_web_search_prefers_you_provider(monkeypatch):
     assert call.ok
     assert call.output["provider"] == "You.com"
     assert sources[0].url == "https://you.example/result"
+    assert get_calls[0][0][0] == "https://ydc-index.io/v1/search"
+    assert get_calls[0][1]["params"] == {"query": "query", "count": 6}
     assert post_calls == []
 
 
@@ -232,7 +241,7 @@ def test_agent_v3_web_search_falls_back_to_nimble(monkeypatch):
                 return None
 
             def json(self):
-                return {"hits": []}
+                return {"results": {"web": []}}
 
         return EmptyYouResponse()
 

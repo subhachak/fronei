@@ -113,25 +113,19 @@ class AgentV3Tools:
 
     def _search_you(self, query: str, max_results: int) -> list[Source]:
         response = httpx.get(
-            "https://api.ydc-index.io/search",
+            "https://ydc-index.io/v1/search",
             headers={"X-API-Key": self.you_api_key or ""},
-            params={"query": query, "num_web_results": max_results},
+            params={"query": query, "count": max_results},
             timeout=20,
         )
         response.raise_for_status()
         payload = response.json()
-        results = payload.get("hits") or payload.get("results") or payload.get("web_results") or []
         sources: list[Source] = []
-        for item in results[:max_results]:
+        for item in _you_result_items(payload)[:max_results]:
             if not isinstance(item, dict):
                 continue
             url = str(item.get("url") or item.get("link") or "")
-            snippets = item.get("snippets") or item.get("highlights") or []
-            if isinstance(snippets, list):
-                snippet = " ".join(str(part) for part in snippets)
-            else:
-                snippet = str(snippets or "")
-            snippet = snippet or str(item.get("description") or item.get("snippet") or item.get("content") or "")
+            snippet = _you_item_content(item)
             if url:
                 sources.append(
                     Source(
@@ -281,6 +275,39 @@ def _nimble_auth_header(api_key: str) -> str:
     if api_key.lower().startswith(("bearer ", "basic ")):
         return api_key
     return f"Bearer {api_key}"
+
+
+def _you_result_items(data: dict) -> list[dict]:
+    results = data.get("results")
+    if isinstance(results, dict):
+        items: list[dict] = []
+        for key in ("web", "news"):
+            value = results.get(key)
+            if isinstance(value, list):
+                items.extend(item for item in value if isinstance(item, dict))
+        return items
+    if isinstance(results, list):
+        return [item for item in results if isinstance(item, dict)]
+    return []
+
+
+def _you_item_content(item: dict) -> str:
+    snippets = item.get("snippets") or item.get("highlights") or []
+    if isinstance(snippets, list):
+        snippet = " ".join(str(part) for part in snippets)
+    else:
+        snippet = str(snippets or "")
+    if snippet:
+        return snippet
+    contents = item.get("contents") if isinstance(item.get("contents"), dict) else {}
+    return str(
+        item.get("description")
+        or item.get("snippet")
+        or item.get("content")
+        or contents.get("markdown")
+        or contents.get("html")
+        or ""
+    )
 
 
 def _nimble_result_items(data: dict) -> list[dict]:

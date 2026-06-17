@@ -241,30 +241,27 @@ def you_search(query: str, recency: str | None = None) -> list[WebSource]:
     settings = get_settings()
     if not settings.you_api_key:
         return []
+    params: dict[str, str | int] = {"query": query, "count": MAX_SEARCH_RESULTS}
+    if recency in {"day", "week", "month", "year"}:
+        params["freshness"] = recency
     try:
         with httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS) as client:
             response = client.get(
-                "https://api.ydc-index.io/search",
+                "https://ydc-index.io/v1/search",
                 headers={"X-API-Key": settings.you_api_key},
-                params={"query": query, "num_web_results": MAX_SEARCH_RESULTS},
+                params=params,
             )
             response.raise_for_status()
         data = response.json()
     except Exception:
         return []
     sources: list[WebSource] = []
-    results = data.get("hits") or data.get("results") or data.get("web_results") or []
-    for item in results[:MAX_SEARCH_RESULTS]:
+    for item in _you_result_items(data)[:MAX_SEARCH_RESULTS]:
         if not isinstance(item, dict):
             continue
         url = item.get("url") or item.get("link") or ""
         title = item.get("title") or source_title(url)
-        snippets = item.get("snippets") or item.get("highlights") or []
-        if isinstance(snippets, list):
-            snippet = " ".join(str(part) for part in snippets)
-        else:
-            snippet = str(snippets or "")
-        content = snippet or item.get("description") or item.get("snippet") or item.get("content") or ""
+        content = _you_item_content(item)
         if url and content:
             sources.append(WebSource(title=title, url=url, content=normalize_text(content)[:MAX_SOURCE_CHARS]))
     return sources
@@ -355,6 +352,39 @@ def _nimble_auth_header(api_key: str) -> str:
     return f"Bearer {api_key}"
 
 
+def _you_result_items(data: dict) -> list[dict]:
+    results = data.get("results")
+    if isinstance(results, dict):
+        items: list[dict] = []
+        for key in ("web", "news"):
+            value = results.get(key)
+            if isinstance(value, list):
+                items.extend(item for item in value if isinstance(item, dict))
+        return items
+    if isinstance(results, list):
+        return [item for item in results if isinstance(item, dict)]
+    return []
+
+
+def _you_item_content(item: dict) -> str:
+    snippets = item.get("snippets") or item.get("highlights") or []
+    if isinstance(snippets, list):
+        snippet = " ".join(str(part) for part in snippets)
+    else:
+        snippet = str(snippets or "")
+    if snippet:
+        return snippet
+    contents = item.get("contents") if isinstance(item.get("contents"), dict) else {}
+    return str(
+        item.get("description")
+        or item.get("snippet")
+        or item.get("content")
+        or contents.get("markdown")
+        or contents.get("html")
+        or ""
+    )
+
+
 def _nimble_result_items(data: dict) -> list[dict]:
     parsing = data.get("parsing") if isinstance(data.get("parsing"), dict) else {}
     entities = parsing.get("entities") if isinstance(parsing.get("entities"), dict) else {}
@@ -397,9 +427,9 @@ def test_you_connection() -> dict:
     try:
         with httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS) as client:
             response = client.get(
-                "https://api.ydc-index.io/search",
+                "https://ydc-index.io/v1/search",
                 headers={"X-API-Key": settings.you_api_key},
-                params={"query": "ping", "num_web_results": 1},
+                params={"query": "ping", "count": 1},
             )
             response.raise_for_status()
         return {"success": True, "latency_ms": int((time.perf_counter() - started) * 1000)}

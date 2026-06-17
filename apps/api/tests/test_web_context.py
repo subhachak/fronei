@@ -86,6 +86,59 @@ def test_search_web_sources_prefers_you_before_tavily(monkeypatch):
     assert calls == ["You.com"]
 
 
+def test_you_search_uses_documented_endpoint_and_response_shape(monkeypatch):
+    monkeypatch.setattr(
+        web_context,
+        "get_settings",
+        lambda: SimpleNamespace(you_api_key="you-key", tavily_api_key=None, nimble_api_key=None),
+    )
+    captured: dict = {}
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "results": {
+                    "web": [
+                        {
+                            "title": "You result",
+                            "url": "https://you.example/result",
+                            "snippets": ["You.com snippet"],
+                        }
+                    ]
+                }
+            }
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def get(self, url, *, headers=None, params=None):
+            captured["url"] = url
+            captured["headers"] = headers
+            captured["params"] = params
+            return FakeResponse()
+
+    monkeypatch.setattr(web_context.httpx, "Client", FakeClient)
+
+    sources = web_context.you_search("agent search", recency="week")
+
+    assert captured["url"] == "https://ydc-index.io/v1/search"
+    assert captured["headers"] == {"X-API-Key": "you-key"}
+    assert captured["params"] == {"query": "agent search", "count": web_context.MAX_SEARCH_RESULTS, "freshness": "week"}
+    assert sources[0].title == "You result"
+    assert sources[0].url == "https://you.example/result"
+    assert sources[0].content == "You.com snippet"
+
+
 def test_search_web_sources_falls_back_to_tavily_when_you_empty(monkeypatch):
     monkeypatch.setattr(
         web_context,

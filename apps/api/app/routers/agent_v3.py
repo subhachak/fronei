@@ -20,6 +20,7 @@ from app.services.agent_v3.models import (
     Goal,
     ProgressEvent,
     StreamEnvelope,
+    new_id,
 )
 from app.services.agent_v3.runtime import AgentV3Runtime
 
@@ -32,6 +33,78 @@ _DONE = object()
 
 def _sse(envelope: StreamEnvelope) -> str:
     return f"event: {envelope.type}\ndata: {json.dumps(envelope.data, default=str)}\n\n"
+
+
+def _persist_agent_v3_envelope(envelope: StreamEnvelope, turn_id: str | None) -> None:
+    if envelope.type == "start":
+        start_turn_id = str(envelope.data.get("turn_id") or turn_id or "")
+        goal = Goal.model_validate(envelope.data.get("goal"))
+        persistence.create_turn(goal, start_turn_id)
+    elif envelope.type == "progress":
+        progress_event = ProgressEvent.model_validate(envelope.data)
+        if not progress_event.data.get("ephemeral"):
+            persistence.append_event(progress_event)
+    elif envelope.type == "result":
+        result = AgentV3Result.model_validate(envelope.data)
+        persistence.complete_turn(result)
+    elif envelope.type == "error" and turn_id:
+        persistence.fail_turn(turn_id, str(envelope.data.get("message") or "Agent v3 failed"))
+
+
+def _run_agent_v3_background(request: AgentV3Request, *, user_id: str, turn_id: str) -> None:
+    runtime = AgentV3Runtime()
+    try:
+        for envelope in runtime.run_stream(request, user_id=user_id, turn_id=turn_id):
+            _persist_agent_v3_envelope(envelope, turn_id)
+    except BaseException as exc:  # pragma: no cover - defensive background boundary.
+        logger.exception("Agent v3 background turn failed")
+        persistence.fail_turn(turn_id, f"Agent v3 failed while working in the background: {exc}")
+
+
+@router.post("/turns")
+def start_agent_v3_turn(request: AgentV3Request, user_id: str = CurrentUser) -> dict:
+    """Start an Agent v3 turn as a durable background job.
+
+    The browser can poll /agent-v3/turns/{turn_id}/status for telemetry and
+    completion. The run continues server-side if the browser connection drops.
+    """
+
+    conversation = persistence.ensure_conversation(user_id, request.conversation_id, request.message)
+    request = request.model_copy(
+        update={
+            "conversation_id": conversation.id,
+            "conversation_context": persistence.conversation_context_text(user_id, conversation.id),
+        }
+    )
+    turn_id = new_id("turn")
+    placeholder_goal = Goal(
+        user_id=user_id,
+        conversation_id=conversation.id,
+        objective=request.message,
+        route=request.force_route or ("research_document" if request.output_format != "chat" else "research"),
+        quality_mode=request.quality_mode,
+    )
+    persistence.create_turn(placeholder_goal, turn_id)
+    persistence.append_event(
+        ProgressEvent(
+            turn_id=turn_id,
+            stage="background_job",
+            message="Started a durable background run.",
+            data={"conversation_id": conversation.id},
+        )
+    )
+    worker = Thread(
+        target=_run_agent_v3_background,
+        kwargs={"request": request, "user_id": user_id, "turn_id": turn_id},
+        name=f"agent-v3-bg-{turn_id}",
+        daemon=True,
+    )
+    worker.start()
+    return {
+        "turn_id": turn_id,
+        "conversation_id": conversation.id,
+        "status": "running",
+    }
 
 
 @router.post("/turns/stream")
@@ -103,17 +176,7 @@ def stream_agent_v3_turn(request: AgentV3Request, user_id: str = CurrentUser) ->
             try:
                 if envelope.type == "start":
                     turn_id = str(envelope.data.get("turn_id") or "")
-                    goal = Goal.model_validate(envelope.data.get("goal"))
-                    persistence.create_turn(goal, turn_id)
-                elif envelope.type == "progress":
-                    progress_event = ProgressEvent.model_validate(envelope.data)
-                    if not progress_event.data.get("ephemeral"):
-                        persistence.append_event(progress_event)
-                elif envelope.type == "result":
-                    result = AgentV3Result.model_validate(envelope.data)
-                    persistence.complete_turn(result)
-                elif envelope.type == "error" and turn_id:
-                    persistence.fail_turn(turn_id, str(envelope.data.get("message") or "Agent v3 failed"))
+                _persist_agent_v3_envelope(envelope, turn_id)
             except Exception as exc:
                 logger.exception("Agent v3 stream persistence failed for envelope type=%s", envelope.type)
                 if envelope.type == "result" and turn_id:
@@ -144,6 +207,14 @@ def get_agent_v3_turn(turn_id: str, user_id: str = CurrentUser) -> dict:
     if result is None:
         raise HTTPException(status_code=404, detail="Agent v3 turn not found")
     return result.model_dump(mode="json")
+
+
+@router.get("/turns/{turn_id}/status")
+def get_agent_v3_turn_status(turn_id: str, user_id: str = CurrentUser) -> dict:
+    status = persistence.load_turn_status(turn_id, user_id)
+    if status is None:
+        raise HTTPException(status_code=404, detail="Agent v3 turn not found")
+    return status
 
 
 @router.get("/workspaces")

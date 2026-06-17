@@ -5,11 +5,13 @@ import DOMPurify from 'dompurify'
 import {
   ArrowUpRight,
   BookOpen,
+  Check,
   CheckCircle2,
   ChevronDown,
   ChevronsLeft,
   ChevronsRight,
   Clock3,
+  Copy,
   Download,
   FileText,
   Folder,
@@ -87,6 +89,13 @@ type AgentResult = {
   created_at?: string
 }
 
+type AgentTurnStatus = {
+  turn_id: string
+  status: 'running' | 'completed' | 'failed' | string
+  error_message?: string | null
+  turn: AgentResult
+}
+
 type FollowUpOption = {
   label: string
   message?: string
@@ -154,12 +163,6 @@ type ApiWorkspace = {
   conversations: ApiConversation[]
 }
 
-const SUGGESTIONS = [
-  'Research RBI digital lending guidelines and create a concise briefing note.',
-  'Compare You.com, Tavily, and Nimble as search providers for source-grounded research.',
-  'Create a DOCX report on Agent v3 architecture progress and remaining risks.',
-]
-
 export default function AgentV3Page() {
   const { getToken, isLoaded, isSignedIn } = useAuth()
   const [message, setMessage] = useState('Research the latest enterprise AI governance trends and create a concise report.')
@@ -185,6 +188,7 @@ export default function AgentV3Page() {
   const [composerHeight, setComposerHeight] = useState(168)
   const [leftRailCollapsed, setLeftRailCollapsed] = useState(false)
   const [rightRailCollapsed, setRightRailCollapsed] = useState(false)
+  const [copiedKey, setCopiedKey] = useState<string | null>(null)
   const eventsRef = useRef<ProgressEvent[]>([])
   const chatScrollRef = useRef<HTMLDivElement | null>(null)
   const activeRunConversationIdRef = useRef<string | null>(null)
@@ -280,7 +284,7 @@ export default function AgentV3Page() {
     try {
       const conversationId = await ensureActiveConversation(runMessage)
       activeRunConversationIdRef.current = conversationId
-      const response = await authorizedFetch('/agent-v3/turns/stream', {
+      const response = await authorizedFetch('/agent-v3/turns', {
         method: 'POST',
         body: JSON.stringify({
           message: runMessage,
@@ -292,22 +296,12 @@ export default function AgentV3Page() {
           force_route: option?.force_route || undefined,
         }),
       })
-      if (!response.ok || !response.body) {
+      if (!response.ok) {
         const body = await response.text()
-        throw new Error(body || 'Agent v3 request failed')
+        throw new Error(body || 'Agent v3 job could not start')
       }
-      const reader = response.body.getReader()
-      const decoder = new TextDecoder()
-      let buffer = ''
-      while (true) {
-        const { value, done } = await reader.read()
-        if (done) break
-        buffer += decoder.decode(value, { stream: true })
-        const frames = buffer.split('\n\n')
-        buffer = frames.pop() || ''
-        for (const frame of frames) handleFrame(frame)
-      }
-      if (buffer.trim()) handleFrame(buffer)
+      const started = await response.json() as { turn_id: string; conversation_id: string; status: string }
+      await pollTurnStatus(started.turn_id, started.conversation_id || conversationId, runMessage, option)
     } catch (err) {
       setError(streamErrorMessage(err))
     } finally {
@@ -317,36 +311,51 @@ export default function AgentV3Page() {
     }
   }
 
-  function handleFrame(frame: string) {
-    const eventLine = frame.split('\n').find(line => line.startsWith('event: '))
-    const dataLine = frame.split('\n').find(line => line.startsWith('data: '))
-    const eventType = eventLine?.replace('event: ', '').trim()
-    const data = dataLine ? JSON.parse(dataLine.replace('data: ', '')) : {}
-    if (eventType === 'progress') {
-      const nextEvent = data as ProgressEvent
-      eventsRef.current = [...eventsRef.current, nextEvent]
-      setEvents(eventsRef.current)
-    } else if (eventType === 'result') {
-      const next = data as AgentResult
-      const turnMessage = activeRunMessageRef.current || message
-      setResult(next)
-      setTraceOpen(false)
-      appendTurnToActiveConversation({
-        id: next.turn_id,
-        title: titleFromMessage(turnMessage),
-        route: next.route,
-        createdAt: new Date().toISOString(),
-        completedAt: new Date().toISOString(),
-        message: turnMessage,
-        qualityMode,
-        outputFormat,
-        events: eventsRef.current,
-        result: next,
-        artifacts: next.artifacts || [],
-        sourceCount: next.sources?.length || 0,
-      }, activeRunConversationIdRef.current || activeConversationId)
-    } else if (eventType === 'error') {
-      setError(data.message || 'Agent v3 failed')
+  async function pollTurnStatus(
+    turnId: string,
+    conversationId: string,
+    turnMessage: string,
+    option?: FollowUpOption,
+  ) {
+    let transientFailures = 0
+    while (true) {
+      try {
+        const response = await authorizedFetch(`/agent-v3/turns/${turnId}/status`)
+        if (!response.ok) throw new Error(await response.text() || 'Could not load turn status')
+        const payload = await response.json() as AgentTurnStatus
+        const next = payload.turn
+        const nextEvents = next.events || []
+        transientFailures = 0
+        eventsRef.current = nextEvents
+        setEvents(nextEvents)
+        if (payload.status === 'completed') {
+          setResult(next)
+          setTraceOpen(false)
+          appendTurnToActiveConversation({
+            id: next.turn_id,
+            title: titleFromMessage(turnMessage),
+            route: next.route,
+            createdAt: next.created_at || new Date().toISOString(),
+            completedAt: new Date().toISOString(),
+            message: turnMessage,
+            qualityMode,
+            outputFormat: option?.output_format || outputFormat,
+            events: nextEvents,
+            result: next,
+            artifacts: next.artifacts || [],
+            sourceCount: next.sources?.length || 0,
+          }, conversationId)
+          return
+        }
+        if (payload.status === 'failed') {
+          setError(payload.error_message || 'Agent v3 failed')
+          return
+        }
+      } catch (err) {
+        transientFailures += 1
+        if (transientFailures >= 5) throw err
+      }
+      await sleep(1200)
     }
   }
 
@@ -639,6 +648,24 @@ export default function AgentV3Page() {
     URL.revokeObjectURL(url)
   }
 
+  async function copyText(value: string, key: string) {
+    const text = value.trim()
+    if (!text) return
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text)
+      } else if (!fallbackCopyText(text)) {
+        throw new Error('Clipboard is unavailable')
+      }
+      setCopiedKey(key)
+      window.setTimeout(() => {
+        setCopiedKey(current => current === key ? null : current)
+      }, 1600)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not copy text')
+    }
+  }
+
   function eventChips(event: ProgressEvent): string[] {
     const data = event.data || {}
     const chips: string[] = []
@@ -719,14 +746,12 @@ export default function AgentV3Page() {
               running={running}
               result={result}
               confidenceCues={confidenceCues}
-              traceOpen={traceOpen}
-              setTraceOpen={setTraceOpen}
-              eventChips={eventChips}
               downloadArtifact={downloadArtifact}
               onFollowUp={option => void run(option)}
+              copiedKey={copiedKey}
+              onCopyText={copyText}
             />
             {error && <div className={styles.errorBox}>{error}</div>}
-            {!result && !running && activeTurns.length === 0 && <SuggestionStrip suggestions={SUGGESTIONS} setMessage={setMessage} />}
           </div>
           <div className={styles.composerDock} style={{ height: composerHeight }}>
             <div
@@ -770,6 +795,11 @@ export default function AgentV3Page() {
                 activeConversation={activeConversation}
                 currentMessage={running ? activeRunMessageRef.current || message : message}
                 downloadArtifact={downloadArtifact}
+                traceOpen={traceOpen}
+                setTraceOpen={setTraceOpen}
+                eventChips={eventChips}
+                copiedKey={copiedKey}
+                onCopyText={copyText}
                 onCollapse={() => setRightRailCollapsed(true)}
               />
             </>
@@ -859,6 +889,19 @@ function StudioLibrary({
   onCancelDelete: () => void
   onCollapse: () => void
 }) {
+  const [workspaceSearchOpen, setWorkspaceSearchOpen] = useState(false)
+  const [workspaceSearch, setWorkspaceSearch] = useState('')
+  const [conversationSearchOpen, setConversationSearchOpen] = useState<Record<string, boolean>>({})
+  const [conversationSearch, setConversationSearch] = useState<Record<string, string>>({})
+  const workspaceQuery = workspaceSearch.trim().toLowerCase()
+  const visibleWorkspaces = workspaces.filter(workspace => {
+    if (!workspaceQuery) return true
+    return (
+      workspace.name.toLowerCase().includes(workspaceQuery)
+      || workspace.conversations.some(conversation => conversation.title.toLowerCase().includes(workspaceQuery))
+    )
+  })
+
   return (
     <>
       <div className={styles.sectionHeader}>
@@ -870,11 +913,37 @@ function StudioLibrary({
           <button type="button" className={styles.smallIconButton} onClick={onCollapse} aria-label="Collapse library" title="Collapse library">
             <ChevronsLeft size={15} />
           </button>
+          <button
+            type="button"
+            className={styles.smallIconButton}
+            onClick={() => setWorkspaceSearchOpen(open => !open)}
+            aria-label="Search workspaces"
+            title="Search workspaces"
+          >
+            <Search size={15} />
+          </button>
           <button type="button" className={styles.iconButton} onClick={onCreateWorkspace} aria-label="Create workspace" title="Create workspace">
             <Plus size={16} />
           </button>
         </div>
       </div>
+
+      {workspaceSearchOpen && (
+        <div className={styles.librarySearchBox}>
+          <Search size={14} />
+          <input
+            value={workspaceSearch}
+            onChange={event => setWorkspaceSearch(event.target.value)}
+            placeholder="Search workspaces..."
+            autoFocus
+          />
+          {workspaceSearch && (
+            <button type="button" onClick={() => setWorkspaceSearch('')} aria-label="Clear workspace search">
+              Clear
+            </button>
+          )}
+        </div>
+      )}
 
       <div className={styles.libraryList}>
         {workspaces.length === 0 && (
@@ -882,8 +951,19 @@ function StudioLibrary({
             Create a workspace to begin.
           </div>
         )}
-        {workspaces.map((workspace, index) => {
+        {workspaces.length > 0 && visibleWorkspaces.length === 0 && (
+          <div className={styles.emptyState}>
+            No matching workspaces.
+          </div>
+        )}
+        {visibleWorkspaces.map((workspace, index) => {
           const expanded = expandedWorkspaceIds[workspace.id] ?? index === 0
+          const conversationQuery = (conversationSearch[workspace.id] || '').trim().toLowerCase()
+          const visibleConversations = workspace.conversations.filter(conversation => (
+            !conversationQuery
+            || conversation.title.toLowerCase().includes(conversationQuery)
+            || String(conversation.turnCount || conversation.turns.length).includes(conversationQuery)
+          ))
           const turnCount = workspace.conversations.reduce((total, conversation) => total + (conversation.turnCount || conversation.turns.length), 0)
           return (
             <section key={workspace.id} className={`${styles.workspaceGroup} ${workspace.id === activeWorkspaceId ? styles.workspaceGroupActive : ''}`}>
@@ -924,6 +1004,17 @@ function StudioLibrary({
                   <button type="button" onClick={() => onCreateConversation(workspace.id)} aria-label="New conversation" title="New conversation">
                     <MessageSquare size={14} />
                   </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setConversationSearchOpen(prev => ({ ...prev, [workspace.id]: !prev[workspace.id] }))
+                      if (!expanded) onToggleWorkspace(workspace.id)
+                    }}
+                    aria-label="Search conversations"
+                    title="Search conversations"
+                  >
+                    <Search size={14} />
+                  </button>
                   <button type="button" onClick={() => onRequestDeleteWorkspace(workspace.id)} aria-label="Delete workspace" title="Delete workspace" disabled={workspaces.length <= 1}>
                     <Trash2 size={14} />
                   </button>
@@ -940,7 +1031,30 @@ function StudioLibrary({
               )}
               {expanded && (
               <div className={styles.conversationList}>
-                {workspace.conversations.map(conversation => (
+                {conversationSearchOpen[workspace.id] && (
+                  <div className={styles.conversationSearchBox}>
+                    <Search size={14} />
+                    <input
+                      value={conversationSearch[workspace.id] || ''}
+                      onChange={event => setConversationSearch(prev => ({ ...prev, [workspace.id]: event.target.value }))}
+                      placeholder="Search conversations..."
+                      autoFocus
+                    />
+                    {conversationSearch[workspace.id] && (
+                      <button
+                        type="button"
+                        onClick={() => setConversationSearch(prev => ({ ...prev, [workspace.id]: '' }))}
+                        aria-label="Clear conversation search"
+                      >
+                        Clear
+                      </button>
+                    )}
+                  </div>
+                )}
+                {visibleConversations.length === 0 && (
+                  <div className={styles.emptyConversationSearch}>No matching conversations.</div>
+                )}
+                {visibleConversations.map(conversation => (
                   <div key={conversation.id} className={`${styles.conversationItemWrap} ${conversation.id === activeConversationId ? styles.conversationItemActive : ''}`}>
                     <button
                       type="button"
@@ -1109,23 +1223,6 @@ function StudioSelect({ label, value, onChange, options }: { label: string; valu
   )
 }
 
-function SuggestionStrip({ suggestions, setMessage }: { suggestions: string[]; setMessage: (message: string) => void }) {
-  return (
-    <div className={styles.suggestionStrip}>
-      {suggestions.map(suggestion => (
-        <button
-          key={suggestion}
-          type="button"
-          onClick={() => setMessage(suggestion)}
-          className={styles.suggestionButton}
-        >
-          {suggestion}
-        </button>
-      ))}
-    </div>
-  )
-}
-
 function Timeline({
   draftMessage,
   turns,
@@ -1133,11 +1230,10 @@ function Timeline({
   running,
   result,
   confidenceCues,
-  traceOpen,
-  setTraceOpen,
-  eventChips,
   downloadArtifact,
   onFollowUp,
+  copiedKey,
+  onCopyText,
 }: {
   draftMessage: string
   turns: WorkItem[]
@@ -1145,11 +1241,10 @@ function Timeline({
   running: boolean
   result: AgentResult | null
   confidenceCues: string[]
-  traceOpen: boolean
-  setTraceOpen: (open: boolean) => void
-  eventChips: (event: ProgressEvent) => string[]
   downloadArtifact: (artifact: Artifact) => void | Promise<void>
   onFollowUp: (option: FollowUpOption) => void
+  copiedKey: string | null
+  onCopyText: (value: string, key: string) => void | Promise<void>
 }) {
   return (
     <section className={styles.chatThread}>
@@ -1167,11 +1262,18 @@ function Timeline({
       )}
 
       {turns.map(turn => (
-        <TurnPair key={turn.id} turn={turn} downloadArtifact={downloadArtifact} onFollowUp={onFollowUp} />
+        <TurnPair
+          key={turn.id}
+          turn={turn}
+          downloadArtifact={downloadArtifact}
+          onFollowUp={onFollowUp}
+          copiedKey={copiedKey}
+          onCopyText={onCopyText}
+        />
       ))}
 
       {running && (
-        <LiveTurn message={draftMessage} events={events} />
+        <LiveTurn message={draftMessage} events={events} copiedKey={copiedKey} onCopyText={onCopyText} />
       )}
 
       {!running && result && turns.length === 0 && (
@@ -1190,37 +1292,9 @@ function Timeline({
           confidenceCues={confidenceCues}
           downloadArtifact={downloadArtifact}
           onFollowUp={onFollowUp}
+          copiedKey={copiedKey}
+          onCopyText={onCopyText}
         />
-      )}
-
-      {(events.length > 0 || result) && (
-        <button
-          type="button"
-          onClick={() => setTraceOpen(!traceOpen)}
-          className={styles.traceToggle}
-        >
-          <span>{traceOpen ? 'Hide execution trace' : `${events.length || 0} engine events`}</span>
-          <ChevronDown size={16} className={traceOpen ? styles.rotated : ''} />
-        </button>
-      )}
-
-      {traceOpen && (
-        <div className={styles.traceList}>
-          {events.length === 0 && <p className={styles.mutedText}>No events yet.</p>}
-          {events.map((event, index) => (
-            <div key={`${event.stage}-${index}`} className={styles.traceEvent}>
-              <p className={styles.traceStage}>{event.stage}</p>
-              <p className={styles.traceMessage}>{event.message}</p>
-              {eventChips(event).length ? (
-                <div className={styles.chipRow}>
-                  {eventChips(event).map(chip => (
-                    <span key={chip} className={styles.traceChip}>{chip}</span>
-                  ))}
-                </div>
-              ) : null}
-            </div>
-          ))}
-        </div>
       )}
     </section>
   )
@@ -1231,16 +1305,29 @@ function TurnPair({
   confidenceCues,
   downloadArtifact,
   onFollowUp,
+  copiedKey,
+  onCopyText,
 }: {
   turn: WorkItem
   confidenceCues?: string[]
   downloadArtifact: (artifact: Artifact) => void | Promise<void>
   onFollowUp?: (option: FollowUpOption) => void
+  copiedKey: string | null
+  onCopyText: (value: string, key: string) => void | Promise<void>
 }) {
+  const userCopy = turn.message || turn.title
+  const assistantCopy = assistantTurnCopyText(turn)
   return (
     <div className={styles.turnExchange}>
       <div className={styles.userBubble}>
-        <p className={styles.bubbleLabel}>You</p>
+        <div className={styles.bubbleTopRow}>
+          <p className={styles.bubbleLabel}>You</p>
+          <CopyButton
+            copied={copiedKey === `${turn.id}:user`}
+            label="Copy your message"
+            onClick={() => onCopyText(userCopy, `${turn.id}:user`)}
+          />
+        </div>
         <p className={styles.userText}>{turn.message || turn.title}</p>
       </div>
       <div className={styles.assistantBubble}>
@@ -1250,6 +1337,11 @@ function TurnPair({
             <p className={styles.companionTitle}>Fronei</p>
             <p className={styles.companionText}>Completed as {turn.route}.</p>
           </div>
+          <CopyButton
+            copied={copiedKey === `${turn.id}:assistant`}
+            label="Copy Fronei response"
+            onClick={() => onCopyText(assistantCopy, `${turn.id}:assistant`)}
+          />
         </div>
         {confidenceCues?.length ? (
           <div className={styles.cueGrid}>
@@ -1296,12 +1388,30 @@ function TurnPair({
   )
 }
 
-function LiveTurn({ message, events }: { message: string; events: ProgressEvent[] }) {
+function LiveTurn({
+  message,
+  events,
+  copiedKey,
+  onCopyText,
+}: {
+  message: string
+  events: ProgressEvent[]
+  copiedKey: string | null
+  onCopyText: (value: string, key: string) => void | Promise<void>
+}) {
   const latestMessage = plainCommentary(events).at(-1) || 'I’m getting oriented and deciding the best way to handle this.'
+  const liveCopy = plainCommentary(events).join('\n') || latestMessage
   return (
     <div className={styles.turnExchange}>
       <div className={styles.userBubble}>
-        <p className={styles.bubbleLabel}>You</p>
+        <div className={styles.bubbleTopRow}>
+          <p className={styles.bubbleLabel}>You</p>
+          <CopyButton
+            copied={copiedKey === 'live:user'}
+            label="Copy your message"
+            onClick={() => onCopyText(message, 'live:user')}
+          />
+        </div>
         <p className={styles.userText}>{message}</p>
       </div>
       <div className={styles.assistantBubble}>
@@ -1311,6 +1421,11 @@ function LiveTurn({ message, events }: { message: string; events: ProgressEvent[
             <p className={styles.companionTitle}>Fronei</p>
             <p className={styles.companionText}>{latestMessage}</p>
           </div>
+          <CopyButton
+            copied={copiedKey === 'live:assistant'}
+            label="Copy current commentary"
+            onClick={() => onCopyText(liveCopy, 'live:assistant')}
+          />
         </div>
         <div className={styles.workPulse} aria-label="Fronei is actively working">
           <span />
@@ -1357,6 +1472,29 @@ function RollingCommentary({ events }: { events: ProgressEvent[] }) {
   )
 }
 
+function CopyButton({
+  copied,
+  label,
+  onClick,
+}: {
+  copied: boolean
+  label: string
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      className={`${styles.copyButton} ${copied ? styles.copyButtonCopied : ''}`}
+      onClick={onClick}
+      aria-label={copied ? 'Copied' : label}
+      title={copied ? 'Copied' : label}
+    >
+      {copied ? <Check size={14} /> : <Copy size={14} />}
+      <span>{copied ? 'Copied' : 'Copy'}</span>
+    </button>
+  )
+}
+
 function ContextRail({
   result,
   events,
@@ -1365,6 +1503,11 @@ function ContextRail({
   activeConversation,
   currentMessage,
   downloadArtifact,
+  traceOpen,
+  setTraceOpen,
+  eventChips,
+  copiedKey,
+  onCopyText,
   onCollapse,
 }: {
   result: AgentResult | null
@@ -1374,9 +1517,13 @@ function ContextRail({
   activeConversation: Conversation | null
   currentMessage: string
   downloadArtifact: (artifact: Artifact) => void | Promise<void>
+  traceOpen: boolean
+  setTraceOpen: (open: boolean) => void
+  eventChips: (event: ProgressEvent) => string[]
+  copiedKey: string | null
+  onCopyText: (value: string, key: string) => void | Promise<void>
   onCollapse: () => void
 }) {
-  const providerEvents = events.filter(event => event.stage === 'search_worker_provider')
   const workSummary = buildWorkSummary({ result, events, sources, activeConversation, currentMessage })
   return (
     <>
@@ -1417,22 +1564,44 @@ function ContextRail({
           {result?.model_used && <p className={styles.mutedSmall}>{result.model_used}</p>}
         </section>
 
-        {providerEvents.length > 0 && (
-          <section className={styles.contextCard}>
-            <div className={styles.contextCardHeader}>
-              <Search size={16} />
-              <h3>Search providers</h3>
-            </div>
-            <div className={styles.providerList}>
-              {providerEvents.map((event, index) => (
-                <div key={`${event.message}-${index}`} className={styles.providerRow}>
-                  <span>Worker {String(event.data?.worker_index || index + 1)}</span>
-                  <strong>{String(event.data?.provider || 'none')}</strong>
+        <section className={styles.contextCard}>
+          <button
+            type="button"
+            onClick={() => setTraceOpen(!traceOpen)}
+            className={styles.contextTraceToggle}
+          >
+            <span>
+              <span className={styles.contextTraceTitle}>Engine events</span>
+              <span className={styles.contextTraceCount}>{events.length || 0} recorded</span>
+            </span>
+            <ChevronDown size={16} className={traceOpen ? styles.rotated : ''} />
+          </button>
+          {traceOpen && (
+            <div className={styles.traceList}>
+              {events.length === 0 && <p className={styles.mutedText}>No events yet.</p>}
+              {events.map((event, index) => (
+                <div key={`${event.stage}-${index}`} className={styles.traceEvent}>
+                  <div className={styles.traceEventHeader}>
+                    <p className={styles.traceStage}>{event.stage}</p>
+                    <CopyButton
+                      copied={copiedKey === `event:${index}:${event.stage}`}
+                      label="Copy event"
+                      onClick={() => onCopyText(eventCopyText(event), `event:${index}:${event.stage}`)}
+                    />
+                  </div>
+                  <p className={styles.traceMessage}>{event.message}</p>
+                  {eventChips(event).length ? (
+                    <div className={styles.chipRow}>
+                      {eventChips(event).map(chip => (
+                        <span key={chip} className={styles.traceChip}>{chip}</span>
+                      ))}
+                    </div>
+                  ) : null}
                 </div>
               ))}
             </div>
-          </section>
-        )}
+          )}
+        </section>
 
         {latestArtifact && (
           <section className={styles.artifactCard}>
@@ -1479,6 +1648,43 @@ function ContextRail({
 function MarkdownResult({ content }: { content: string }) {
   const html = useMemo(() => DOMPurify.sanitize(marked.parse(content || '') as string), [content])
   return <div className={styles.markdownResult} dangerouslySetInnerHTML={{ __html: html }} />
+}
+
+function assistantTurnCopyText(turn: WorkItem): string {
+  const parts = [turn.result?.answer || '']
+  if (turn.artifacts.length) {
+    parts.push(`Artifacts:\n${turn.artifacts.map(artifact => `- ${artifact.filename}`).join('\n')}`)
+  }
+  if (turn.sourceCount) parts.push(`Sources: ${turn.sourceCount}`)
+  return parts.filter(Boolean).join('\n\n')
+}
+
+function eventCopyText(event: ProgressEvent): string {
+  const parts = [`[${event.stage}] ${event.message}`]
+  if (event.created_at) parts.push(`created_at: ${event.created_at}`)
+  if (event.data && Object.keys(event.data).length) {
+    parts.push(JSON.stringify(event.data, null, 2))
+  }
+  return parts.join('\n')
+}
+
+function fallbackCopyText(text: string): boolean {
+  const textarea = document.createElement('textarea')
+  textarea.value = text
+  textarea.setAttribute('readonly', 'true')
+  textarea.style.position = 'fixed'
+  textarea.style.left = '-9999px'
+  document.body.appendChild(textarea)
+  textarea.select()
+  try {
+    return document.execCommand('copy')
+  } finally {
+    document.body.removeChild(textarea)
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => window.setTimeout(resolve, ms))
 }
 
 function buildConfidenceCues(events: ProgressEvent[], result: AgentResult | null): string[] {

@@ -80,9 +80,8 @@
 .darkButton,
 .fullDarkButton,
 .contextCardHeader,
-.providerRow,
+.contextTraceToggle,
 .cueCard,
-.traceToggle,
 .artifactButton {
   display: flex;
   align-items: center;
@@ -96,6 +95,7 @@
 .darkButton,
 .fullDarkButton,
 .contextCardHeader,
+.contextTraceToggle,
 .cueCard,
 .artifactButton {
   gap: 8px;
@@ -362,7 +362,6 @@
 .contextList,
 .traceList,
 .sourceList,
-.providerList,
 .timeline {
   display: flex;
   flex-direction: column;
@@ -384,6 +383,53 @@
 .workspaceGroupActive {
   border-color: #c9bda9;
   background: #fffdf8;
+}
+
+.librarySearchBox,
+.conversationSearchBox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid #ded6c9;
+  background: #fbfaf6;
+  color: #79827c;
+}
+
+.librarySearchBox {
+  margin-bottom: 12px;
+  padding: 8px 10px;
+}
+
+.conversationSearchBox {
+  padding: 7px 8px;
+}
+
+.librarySearchBox input,
+.conversationSearchBox input {
+  min-width: 0;
+  flex: 1;
+  border: 0;
+  background: transparent;
+  color: #162033;
+  font-size: 13px;
+  font-weight: 750;
+  outline: none;
+}
+
+.librarySearchBox input::placeholder,
+.conversationSearchBox input::placeholder {
+  color: #9aa197;
+}
+
+.librarySearchBox button,
+.conversationSearchBox button {
+  border: 0;
+  background: transparent;
+  color: #53615a;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 850;
+  padding: 4px 0;
 }
 
 .workspaceSummary {
@@ -494,6 +540,14 @@
   display: grid;
   gap: 8px;
   padding: 0 12px 12px;
+}
+
+.emptyConversationSearch {
+  border: 1px dashed #d8cdbc;
+  color: #79827c;
+  font-size: 12px;
+  font-weight: 750;
+  padding: 10px;
 }
 
 .conversationItemWrap {
@@ -615,7 +669,6 @@
 
 .traceList,
 .sourceList,
-.providerList,
 .timeline {
   gap: 8px;
 }
@@ -649,6 +702,7 @@
 
 .userBubble,
 .assistantBubble {
+  position: relative;
   width: fit-content;
   max-width: min(82%, 860px);
   border: 1px solid #ded6c9;
@@ -671,6 +725,18 @@
   box-shadow: 0 18px 50px rgba(49, 39, 25, 0.08);
 }
 
+.bubbleTopRow,
+.traceEventHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.bubbleTopRow {
+  margin-bottom: 8px;
+}
+
 .bubbleLabel {
   margin: 0 0 8px;
   color: #79827c;
@@ -678,6 +744,11 @@
   font-weight: 800;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+}
+
+.bubbleTopRow .bubbleLabel,
+.traceEventHeader .traceStage {
+  margin: 0;
 }
 
 .userBubble .bubbleLabel {
@@ -707,6 +778,58 @@
   align-items: flex-start;
   gap: 12px;
   margin-bottom: 16px;
+}
+
+.assistantHeader .copyButton {
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+.copyButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 30px;
+  border: 1px solid #ded6c9;
+  border-radius: 999px;
+  background: #fffdf8;
+  color: #53615a;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+  padding: 6px 9px;
+  white-space: nowrap;
+}
+
+.copyButton:hover {
+  border-color: #162033;
+  color: #162033;
+}
+
+.copyButton:focus-visible {
+  outline: 3px solid rgba(22, 32, 51, 0.22);
+  outline-offset: 2px;
+}
+
+.copyButtonCopied {
+  border-color: #b8d5c8;
+  background: #e7f2ed;
+  color: #17614d;
+}
+
+.userBubble .copyButton {
+  border-color: rgba(255, 255, 255, 0.24);
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.78);
+}
+
+.userBubble .copyButton:hover,
+.userBubble .copyButtonCopied {
+  border-color: rgba(255, 255, 255, 0.42);
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
 }
 
 .rollingLog {
@@ -851,8 +974,7 @@
 .artifactCard,
 .summaryDrawer,
 .composer,
-.resultBox,
-.traceEvent {
+.resultBox {
   border: 1px solid #ded6c9;
   background: rgba(255, 253, 248, 0.88);
 }
@@ -1025,26 +1147,6 @@
   background: #a8afa7;
 }
 
-.suggestionStrip {
-  display: flex;
-  gap: 8px;
-  overflow-x: auto;
-  padding-bottom: 4px;
-  scroll-snap-type: x mandatory;
-}
-
-.suggestionButton {
-  flex: 0 0 auto;
-  scroll-snap-align: start;
-  border: 1px solid #ded6c9;
-  background: #fbfaf6;
-  color: #53615a;
-  font-size: 12px;
-  font-weight: 700;
-  padding: 8px 12px;
-  white-space: nowrap;
-}
-
 .timelineMain {
   border-left: 2px solid #d8cdbc;
   padding-left: 16px;
@@ -1140,18 +1242,6 @@
   padding: 8px 16px;
 }
 
-.traceToggle {
-  width: 100%;
-  justify-content: space-between;
-  border: 1px solid #ded6c9;
-  background: #fbfaf6;
-  color: #162033;
-  font-size: 14px;
-  font-weight: 800;
-  padding: 12px 16px;
-  text-align: left;
-}
-
 .rotated {
   transform: rotate(180deg);
 }
@@ -1189,6 +1279,67 @@
 
 .contextCard {
   padding: 16px;
+}
+
+.contextTraceToggle {
+  width: 100%;
+  justify-content: space-between;
+  border: 0;
+  background: transparent;
+  color: #162033;
+  cursor: pointer;
+  padding: 0;
+  text-align: left;
+}
+
+.contextTraceTitle,
+.contextTraceCount {
+  display: block;
+}
+
+.contextTraceTitle {
+  color: #162033;
+  font-size: 14px;
+  font-weight: 850;
+}
+
+.contextTraceCount {
+  margin-top: 3px;
+  color: #79827c;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.contextCard .traceList {
+  position: relative;
+  max-height: 360px;
+  margin-top: 14px;
+  overflow-y: auto;
+  border-left: 2px solid #d8cdbc;
+  padding: 2px 2px 2px 12px;
+}
+
+.traceEvent {
+  position: relative;
+  border-bottom: 1px solid #ebe4d8;
+  padding: 10px 0 12px;
+}
+
+.traceEvent::before {
+  position: absolute;
+  top: 17px;
+  left: -17px;
+  width: 8px;
+  height: 8px;
+  border: 2px solid #fffdf8;
+  border-radius: 999px;
+  background: #1f6d5d;
+  box-shadow: 0 0 0 1px #d8cdbc;
+  content: '';
+}
+
+.traceEvent:last-child {
+  border-bottom: 0;
 }
 
 .artifactCard {
@@ -1265,17 +1416,6 @@
   color: #59645f;
   font-size: 14px;
   line-height: 1.55;
-}
-
-.providerRow {
-  justify-content: space-between;
-  gap: 12px;
-  color: #59645f;
-  font-size: 14px;
-}
-
-.providerRow strong {
-  color: #162033;
 }
 
 .fullDarkButton {
@@ -1443,6 +1583,17 @@
 @keyframes spin {
   to {
     transform: rotate(360deg);
+  }
+}
+
+@media (max-width: 639px) {
+  .copyButton span {
+    display: none;
+  }
+
+  .copyButton {
+    min-width: 30px;
+    padding: 6px;
   }
 }
 

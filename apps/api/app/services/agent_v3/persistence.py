@@ -672,6 +672,14 @@ def create_turn(goal: Goal, turn_id: str) -> None:
     try:
         existing = db.get(AgentV3Turn, turn_id)
         if existing:
+            existing.user_id = goal.user_id
+            existing.conversation_id = goal.conversation_id
+            existing.objective = goal.objective
+            existing.route = goal.route
+            existing.quality_mode = goal.quality_mode
+            existing.status = "running"
+            existing.updated_at = _now()
+            db.commit()
             return
         conversation = None
         if goal.conversation_id:
@@ -733,6 +741,11 @@ def complete_turn(result: AgentV3Result) -> None:
                 quality_mode=result.goal.quality_mode,
             )
             db.add(turn)
+        turn.user_id = result.goal.user_id
+        turn.conversation_id = result.goal.conversation_id
+        turn.objective = result.goal.objective
+        turn.route = result.route
+        turn.quality_mode = result.goal.quality_mode
         turn.status = "completed"
         turn.answer = result.answer
         turn.model_used = result.model_used
@@ -814,6 +827,27 @@ def fail_turn(turn_id: str, message: str) -> None:
             db.commit()
     finally:
         db.close()
+
+
+def load_turn_status(turn_id: str, user_id: str) -> dict | None:
+    db = SessionLocal()
+    try:
+        turn = db.get(AgentV3Turn, turn_id)
+        if turn is None or turn.user_id != user_id:
+            return None
+        status = turn.status
+        error_message = turn.error_message
+    finally:
+        db.close()
+    result = load_turn(turn_id, user_id)
+    if result is None:
+        return None
+    return {
+        "turn_id": turn_id,
+        "status": status,
+        "error_message": error_message,
+        "turn": result.model_dump(mode="json"),
+    }
 
 
 def load_turn(turn_id: str, user_id: str) -> AgentV3Result | None:

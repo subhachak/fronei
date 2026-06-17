@@ -48,8 +48,8 @@ class AgentV3Runtime:
     def __init__(self, tools: AgentV3Tools | None = None):
         self.tool_registry = ToolRegistry(tools or AgentV3Tools.from_settings())
 
-    def run_stream(self, request: AgentV3Request, *, user_id: str) -> Iterator[StreamEnvelope]:
-        turn_id = new_id("turn")
+    def run_stream(self, request: AgentV3Request, *, user_id: str, turn_id: str | None = None) -> Iterator[StreamEnvelope]:
+        turn_id = turn_id or new_id("turn")
         started = time.perf_counter()
         available_routes = ["direct", "clarify", "research", "document", "research_document"]
         available_tools = [tool["name"] for tool in self.tool_registry.describe()]

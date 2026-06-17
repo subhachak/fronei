@@ -7,6 +7,8 @@ import {
   BookOpen,
   CheckCircle2,
   ChevronDown,
+  ChevronsLeft,
+  ChevronsRight,
   Clock3,
   Download,
   FileText,
@@ -23,11 +25,17 @@ import {
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { marked } from 'marked'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import styles from './page.module.css'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
 const INITIAL_VISIBLE_TURNS = 6
+const MIN_LEFT_RAIL_WIDTH = 220
+const MAX_LEFT_RAIL_WIDTH = 420
+const MIN_RIGHT_RAIL_WIDTH = 260
+const MAX_RIGHT_RAIL_WIDTH = 480
+const MIN_COMPOSER_HEIGHT = 132
+const MAX_COMPOSER_HEIGHT = 340
 
 type QualityMode = 'draft' | 'standard' | 'executive'
 type OutputFormat = 'chat' | 'markdown' | 'docx'
@@ -145,7 +153,7 @@ export default function AgentV3Page() {
   const { getToken, isLoaded, isSignedIn } = useAuth()
   const [message, setMessage] = useState('Research the latest enterprise AI governance trends and create a concise report.')
   const [qualityMode, setQualityMode] = useState<QualityMode>('standard')
-  const [outputFormat, setOutputFormat] = useState<OutputFormat>('docx')
+  const [outputFormat, setOutputFormat] = useState<OutputFormat>('chat')
   const [events, setEvents] = useState<ProgressEvent[]>([])
   const [result, setResult] = useState<AgentResult | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -160,9 +168,15 @@ export default function AgentV3Page() {
   const [editingWorkspaceId, setEditingWorkspaceId] = useState<string | null>(null)
   const [editingWorkspaceName, setEditingWorkspaceName] = useState('')
   const [pendingDelete, setPendingDelete] = useState<PendingDelete>(null)
+  const [leftRailWidth, setLeftRailWidth] = useState(280)
+  const [rightRailWidth, setRightRailWidth] = useState(340)
+  const [composerHeight, setComposerHeight] = useState(176)
+  const [leftRailCollapsed, setLeftRailCollapsed] = useState(false)
+  const [rightRailCollapsed, setRightRailCollapsed] = useState(false)
   const eventsRef = useRef<ProgressEvent[]>([])
   const chatScrollRef = useRef<HTMLDivElement | null>(null)
   const activeRunConversationIdRef = useRef<string | null>(null)
+  const activeRunMessageRef = useRef<string | null>(null)
 
   const canRun = useMemo(() => isLoaded && isSignedIn && message.trim().length > 0 && !running, [isLoaded, isSignedIn, message, running])
   const activeEvents = useMemo(() => events.filter(event => !['tool_selection', 'tool_result'].includes(event.stage)), [events])
@@ -240,6 +254,9 @@ export default function AgentV3Page() {
 
   async function run() {
     if (!canRun) return
+    const runMessage = message.trim()
+    if (!runMessage) return
+    activeRunMessageRef.current = runMessage
     setEvents([])
     eventsRef.current = []
     setResult(null)
@@ -247,13 +264,14 @@ export default function AgentV3Page() {
     setRunning(true)
     setTraceOpen(false)
     setMobileView('work')
+    setMessage('')
     try {
-      const conversationId = await ensureActiveConversation(message)
+      const conversationId = await ensureActiveConversation(runMessage)
       activeRunConversationIdRef.current = conversationId
       const response = await authorizedFetch('/agent-v3/turns/stream', {
         method: 'POST',
         body: JSON.stringify({
-          message,
+          message: runMessage,
           conversation_id: conversationId,
           quality_mode: qualityMode,
           output_format: outputFormat,
@@ -280,6 +298,7 @@ export default function AgentV3Page() {
     } finally {
       setRunning(false)
       activeRunConversationIdRef.current = null
+      activeRunMessageRef.current = null
     }
   }
 
@@ -294,15 +313,16 @@ export default function AgentV3Page() {
       setEvents(eventsRef.current)
     } else if (eventType === 'result') {
       const next = data as AgentResult
+      const turnMessage = activeRunMessageRef.current || message
       setResult(next)
       setTraceOpen(false)
       appendTurnToActiveConversation({
         id: next.turn_id,
-        title: titleFromMessage(message),
+        title: titleFromMessage(turnMessage),
         route: next.route,
         createdAt: new Date().toISOString(),
         completedAt: new Date().toISOString(),
-        message,
+        message: turnMessage,
         qualityMode,
         outputFormat,
         events: eventsRef.current,
@@ -313,6 +333,41 @@ export default function AgentV3Page() {
     } else if (eventType === 'error') {
       setError(data.message || 'Agent v3 failed')
     }
+  }
+
+  function beginHorizontalResize(kind: 'left' | 'right', event: ReactPointerEvent) {
+    event.preventDefault()
+    const startX = event.clientX
+    const startWidth = kind === 'left' ? leftRailWidth : rightRailWidth
+    const onMove = (moveEvent: PointerEvent) => {
+      const delta = moveEvent.clientX - startX
+      if (kind === 'left') {
+        setLeftRailWidth(clamp(startWidth + delta, MIN_LEFT_RAIL_WIDTH, MAX_LEFT_RAIL_WIDTH))
+      } else {
+        setRightRailWidth(clamp(startWidth - delta, MIN_RIGHT_RAIL_WIDTH, MAX_RIGHT_RAIL_WIDTH))
+      }
+    }
+    const onUp = () => {
+      document.removeEventListener('pointermove', onMove)
+      document.removeEventListener('pointerup', onUp)
+    }
+    document.addEventListener('pointermove', onMove)
+    document.addEventListener('pointerup', onUp, { once: true })
+  }
+
+  function beginComposerResize(event: ReactPointerEvent) {
+    event.preventDefault()
+    const startY = event.clientY
+    const startHeight = composerHeight
+    const onMove = (moveEvent: PointerEvent) => {
+      setComposerHeight(clamp(startHeight + startY - moveEvent.clientY, MIN_COMPOSER_HEIGHT, MAX_COMPOSER_HEIGHT))
+    }
+    const onUp = () => {
+      document.removeEventListener('pointermove', onMove)
+      document.removeEventListener('pointerup', onUp)
+    }
+    document.addEventListener('pointermove', onMove)
+    document.addEventListener('pointerup', onUp, { once: true })
   }
 
   async function selectConversation(workspaceId: string, conversationId: string) {
@@ -581,31 +636,49 @@ export default function AgentV3Page() {
 
   return (
     <main className={styles.root}>
-      <div className={styles.shell}>
+      <div
+        className={styles.shell}
+        style={{
+          gridTemplateColumns: `${leftRailCollapsed ? 56 : leftRailWidth}px minmax(0, 1fr) ${rightRailCollapsed ? 56 : rightRailWidth}px`,
+        }}
+      >
         <MobileTopBar mobileView={mobileView} setMobileView={setMobileView} running={running} />
 
-        <aside className={`${styles.libraryPane} ${mobileView === 'library' ? styles.mobileVisible : styles.mobileHidden}`}>
-          <StudioLibrary
-            workspaces={workspaces}
-            activeWorkspaceId={activeWorkspace?.id || null}
-            activeConversationId={activeConversation?.id || null}
-            onCreateWorkspace={createWorkspace}
-            onDeleteWorkspace={deleteWorkspace}
-            onCreateConversation={createConversation}
-            onDeleteConversation={deleteConversation}
-            onSelectConversation={selectConversation}
-            expandedWorkspaceIds={expandedWorkspaceIds}
-            editingWorkspaceId={editingWorkspaceId}
-            editingWorkspaceName={editingWorkspaceName}
-            onToggleWorkspace={toggleWorkspace}
-            onStartEditingWorkspace={startEditingWorkspace}
-            onEditingWorkspaceNameChange={setEditingWorkspaceName}
-            onSaveWorkspaceName={saveWorkspaceName}
-            pendingDelete={pendingDelete}
-            onRequestDeleteWorkspace={workspaceId => setPendingDelete({ type: 'workspace', workspaceId })}
-            onRequestDeleteConversation={(workspaceId, conversationId) => setPendingDelete({ type: 'conversation', workspaceId, conversationId })}
-            onCancelDelete={() => setPendingDelete(null)}
-          />
+        <aside className={`${styles.libraryPane} ${leftRailCollapsed ? styles.railCollapsed : ''} ${mobileView === 'library' ? styles.mobileVisible : styles.mobileHidden}`}>
+          {leftRailCollapsed ? (
+            <CollapsedRailButton label="Library" icon={Library} onClick={() => setLeftRailCollapsed(false)} />
+          ) : (
+            <>
+              <StudioLibrary
+                workspaces={workspaces}
+                activeWorkspaceId={activeWorkspace?.id || null}
+                activeConversationId={activeConversation?.id || null}
+                onCreateWorkspace={createWorkspace}
+                onDeleteWorkspace={deleteWorkspace}
+                onCreateConversation={createConversation}
+                onDeleteConversation={deleteConversation}
+                onSelectConversation={selectConversation}
+                expandedWorkspaceIds={expandedWorkspaceIds}
+                editingWorkspaceId={editingWorkspaceId}
+                editingWorkspaceName={editingWorkspaceName}
+                onToggleWorkspace={toggleWorkspace}
+                onStartEditingWorkspace={startEditingWorkspace}
+                onEditingWorkspaceNameChange={setEditingWorkspaceName}
+                onSaveWorkspaceName={saveWorkspaceName}
+                pendingDelete={pendingDelete}
+                onRequestDeleteWorkspace={workspaceId => setPendingDelete({ type: 'workspace', workspaceId })}
+                onRequestDeleteConversation={(workspaceId, conversationId) => setPendingDelete({ type: 'conversation', workspaceId, conversationId })}
+                onCancelDelete={() => setPendingDelete(null)}
+                onCollapse={() => setLeftRailCollapsed(true)}
+              />
+              <div
+                className={`${styles.railResizeHandle} ${styles.railResizeHandleRight}`}
+                role="separator"
+                aria-label="Resize library rail"
+                onPointerDown={event => beginHorizontalResize('left', event)}
+              />
+            </>
+          )}
         </aside>
 
         <section className={`${styles.workPane} ${mobileView === 'work' ? styles.mobileVisible : styles.mobileHidden}`}>
@@ -625,7 +698,7 @@ export default function AgentV3Page() {
               </button>
             )}
             <Timeline
-              draftMessage={message}
+              draftMessage={running ? activeRunMessageRef.current || message : message}
               turns={visibleTurns}
               events={activeEvents}
               running={running}
@@ -639,7 +712,13 @@ export default function AgentV3Page() {
             {error && <div className={styles.errorBox}>{error}</div>}
             {!result && !running && activeTurns.length === 0 && <SuggestionStrip suggestions={SUGGESTIONS} setMessage={setMessage} />}
           </div>
-          <div className={styles.composerDock}>
+          <div className={styles.composerDock} style={{ height: composerHeight }}>
+            <div
+              className={styles.composerResizeHandle}
+              role="separator"
+              aria-label="Resize composer"
+              onPointerDown={beginComposerResize}
+            />
             <Composer
               message={message}
               setMessage={setMessage}
@@ -654,16 +733,29 @@ export default function AgentV3Page() {
           </div>
         </section>
 
-        <aside className={`${styles.contextPane} ${mobileView === 'context' ? styles.mobileVisible : styles.mobileHidden}`}>
-          <ContextRail
-            result={result}
-            events={events}
-            sources={sources}
-            latestArtifact={latestArtifact}
-            activeConversation={activeConversation}
-            currentMessage={message}
-            downloadArtifact={downloadArtifact}
-          />
+        <aside className={`${styles.contextPane} ${rightRailCollapsed ? styles.railCollapsed : ''} ${mobileView === 'context' ? styles.mobileVisible : styles.mobileHidden}`}>
+          {rightRailCollapsed ? (
+            <CollapsedRailButton label="Context" icon={PanelRight} onClick={() => setRightRailCollapsed(false)} />
+          ) : (
+            <>
+              <div
+                className={`${styles.railResizeHandle} ${styles.railResizeHandleLeft}`}
+                role="separator"
+                aria-label="Resize context rail"
+                onPointerDown={event => beginHorizontalResize('right', event)}
+              />
+              <ContextRail
+                result={result}
+                events={events}
+                sources={sources}
+                latestArtifact={latestArtifact}
+                activeConversation={activeConversation}
+                currentMessage={running ? activeRunMessageRef.current || message : message}
+                downloadArtifact={downloadArtifact}
+                onCollapse={() => setRightRailCollapsed(true)}
+              />
+            </>
+          )}
         </aside>
       </div>
     </main>
@@ -726,6 +818,7 @@ function StudioLibrary({
   onRequestDeleteWorkspace,
   onRequestDeleteConversation,
   onCancelDelete,
+  onCollapse,
 }: {
   workspaces: Workspace[]
   activeWorkspaceId: string | null
@@ -746,6 +839,7 @@ function StudioLibrary({
   onRequestDeleteWorkspace: (workspaceId: string) => void
   onRequestDeleteConversation: (workspaceId: string, conversationId: string) => void
   onCancelDelete: () => void
+  onCollapse: () => void
 }) {
   return (
     <>
@@ -754,9 +848,14 @@ function StudioLibrary({
           <p className={styles.overline}>Studio</p>
           <h1 className={styles.sectionTitle}>Workspaces</h1>
         </div>
-        <button type="button" className={styles.iconButton} onClick={onCreateWorkspace} aria-label="Create workspace" title="Create workspace">
-          <Plus size={16} />
-        </button>
+        <div className={styles.headerActions}>
+          <button type="button" className={styles.smallIconButton} onClick={onCollapse} aria-label="Collapse library" title="Collapse library">
+            <ChevronsLeft size={15} />
+          </button>
+          <button type="button" className={styles.iconButton} onClick={onCreateWorkspace} aria-label="Create workspace" title="Create workspace">
+            <Plus size={16} />
+          </button>
+        </div>
       </div>
 
       <div className={styles.libraryList}>
@@ -893,6 +992,15 @@ function InlineDeleteConfirm({
   )
 }
 
+function CollapsedRailButton({ label, icon: Icon, onClick }: { label: string; icon: LucideIcon; onClick: () => void }) {
+  return (
+    <button type="button" className={styles.collapsedRailButton} onClick={onClick} aria-label={`Expand ${label}`} title={`Expand ${label}`}>
+      <Icon size={17} />
+      <span>{label}</span>
+    </button>
+  )
+}
+
 function WorkbenchHeader({ running, result }: { running: boolean; result: AgentResult | null }) {
   return (
     <header className={styles.desktopHeader}>
@@ -939,6 +1047,12 @@ function Composer({
       <textarea
         value={message}
         onChange={event => setMessage(event.target.value)}
+        onKeyDown={event => {
+          if (event.key === 'Enter' && !event.shiftKey) {
+            event.preventDefault()
+            if (canRun) run()
+          }
+        }}
         className={styles.textarea}
         placeholder="Give Fronei a task..."
       />
@@ -1193,6 +1307,7 @@ function ContextRail({
   activeConversation,
   currentMessage,
   downloadArtifact,
+  onCollapse,
 }: {
   result: AgentResult | null
   events: ProgressEvent[]
@@ -1201,14 +1316,22 @@ function ContextRail({
   activeConversation: Conversation | null
   currentMessage: string
   downloadArtifact: (artifact: Artifact) => void | Promise<void>
+  onCollapse: () => void
 }) {
   const providerEvents = events.filter(event => event.stage === 'search_worker_provider')
   const workSummary = buildWorkSummary({ result, events, sources, activeConversation, currentMessage })
   return (
     <>
       <div className={styles.sectionHeaderPlain}>
-        <p className={styles.overline}>Context</p>
-        <h2 className={styles.sectionTitle}>Current work</h2>
+        <div className={styles.sectionHeader}>
+          <div>
+            <p className={styles.overline}>Context</p>
+            <h2 className={styles.sectionTitle}>Current work</h2>
+          </div>
+          <button type="button" className={styles.smallIconButton} onClick={onCollapse} aria-label="Collapse context" title="Collapse context">
+            <ChevronsRight size={15} />
+          </button>
+        </div>
       </div>
 
       <div className={styles.contextList}>
@@ -1503,6 +1626,10 @@ function draftConversationId(): string {
     ? crypto.randomUUID()
     : `${Date.now()}-${Math.random().toString(16).slice(2)}`
   return `draft-${random}`
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value))
 }
 
 function uniqueWorkspaceName(baseName: string, workspaces: Workspace[], excludeWorkspaceId?: string): string {

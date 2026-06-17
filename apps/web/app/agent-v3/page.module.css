@@ -30,6 +30,7 @@
 
 .shell {
   display: flex;
+  position: relative;
   flex-direction: column;
   width: 100%;
   max-width: 1500px;
@@ -273,6 +274,47 @@
   border-radius: 999px;
   background: #162033;
   color: #fff;
+}
+
+.smallIconButton {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border: 1px solid #ded6c9;
+  border-radius: 999px;
+  background: #fffdf8;
+  color: #53615a;
+}
+
+.railResizeHandle,
+.composerResizeHandle {
+  display: none;
+}
+
+.railCollapsed {
+  align-items: center;
+  justify-content: flex-start;
+  padding: 16px 8px;
+}
+
+.collapsedRailButton {
+  display: grid;
+  width: 38px;
+  min-height: 118px;
+  place-items: center;
+  gap: 8px;
+  border: 1px solid #ded6c9;
+  background: #fffdf8;
+  color: #162033;
+  font-size: 11px;
+  font-weight: 850;
+  padding: 10px 6px;
+  writing-mode: vertical-rl;
+}
+
+.collapsedRailButton svg {
+  transform: rotate(90deg);
 }
 
 .artifactButton {
@@ -766,12 +808,17 @@
 }
 
 .composer {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  flex-direction: column;
   padding: 12px;
   box-shadow: 0 24px 70px rgba(49, 39, 25, 0.08);
 }
 
 .composerDock {
   flex-shrink: 0;
+  position: relative;
   border-top: 1px solid #ded6c9;
   background: rgba(244, 241, 234, 0.96);
   padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
@@ -780,7 +827,8 @@
 
 .textarea {
   width: 100%;
-  min-height: 160px;
+  min-height: 72px;
+  flex: 1;
   resize: none;
   border: 0;
   background: transparent;
@@ -797,11 +845,12 @@
 
 .composerFooter {
   display: flex;
+  flex-shrink: 0;
   flex-direction: column;
-  gap: 12px;
-  margin-top: 12px;
+  gap: 10px;
+  margin-top: 8px;
   border-top: 1px solid #ebe4d8;
-  padding-top: 12px;
+  padding-top: 10px;
 }
 
 .selectGrid {
@@ -1265,7 +1314,7 @@
   }
 
   .textarea {
-    min-height: 128px;
+    min-height: 72px;
   }
 
   .composerFooter {
@@ -1290,7 +1339,6 @@
 @media (min-width: 1024px) {
   .shell {
     display: grid;
-    grid-template-columns: 280px minmax(0, 1fr) 340px;
   }
 
   .mobileTop {
@@ -1309,7 +1357,48 @@
 
   .libraryPane,
   .contextPane {
+    position: relative;
     padding: 24px 20px;
+  }
+
+  .railResizeHandle,
+  .composerResizeHandle {
+    display: block;
+    position: absolute;
+    z-index: 10;
+    background: transparent;
+  }
+
+  .railResizeHandle {
+    top: 0;
+    bottom: 0;
+    width: 10px;
+    cursor: col-resize;
+  }
+
+  .railResizeHandle:hover,
+  .composerResizeHandle:hover {
+    background: rgba(22, 32, 51, 0.08);
+  }
+
+  .railResizeHandleRight {
+    right: -5px;
+  }
+
+  .railResizeHandleLeft {
+    left: -5px;
+  }
+
+  .composerResizeHandle {
+    top: -5px;
+    left: 0;
+    right: 0;
+    height: 10px;
+    cursor: row-resize;
+  }
+
+  .railCollapsed {
+    padding: 18px 8px;
   }
 
   .desktopHeader {

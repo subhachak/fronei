@@ -165,7 +165,7 @@ type ApiWorkspace = {
 
 export default function AgentV3Page() {
   const { getToken, isLoaded, isSignedIn } = useAuth()
-  const [message, setMessage] = useState('Research the latest enterprise AI governance trends and create a concise report.')
+  const [message, setMessage] = useState('')
   const [qualityMode, setQualityMode] = useState<QualityMode>('standard')
   const [outputFormat, setOutputFormat] = useState<OutputFormat>('chat')
   const [researchLevel, setResearchLevel] = useState<ResearchLevel>('auto')
@@ -1565,30 +1565,30 @@ function ContextRail({
         </section>
 
         <section className={styles.contextCard}>
-          <button
-            type="button"
-            onClick={() => setTraceOpen(!traceOpen)}
-            className={styles.contextTraceToggle}
-          >
-            <span>
-              <span className={styles.contextTraceTitle}>Engine events</span>
-              <span className={styles.contextTraceCount}>{events.length || 0} recorded</span>
-            </span>
-            <ChevronDown size={16} className={traceOpen ? styles.rotated : ''} />
-          </button>
+          <div className={styles.contextTraceBar}>
+            <button
+              type="button"
+              onClick={() => setTraceOpen(!traceOpen)}
+              className={styles.contextTraceToggle}
+            >
+              <span>
+                <span className={styles.contextTraceTitle}>Engine events</span>
+                <span className={styles.contextTraceCount}>{events.length || 0} recorded</span>
+              </span>
+              <ChevronDown size={16} className={traceOpen ? styles.rotated : ''} />
+            </button>
+            <CopyButton
+              copied={copiedKey === 'events:all'}
+              label="Copy all engine events"
+              onClick={() => onCopyText(engineEventsCopyText(events), 'events:all')}
+            />
+          </div>
           {traceOpen && (
             <div className={styles.traceList}>
               {events.length === 0 && <p className={styles.mutedText}>No events yet.</p>}
               {events.map((event, index) => (
                 <div key={`${event.stage}-${index}`} className={styles.traceEvent}>
-                  <div className={styles.traceEventHeader}>
-                    <p className={styles.traceStage}>{event.stage}</p>
-                    <CopyButton
-                      copied={copiedKey === `event:${index}:${event.stage}`}
-                      label="Copy event"
-                      onClick={() => onCopyText(eventCopyText(event), `event:${index}:${event.stage}`)}
-                    />
-                  </div>
+                  <p className={styles.traceStage}>{event.stage}</p>
                   <p className={styles.traceMessage}>{event.message}</p>
                   {eventChips(event).length ? (
                     <div className={styles.chipRow}>
@@ -1666,6 +1666,16 @@ function eventCopyText(event: ProgressEvent): string {
     parts.push(JSON.stringify(event.data, null, 2))
   }
   return parts.join('\n')
+}
+
+function engineEventsCopyText(events: ProgressEvent[]): string {
+  if (!events.length) return ''
+  return events
+    .map((event, index) => {
+      const parts = [`#${index + 1} ${eventCopyText(event)}`]
+      return parts.join('\n')
+    })
+    .join('\n\n')
 }
 
 function fallbackCopyText(text: string): boolean {

@@ -4,12 +4,18 @@ import time
 from collections.abc import Iterator
 
 from app.services.agent_v3 import model_client
+from app.services.agent_v3.document_subtree import (
+    build_artifact,
+    choose_artifact_tool,
+    judge_document,
+    plan_document,
+    write_document,
+)
 from app.services.agent_v3.orchestrator import OrchestratorDecision, decide_with_options
 from app.services.agent_v3.research_subtree import (
     EvidencePack,
     bind_evidence,
     plan_research,
-    source_context_from_evidence,
     synthesize_answer,
 )
 from app.services.agent_v3.models import (
@@ -22,7 +28,7 @@ from app.services.agent_v3.models import (
     new_id,
 )
 from app.services.agent_v3.tool_registry import ToolRegistry
-from app.services.agent_v3.tools import AgentV3Tools, source_context
+from app.services.agent_v3.tools import AgentV3Tools
 
 
 class AgentV3Runtime:
@@ -95,12 +101,12 @@ class AgentV3Runtime:
             elif route == "document":
                 event = progress("document", "Composing a standalone document artifact.")
                 yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
-                result = self._run_document(request, goal, turn_id, events, progress, sources=[])
+                result = yield from self._run_document(request, goal, turn_id, events, progress, sources=[])
             elif route == "research_document":
                 research = yield from self._run_research_subtree(request, progress)
                 event = progress("document", "Writing the downloadable document.")
                 yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
-                result = self._run_document(
+                result = yield from self._run_document(
                     request,
                     goal,
                     turn_id,
@@ -195,6 +201,23 @@ class AgentV3Runtime:
             )
             tool_calls.append(call)
             search_sources.extend(sources)
+            provider = call.output.get("provider") if isinstance(call.output, dict) else None
+            provider_message = (
+                f"Search worker {idx} used {provider}."
+                if provider
+                else f"Search worker {idx} completed without a provider result."
+            )
+            event = progress(
+                "search_worker_provider",
+                provider_message,
+                worker_index=idx,
+                query=query,
+                provider=provider,
+                ok=call.ok,
+                source_count=len(sources),
+                error=call.error,
+            )
+            yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
 
         deduped = self._merge_sources(search_sources, [])
         event = progress(
@@ -292,50 +315,99 @@ class AgentV3Runtime:
         research_answer: str | None = None,
         evidence: EvidencePack | None = None,
     ) -> AgentV3Result:
-        context = source_context_from_evidence(evidence) if evidence is not None else source_context(sources)
-        prompt = (
-            f"User request:\n{request.message}\n\n"
-            f"Research summary:\n{research_answer or ''}\n\n"
-            f"Sources:\n{context}\n\n"
-            "Write a polished, structured markdown document with clear headings."
+        event = progress(
+            "document_planner",
+            "Planning document structure.",
+            source_count=len(sources),
+            has_research=bool(research_answer),
         )
-        response = model_client.simple_completion(
-            "You are a document-writing agent. Produce only the document body in markdown.",
-            prompt,
-            max_tokens=2200,
+        yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
+        # This subtree is synchronous but deliberately stage-explicit so the
+        # UI/admin trace shows every decision the document path makes.
+        plan = plan_document(request, sources=sources, research_answer=research_answer, evidence=evidence)
+        event = progress(
+            "document_plan",
+            f"Document plan ready with {len(plan.sections)} section(s).",
+            title=plan.title,
+            format=plan.format,
+            audience=plan.audience,
+            sections=plan.sections,
+            source=plan.source,
+            model_used=plan.model_used,
+            fallback_reason=plan.fallback_reason,
         )
-        title = self._title_from_message(request.message)
-        artifact, artifact_call = (
-            self._make_artifact("make_docx_artifact", title, response.text)
-            if request.output_format in {"docx", "chat"} or "docx" in request.message.lower()
-            else self._make_artifact("make_markdown_artifact", title, response.text)
+        yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
+
+        event = progress("document_writer", "Writing document draft.", plan_title=plan.title)
+        yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
+        draft = write_document(request, plan, sources=sources, research_answer=research_answer, evidence=evidence)
+
+        event = progress("document_judge", "Checking document draft.", plan_title=plan.title)
+        yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
+        judge = judge_document(draft, plan, source_count=len(sources))
+        event = progress(
+            "document_judge_result",
+            f"Document judge returned {judge.status}.",
+            status=judge.status,
+            score=judge.score,
+            issues=judge.issues,
+            repair_instruction=judge.repair_instruction,
         )
+        yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
+
+        if judge.status == "repair":
+            event = progress(
+                "document_repair",
+                "Repairing document draft.",
+                issues=judge.issues,
+                repair_instruction=judge.repair_instruction,
+            )
+            yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
+            repaired = write_document(
+                request,
+                plan,
+                sources=sources,
+                research_answer=research_answer,
+                evidence=evidence,
+                repair_instruction=judge.repair_instruction,
+            )
+            draft.markdown = repaired.markdown
+            draft.model_used = repaired.model_used or draft.model_used
+            draft.latency_ms += repaired.latency_ms
+            draft.cost_usd += repaired.cost_usd
+
+        tool_name = choose_artifact_tool(request, plan)
+        event = progress(
+            "artifact_builder",
+            f"Building artifact with {tool_name}.",
+            tool_name=tool_name,
+            title=plan.title,
+        )
+        yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
+        artifact, artifact_call = build_artifact(self.tool_registry, plan, draft, tool_name)
+        event = progress(
+            "artifact_result",
+            f"Artifact builder produced {artifact.filename}.",
+            tool_name=artifact_call.name,
+            filename=artifact.filename,
+            ok=artifact_call.ok,
+            error=artifact_call.error,
+        )
+        yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
         answer = f"Done. I created `{artifact.filename}` with the fresh Agent v3 runtime."
         return AgentV3Result(
             turn_id=turn_id,
             goal=goal,
             answer=answer,
             route=goal.route,
-            model_used=response.model_used,
+            model_used=draft.model_used,
             sources=sources,
             tool_calls=[artifact_call],
             artifacts=[artifact],
             events=events,
-            latency_ms=response.latency_ms,
-            cost_usd=response.cost_usd,
+            latency_ms=plan.latency_ms + draft.latency_ms + artifact_call.latency_ms,
+            cost_usd=plan.cost_usd + draft.cost_usd,
         )
-
-    def _make_artifact(self, tool_name: str, title: str, markdown: str):
-        artifact, call = self.tool_registry.run(tool_name, {"title": title, "markdown": markdown})
-        if not call.ok or artifact is None:
-            fallback, fallback_call = self.tool_registry.run(
-                "make_markdown_artifact",
-                {"title": title, "markdown": markdown},
-            )
-            fallback_call.input["fallback_from"] = tool_name
-            fallback_call.input["fallback_reason"] = call.error
-            return fallback, fallback_call
-        return artifact, call
 
     def _merge_sources(self, search_sources: list[Source], extracted_sources: list[Source]) -> list[Source]:
         by_url = {source.url: source for source in search_sources if source.url}
@@ -347,7 +419,3 @@ class AgentV3Runtime:
             elif source.url:
                 by_url[source.url] = source
         return list(by_url.values())
-
-    def _title_from_message(self, message: str) -> str:
-        cleaned = " ".join(message.replace("\n", " ").split())
-        return cleaned[:80].strip(" .") or "Agent v3 document"

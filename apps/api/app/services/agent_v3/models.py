@@ -7,7 +7,7 @@ from uuid import uuid4
 from pydantic import BaseModel, Field
 
 
-RouteName = Literal["direct", "research", "document", "research_document"]
+RouteName = Literal["direct", "clarify", "research", "document", "research_document"]
 
 
 def utc_now() -> datetime:

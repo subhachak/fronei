@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 
 RouteName = Literal["direct", "clarify", "research", "document", "research_document"]
+ResearchLevel = Literal["auto", "easy", "regular", "deep"]
 
 
 def utc_now() -> datetime:
@@ -23,6 +24,8 @@ class AgentV3Request(BaseModel):
     conversation_id: str | None = None
     conversation_context: str = ""
     quality_mode: Literal["draft", "standard", "executive"] = "standard"
+    research_level: ResearchLevel = "auto"
+    confirm_deep_research: bool = False
     force_route: RouteName | None = None
     output_format: Literal["chat", "markdown", "docx"] = "chat"
 
@@ -94,6 +97,7 @@ class AgentV3Result(BaseModel):
     events: list[ProgressEvent] = Field(default_factory=list)
     latency_ms: int = 0
     cost_usd: float = 0.0
+    follow_up_options: list[dict[str, Any]] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=utc_now)
 
 

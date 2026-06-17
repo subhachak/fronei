@@ -76,6 +76,8 @@ class AgentV3Runtime:
             "orchestrator",
             f"Fresh orchestrator selected the {route} route.",
             route=route,
+            research_level=decision.research_level if route in {"research", "research_document"} else None,
+            requires_confirmation=decision.requires_confirmation,
             confidence=decision.confidence,
             reason=decision.reason,
             source=decision.source,
@@ -88,6 +90,13 @@ class AgentV3Runtime:
         yield StreamEnvelope(type="progress", data=first.model_dump(mode="json"))
 
         try:
+            if route in {"research", "research_document"} and decision.requires_confirmation and not request.confirm_deep_research:
+                result = self._run_deep_research_confirmation(request, goal, turn_id, events, decision)
+                result.latency_ms = int((time.perf_counter() - started) * 1000)
+                result.events = events
+                yield StreamEnvelope(type="result", data=result.model_dump(mode="json"))
+                yield StreamEnvelope(type="done", data={"turn_id": turn_id, "latency_ms": result.latency_ms})
+                return
             if route == "clarify":
                 result = self._run_clarify(request, goal, turn_id, events, decision)
             elif route == "direct":
@@ -564,9 +573,60 @@ class AgentV3Runtime:
         updates = {}
         if decision.output_format in {"chat", "markdown", "docx"}:
             updates["output_format"] = decision.output_format
+        if decision.research_level in {"easy", "regular", "deep"}:
+            updates["research_level"] = decision.research_level
         if decision.rewritten_request:
             updates["message"] = decision.rewritten_request
         return request.model_copy(update=updates) if updates else request
+
+    def _run_deep_research_confirmation(
+        self,
+        request: AgentV3Request,
+        goal: Goal,
+        turn_id: str,
+        events: list[ProgressEvent],
+        decision: OrchestratorDecision,
+    ) -> AgentV3Result:
+        return AgentV3Result(
+            turn_id=turn_id,
+            goal=goal,
+            answer=decision.confirmation_message
+            or (
+                "This looks like deep research and may take a few minutes. "
+                "Would you like me to run deep research, use regular research, or answer directly?"
+            ),
+            route="clarify",
+            model_used=decision.model_used,
+            events=events,
+            latency_ms=decision.latency_ms,
+            cost_usd=decision.cost_usd,
+            follow_up_options=[
+                {
+                    "label": "Run deep research",
+                    "message": request.message,
+                    "force_route": decision.route,
+                    "research_level": "deep",
+                    "confirm_deep_research": True,
+                    "output_format": request.output_format,
+                },
+                {
+                    "label": "Use regular research",
+                    "message": request.message,
+                    "force_route": decision.route,
+                    "research_level": "regular",
+                    "confirm_deep_research": False,
+                    "output_format": request.output_format,
+                },
+                {
+                    "label": "Answer directly",
+                    "message": request.message,
+                    "force_route": "direct",
+                    "research_level": "easy",
+                    "confirm_deep_research": False,
+                    "output_format": "chat",
+                },
+            ],
+        )
 
     def _run_clarify(
         self,

@@ -184,6 +184,7 @@ class ResearchBudgetLedger(BaseModel):
 class ResearchGoal(BaseModel):
     id: str = Field(default_factory=lambda: new_id("rgoal"))
     objective: str
+    research_level: str = "regular"
     quality_mode: str = "standard"
     output_format: str = "chat"
     budget: ResearchBudget = Field(default_factory=ResearchBudget)
@@ -472,31 +473,31 @@ def get_research_registry() -> ResearchAgentRegistry:
 
 
 def research_budget_for(request: AgentV3Request) -> ResearchBudget:
-    if request.quality_mode == "executive":
+    if request.research_level == "easy":
+        return ResearchBudget(
+            max_search_workers=1,
+            max_sources=1,
+            min_evidence_items=1,
+            repair_iterations=0,
+            judge_threshold=0.60,
+            max_tool_calls=2,
+            max_model_calls=2,
+            max_cost_usd=0.01,
+            max_elapsed_ms=15_000,
+            max_deep_links=0,
+        )
+    if request.research_level == "deep":
         return ResearchBudget(
             max_search_workers=4,
-            max_sources=8,
+            max_sources=12,
             min_evidence_items=3,
             repair_iterations=2,
             judge_threshold=0.78,
-            max_tool_calls=12,
-            max_model_calls=5,
-            max_cost_usd=0.20,
+            max_tool_calls=24,
+            max_model_calls=10,
+            max_cost_usd=0.25,
             max_elapsed_ms=180_000,
-            max_deep_links=4,
-        )
-    if request.quality_mode == "draft":
-        return ResearchBudget(
-            max_search_workers=2,
-            max_sources=4,
-            min_evidence_items=1,
-            repair_iterations=0,
-            judge_threshold=0.62,
-            max_tool_calls=4,
-            max_model_calls=3,
-            max_cost_usd=0.02,
-            max_elapsed_ms=45_000,
-            max_deep_links=0,
+            max_deep_links=8,
         )
     return ResearchBudget(
         max_search_workers=3,
@@ -516,6 +517,7 @@ def create_research_goal(request: AgentV3Request) -> ResearchGoal:
     budget = research_budget_for(request)
     return ResearchGoal(
         objective=request.message,
+        research_level=request.research_level if request.research_level != "auto" else "regular",
         quality_mode=request.quality_mode,
         output_format=request.output_format,
         budget=budget,
@@ -544,6 +546,7 @@ def plan_research(request: AgentV3Request) -> ResearchPlan:
                             "message": request.message,
                             "conversation_context": request.conversation_context[-5000:] if request.conversation_context else "",
                             "quality_mode": request.quality_mode,
+                            "research_level": request.research_level,
                             "output_format": request.output_format,
                             "budget": goal.budget.model_dump(mode="json"),
                             "guardrails": goal.guardrails,
@@ -557,6 +560,11 @@ def plan_research(request: AgentV3Request) -> ResearchPlan:
         )
         payload = _parse_json(response.text)
         plan = ResearchPlan.model_validate(payload)
+        plan.max_sources = min(plan.max_sources, goal.budget.max_sources)
+        plan.min_evidence_items = min(plan.min_evidence_items, goal.budget.min_evidence_items)
+        plan.judge_threshold = goal.budget.judge_threshold
+        plan.repair_iterations = goal.budget.repair_iterations
+        plan.workers = plan.workers[: goal.budget.max_search_workers]
         plan.model_used = response.model_used
         plan.latency_ms = response.latency_ms
         plan.cost_usd = response.cost_usd
@@ -847,10 +855,13 @@ def source_context_from_evidence(evidence: EvidencePack) -> str:
 
 def _fallback_plan(request: AgentV3Request, goal: ResearchGoal | None = None) -> ResearchPlan:
     goal = goal or create_research_goal(request)
+    rationale = "Fallback worker from the original request."
+    if request.research_level == "easy":
+        rationale = "Easy research uses one narrow source-grounding search."
     worker = SearchWorkerPlan(
         question=request.message,
         query=request.message,
-        rationale="Fallback worker from the original request.",
+        rationale=rationale,
         max_results=min(5, goal.budget.max_sources),
     )
     return ResearchPlan(
@@ -889,7 +900,8 @@ def _normalize_plan(plan: ResearchPlan, request: AgentV3Request, goal: ResearchG
         plan.workers = _fallback_plan(request, goal).workers
     plan.search_queries = [worker.query for worker in plan.workers]
     plan.questions = _dedupe([worker.question for worker in plan.workers] or plan.questions)[:4]
-    plan.max_sources = max(2, min(goal.budget.max_sources, int(plan.max_sources or goal.budget.max_sources)))
+    minimum_sources = 1 if request.research_level == "easy" else 2
+    plan.max_sources = max(minimum_sources, min(goal.budget.max_sources, int(plan.max_sources or goal.budget.max_sources)))
     plan.min_evidence_items = max(1, min(plan.max_sources, int(plan.min_evidence_items or goal.budget.min_evidence_items)))
     plan.judge_threshold = max(0.45, min(0.9, float(plan.judge_threshold or goal.budget.judge_threshold)))
     plan.repair_iterations = max(0, min(goal.budget.repair_iterations, int(plan.repair_iterations or 0)))

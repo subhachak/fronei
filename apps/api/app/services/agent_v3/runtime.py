@@ -825,10 +825,17 @@ class AgentV3Runtime:
             "document_writer_result",
             f"Document writer used {draft.model_used or 'the configured document writer model'}.",
             plan_title=plan.title,
-            **model_client.telemetry_for_role(
-                "document_writer",
-                quality_mode=request.quality_mode,
-                model_used=draft.model_used,
+            **model_client.telemetry_for_response(
+                model_client.ModelResponse(
+                    text="",
+                    model_used=draft.model_used,
+                    latency_ms=draft.latency_ms,
+                    cost_usd=draft.cost_usd,
+                    model_role=draft.model_role,
+                    preferred_model=draft.preferred_model,
+                    attempted_models=draft.attempted_models,
+                    failed_model_attempts=draft.failed_model_attempts,
+                )
             ),
             latency_ms=draft.latency_ms,
             cost_usd=draft.cost_usd,

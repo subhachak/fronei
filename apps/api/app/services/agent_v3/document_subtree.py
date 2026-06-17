@@ -32,6 +32,10 @@ class DocumentDraft(BaseModel):
     model_used: str = ""
     latency_ms: int = 0
     cost_usd: float = 0.0
+    model_role: str = "document_writer"
+    preferred_model: str = ""
+    attempted_models: list[str] = Field(default_factory=list)
+    failed_model_attempts: list[dict[str, str]] = Field(default_factory=list)
 
 
 class DocumentJudgeResult(BaseModel):
@@ -133,6 +137,10 @@ def write_document(
         model_used=response.model_used,
         latency_ms=response.latency_ms,
         cost_usd=response.cost_usd,
+        model_role=getattr(response, "model_role", "document_writer"),
+        preferred_model=getattr(response, "preferred_model", ""),
+        attempted_models=list(getattr(response, "attempted_models", []) or []),
+        failed_model_attempts=list(getattr(response, "failed_model_attempts", []) or []),
     )
 
 

@@ -7,6 +7,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from app.config import get_settings
 from app.services.agent_v3 import model_client
 from app.services.agent_v3.models import AgentV3Request, Artifact, Source, ToolCall
 from app.services.agent_v3.research_subtree import EvidencePack, infer_research_profile, source_context_from_evidence
@@ -117,6 +118,34 @@ def write_document(
     evidence: EvidencePack | None = None,
     repair_instruction: str | None = None,
 ) -> DocumentDraft:
+    if _should_write_by_section(request, plan, research_answer=research_answer):
+        return _write_document_by_section(
+            request,
+            plan,
+            sources=sources,
+            research_answer=research_answer,
+            evidence=evidence,
+            repair_instruction=repair_instruction,
+        )
+    return _write_document_single_call(
+        request,
+        plan,
+        sources=sources,
+        research_answer=research_answer,
+        evidence=evidence,
+        repair_instruction=repair_instruction,
+    )
+
+
+def _write_document_single_call(
+    request: AgentV3Request,
+    plan: DocumentPlan,
+    *,
+    sources: list[Source],
+    research_answer: str | None = None,
+    evidence: EvidencePack | None = None,
+    repair_instruction: str | None = None,
+) -> DocumentDraft:
     context = source_context_from_evidence(evidence) if evidence is not None else source_context(sources)
     prompt = (
         (f"{request.conversation_context}\n\n" if request.conversation_context else "")
@@ -135,6 +164,7 @@ def write_document(
         max_tokens=_document_writer_token_budget(request, research_answer=research_answer),
         role="document_writer",
         quality_mode=request.quality_mode,
+        timeout_s=max(30, int(get_settings().agent_v3_longform_timeout_s or 180)),
     )
     return DocumentDraft(
         markdown=response.text,
@@ -145,6 +175,68 @@ def write_document(
         preferred_model=getattr(response, "preferred_model", ""),
         attempted_models=list(getattr(response, "attempted_models", []) or []),
         failed_model_attempts=list(getattr(response, "failed_model_attempts", []) or []),
+    )
+
+
+def _write_document_by_section(
+    request: AgentV3Request,
+    plan: DocumentPlan,
+    *,
+    sources: list[Source],
+    research_answer: str | None = None,
+    evidence: EvidencePack | None = None,
+    repair_instruction: str | None = None,
+) -> DocumentDraft:
+    sections = plan.sections or ["Executive summary", "Findings", "Recommendations"]
+    written_sections: list[str] = []
+    model_used = ""
+    latency_ms = 0
+    cost_usd = 0.0
+    attempted_models: list[str] = []
+    failed_model_attempts: list[dict[str, str]] = []
+    timeout_s = max(30, int(get_settings().agent_v3_longform_timeout_s or 180))
+    outline = "\n".join(f"{idx + 1}. {heading}" for idx, heading in enumerate(sections))
+    prior_context = ""
+    for index, heading in enumerate(sections):
+        depth = _section_depth(heading, index=index, total=len(sections), request=request)
+        context = _section_source_context(heading, evidence=evidence, sources=sources, max_chars=_section_context_chars(depth))
+        prompt = _section_writer_prompt(
+            request,
+            plan,
+            section_heading=heading,
+            section_index=index,
+            section_depth=depth,
+            outline=outline,
+            research_answer=research_answer,
+            source_context_text=context,
+            prior_context=prior_context,
+            repair_instruction=repair_instruction,
+        )
+        response = model_client.simple_completion(
+            "You are the Agent v3 document section writer. Write only the requested section in markdown.",
+            prompt,
+            max_tokens=_section_token_budget(depth, request=request),
+            role="document_writer",
+            quality_mode=request.quality_mode,
+            timeout_s=timeout_s,
+        )
+        section_md = _normalize_section_markdown(heading, response.text)
+        written_sections.append(section_md)
+        prior_context = section_md[-1800:]
+        model_used = response.model_used or model_used
+        latency_ms += response.latency_ms
+        cost_usd += response.cost_usd
+        attempted_models.extend([model for model in response.attempted_models if model not in attempted_models])
+        failed_model_attempts.extend(response.failed_model_attempts)
+    return DocumentDraft(
+        markdown="\n\n".join(written_sections).strip(),
+        model_used=model_used,
+        latency_ms=latency_ms,
+        cost_usd=cost_usd,
+        model_role="document_writer",
+        preferred_model=model_client.model_for_role("document_writer", quality_mode=request.quality_mode) or "",
+        attempted_models=attempted_models,
+        failed_model_attempts=failed_model_attempts,
     )
 
 
@@ -205,6 +297,181 @@ def _document_writer_instruction(request: AgentV3Request, *, research_answer: st
             "into a brief summary unless the user explicitly asked for concision."
         )
     return "Write the complete document body in markdown. Use clear headings and complete, useful paragraphs."
+
+
+def _should_write_by_section(
+    request: AgentV3Request,
+    plan: DocumentPlan,
+    *,
+    research_answer: str | None = None,
+) -> bool:
+    if not research_answer:
+        return False
+    if request.research_level != "deep":
+        return False
+    if len(plan.sections or []) < 6:
+        return False
+    return "report" in request.message.lower() or request.output_format in {"docx", "markdown"}
+
+
+def _section_writer_prompt(
+    request: AgentV3Request,
+    plan: DocumentPlan,
+    *,
+    section_heading: str,
+    section_index: int,
+    section_depth: str,
+    outline: str,
+    research_answer: str | None,
+    source_context_text: str,
+    prior_context: str,
+    repair_instruction: str | None,
+) -> str:
+    word_target = {
+        "brief": "250-450 words",
+        "standard": "500-850 words",
+        "deep": "900-1400 words",
+    }.get(section_depth, "500-850 words")
+    parts = [
+        f"User request:\n{request.message}",
+        f"Document title: {plan.title}",
+        f"Audience: {plan.audience}",
+        f"Full outline:\n{outline}",
+        f"Current section {section_index + 1}/{len(plan.sections or [])}: {section_heading}",
+        f"Depth: {section_depth}; target length: {word_target}.",
+        (
+            "Write this section only. Use the exact section heading as a markdown H2. "
+            "Vary depth based on evidence. Include concrete architecture mechanisms, named examples, "
+            "data/state objects, control flow, trade-offs, and failure modes when relevant. "
+            "Use [S#] citations for evidence-backed factual claims. Do not add a global conclusion unless this is the final section."
+        ),
+    ]
+    if repair_instruction:
+        parts.append(f"Repair instruction:\n{repair_instruction}")
+    if prior_context:
+        parts.append(f"Previous section tail for continuity:\n{prior_context}")
+    if research_answer:
+        parts.append(f"Research synthesis excerpt:\n{_section_research_excerpt(section_heading, research_answer)}")
+    parts.append(f"Relevant sources/evidence:\n{source_context_text or 'No targeted source context available; disclose any evidence gap plainly.'}")
+    return "\n\n".join(parts)
+
+
+def _section_depth(heading: str, *, index: int, total: int, request: AgentV3Request) -> str:
+    lower = heading.lower()
+    if index == 0 or any(token in lower for token in ("executive summary", "introduction", "scope")):
+        return "brief"
+    if index == total - 1 or any(token in lower for token in ("recommendation", "conclusion", "summary")):
+        return "standard"
+    deep_terms = (
+        "architecture",
+        "workflow",
+        "orchestration",
+        "agent",
+        "llm",
+        "integration",
+        "evidence",
+        "memory",
+        "state",
+        "tool",
+        "render",
+        "verification",
+        "reflection",
+        "guardrail",
+        "failure",
+        "security",
+        "trade-off",
+        "cost",
+        "latency",
+    )
+    if request.research_level == "deep" and any(term in lower for term in deep_terms):
+        return "deep"
+    return "standard"
+
+
+def _section_token_budget(depth: str, *, request: AgentV3Request) -> int:
+    executive_bonus = 500 if request.quality_mode == "executive" else 0
+    if depth == "deep":
+        return 2400 + executive_bonus
+    if depth == "standard":
+        return 1500 + executive_bonus
+    return 900 + executive_bonus
+
+
+def _section_context_chars(depth: str) -> int:
+    if depth == "deep":
+        return 9000
+    if depth == "standard":
+        return 5500
+    return 3000
+
+
+def _section_source_context(
+    heading: str,
+    *,
+    evidence: EvidencePack | None,
+    sources: list[Source],
+    max_chars: int,
+) -> str:
+    if evidence is not None and evidence.items:
+        terms = _section_terms(heading)
+        scored = []
+        for item in evidence.items:
+            text = f"{item.title} {item.question} {item.evidence}".lower()
+            score = sum(1 for term in terms if term in text)
+            if score <= 0:
+                score = 1 if any(term in text for term in ("architecture", "agent", "workflow", "system")) else 0
+            scored.append((score, item))
+        scored.sort(key=lambda pair: pair[0], reverse=True)
+        chunks: list[str] = []
+        remaining = max_chars
+        for score, item in scored[:8]:
+            if score <= 0 and chunks:
+                continue
+            chunk = (
+                f"[{item.source_id}] {item.title}\n"
+                f"Question: {item.question}\n"
+                f"URL: {item.url}\n"
+                f"Evidence: {item.evidence[:1800]}"
+            )
+            if len(chunk) > remaining:
+                chunk = chunk[:remaining]
+            chunks.append(chunk)
+            remaining -= len(chunk)
+            if remaining <= 0:
+                break
+        return "\n\n".join(chunks)
+    context = source_context(sources)
+    return context[:max_chars]
+
+
+def _section_research_excerpt(heading: str, research_answer: str) -> str:
+    terms = _section_terms(heading)
+    paragraphs = [paragraph.strip() for paragraph in re.split(r"\n{2,}", research_answer or "") if paragraph.strip()]
+    scored = []
+    for paragraph in paragraphs:
+        lower = paragraph.lower()
+        scored.append((sum(1 for term in terms if term in lower), paragraph))
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    selected = [paragraph for score, paragraph in scored[:4] if score > 0] or paragraphs[:2]
+    return "\n\n".join(selected)[:5000]
+
+
+def _section_terms(heading: str) -> list[str]:
+    return [
+        token
+        for token in re.findall(r"[a-z0-9.]{3,}", heading.lower())
+        if token not in {"the", "and", "for", "with", "from", "section", "overview"}
+    ]
+
+
+def _normalize_section_markdown(heading: str, markdown: str) -> str:
+    text = (markdown or "").strip()
+    heading_text = heading.strip()
+    if not text:
+        return f"## {heading_text}\n\nNo evidence-backed content was generated for this section."
+    if re.match(r"^#{1,3}\s+", text):
+        return text
+    return f"## {heading_text}\n\n{text}"
 
 
 def _minimum_document_chars(plan: DocumentPlan) -> int:

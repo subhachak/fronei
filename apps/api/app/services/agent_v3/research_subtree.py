@@ -12,12 +12,12 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, field_validator
 
+from app.config import get_settings
 from app.services.agent_v3 import model_client
 from app.services.agent_v3.models import AgentV3Request, Source, ToolCall, new_id
 
 logger = logging.getLogger(__name__)
 
-MAX_PARALLEL_SEARCH_WORKERS = 8
 MAX_PARALLEL_READ_BATCHES = 4
 MAX_PARALLEL_READ_BATCHES_DEEP = 6
 MAX_URLS_PER_READ_BATCH = 6
@@ -853,7 +853,7 @@ def generate_research_brief(request: AgentV3Request) -> ResearchBrief:
             ],
             role="research_brief",
             quality_mode=request.quality_mode,
-            max_tokens=600,
+            max_tokens=900 if request.research_level == "deep" else 600,
             timeout_s=15,
         )
         payload = _parse_json(response.text)
@@ -1056,11 +1056,11 @@ def plan_from_contract(
     if not workers:
         workers = _fallback_plan(request, create_research_goal(request)).workers
 
-    # For technical_architecture + deep, prepend anchor queries that reliably
+    # For technical_architecture + deep, include anchor queries that reliably
     # surface arxiv papers, GitHub repos, and engineering reference material.
-    # These run before the contract-cell workers so wave 1 seeds the evidence
-    # pool with dense sources before the coverage check fires.
+    # Keep only a small fixed slice so contract-cell workers still execute.
     profile = infer_research_profile(request.message)
+    anchor_workers: list[SearchWorkerPlan] = []
     if profile == "technical_architecture" and request.research_level == "deep":
         anchor_queries = _tech_arch_anchor_queries(request.message)
         existing_queries = {w.query for w in workers}
@@ -1075,14 +1075,23 @@ def plan_from_contract(
             for q in anchor_queries
             if q not in existing_queries
         ]
-        workers = (anchor_workers + workers)[: budget.max_search_workers]
 
+    domain_workers: list[SearchWorkerPlan] = []
     if request.research_level == "deep":
-        existing_queries = {w.query for w in workers}
+        existing_queries = {w.query for w in workers} | {w.query for w in anchor_workers}
         domain_workers = [
             worker for worker in _domain_discovery_workers(request, profile, budget) if worker.query not in existing_queries
         ]
-        workers = (domain_workers + workers)[: budget.max_search_workers]
+
+    if request.research_level == "deep":
+        workers = _compose_deep_worker_wave(
+            contract_workers=workers,
+            anchor_workers=anchor_workers,
+            domain_workers=domain_workers,
+            max_workers=budget.max_search_workers,
+        )
+    elif anchor_workers:
+        workers = _dedupe_workers(anchor_workers[:2] + workers)[: budget.max_search_workers]
 
     return ResearchPlan(
         research_profile=profile,
@@ -1096,6 +1105,44 @@ def plan_from_contract(
         guardrails=create_research_goal(request).guardrails,
         source="contract",
     )
+
+
+def _dedupe_workers(workers: list[SearchWorkerPlan]) -> list[SearchWorkerPlan]:
+    seen: set[str] = set()
+    result: list[SearchWorkerPlan] = []
+    for worker in workers:
+        key = " ".join((worker.query or worker.question).lower().split())
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        result.append(worker)
+    return result
+
+
+def _compose_deep_worker_wave(
+    *,
+    contract_workers: list[SearchWorkerPlan],
+    anchor_workers: list[SearchWorkerPlan],
+    domain_workers: list[SearchWorkerPlan],
+    max_workers: int,
+) -> list[SearchWorkerPlan]:
+    """Mix broad discovery with contract-targeted work without starving either."""
+    if max_workers <= 0:
+        return []
+    if not contract_workers:
+        return _dedupe_workers(domain_workers + anchor_workers)[:max_workers]
+
+    discovery_cap = min(4, max(2, max_workers // 3))
+    domain_cap = min(2, discovery_cap)
+    anchor_cap = max(0, discovery_cap - domain_cap)
+    selected = _dedupe_workers(
+        domain_workers[:domain_cap]
+        + anchor_workers[:anchor_cap]
+        + contract_workers
+        + domain_workers[domain_cap:]
+        + anchor_workers[anchor_cap:]
+    )
+    return selected[:max_workers]
 
 
 def plan_from_targeted_queries(targeted_queries: list[str], state: ResearchStateStore) -> ResearchPlan:
@@ -1246,7 +1293,7 @@ def reflect(request: AgentV3Request, state: ResearchStateStore) -> ReflectionDec
             ],
             role="reflection",
             quality_mode=request.quality_mode,
-            max_tokens=500,
+            max_tokens=900 if request.research_level == "deep" else 500,
             timeout_s=15,
         )
         payload = _parse_json(response.text)
@@ -1278,7 +1325,7 @@ def verify_citations_semantically(answer: str, evidence: EvidencePack) -> Citati
     if not answer or not evidence.items:
         return CitationVerification(source="skipped")
     evidence_index = {
-        item.source_id: f"[{item.source_id}] {item.title}\nURL: {item.url}\nEvidence: {item.evidence[:500]}"
+        item.source_id: f"[{item.source_id}] {item.title}\nURL: {item.url}\nEvidence: {item.evidence[:1600]}"
         for item in evidence.items
     }
     cited_ids = set(re.findall(r"\[(S\d+)\]", answer))
@@ -1297,7 +1344,7 @@ def verify_citations_semantically(answer: str, evidence: EvidencePack) -> Citati
                     "role": "user",
                     "content": json.dumps(
                         {
-                            "answer": answer[:3500],
+                            "answer": answer[:10000],
                             "evidence_pack": list(evidence_index.values()),
                             "hallucinated_citations_detected": hallucinated,
                         },
@@ -1452,7 +1499,7 @@ def plan_research(request: AgentV3Request) -> ResearchPlan:
             ],
             role="research_planner",
             quality_mode=request.quality_mode,
-            max_tokens=600,
+            max_tokens=1000 if request.research_level == "deep" else 600,
             timeout_s=20,
         )
         payload = _parse_json(response.text)
@@ -1650,6 +1697,7 @@ def extract_evidence_claims(
     claims: list[EvidenceClaim] = []
     query_terms = _claim_query_terms(plan)
     for item in evidence.items:
+        item_claim_limit = _max_claims_for_item(item, plan, default=max_claims_per_item)
         candidates: list[tuple[float, str]] = []
         for sentence in _claim_candidate_sentences(item.evidence):
             score = _score_claim_sentence(sentence, item, query_terms=query_terms, plan=plan)
@@ -1657,7 +1705,7 @@ def extract_evidence_claims(
                 continue
             candidates.append((score, sentence))
         candidates.sort(key=lambda pair: pair[0], reverse=True)
-        for score, sentence in candidates[:max_claims_per_item]:
+        for score, sentence in candidates[:item_claim_limit]:
             claims.append(
                 EvidenceClaim(
                     source_id=item.source_id,
@@ -1672,8 +1720,22 @@ def extract_evidence_claims(
                 )
             )
     claims.sort(key=lambda claim: (claim.confidence, _claim_type_priority(claim.claim_type)), reverse=True)
-    max_claims = 40 if plan and plan.research_profile == "technical_architecture" else 24
+    max_claims = 80 if plan and plan.research_profile == "technical_architecture" else 32
     return claims[:max_claims]
+
+
+def _max_claims_for_item(item: EvidenceItem, plan: ResearchPlan | None, *, default: int) -> int:
+    if not plan:
+        return default
+    if plan.research_profile == "technical_architecture":
+        if item.source_type in {"academic", "repository"}:
+            return 7
+        if item.source_type in {"documentation", "pdf"}:
+            return 6
+        return 5
+    if item.source_type in {"academic", "repository", "documentation", "pdf"}:
+        return max(default, 5)
+    return default
 
 
 def extract_architecture_cards(
@@ -2187,6 +2249,7 @@ def synthesize_answer(request: AgentV3Request, plan: ResearchPlan, evidence: Evi
         max_tokens=_synthesis_token_budget(request, plan),
         role="synthesis",
         quality_mode=request.quality_mode,
+        timeout_s=_longform_timeout_s(),
     )
 
 
@@ -2255,6 +2318,7 @@ def repair_research_answer(
         max_tokens=_synthesis_token_budget(request, plan),
         role="repair",
         quality_mode=request.quality_mode,
+        timeout_s=_longform_timeout_s(),
     )
 
 
@@ -2558,19 +2622,21 @@ def _worker_claim_pack(worker: SearchWorkerPlan, assigned_cell: CoverageCell | N
     contract = None
     if assigned_cell:
         contract = CoverageContract(cells=[assigned_cell], subjects=[assigned_cell.subject], dimensions=[assigned_cell.dimension])
+    worker_max_sources = 8 if plan.research_profile == "technical_architecture" else 6
+    worker_max_items = 8 if plan.research_profile == "technical_architecture" else 6
     worker_plan = ResearchPlan(
         research_profile=plan.research_profile,
         questions=[worker.question],
         search_queries=[worker.query],
         workers=[worker],
-        max_sources=min(4, plan.max_sources),
+        max_sources=min(worker_max_sources, plan.max_sources),
         min_evidence_items=1,
     )
     return bind_evidence(
         sources,
         plan=worker_plan,
         contract=contract,
-        max_items=min(4, max(1, len(sources) * 2)),
+        max_items=min(worker_max_items, max(1, len(sources) * 2)),
     )
 
 
@@ -2856,7 +2922,7 @@ class LeadResearchAgent:
             pending_workers.append((index, worker))
 
         search_slots = min(
-            MAX_PARALLEL_SEARCH_WORKERS,
+            max(1, state.budget_ledger.budget.max_search_workers),
             len(pending_workers),
             self.ledger.remaining_tool_calls(),
         )
@@ -2880,7 +2946,7 @@ class LeadResearchAgent:
                 },
             )
         if pending_workers:
-            max_workers = max(1, min(MAX_PARALLEL_SEARCH_WORKERS, len(pending_workers)))
+            max_workers = max(1, min(state.budget_ledger.budget.max_search_workers, len(pending_workers)))
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = {
                     executor.submit(self.tools.search_web, worker.query, max_results=worker.max_results): (index, worker)
@@ -3784,15 +3850,52 @@ def _domain_discovery_workers(request: AgentV3Request, profile: ResearchProfile,
 
 
 def _compact_search_subject(message: str) -> str:
-    cleaned = re.sub(
-        r"\b(?:conduct|perform|do|deep|regular|easy|research|generate|create|detailed|comprehensive|report|explaining|explain)\b",
-        " ",
-        message or "",
-        flags=re.IGNORECASE,
-    )
-    cleaned = re.sub(r"[\"'`]", " ", cleaned)
-    cleaned = " ".join(cleaned.split())
-    return cleaned[:110] or (message or "")[:110] or "research topic"
+    tokens = [
+        token
+        for token in re.findall(r"[a-z0-9.]{2,}", (message or "").lower())
+        if token
+        not in {
+            "a",
+            "an",
+            "and",
+            "are",
+            "as",
+            "be",
+            "by",
+            "conduct",
+            "create",
+            "deep",
+            "detailed",
+            "do",
+            "easy",
+            "explaining",
+            "explain",
+            "for",
+            "from",
+            "generate",
+            "give",
+            "in",
+            "into",
+            "latest",
+            "like",
+            "me",
+            "of",
+            "on",
+            "perform",
+            "regular",
+            "report",
+            "research",
+            "the",
+            "to",
+            "with",
+        }
+    ]
+    cleaned = " ".join(_dedupe(tokens)[:16])
+    return cleaned[:140] or (message or "")[:110] or "research topic"
+
+
+def _longform_timeout_s() -> int:
+    return max(30, int(get_settings().agent_v3_longform_timeout_s or 180))
 
 
 def _domain_for_query(query: str) -> Literal["general", "academic", "repository", "documentation", "news", "primary"]:
@@ -3937,7 +4040,11 @@ def _max_attempts_per_cell(request: AgentV3Request) -> int:
 
 
 def _max_iterations_for(request: AgentV3Request) -> int:
-    return 4 if request.quality_mode == "executive" else 3
+    if request.quality_mode == "executive" and request.research_level == "deep":
+        return 5
+    if request.research_level == "deep":
+        return 4
+    return 3
 
 
 def _citation_repair_instruction(result: CitationVerification) -> str:

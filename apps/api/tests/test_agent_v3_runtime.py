@@ -1,4 +1,5 @@
 import json
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -580,9 +581,42 @@ def test_agent_v3_api_stream(monkeypatch):
         app.dependency_overrides.clear()
 
 
-def test_agent_v3_api_stream_emits_keepalive_during_quiet_work(monkeypatch):
-    import time
+def test_agent_v3_background_turn_persists_and_polls_status(monkeypatch):
+    _patch_completion(monkeypatch, "Background answer.")
+    from app.services.agent_v3 import persistence
 
+    Session = _sqlite_session()
+    monkeypatch.setattr(persistence, "SessionLocal", Session)
+    app.dependency_overrides[get_current_user_id] = lambda: "u1"
+    try:
+        with TestClient(app) as client:
+            started = client.post("/agent-v3/turns", json={"message": "Hello from background v3"})
+            assert started.status_code == 200
+            turn_id = started.json()["turn_id"]
+            deadline = time.time() + 5
+            status_payload = None
+            while time.time() < deadline:
+                status = client.get(f"/agent-v3/turns/{turn_id}/status")
+                assert status.status_code == 200
+                status_payload = status.json()
+                if status_payload["status"] == "completed":
+                    break
+                time.sleep(0.05)
+
+        assert status_payload is not None
+        assert status_payload["status"] == "completed"
+        assert status_payload["turn"]["answer"] == "Background answer."
+        assert any(event["stage"] == "background_job" for event in status_payload["turn"]["events"])
+
+        with Session() as db:
+            row = db.get(AgentV3Turn, turn_id)
+            assert row is not None
+            assert row.status == "completed"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_agent_v3_api_stream_emits_keepalive_during_quiet_work(monkeypatch):
     from app.routers import agent_v3 as agent_v3_router
     from app.services.agent_v3 import persistence
     from app.services.agent_v3.models import Goal, StreamEnvelope

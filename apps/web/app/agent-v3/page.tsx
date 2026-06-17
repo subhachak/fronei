@@ -38,6 +38,8 @@ const MIN_RIGHT_RAIL_WIDTH = 260
 const MAX_RIGHT_RAIL_WIDTH = 480
 const MIN_COMPOSER_HEIGHT = 152
 const MAX_COMPOSER_HEIGHT = 340
+const TURN_POLL_INTERVAL_MS = 1200
+const TURN_POLL_RECOVERY_WINDOW_MS = 20 * 60 * 1000
 
 type QualityMode = 'draft' | 'standard' | 'executive'
 type OutputFormat = 'chat' | 'markdown' | 'docx'
@@ -336,6 +338,7 @@ export default function AgentV3Page() {
     option?: FollowUpOption,
   ) {
     let transientFailures = 0
+    const startedAt = Date.now()
     while (true) {
       try {
         const response = await authorizedFetch(`/agent-v3/turns/${turnId}/status`)
@@ -344,6 +347,7 @@ export default function AgentV3Page() {
         const next = payload.turn
         const nextEvents = next.events || []
         transientFailures = 0
+        setError(null)
         eventsRef.current = nextEvents
         setEvents(nextEvents)
         if (payload.status === 'completed') {
@@ -371,9 +375,32 @@ export default function AgentV3Page() {
         }
       } catch (err) {
         transientFailures += 1
-        if (transientFailures >= 5) throw err
+        const elapsed = Date.now() - startedAt
+        const recoveringEvent: ProgressEvent = {
+          stage: 'connection_recovering',
+          message: 'The browser connection is reconnecting while Fronei keeps working in the background.',
+          data: {
+            ephemeral: true,
+            failure_count: transientFailures,
+            turn_id: turnId,
+          },
+          created_at: new Date().toISOString(),
+        }
+        eventsRef.current = [
+          ...eventsRef.current.filter(event => event.stage !== 'connection_recovering'),
+          recoveringEvent,
+        ]
+        setEvents(eventsRef.current)
+        setError(null)
+        if (elapsed >= TURN_POLL_RECOVERY_WINDOW_MS) {
+          throw new Error(
+            `I could not reconnect to this background job after ${Math.round(TURN_POLL_RECOVERY_WINDOW_MS / 60000)} minutes. Reopen this conversation to check whether it completed.`,
+          )
+        }
+        await sleep(Math.min(10000, TURN_POLL_INTERVAL_MS * Math.max(1, transientFailures)))
+        continue
       }
-      await sleep(1200)
+      await sleep(TURN_POLL_INTERVAL_MS)
     }
   }
 
@@ -1857,6 +1884,10 @@ function plainCommentaryForEvent(event: ProgressEvent): string | null {
     case 'route_decision':
     case 'routing':
       return 'I’ve chosen a path for this request and I’m setting up the work.'
+    case 'background_job':
+      return 'I’ve moved this into a background run so it can keep going safely.'
+    case 'connection_recovering':
+      return 'The browser connection is reconnecting. The background run is still being checked.'
     case 'research_planner':
     case 'query_decomposition':
       return 'I’m breaking the question into focused research angles.'

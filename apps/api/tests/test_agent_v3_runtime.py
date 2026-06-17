@@ -958,8 +958,11 @@ def test_agent_v3_deep_research_requires_confirmation(monkeypatch):
     result = next(e.data for e in envelopes if e.type == "result")
     assert result["route"] == "clarify"
     assert result["answer"] == "Deep research will take longer. Continue?"
+    assert result["research_plan_preview"]["research_level"] == "deep"
+    assert result["research_plan_preview"]["investigate"]
+    assert any(e.data.get("stage") == "research_plan_preview" for e in envelopes if e.type == "progress")
     labels = [option["label"] for option in result["follow_up_options"]]
-    assert labels == ["Run deep research", "Use regular research", "Answer directly"]
+    assert labels == ["Start research", "Use regular research", "Answer directly"]
     assert not any(e.data.get("stage") == "research_registry" for e in envelopes if e.type == "progress")
 
 

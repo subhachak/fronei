@@ -100,6 +100,7 @@ class AgentV3Result(BaseModel):
     latency_ms: int = 0
     cost_usd: float = 0.0
     follow_up_options: list[dict[str, Any]] = Field(default_factory=list)
+    research_plan_preview: dict[str, Any] | None = None
     created_at: datetime = Field(default_factory=utc_now)
 
 

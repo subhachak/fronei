@@ -366,9 +366,10 @@ def test_lead_research_loop_returns_expected_shape(monkeypatch):
         lambda stage, message, data: None,
     )
 
-    assert set(result) == {"sources", "tool_calls", "evidence", "response", "plan", "feedback"}
+    assert set(result) == {"sources", "tool_calls", "evidence", "response", "plan", "worker_reports", "feedback"}
     assert result["response"].text
     assert result["tool_calls"]
+    assert result["worker_reports"]
 
 
 def test_technical_architecture_synthesis_uses_report_budget(monkeypatch):
@@ -479,6 +480,56 @@ def test_lead_research_dispatches_search_workers_in_parallel(monkeypatch):
     assert elapsed < 0.30
     assert len(state.all_tool_calls) >= 2
     assert len(state.all_sources) >= 3
+    assert state.worker_reports
+    assert all(report.claims for report in state.worker_reports)
+
+
+def test_worker_reports_update_coverage_from_typed_claims():
+    from app.services.agent_v3.research_subtree import (
+        CoverageCell,
+        CoverageContract,
+        EvidenceClaim,
+        ResearchBrief,
+        ResearchBudget,
+        ResearchBudgetLedger,
+        ResearchPlan,
+        ResearchStateStore,
+        SearchWorkerReport,
+        update_contract_from_evidence,
+    )
+
+    cell = CoverageCell(subject="Evidence binder and citation map", dimension="data model")
+    state = ResearchStateStore(
+        brief=ResearchBrief(objective="coverage test", source="heuristic"),
+        contract=CoverageContract(cells=[cell]),
+        plan=ResearchPlan(source="heuristic"),
+        budget_ledger=ResearchBudgetLedger(budget=ResearchBudget()),
+        worker_reports=[
+            SearchWorkerReport(
+                worker_id="worker-1",
+                question="How is evidence modeled?",
+                query="citation evidence schema",
+                assigned_subject="Evidence binder and citation map",
+                assigned_dimension="data model",
+                claims=[
+                    EvidenceClaim(
+                        source_id="S1",
+                        text="The evidence binder stores citation provenance and source identifiers in a schema.",
+                        claim_type="implementation",
+                        claim_role="implementation_detail",
+                        confidence=0.8,
+                    )
+                ],
+                self_assessed_confidence=0.72,
+            )
+        ],
+    )
+
+    update_contract_from_evidence(state)
+
+    assert state.contract.cells[0].status == "partial"
+    assert state.contract.cells[0].evidence_ids == ["S1"]
+    assert "typed claim" in state.contract.cells[0].notes
 
 
 def test_runtime_routes_deep_to_lead_loop(monkeypatch):

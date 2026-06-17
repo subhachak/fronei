@@ -18,6 +18,7 @@ from app.services.agent_v3.research_subtree import (
     ResearchBudgetLedger,
     bind_evidence,
     build_gap_followup_workers,
+    build_research_plan_preview,
     create_research_goal,
     extract_deep_link_candidates,
     get_research_registry,
@@ -91,7 +92,8 @@ class AgentV3Runtime:
 
         try:
             if route in {"research", "research_document"} and decision.requires_confirmation and not request.confirm_deep_research:
-                result = self._run_deep_research_confirmation(request, goal, turn_id, events, decision)
+                result, preview_event = self._run_deep_research_confirmation(request, goal, turn_id, events, decision, progress)
+                yield StreamEnvelope(type="progress", data=preview_event.model_dump(mode="json"))
                 result.latency_ms = int((time.perf_counter() - started) * 1000)
                 result.events = events
                 yield StreamEnvelope(type="result", data=result.model_dump(mode="json"))
@@ -625,23 +627,46 @@ class AgentV3Runtime:
         turn_id: str,
         events: list[ProgressEvent],
         decision: OrchestratorDecision,
-    ) -> AgentV3Result:
-        return AgentV3Result(
+        progress,
+    ) -> tuple[AgentV3Result, ProgressEvent]:
+        try:
+            preview = build_research_plan_preview(request)
+        except Exception as exc:
+            preview = {
+                "title": "Deep research plan",
+                "goal": request.message,
+                "research_level": "deep",
+                "estimated_duration": "Ready in a few minutes",
+                "workflow": [
+                    {"label": "Research websites", "description": "Search and read source candidates."},
+                    {"label": "Analyze results", "description": "Evaluate evidence quality and gaps."},
+                    {"label": "Create report", "description": "Synthesize the final answer."},
+                ],
+                "investigate": [request.message],
+                "source_strategy": ["Web search", "Source reading", "Evidence extraction"],
+                "fallback_reasons": [str(exc)],
+            }
+        preview_event = progress(
+            "research_plan_preview",
+            "I drafted a deep research plan for review.",
+            research_plan_preview=preview,
+        )
+        result = AgentV3Result(
             turn_id=turn_id,
             goal=goal,
             answer=decision.confirmation_message
             or (
-                "This looks like deep research and may take a few minutes. "
-                "Would you like me to run deep research, use regular research, or answer directly?"
+                "I drafted a deep research plan. Review it, then start deep research when you are ready."
             ),
             route="clarify",
             model_used=decision.model_used,
             events=events,
             latency_ms=decision.latency_ms,
             cost_usd=decision.cost_usd,
+            research_plan_preview=preview,
             follow_up_options=[
                 {
-                    "label": "Run deep research",
+                    "label": "Start research",
                     "message": request.message,
                     "force_route": decision.route,
                     "research_level": "deep",
@@ -666,6 +691,7 @@ class AgentV3Runtime:
                 },
             ],
         )
+        return result, preview_event
 
     def _run_clarify(
         self,

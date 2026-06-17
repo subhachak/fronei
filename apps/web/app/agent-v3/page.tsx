@@ -309,7 +309,7 @@ export default function AgentV3Page() {
       }
       if (buffer.trim()) handleFrame(buffer)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unknown Agent v3 error')
+      setError(streamErrorMessage(err))
     } finally {
       setRunning(false)
       activeRunConversationIdRef.current = null
@@ -1501,6 +1501,14 @@ function plainCommentary(events: ProgressEvent[]): string[] {
     .map(event => plainCommentaryForEvent(event))
     .filter(Boolean) as string[]
   return messages.filter((message, index) => message !== messages[index - 1])
+}
+
+function streamErrorMessage(err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err || '')
+  if (/network|failed to fetch|load failed|terminated|aborted/i.test(message)) {
+    return 'The live connection dropped while Fronei was working. The task may still finish on the server; reopen this conversation or retry if it does not appear shortly.'
+  }
+  return message || 'Unknown Agent v3 error'
 }
 
 function plainCommentaryForEvent(event: ProgressEvent): string | null {

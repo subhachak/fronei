@@ -670,16 +670,8 @@
   margin-top: 7px;
 }
 
-.rollingStage {
-  margin: 0;
-  color: #205d51;
-  font-size: 12px;
-  font-weight: 850;
-  letter-spacing: 0.02em;
-}
-
 .rollingMessage {
-  margin: 3px 0 0;
+  margin: 0;
   color: #53615a;
   font-size: 14px;
   line-height: 1.5;

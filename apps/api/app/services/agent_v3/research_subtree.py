@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from ipaddress import ip_address
 from collections.abc import Callable
 from typing import Any, Literal
@@ -14,6 +15,10 @@ from app.services.agent_v3 import model_client
 from app.services.agent_v3.models import AgentV3Request, Source, ToolCall, new_id
 
 logger = logging.getLogger(__name__)
+
+MAX_PARALLEL_SEARCH_WORKERS = 4
+MAX_PARALLEL_READ_BATCHES = 3
+MAX_URLS_PER_READ_BATCH = 6
 
 ResearchProfile = Literal[
     "general",
@@ -250,8 +255,44 @@ class EvidenceItem(BaseModel):
     provider: str = ""
 
 
+class EvidenceClaim(BaseModel):
+    claim_id: str = Field(default_factory=lambda: new_id("claim"))
+    source_id: str
+    text: str
+    quote: str = ""
+    claim_type: Literal[
+        "policy",
+        "timeline",
+        "price",
+        "statistic",
+        "capability",
+        "anecdote",
+        "interpretation",
+        "architecture",
+        "implementation",
+        "tradeoff",
+        "failure",
+        "unknown",
+    ] = "unknown"
+    claim_role: Literal[
+        "official_policy",
+        "operational_reality",
+        "expert_interpretation",
+        "anecdotal_case",
+        "statistical_data",
+        "technical_design",
+        "implementation_detail",
+        "background_context",
+    ] = "background_context"
+    freshness_risk: Literal["low", "medium", "high", "unknown"] = "unknown"
+    confidence: float = 0.5
+    source_title: str = ""
+    source_url: str = ""
+
+
 class EvidencePack(BaseModel):
     items: list[EvidenceItem] = Field(default_factory=list)
+    claims: list[EvidenceClaim] = Field(default_factory=list)
     coverage: float = 0.0
     gaps: list[str] = Field(default_factory=list)
     contradictions: list[str] = Field(default_factory=list)
@@ -1224,6 +1265,11 @@ def judge_research_final(request: AgentV3Request, state: ResearchStateStore, ans
         technical_sources = [
             item for item in state.evidence.items if score_technical_density(Source(title=item.title, url=item.url, content=item.evidence)) >= 0.35
         ]
+        technical_claims = [
+            claim
+            for claim in state.evidence.claims
+            if claim.claim_type in {"architecture", "implementation", "tradeoff", "failure", "statistic"}
+        ]
         if len(answer or "") < 4500:
             score -= 0.18
             issues.append("Deep technical architecture report is too short; expected a detailed multi-section report.")
@@ -1236,6 +1282,9 @@ def judge_research_final(request: AgentV3Request, state: ResearchStateStore, ans
         if len(technical_sources) < 4:
             score -= 0.12
             issues.append("Evidence pack has too few technically dense sources.")
+        if len(technical_claims) < max(8, state.plan.min_evidence_items):
+            score -= 0.12
+            issues.append("Evidence pack has too few typed technical claims for a deep architecture report.")
     open_cells = state.contract.open_cells()
     if open_cells:
         score -= min(0.18, 0.025 * len(open_cells))
@@ -1321,10 +1370,16 @@ def plan_research(request: AgentV3Request) -> ResearchPlan:
         return plan
 
 
-def bind_evidence(sources: list[Source], plan: ResearchPlan | None = None, max_items: int = 8) -> EvidencePack:
+def bind_evidence(
+    sources: list[Source],
+    plan: ResearchPlan | None = None,
+    max_items: int = 8,
+    contract: CoverageContract | None = None,
+) -> EvidencePack:
     seen: set[str] = set()
     items: list[EvidenceItem] = []
     questions = plan.questions if plan else []
+    profile = plan.research_profile if plan else "general"
     for source in sources:
         if not source.url or source.url in seen:
             continue
@@ -1332,32 +1387,348 @@ def bind_evidence(sources: list[Source], plan: ResearchPlan | None = None, max_i
         body = (source.content or source.snippet or "").strip()
         if not body:
             continue
-        source_id = f"S{len(items) + 1}"
-        items.append(
-            EvidenceItem(
-                source_id=source_id,
-                question=questions[(len(items) % len(questions))] if questions else "",
-                title=source.title,
-                url=source.url,
-                source_type=classify_source_type(source.url),
-                evidence=body[:900],
-                relevance=_estimate_relevance(source, questions),
-                confidence=0.75 if source.content else 0.55,
-                authority=score_source_authority(source.url),
-                query=source.query,
-                provider=source.provider,
-            )
+        source_type = classify_source_type(url=source.url)
+        # Evidence body cap: academic papers and repos are the richest technical
+        # sources — give them more room so synthesis has dense material to work with.
+        # Generic web pages are capped lower to avoid diluting the context.
+        if source_type in {"academic", "repository"} or profile == "technical_architecture":
+            body_cap = 2800
+        elif source_type in {"documentation", "pdf"}:
+            body_cap = 1800
+        else:
+            body_cap = 900
+        passages = _select_evidence_passages(
+            source,
+            body,
+            plan=plan,
+            contract=contract,
+            body_cap=body_cap,
+            max_passages=3 if profile == "technical_architecture" else 1,
         )
+        for passage in passages:
+            source_id = f"S{len(items) + 1}"
+            items.append(
+                EvidenceItem(
+                    source_id=source_id,
+                    question=questions[(len(items) % len(questions))] if questions else "",
+                    title=source.title,
+                    url=source.url,
+                    source_type=source_type,
+                    evidence=passage["text"],
+                    relevance=max(_estimate_relevance(source, questions), float(passage["score"])),
+                    confidence=_passage_confidence(source, passage_score=float(passage["score"])),
+                    authority=score_source_authority(source.url),
+                    supports_cells=list(passage["cell_ids"]),
+                    quoted_text=str(passage["text"])[:500],
+                    query=source.query,
+                    provider=source.provider,
+                )
+            )
+            if len(items) >= max_items:
+                break
         if len(items) >= max_items:
             break
     min_items = plan.min_evidence_items if plan else 1
     coverage = min(1.0, len(items) / max(1, min_items))
     gaps = [] if len(items) >= min_items else [f"Only {len(items)} usable evidence item(s); target is {min_items}."]
     contradictions = detect_contradictions(items)
-    return EvidencePack(items=items, coverage=coverage, gaps=gaps, contradictions=contradictions)
+    pack = EvidencePack(items=items, coverage=coverage, gaps=gaps, contradictions=contradictions)
+    pack.claims = extract_evidence_claims(pack, plan=plan)
+    return pack
+
+
+def extract_evidence_claims(
+    evidence: EvidencePack,
+    *,
+    plan: ResearchPlan | None = None,
+    max_claims_per_item: int = 3,
+) -> list[EvidenceClaim]:
+    claims: list[EvidenceClaim] = []
+    query_terms = _claim_query_terms(plan)
+    for item in evidence.items:
+        candidates: list[tuple[float, str]] = []
+        for sentence in _claim_candidate_sentences(item.evidence):
+            score = _score_claim_sentence(sentence, item, query_terms=query_terms, plan=plan)
+            if score <= 0:
+                continue
+            candidates.append((score, sentence))
+        candidates.sort(key=lambda pair: pair[0], reverse=True)
+        for score, sentence in candidates[:max_claims_per_item]:
+            claims.append(
+                EvidenceClaim(
+                    source_id=item.source_id,
+                    text=sentence[:650],
+                    quote=sentence[:500],
+                    claim_type=_claim_type_for_text(sentence),
+                    claim_role=_claim_role_for_text(sentence, item),
+                    freshness_risk=_freshness_risk_for_text(sentence),
+                    confidence=max(0.35, min(0.94, item.confidence + min(0.20, score * 0.05))),
+                    source_title=item.title,
+                    source_url=item.url,
+                )
+            )
+    claims.sort(key=lambda claim: (claim.confidence, _claim_type_priority(claim.claim_type)), reverse=True)
+    max_claims = 40 if plan and plan.research_profile == "technical_architecture" else 24
+    return claims[:max_claims]
+
+
+def _claim_candidate_sentences(text: str) -> list[str]:
+    normalized = re.sub(r"\s+", " ", text or "").strip()
+    if not normalized:
+        return []
+    parts = [part.strip() for part in re.split(r"(?<=[.!?])\s+", normalized) if part.strip()]
+    candidates: list[str] = []
+    for part in parts:
+        if 45 <= len(part) <= 520 and _looks_like_substantive_claim(part):
+            candidates.append(part)
+    if candidates:
+        return candidates
+    return [part for part in parts if 45 <= len(part) <= 520][:4]
+
+
+def _claim_query_terms(plan: ResearchPlan | None) -> set[str]:
+    if not plan:
+        return set()
+    text = " ".join(
+        [
+            plan.research_profile,
+            *plan.questions,
+            *plan.search_queries,
+            *[worker.question for worker in plan.workers],
+            *[worker.query for worker in plan.workers],
+        ]
+    )
+    return set(_meaningful_tokens(text))
+
+
+def _score_claim_sentence(
+    sentence: str,
+    item: EvidenceItem,
+    *,
+    query_terms: set[str],
+    plan: ResearchPlan | None,
+) -> float:
+    lower = sentence.lower()
+    query_hits = sum(1 for term in query_terms if term in lower)
+    score = min(10.0, query_hits * 0.65)
+    if re.search(r"\b\d+(?:\.\d+)?\s*(?:%|percent|ms|seconds|minutes|hours|days|tokens|calls|usd|\$)\b", lower):
+        score += 2.2
+    if any(term in lower for term in ("architecture", "orchestr", "workflow", "pipeline", "runtime", "state", "memory", "tool", "agent")):
+        score += 1.8
+    if any(term in lower for term in ("implementation", "data model", "schema", "queue", "trace", "event", "budget", "guardrail")):
+        score += 1.8
+    if any(term in lower for term in ("trade-off", "tradeoff", "latency", "cost", "failure", "risk", "limitation", "recovery")):
+        score += 1.4
+    if item.source_type in {"academic", "repository", "documentation", "pdf"}:
+        score += 0.8
+    if plan and plan.research_profile == "technical_architecture":
+        score += score_technical_density(Source(title=item.title, url=item.url, content=sentence)) * 3.0
+    return score
+
+
+def _claim_type_for_text(text: str) -> str:
+    lower = text.lower()
+    if any(term in lower for term in ("architecture", "orchestr", "workflow", "pipeline", "component", "topology")):
+        return "architecture"
+    if any(term in lower for term in ("implementation", "schema", "data model", "queue", "state", "trace", "runtime")):
+        return "implementation"
+    if any(term in lower for term in ("trade-off", "tradeoff", "latency", "cost", "overhead", "performance")):
+        return "tradeoff"
+    if any(term in lower for term in ("fail", "failure", "risk", "limitation", "error", "recover", "timeout")):
+        return "failure"
+    if re.search(r"\b\d+(?:\.\d+)?\s*(?:%|percent|ms|seconds|minutes|hours|days|tokens|calls|\$|usd)\b", lower):
+        return "statistic"
+    if any(term in lower for term in ("price", "pricing", "costs", "plan", "$")):
+        return "price"
+    if any(term in lower for term in ("supports", "provides", "offers", "enables", "can ")):
+        return "capability"
+    if any(term in lower for term in ("according to", "argues", "suggests", "proposes", "observes")):
+        return "interpretation"
+    if any(term in lower for term in ("must", "required", "policy", "compliance", "shall")):
+        return "policy"
+    return "unknown"
+
+
+def _claim_role_for_text(text: str, item: EvidenceItem) -> str:
+    lower = text.lower()
+    if item.source_type in {"academic", "repository", "documentation"} and any(
+        term in lower for term in ("implementation", "schema", "workflow", "runtime", "architecture", "pipeline")
+    ):
+        return "technical_design"
+    if any(term in lower for term in ("implementation", "code", "schema", "api", "runtime", "trace")):
+        return "implementation_detail"
+    if any(term in lower for term in ("benchmark", "study", "%", "percent", "measured", "dataset")):
+        return "statistical_data"
+    if any(term in lower for term in ("according to", "argues", "suggests", "we propose")):
+        return "expert_interpretation"
+    if item.source_type in {"primary", "documentation"}:
+        return "official_policy"
+    return "background_context"
+
+
+def _freshness_risk_for_text(text: str) -> Literal["low", "medium", "high", "unknown"]:
+    lower = text.lower()
+    if re.search(r"\b20(?:2[4-9]|3\d)\b", lower) or any(term in lower for term in ("latest", "current", "recent")):
+        return "low"
+    if re.search(r"\b20(?:1\d|2[0-3])\b", lower):
+        return "medium"
+    return "unknown"
+
+
+def _claim_type_priority(claim_type: str) -> int:
+    return {
+        "implementation": 7,
+        "architecture": 7,
+        "tradeoff": 6,
+        "failure": 6,
+        "statistic": 5,
+        "policy": 4,
+        "capability": 3,
+        "interpretation": 2,
+    }.get(claim_type, 1)
+
+
+def _select_evidence_passages(
+    source: Source,
+    body: str,
+    *,
+    plan: ResearchPlan | None,
+    contract: CoverageContract | None,
+    body_cap: int,
+    max_passages: int,
+) -> list[dict[str, object]]:
+    passages = _candidate_passages(body, max_chars=body_cap)
+    if not passages:
+        return [{"text": body[:body_cap], "score": 0.5, "cell_ids": []}]
+    scored: list[dict[str, object]] = []
+    for index, passage in enumerate(passages):
+        score = _score_passage(source, passage, plan=plan, contract=contract)
+        cell_ids = [
+            cell.cell_id
+            for cell in (contract.cells if contract else [])
+            if _text_supports_cell(f"{source.title} {source.url} {passage}", cell)
+        ]
+        scored.append({"text": passage[:body_cap], "score": score, "cell_ids": cell_ids, "index": index})
+    scored.sort(key=lambda item: (float(item["score"]), -int(item["index"])), reverse=True)
+    selected: list[dict[str, object]] = []
+    selected_signatures: set[str] = set()
+    for passage in scored:
+        signature = _passage_signature(str(passage["text"]))
+        if signature in selected_signatures:
+            continue
+        selected.append(passage)
+        selected_signatures.add(signature)
+        if len(selected) >= max_passages:
+            break
+    if not selected:
+        selected = [scored[0]]
+    return selected
+
+
+def _candidate_passages(body: str, *, max_chars: int) -> list[str]:
+    text = re.sub(r"\s+", " ", body or "").strip()
+    if not text:
+        return []
+    raw_parts = [part.strip() for part in re.split(r"(?:\n\s*){2,}", body) if part.strip()]
+    if len(raw_parts) >= 2:
+        passages: list[str] = []
+        for part in raw_parts:
+            normalized = re.sub(r"\s+", " ", part).strip()
+            if len(normalized) > max_chars:
+                passages.extend(_chunk_long_passage(normalized, max_chars=max_chars))
+            elif normalized:
+                passages.append(normalized)
+        return [passage for passage in passages if len(passage) >= 60] or [text[:max_chars]]
+    if len(raw_parts) <= 1:
+        raw_parts = [part.strip() for part in re.split(r"(?<=[.!?])\s+", text) if part.strip()]
+    passages: list[str] = []
+    current = ""
+    target_chars = max(650, min(max_chars, 1400))
+    for part in raw_parts:
+        normalized = re.sub(r"\s+", " ", part).strip()
+        if not normalized:
+            continue
+        if len(normalized) > max_chars:
+            for chunk in _chunk_long_passage(normalized, max_chars=max_chars):
+                passages.append(chunk)
+            current = ""
+            continue
+        if current and len(current) + len(normalized) + 1 > target_chars:
+            passages.append(current)
+            current = normalized
+        else:
+            current = f"{current} {normalized}".strip()
+    if current:
+        passages.append(current)
+    return [passage for passage in passages if len(passage) >= 80] or [text[:max_chars]]
+
+
+def _chunk_long_passage(text: str, *, max_chars: int) -> list[str]:
+    chunks: list[str] = []
+    start = 0
+    stride = max(500, max_chars - 250)
+    while start < len(text):
+        chunk = text[start : start + max_chars].strip()
+        if chunk:
+            chunks.append(chunk)
+        start += stride
+    return chunks
+
+
+def _score_passage(
+    source: Source,
+    passage: str,
+    *,
+    plan: ResearchPlan | None,
+    contract: CoverageContract | None,
+) -> float:
+    haystack = f"{source.title} {source.url} {passage}".lower()
+    query_text = " ".join(
+        [
+            *(plan.questions if plan else []),
+            *(plan.search_queries if plan else []),
+            *([worker.question + " " + worker.query for worker in plan.workers] if plan else []),
+        ]
+    )
+    query_tokens = set(_meaningful_tokens(query_text))
+    query_hits = sum(1 for token in query_tokens if token in haystack)
+    query_score = min(0.30, query_hits * 0.018)
+    cell_matches = 0
+    if contract:
+        cell_matches = sum(1 for cell in contract.cells if _text_supports_cell(haystack, cell))
+    cell_score = min(0.30, cell_matches * 0.04)
+    technical_score = 0.0
+    if plan and plan.research_profile == "technical_architecture":
+        technical_score = score_technical_density(Source(title=source.title, url=source.url, content=passage)) * 0.32
+    type_score = {
+        "academic": 0.12,
+        "repository": 0.11,
+        "documentation": 0.10,
+        "pdf": 0.08,
+        "primary": 0.08,
+    }.get(classify_source_type(source.url), 0.03)
+    length_score = 0.08 if len(passage) > 900 else 0.04 if len(passage) > 350 else 0.0
+    return max(0.0, min(1.0, 0.16 + query_score + cell_score + technical_score + type_score + length_score))
+
+
+def _passage_confidence(source: Source, *, passage_score: float) -> float:
+    base = 0.66 if source.content else 0.50
+    return max(0.45, min(0.9, base + min(0.18, passage_score * 0.18)))
+
+
+def _passage_signature(text: str) -> str:
+    tokens = _meaningful_tokens(text)[:28]
+    return " ".join(tokens)
 
 
 def synthesize_answer(request: AgentV3Request, plan: ResearchPlan, evidence: EvidencePack):
+    claim_context = "\n".join(
+        f"[{claim.source_id}] {claim.claim_type}/{claim.claim_role} "
+        f"(confidence={claim.confidence:.2f}, freshness={claim.freshness_risk}): {claim.text}"
+        for claim in evidence.claims[:40]
+    )
+    if not claim_context:
+        claim_context = "No typed evidence claims were extracted. Lean on the evidence passages and disclose limits."
     evidence_context = "\n\n".join(
         f"[{item.source_id}] {item.title}\n"
         f"Question: {item.question}\n"
@@ -1380,6 +1751,7 @@ def synthesize_answer(request: AgentV3Request, plan: ResearchPlan, evidence: Evi
             f"Research profile: {plan.research_profile}\n\n"
             f"Required deliverable shape:\n{report_contract}\n\n"
             f"Research questions:\n{json.dumps(plan.questions, ensure_ascii=False)}\n\n"
+            f"Typed evidence claims:\n{claim_context}\n\n"
             f"Evidence pack:\n{evidence_context}\n\n"
             f"Known gaps:\n{json.dumps(evidence.gaps, ensure_ascii=False)}"
         ),
@@ -1528,6 +1900,15 @@ def build_gap_followup_workers(request: AgentV3Request, plan: ResearchPlan, evid
     ]
 
 
+def _chunk_urls(urls: list[str], *, size: int) -> list[list[str]]:
+    chunks: list[list[str]] = []
+    for index in range(0, len(urls), max(1, size)):
+        chunk = [url for url in urls[index : index + size] if url]
+        if chunk:
+            chunks.append(chunk)
+    return chunks
+
+
 def verify_claims(answer: str, evidence: EvidencePack) -> ClaimVerification:
     sentences = [part.strip() for part in re.split(r"(?<=[.!?])\s+", answer or "") if len(part.strip()) > 30]
     checked = min(12, len(sentences))
@@ -1608,6 +1989,7 @@ class LeadResearchAgent:
                 state.all_sources,
                 plan=state.plan,
                 max_items=self.budget.max_sources + self.budget.max_deep_links,
+                contract=state.contract,
             )
             update_contract_from_evidence(state)
             self._progress(
@@ -1683,11 +2065,23 @@ class LeadResearchAgent:
             },
         )
         wave_sources: list[Source] = []
+        pending_workers: list[tuple[int, SearchWorkerPlan]] = []
         for index, worker in enumerate(state.plan.workers, start=1):
-            if not self.ledger.can_start_tool("web_search"):
-                break
             if worker.query in state.query_history:
                 continue
+            pending_workers.append((index, worker))
+
+        search_slots = min(
+            MAX_PARALLEL_SEARCH_WORKERS,
+            len(pending_workers),
+            self.ledger.remaining_tool_calls(),
+        )
+        if search_slots <= 0 or not self.ledger.can_start_tool("web_search"):
+            pending_workers = []
+        else:
+            pending_workers = pending_workers[:search_slots]
+
+        for index, worker in pending_workers:
             state.add_queries([worker.query])
             self._progress(
                 "search_worker",
@@ -1701,27 +2095,48 @@ class LeadResearchAgent:
                     "rationale": worker.rationale,
                 },
             )
-            sources, call = self.tools.search_web(worker.query, max_results=worker.max_results)
-            self.ledger.record_tool_call(latency_ms=call.latency_ms, sources_seen=len(sources))
-            state.all_tool_calls.append(call)
-            provider = call.output.get("provider") if isinstance(call.output, dict) else ""
-            _ensure_source_provenance(sources, query=worker.query, provider=str(provider or ""))
-            public_sources = [source for source in sources if is_public_source_url(source.url)]
-            added = state.add_sources(public_sources)
-            wave_sources.extend(added)
-            self._progress(
-                "search_worker_provider",
-                f"Search worker {index} used {provider or 'the configured search provider chain'}.",
-                {
-                    "worker_index": index,
-                    "provider": provider,
-                    "ok": call.ok,
-                    "error": call.error,
-                    "source_count": len(sources),
-                    "public_source_count": len(public_sources),
-                    "budget_ledger": self.ledger.model_dump(mode="json"),
-                },
-            )
+        if pending_workers:
+            max_workers = max(1, min(MAX_PARALLEL_SEARCH_WORKERS, len(pending_workers)))
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {
+                    executor.submit(self.tools.search_web, worker.query, max_results=worker.max_results): (index, worker)
+                    for index, worker in pending_workers
+                }
+                for future in as_completed(futures):
+                    index, worker = futures[future]
+                    try:
+                        sources, call = future.result()
+                    except Exception as exc:
+                        logger.warning("agent_v3 search worker failed for query=%r: %s", worker.query, exc)
+                        sources = []
+                        call = ToolCall(
+                            name="web_search",
+                            input={"query": worker.query, "max_results": worker.max_results},
+                            output={},
+                            ok=False,
+                            error=str(exc),
+                        )
+                    self.ledger.record_tool_call(latency_ms=call.latency_ms, sources_seen=len(sources))
+                    state.all_tool_calls.append(call)
+                    provider = call.output.get("provider") if isinstance(call.output, dict) else ""
+                    _ensure_source_provenance(sources, query=worker.query, provider=str(provider or ""))
+                    public_sources = [source for source in sources if is_public_source_url(source.url)]
+                    added = state.add_sources(public_sources)
+                    wave_sources.extend(added)
+                    self._progress(
+                        "search_worker_provider",
+                        f"Search worker {index} used {provider or 'the configured search provider chain'}.",
+                        {
+                            "worker_index": index,
+                            "provider": provider,
+                            "ok": call.ok,
+                            "error": call.error,
+                            "source_count": len(sources),
+                            "public_source_count": len(public_sources),
+                            "parallel_workers": len(pending_workers),
+                            "budget_ledger": self.ledger.model_dump(mode="json"),
+                        },
+                    )
 
         ranked = rank_sources(wave_sources, state.plan)
         selected = [item.source for item in ranked[: self.ledger.remaining_source_reads()]]
@@ -1749,18 +2164,51 @@ class LeadResearchAgent:
                 for source in selected
                 if source.url
             }
-            self._progress("source_reader", f"Reading {len(read_urls)} selected source page(s).", {"urls": read_urls})
-            extracted, call = self.tools.extract_urls(read_urls, max_chars_per_source=3500)
-            _apply_source_provenance(extracted, provenance_by_url)
-            self.ledger.record_tool_call(latency_ms=call.latency_ms, sources_read=len(read_urls))
-            state.all_tool_calls.append(call)
-            state.add_sources(extracted)
-            provider = call.output.get("provider") if isinstance(call.output, dict) else None
+            read_batches = _chunk_urls(read_urls, size=MAX_URLS_PER_READ_BATCH)
+            read_batches = read_batches[: min(MAX_PARALLEL_READ_BATCHES, self.ledger.remaining_tool_calls())]
             self._progress(
-                "source_reader_result",
-                "Source reader finished extracting source text.",
-                {"ok": call.ok, "error": call.error, "provider": provider, "source_count": len(extracted)},
+                "source_reader",
+                f"Reading {sum(len(batch) for batch in read_batches)} selected source page(s).",
+                {"urls": read_urls, "batch_count": len(read_batches)},
             )
+            if read_batches:
+                max_read_workers = max(1, min(MAX_PARALLEL_READ_BATCHES, len(read_batches)))
+                with ThreadPoolExecutor(max_workers=max_read_workers) as executor:
+                    futures = {
+                        executor.submit(self.tools.extract_urls, batch, max_chars_per_source=3500): batch
+                        for batch in read_batches
+                    }
+                    for future in as_completed(futures):
+                        batch = futures[future]
+                        try:
+                            extracted, call = future.result()
+                        except Exception as exc:
+                            logger.warning("agent_v3 source reader failed for %d url(s): %s", len(batch), exc)
+                            extracted = []
+                            call = ToolCall(
+                                name="read_url",
+                                input={"urls": batch},
+                                output={},
+                                ok=False,
+                                error=str(exc),
+                            )
+                        _apply_source_provenance(extracted, provenance_by_url)
+                        self.ledger.record_tool_call(latency_ms=call.latency_ms, sources_read=len(batch))
+                        state.all_tool_calls.append(call)
+                        state.add_sources(extracted)
+                        provider = call.output.get("provider") if isinstance(call.output, dict) else None
+                        self._progress(
+                            "source_reader_result",
+                            "Source reader finished extracting source text.",
+                            {
+                                "ok": call.ok,
+                                "error": call.error,
+                                "provider": provider,
+                                "source_count": len(extracted),
+                                "batch_size": len(batch),
+                                "budget_ledger": self.ledger.model_dump(mode="json"),
+                            },
+                        )
         self._follow_deep_links(state, [*wave_sources, *selected])
 
     def _follow_deep_links(self, state: ResearchStateStore, sources: list[Source]) -> None:
@@ -1799,9 +2247,11 @@ class LeadResearchAgent:
                 "agent_id": "evidence_binder",
                 "coverage": state.evidence.coverage,
                 "coverage_contract_ratio": state.contract.coverage_ratio(),
+                "claim_count": len(state.evidence.claims),
                 "gaps": state.evidence.gaps,
                 "contradictions": state.evidence.contradictions,
                 "evidence_items": [item.model_dump(mode="json") for item in state.evidence.items],
+                "claims": [claim.model_dump(mode="json") for claim in state.evidence.claims[:20]],
             },
         )
         if not self.ledger.can_start_model("synthesis_agent"):
@@ -1855,6 +2305,7 @@ class LeadResearchAgent:
                 state.all_sources,
                 plan=state.plan,
                 max_items=self.budget.max_sources + self.budget.max_deep_links,
+                contract=state.contract,
             )
             update_contract_from_evidence(state)
             model_response = synthesize_answer(self.request, state.plan, state.evidence)
@@ -2023,21 +2474,16 @@ def _apply_source_provenance(sources: list[Source], provenance_by_url: dict[str,
 
 def _synthesis_report_contract(profile: ResearchProfile, request: AgentV3Request) -> str:
     if profile == "technical_architecture":
-        return "\n".join(
-            [
-                "Produce a detailed architectural report with these sections:",
-                "1. Executive summary and scope",
-                "2. Reference architecture and component map",
-                "3. Lead-agent orchestration and planning loop",
-                "4. Search/source acquisition workers and provider strategy",
-                "5. Source reading, deep-link crawling, and artifact handling",
-                "6. Evidence model, coverage contract, citation map, and contradiction handling",
-                "7. Reflection loop, gap repair, judge/critic gates, and termination rules",
-                "8. Runtime durability, event streaming, budgets, observability, and trace model",
-                "9. Guardrails, security controls, and failure modes",
-                "10. Implementation roadmap and trade-offs",
-                "Use [S#] citations throughout. Avoid generic definitions unless they support a concrete design decision.",
-            ]
+        return (
+            "Produce a detailed architectural report. "
+            "Derive the section structure from the evidence — use the components, workflows, "
+            "and architectural patterns that actually appear in the sources, not a generic template. "
+            "Every section must be grounded in specific evidence with [S#] citations. "
+            "Include concrete implementation details: data models, control flow, state transitions, "
+            "failure handling, trade-offs, and design decisions. "
+            "Add a compact ASCII or text diagram where it clarifies a component relationship or data flow. "
+            "Where sources conflict or leave gaps, say so explicitly rather than filling with generic description. "
+            "Avoid restating definitions unless the definition itself contains a design decision worth citing."
         )
     if request.output_format in {"docx", "markdown"} or "report" in request.message.lower():
         return "Produce a structured report with clear headings, evidence-backed findings, gaps, and recommendations."
@@ -2046,7 +2492,9 @@ def _synthesis_report_contract(profile: ResearchProfile, request: AgentV3Request
 
 def _synthesis_token_budget(request: AgentV3Request, plan: ResearchPlan) -> int:
     if plan.research_profile == "technical_architecture" and request.research_level == "deep":
-        return 6500 if request.quality_mode == "executive" else 5200
+        # Deep technical report: needs room for 10 detailed sections with citations,
+        # diagrams, trade-off tables, and implementation specifics.
+        return 8000 if request.quality_mode == "executive" else 7000
     if request.output_format in {"docx", "markdown"} or "report" in request.message.lower():
         return 4200 if request.quality_mode == "executive" else 3200
     return 1800 if request.quality_mode == "executive" else 1200
@@ -2079,10 +2527,17 @@ def is_public_source_url(url: str) -> bool:
 
 
 def source_context_from_evidence(evidence: EvidencePack) -> str:
-    return "\n\n".join(
+    claim_context = "\n".join(
+        f"[{claim.source_id}] {claim.claim_type}/{claim.claim_role}: {claim.text}"
+        for claim in evidence.claims[:30]
+    )
+    passage_context = "\n\n".join(
         f"[{item.source_id}] {item.title}\nURL: {item.url}\n{item.evidence}"
         for item in evidence.items
     )
+    if claim_context and passage_context:
+        return f"Typed evidence claims:\n{claim_context}\n\nEvidence passages:\n{passage_context}"
+    return passage_context
 
 
 def _fallback_plan(request: AgentV3Request, goal: ResearchGoal | None = None) -> ResearchPlan:
@@ -2271,16 +2726,51 @@ def _tech_arch_grounding_term(subject: str) -> str:
 
 
 def _evidence_supports_cell(item: EvidenceItem, cell: CoverageCell) -> bool:
-    haystack = f"{item.title} {item.url} {item.evidence}".lower()
-    subject_tokens = _meaningful_tokens(cell.subject)
-    dimension_tokens = _meaningful_tokens(cell.dimension)
-    subject_hit = any(token in haystack for token in subject_tokens) if subject_tokens else False
-    dimension_hit = any(token in haystack for token in dimension_tokens) if dimension_tokens else False
+    if cell.cell_id in item.supports_cells:
+        return True
+    return _text_supports_cell(f"{item.title} {item.url} {item.evidence}", cell)
+
+
+def _text_supports_cell(text: str, cell: CoverageCell) -> bool:
+    haystack = text.lower()
+    subject_terms = _cell_terms(cell.subject)
+    dimension_terms = _cell_terms(cell.dimension)
+    subject_hit = any(term in haystack for term in subject_terms) if subject_terms else False
+    dimension_hit = any(term in haystack for term in dimension_terms) if dimension_terms else False
     if subject_hit and dimension_hit:
         return True
     if subject_hit and cell.dimension.lower() in {"evidence", "coverage", "capabilities"}:
         return True
+    if dimension_hit and any(term in haystack for term in ("architecture", "agent", "research", "system")):
+        return True
     return False
+
+
+def _cell_terms(value: str) -> list[str]:
+    tokens = _meaningful_tokens(value)
+    lowered = value.lower()
+    aliases: list[str] = []
+    alias_groups = [
+        (("lead", "orchestrat"), ["orchestrator", "supervisor", "controller", "coordinator", "planner"]),
+        (("planning", "coverage"), ["plan", "planning", "decomposition", "coverage", "evaluation", "query"]),
+        (("search", "provider"), ["search", "retrieval", "provider", "browser", "crawl", "query"]),
+        (("source", "reading", "deep-link"), ["source", "extract", "crawl", "read", "parse", "document"]),
+        (("evidence", "citation"), ["evidence", "citation", "grounding", "provenance", "attribution", "source"]),
+        (("reflection", "gap", "repair"), ["reflection", "critic", "judge", "repair", "gap", "feedback"]),
+        (("synthesis", "judge", "quality"), ["synthesis", "generate", "judge", "critic", "quality", "evaluation"]),
+        (("runtime", "budget", "observability"), ["runtime", "state", "trace", "telemetry", "budget", "cost", "latency", "durable"]),
+        (("guardrail", "security"), ["guardrail", "security", "safety", "policy", "permission", "validation"]),
+        (("responsibility",), ["role", "responsibility", "function", "owns", "manage"]),
+        (("implementation", "pattern"), ["implementation", "architecture", "design", "pattern", "component"]),
+        (("data", "model"), ["schema", "state", "data", "model", "store", "object"]),
+        (("workflow",), ["workflow", "flow", "pipeline", "process", "loop", "sequence"]),
+        (("failure", "handling"), ["failure", "error", "retry", "fallback", "timeout", "recovery"]),
+        (("trade",), ["trade-off", "tradeoff", "latency", "cost", "quality", "accuracy", "complexity"]),
+    ]
+    for triggers, terms in alias_groups:
+        if any(trigger in lowered for trigger in triggers):
+            aliases.extend(terms)
+    return _dedupe([*tokens, *aliases])
 
 
 def _meaningful_tokens(value: str) -> list[str]:

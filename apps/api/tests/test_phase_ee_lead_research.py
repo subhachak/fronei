@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from types import SimpleNamespace
 
 from app.services.agent_v3.models import AgentV3Request, Source, ToolCall
@@ -173,6 +174,100 @@ def test_evidence_preserves_source_provenance():
     assert evidence.items[0].provider == "Tavily"
 
 
+def test_bind_evidence_selects_relevant_passage_not_intro():
+    from app.services.agent_v3.research_subtree import CoverageCell, CoverageContract, ResearchPlan, bind_evidence
+
+    intro = " ".join(["This introductory section defines general artificial intelligence concepts."] * 35)
+    relevant = (
+        "The lead agent orchestrator owns the planning loop, dispatches search workers, "
+        "tracks workflow state, records telemetry traces, manages budget ledger limits, "
+        "and retries failed source readers through recovery policies."
+    )
+    evidence = bind_evidence(
+        [
+            Source(
+                title="Agent runtime paper",
+                url="https://arxiv.org/html/2506.18959v1",
+                content=f"{intro}\n\n{relevant}",
+            )
+        ],
+        ResearchPlan(
+            research_profile="technical_architecture",
+            questions=["lead agent orchestration workflow state budget telemetry"],
+        ),
+        contract=CoverageContract(
+            cells=[
+                CoverageCell(subject="Lead agent and orchestration", dimension="workflow"),
+                CoverageCell(subject="Runtime durability, budget ledger, and observability", dimension="data model"),
+            ]
+        ),
+        max_items=2,
+    )
+
+    combined = "\n".join(item.evidence for item in evidence.items)
+    assert "lead agent orchestrator" in combined.lower()
+    assert "budget ledger" in combined.lower()
+    assert "general artificial intelligence concepts" not in evidence.items[0].evidence.lower()
+
+
+def test_bind_evidence_creates_passage_level_items_for_technical_sources():
+    from app.services.agent_v3.research_subtree import CoverageCell, CoverageContract, ResearchPlan, bind_evidence
+
+    content = "\n\n".join(
+        [
+            "The search worker layer handles provider routing, query planning, source retrieval, and crawl scheduling.",
+            "The evidence binder stores citation provenance, source identifiers, quoted passages, and coverage-cell mappings.",
+            "The judge loop checks synthesis quality, detects gaps, requests repair, and enforces termination rules.",
+        ]
+    )
+    evidence = bind_evidence(
+        [Source(title="Research agent implementation", url="https://github.com/example/research-agent", content=content)],
+        ResearchPlan(research_profile="technical_architecture", questions=["provider strategy evidence binder judge loop"]),
+        contract=CoverageContract(
+            cells=[
+                CoverageCell(subject="Search workers and provider strategy", dimension="implementation pattern"),
+                CoverageCell(subject="Evidence binder and citation map", dimension="data model"),
+                CoverageCell(subject="Synthesis, judge, and quality gates", dimension="workflow"),
+            ]
+        ),
+        max_items=3,
+    )
+
+    assert len(evidence.items) == 3
+    assert all(item.supports_cells for item in evidence.items)
+    assert "citation provenance" in "\n".join(item.evidence for item in evidence.items)
+
+
+def test_bind_evidence_extracts_typed_technical_claims():
+    from app.services.agent_v3.research_subtree import ResearchPlan, bind_evidence
+
+    evidence = bind_evidence(
+        [
+            Source(
+                title="Research runtime implementation",
+                url="https://github.com/example/research-runtime",
+                content=(
+                    "The orchestrator stores workflow state in a durable runtime trace and dispatches search "
+                    "workers through a bounded concurrency queue. The implementation records tool call latency, "
+                    "provider choice, source provenance, and budget ledger decisions for every stage. "
+                    "A failure recovery policy retries transient source-reader failures and stops when the "
+                    "elapsed-time budget is exhausted."
+                ),
+            )
+        ],
+        ResearchPlan(
+            research_profile="technical_architecture",
+            questions=["orchestrator workflow state implementation budget ledger failure recovery"],
+        ),
+        max_items=3,
+    )
+
+    assert evidence.claims
+    assert {claim.claim_type for claim in evidence.claims} & {"architecture", "implementation", "failure"}
+    assert any(claim.claim_role in {"technical_design", "implementation_detail"} for claim in evidence.claims)
+    assert all(claim.source_id.startswith("S") for claim in evidence.claims)
+
+
 def test_reflect_sufficient_when_fully_covered(monkeypatch):
     from app.services.agent_v3 import model_client
     from app.services.agent_v3.research_subtree import (
@@ -305,14 +400,85 @@ def test_technical_architecture_synthesis_uses_report_budget(monkeypatch):
                 url="https://github.com/example/agent-research",
                 evidence="orchestrator planner workflow evidence schema guardrails runtime trace",
             )
-        ]
+        ],
+        claims=[
+            {
+                "source_id": "S1",
+                "text": "The implementation records runtime trace events for each worker and tool call.",
+                "claim_type": "implementation",
+                "claim_role": "implementation_detail",
+                "confidence": 0.82,
+            }
+        ],
     )
 
     synthesize_answer(request, plan, evidence)
 
     assert captured["max_tokens"] >= 5000
-    assert "Reference architecture and component map" in captured["user"]
+    assert "Typed evidence claims" in captured["user"]
+    assert "implementation/implementation_detail" in captured["user"]
+    assert "Derive the section structure from the evidence" in captured["user"]
+    assert "data models, control flow, state transitions" in captured["user"]
     assert "real architectural report" in captured["system"]
+
+
+def test_lead_research_dispatches_search_workers_in_parallel(monkeypatch):
+    from app.services.agent_v3.research_subtree import (
+        CoverageContract,
+        LeadResearchAgent,
+        ResearchBrief,
+        ResearchBudget,
+        ResearchBudgetLedger,
+        ResearchPlan,
+        ResearchStateStore,
+        SearchWorkerPlan,
+    )
+
+    class SlowSearchTools:
+        def search_web(self, query, max_results=4):
+            time.sleep(0.12)
+            return [Source(title=query, url=f"https://example.com/{query}", snippet=query)], ToolCall(
+                name="web_search",
+                input={"query": query},
+                output={"provider": "SlowFake"},
+                ok=True,
+            )
+
+        def extract_urls(self, urls, max_chars_per_source=3500):
+            return [Source(title=url, url=url, content=f"{url} implementation workflow trace budget") for url in urls], ToolCall(
+                name="read_url",
+                input={"urls": urls},
+                output={"provider": "FakeExtract"},
+                ok=True,
+            )
+
+    plan = ResearchPlan(
+        research_profile="technical_architecture",
+        workers=[
+            SearchWorkerPlan(question="q1", query="alpha"),
+            SearchWorkerPlan(question="q2", query="beta"),
+            SearchWorkerPlan(question="q3", query="gamma"),
+        ],
+        max_sources=3,
+    )
+    state = ResearchStateStore(
+        brief=ResearchBrief(objective="parallel test", source="heuristic"),
+        contract=CoverageContract(cells=[]),
+        plan=plan,
+        budget_ledger=ResearchBudgetLedger(
+            budget=ResearchBudget(max_search_workers=3, max_sources=3, max_tool_calls=6, max_deep_links=0)
+        ),
+    )
+    agent = LeadResearchAgent(AgentV3Request(message="parallel test", research_level="deep"), SlowSearchTools())
+    agent.ledger = state.budget_ledger
+
+    started = time.monotonic()
+    agent._dispatch_worker_wave(state)
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 0.30
+    assert len(state.all_tool_calls) >= 2
+    assert len(state.all_sources) >= 3
 
 
 def test_runtime_routes_deep_to_lead_loop(monkeypatch):

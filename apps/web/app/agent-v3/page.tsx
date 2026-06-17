@@ -19,6 +19,7 @@ import {
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
+import styles from './page.module.css'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
 const LIBRARY_KEY = 'fronei-agent-v3-studio-library'
@@ -199,17 +200,17 @@ export default function AgentV3Page() {
   }
 
   return (
-    <main className="min-h-screen bg-[#f4f1ea] text-[#162033]">
-      <div className="mx-auto flex min-h-screen w-full max-w-[1500px] flex-col lg:grid lg:grid-cols-[280px_minmax(0,1fr)_340px]">
+    <main className={styles.root}>
+      <div className={styles.shell}>
         <MobileTopBar mobileView={mobileView} setMobileView={setMobileView} running={running} />
 
-        <aside className={`${mobileView === 'library' ? 'flex' : 'hidden'} min-h-[calc(100vh-64px)] flex-col border-r border-[#ded6c9] bg-[#fbfaf6] px-4 py-4 lg:flex lg:min-h-screen lg:px-5 lg:py-6`}>
+        <aside className={`${styles.libraryPane} ${mobileView === 'library' ? styles.mobileVisible : styles.mobileHidden}`}>
           <StudioLibrary library={library} latestArtifact={latestArtifact} downloadArtifact={downloadArtifact} />
         </aside>
 
-        <section className={`${mobileView === 'work' ? 'flex' : 'hidden'} min-h-[calc(100vh-64px)] flex-col lg:flex lg:min-h-screen`}>
+        <section className={`${styles.workPane} ${mobileView === 'work' ? styles.mobileVisible : styles.mobileHidden}`}>
           <WorkbenchHeader running={running} result={result} />
-          <div className="flex min-h-0 flex-1 flex-col gap-4 px-4 pb-28 pt-4 sm:px-6 lg:overflow-y-auto lg:px-8 lg:pb-6">
+          <div className={styles.workScroll}>
             <Composer
               message={message}
               setMessage={setMessage}
@@ -221,7 +222,7 @@ export default function AgentV3Page() {
               canRun={canRun}
               run={run}
             />
-            {error && <div className="border-l-4 border-[#d95b43] bg-[#fff7f3] px-4 py-3 text-sm text-[#7a2e22]">{error}</div>}
+            {error && <div className={styles.errorBox}>{error}</div>}
             <SuggestionStrip suggestions={SUGGESTIONS} setMessage={setMessage} />
             <Timeline
               events={activeEvents}
@@ -236,7 +237,7 @@ export default function AgentV3Page() {
           </div>
         </section>
 
-        <aside className={`${mobileView === 'context' ? 'flex' : 'hidden'} min-h-[calc(100vh-64px)] flex-col border-l border-[#ded6c9] bg-[#f8f6f0] px-4 py-4 lg:flex lg:min-h-screen lg:px-5 lg:py-6`}>
+        <aside className={`${styles.contextPane} ${mobileView === 'context' ? styles.mobileVisible : styles.mobileHidden}`}>
           <ContextRail result={result} events={events} sources={sources} latestArtifact={latestArtifact} downloadArtifact={downloadArtifact} />
         </aside>
       </div>
@@ -252,26 +253,26 @@ function MobileTopBar({ mobileView, setMobileView, running }: { mobileView: Mobi
   ]
 
   return (
-    <header className="sticky top-0 z-20 border-b border-[#ded6c9] bg-[#fbfaf6]/95 px-3 py-3 backdrop-blur lg:hidden">
-      <div className="mb-3 flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <span className="grid h-9 w-9 place-items-center rounded-full bg-[#162033] text-white"><Sparkles className="h-4 w-4" /></span>
+    <header className={styles.mobileTop}>
+      <div className={styles.mobileBrandRow}>
+        <div className={styles.brandLockup}>
+          <span className={styles.brandMark}><Sparkles size={16} /></span>
           <div>
-            <p className="text-[11px] font-semibold uppercase text-[#6c766f]">Fronei Studio</p>
-            <p className="text-sm font-semibold">Agent v3</p>
+            <p className={styles.overline}>Fronei Studio</p>
+            <p className={styles.brandTitle}>Agent v3</p>
           </div>
         </div>
-        {running && <span className="flex items-center gap-2 rounded-full bg-[#e5f2ef] px-3 py-1 text-xs font-medium text-[#146152]"><Loader2 className="h-3.5 w-3.5 animate-spin" /> Working</span>}
+        {running && <span className={styles.runningPill}><Loader2 size={14} className={styles.spin} /> Working</span>}
       </div>
-      <nav className="grid grid-cols-3 gap-2 rounded-full bg-[#ebe4d8] p-1">
+      <nav className={styles.mobileNav}>
         {items.map(([id, Icon, label]) => (
           <button
             key={id}
             type="button"
             onClick={() => setMobileView(id)}
-            className={`flex items-center justify-center gap-1.5 rounded-full px-2 py-2 text-xs font-semibold ${mobileView === id ? 'bg-[#162033] text-white' : 'text-[#59645f]'}`}
+            className={`${styles.mobileNavButton} ${mobileView === id ? styles.mobileNavButtonActive : ''}`}
           >
-            <Icon className="h-3.5 w-3.5" />
+            <Icon size={14} />
             {label}
           </button>
         ))}
@@ -291,50 +292,50 @@ function StudioLibrary({
 }) {
   return (
     <>
-      <div className="mb-5 flex items-center justify-between">
+      <div className={styles.sectionHeader}>
         <div>
-          <p className="text-xs font-semibold uppercase text-[#79827c]">Studio</p>
-          <h1 className="text-xl font-semibold">Work library</h1>
+          <p className={styles.overline}>Studio</p>
+          <h1 className={styles.sectionTitle}>Work library</h1>
         </div>
-        <span className="grid h-10 w-10 place-items-center rounded-full bg-[#162033] text-white"><Archive className="h-4 w-4" /></span>
+        <span className={styles.sectionIcon}><Archive size={16} /></span>
       </div>
 
       {latestArtifact && (
         <button
           type="button"
           onClick={() => downloadArtifact(latestArtifact)}
-          className="mb-5 flex w-full items-center gap-3 border border-[#d8cdbc] bg-[#fffdf8] p-3 text-left"
+          className={styles.artifactButton}
         >
-          <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-[#e9f3ef] text-[#146152]"><Download className="h-4 w-4" /></span>
-          <span className="min-w-0 flex-1">
-            <span className="block truncate text-sm font-semibold">{latestArtifact.filename}</span>
-            <span className="block text-xs text-[#79827c]">Latest artifact</span>
+          <span className={styles.artifactIcon}><Download size={16} /></span>
+          <span className={styles.minZero}>
+            <span className={styles.truncateStrong}>{latestArtifact.filename}</span>
+            <span className={styles.mutedSmall}>Latest artifact</span>
           </span>
         </button>
       )}
 
-      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
+      <div className={styles.libraryList}>
         {library.length === 0 && (
-          <div className="border border-dashed border-[#d8cdbc] px-4 py-6 text-sm text-[#6f7973]">
+          <div className={styles.emptyState}>
             Finished work will appear here.
           </div>
         )}
         {library.map(item => (
-          <div key={item.id} className="border border-[#ded6c9] bg-white/70 p-3">
-            <div className="flex items-start gap-3">
-              <span className="mt-0.5 grid h-8 w-8 shrink-0 place-items-center rounded-full bg-[#f1e7d8] text-[#8a5a18]"><FileText className="h-4 w-4" /></span>
-              <div className="min-w-0 flex-1">
-                <p className="line-clamp-2 text-sm font-semibold leading-5">{item.title}</p>
-                <p className="mt-1 text-xs text-[#79827c]">{item.route} | {item.sourceCount} sources</p>
+          <div key={item.id} className={styles.workCard}>
+            <div className={styles.cardRowTop}>
+              <span className={styles.cardIcon}><FileText size={16} /></span>
+              <div className={styles.minZero}>
+                <p className={styles.cardTitle}>{item.title}</p>
+                <p className={styles.cardMeta}>{item.route} | {item.sourceCount} sources</p>
               </div>
             </div>
             {item.artifacts.length > 0 && (
               <button
                 type="button"
                 onClick={() => downloadArtifact(item.artifacts[0])}
-                className="mt-3 flex w-full items-center justify-center gap-2 border border-[#c8bba8] px-3 py-2 text-xs font-semibold text-[#162033]"
+                className={styles.secondaryButton}
               >
-                <Download className="h-3.5 w-3.5" />
+                <Download size={14} />
                 Download
               </button>
             )}
@@ -347,16 +348,16 @@ function StudioLibrary({
 
 function WorkbenchHeader({ running, result }: { running: boolean; result: AgentResult | null }) {
   return (
-    <header className="hidden border-b border-[#ded6c9] bg-[#f4f1ea]/95 px-8 py-5 backdrop-blur lg:block">
-      <div className="flex items-center justify-between gap-4">
+    <header className={styles.desktopHeader}>
+      <div className={styles.headerInner}>
         <div>
-          <p className="text-xs font-semibold uppercase text-[#79827c]">Research and work-product studio</p>
-          <h2 className="mt-1 text-2xl font-semibold">Workbench</h2>
+          <p className={styles.overline}>Research and work-product studio</p>
+          <h2 className={styles.headerTitle}>Workbench</h2>
         </div>
-        <div className="flex items-center gap-3">
-          {result && <span className="rounded-full bg-[#ebe4d8] px-3 py-1.5 text-xs font-semibold text-[#53615a]">{result.route} | {result.latency_ms ?? 0}ms</span>}
-          <span className={`flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-semibold ${running ? 'bg-[#e5f2ef] text-[#146152]' : 'bg-[#fffdf8] text-[#53615a]'}`}>
-            {running ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
+        <div className={styles.headerActions}>
+          {result && <span className={styles.routePill}>{result.route} | {result.latency_ms ?? 0}ms</span>}
+          <span className={`${styles.statusPill} ${running ? styles.statusActive : ''}`}>
+            {running ? <Loader2 size={14} className={styles.spin} /> : <CheckCircle2 size={14} />}
             {running ? 'Working' : 'Ready'}
           </span>
         </div>
@@ -387,15 +388,15 @@ function Composer({
   run: () => void
 }) {
   return (
-    <section className="border border-[#ded6c9] bg-[#fffdf8] p-3 shadow-[0_24px_70px_rgba(49,39,25,0.08)] sm:p-4">
+    <section className={styles.composer}>
       <textarea
         value={message}
         onChange={event => setMessage(event.target.value)}
-        className="min-h-40 w-full resize-none bg-transparent p-2 text-base leading-7 text-[#162033] outline-none placeholder:text-[#9aa197] sm:min-h-32"
+        className={styles.textarea}
         placeholder="Give Fronei a task..."
       />
-      <div className="mt-3 flex flex-col gap-3 border-t border-[#ebe4d8] pt-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="grid grid-cols-2 gap-2 sm:flex">
+      <div className={styles.composerFooter}>
+        <div className={styles.selectGrid}>
           <StudioSelect label="Quality" value={qualityMode} onChange={value => setQualityMode(value as QualityMode)} options={['draft', 'standard', 'executive']} />
           <StudioSelect label="Output" value={outputFormat} onChange={value => setOutputFormat(value as OutputFormat)} options={['chat', 'markdown', 'docx']} />
         </div>
@@ -403,9 +404,9 @@ function Composer({
           type="button"
           onClick={run}
           disabled={!canRun}
-          className="flex min-h-12 items-center justify-center gap-2 bg-[#162033] px-5 py-3 text-sm font-semibold text-white transition disabled:cursor-not-allowed disabled:bg-[#a8afa7]"
+          className={styles.primaryButton}
         >
-          {running ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+          {running ? <Loader2 size={16} className={styles.spin} /> : <Send size={16} />}
           {running ? 'Working' : 'Start'}
         </button>
       </div>
@@ -415,9 +416,9 @@ function Composer({
 
 function StudioSelect({ label, value, onChange, options }: { label: string; value: string; onChange: (value: string) => void; options: string[] }) {
   return (
-    <label className="flex items-center justify-between gap-2 border border-[#ded6c9] bg-[#fbfaf6] px-3 py-2 text-xs font-semibold text-[#59645f] sm:min-w-36">
+    <label className={styles.studioSelect}>
       <span>{label}</span>
-      <select value={value} onChange={event => onChange(event.target.value)} className="bg-transparent text-right text-xs font-semibold text-[#162033] outline-none">
+      <select value={value} onChange={event => onChange(event.target.value)} className={styles.selectInput}>
         {options.map(option => <option key={option} value={option}>{option}</option>)}
       </select>
     </label>
@@ -426,13 +427,13 @@ function StudioSelect({ label, value, onChange, options }: { label: string; valu
 
 function SuggestionStrip({ suggestions, setMessage }: { suggestions: string[]; setMessage: (message: string) => void }) {
   return (
-    <div className="flex snap-x gap-2 overflow-x-auto pb-1">
+    <div className={styles.suggestionStrip}>
       {suggestions.map(suggestion => (
         <button
           key={suggestion}
           type="button"
           onClick={() => setMessage(suggestion)}
-          className="snap-start whitespace-nowrap border border-[#ded6c9] bg-[#fbfaf6] px-3 py-2 text-xs font-medium text-[#53615a]"
+          className={styles.suggestionButton}
         >
           {suggestion}
         </button>
@@ -461,23 +462,23 @@ function Timeline({
   downloadArtifact: (artifact: Artifact) => void
 }) {
   return (
-    <section className="flex flex-col gap-4">
-      <div className="border-l-2 border-[#d8cdbc] pl-4">
-        <div className="mb-4 flex items-start gap-3">
-          <span className="mt-1 grid h-9 w-9 shrink-0 place-items-center rounded-full bg-[#162033] text-white"><Sparkles className="h-4 w-4" /></span>
+    <section className={styles.timeline}>
+      <div className={styles.timelineMain}>
+        <div className={styles.companionRow}>
+          <span className={styles.companionMark}><Sparkles size={16} /></span>
           <div>
-            <p className="text-sm font-semibold">Fronei is with you.</p>
-            <p className="mt-1 text-sm leading-6 text-[#647069]">
+            <p className={styles.companionTitle}>Fronei is with you.</p>
+            <p className={styles.companionText}>
               {running ? 'I am turning the task into grounded work.' : result ? 'The work is ready.' : 'Start a task when you are ready.'}
             </p>
           </div>
         </div>
 
         {confidenceCues.length > 0 && (
-          <div className="mb-4 grid gap-2 sm:grid-cols-2">
+          <div className={styles.cueGrid}>
             {confidenceCues.map(cue => (
-              <div key={cue} className="flex items-center gap-2 bg-[#eaf2ee] px-3 py-2 text-sm text-[#205d51]">
-                <CheckCircle2 className="h-4 w-4 shrink-0" />
+              <div key={cue} className={styles.cueCard}>
+                <CheckCircle2 size={16} />
                 {cue}
               </div>
             ))}
@@ -485,19 +486,19 @@ function Timeline({
         )}
 
         {result && (
-          <div className="bg-[#fffdf8] px-4 py-4">
-            <p className="mb-2 text-xs font-semibold uppercase text-[#79827c]">Result</p>
-            <p className="whitespace-pre-wrap text-sm leading-7 text-[#273348]">{result.answer}</p>
+          <div className={styles.resultBox}>
+            <p className={styles.resultLabel}>Result</p>
+            <p className={styles.resultText}>{result.answer}</p>
             {result.artifacts?.length ? (
-              <div className="mt-4 flex flex-wrap gap-2">
+              <div className={styles.artifactRow}>
                 {result.artifacts.map(artifact => (
                   <button
                     key={artifact.filename}
                     type="button"
                     onClick={() => downloadArtifact(artifact)}
-                    className="flex items-center gap-2 bg-[#162033] px-4 py-2 text-sm font-semibold text-white"
+                    className={styles.darkButton}
                   >
-                    <Download className="h-4 w-4" />
+                    <Download size={16} />
                     {artifact.filename}
                   </button>
                 ))}
@@ -510,23 +511,23 @@ function Timeline({
       <button
         type="button"
         onClick={() => setTraceOpen(!traceOpen)}
-        className="flex items-center justify-between border border-[#ded6c9] bg-[#fbfaf6] px-4 py-3 text-left text-sm font-semibold"
+        className={styles.traceToggle}
       >
         <span>{events.length ? `${events.length} studio events` : 'Studio trace'}</span>
-        <ChevronDown className={`h-4 w-4 transition ${traceOpen ? 'rotate-180' : ''}`} />
+        <ChevronDown size={16} className={traceOpen ? styles.rotated : ''} />
       </button>
 
       {traceOpen && (
-        <div className="flex flex-col gap-2">
-          {events.length === 0 && <p className="text-sm text-[#79827c]">No events yet.</p>}
+        <div className={styles.traceList}>
+          {events.length === 0 && <p className={styles.mutedText}>No events yet.</p>}
           {events.map((event, index) => (
-            <div key={`${event.stage}-${index}`} className="border border-[#e1d8ca] bg-white/70 p-3">
-              <p className="text-[11px] font-semibold uppercase text-[#79827c]">{event.stage}</p>
-              <p className="mt-1 text-sm">{event.message}</p>
+            <div key={`${event.stage}-${index}`} className={styles.traceEvent}>
+              <p className={styles.traceStage}>{event.stage}</p>
+              <p className={styles.traceMessage}>{event.message}</p>
               {eventChips(event).length ? (
-                <div className="mt-2 flex flex-wrap gap-2">
+                <div className={styles.chipRow}>
                   {eventChips(event).map(chip => (
-                    <span key={chip} className="bg-[#f1e7d8] px-2 py-1 text-[11px] font-medium text-[#6d5838]">{chip}</span>
+                    <span key={chip} className={styles.traceChip}>{chip}</span>
                   ))}
                 </div>
               ) : null}
@@ -554,31 +555,31 @@ function ContextRail({
   const providerEvents = events.filter(event => event.stage === 'search_worker_provider')
   return (
     <>
-      <div className="mb-5">
-        <p className="text-xs font-semibold uppercase text-[#79827c]">Context</p>
-        <h2 className="mt-1 text-xl font-semibold">Current work</h2>
+      <div className={styles.sectionHeaderPlain}>
+        <p className={styles.overline}>Context</p>
+        <h2 className={styles.sectionTitle}>Current work</h2>
       </div>
 
-      <div className="flex flex-col gap-4 overflow-y-auto">
-        <section className="border border-[#ded6c9] bg-[#fffdf8] p-4">
-          <div className="mb-3 flex items-center gap-2">
-            <Clock3 className="h-4 w-4 text-[#ad7a2a]" />
-            <h3 className="text-sm font-semibold">Status</h3>
+      <div className={styles.contextList}>
+        <section className={styles.contextCard}>
+          <div className={styles.contextCardHeader}>
+            <Clock3 size={16} />
+            <h3>Status</h3>
           </div>
-          <p className="text-sm text-[#59645f]">{result ? `Completed as ${result.route}` : events.length ? 'In progress' : 'Waiting'}</p>
-          {result?.model_used && <p className="mt-2 text-xs text-[#79827c]">{result.model_used}</p>}
+          <p className={styles.contextBody}>{result ? `Completed as ${result.route}` : events.length ? 'In progress' : 'Waiting'}</p>
+          {result?.model_used && <p className={styles.mutedSmall}>{result.model_used}</p>}
         </section>
 
         {providerEvents.length > 0 && (
-          <section className="border border-[#ded6c9] bg-[#fffdf8] p-4">
-            <div className="mb-3 flex items-center gap-2">
-              <Search className="h-4 w-4 text-[#146152]" />
-              <h3 className="text-sm font-semibold">Search providers</h3>
+          <section className={styles.contextCard}>
+            <div className={styles.contextCardHeader}>
+              <Search size={16} />
+              <h3>Search providers</h3>
             </div>
-            <div className="flex flex-col gap-2">
+            <div className={styles.providerList}>
               {providerEvents.map((event, index) => (
-                <div key={`${event.message}-${index}`} className="flex items-center justify-between gap-3 text-sm">
-                  <span className="text-[#59645f]">Worker {String(event.data?.worker_index || index + 1)}</span>
+                <div key={`${event.message}-${index}`} className={styles.providerRow}>
+                  <span>Worker {String(event.data?.worker_index || index + 1)}</span>
                   <strong>{String(event.data?.provider || 'none')}</strong>
                 </div>
               ))}
@@ -587,37 +588,37 @@ function ContextRail({
         )}
 
         {latestArtifact && (
-          <section className="border border-[#ded6c9] bg-[#fffdf8] p-4">
-            <div className="mb-3 flex items-center gap-2">
-              <FileText className="h-4 w-4 text-[#8a5a18]" />
-              <h3 className="text-sm font-semibold">Artifact</h3>
+          <section className={styles.contextCard}>
+            <div className={styles.contextCardHeader}>
+              <FileText size={16} />
+              <h3>Artifact</h3>
             </div>
-            <p className="truncate text-sm font-semibold">{latestArtifact.filename}</p>
+            <p className={styles.truncateStrong}>{latestArtifact.filename}</p>
             <button
               type="button"
               onClick={() => downloadArtifact(latestArtifact)}
-              className="mt-3 flex w-full items-center justify-center gap-2 bg-[#162033] px-3 py-2 text-sm font-semibold text-white"
+              className={styles.fullDarkButton}
             >
-              <Download className="h-4 w-4" />
+              <Download size={16} />
               Download
             </button>
           </section>
         )}
 
-        <section className="border border-[#ded6c9] bg-[#fffdf8] p-4">
-          <div className="mb-3 flex items-center gap-2">
-            <BookOpen className="h-4 w-4 text-[#455f9a]" />
-            <h3 className="text-sm font-semibold">Sources</h3>
+        <section className={styles.contextCard}>
+          <div className={styles.contextCardHeader}>
+            <BookOpen size={16} />
+            <h3>Sources</h3>
           </div>
-          {sources.length === 0 && <p className="text-sm text-[#79827c]">No sources attached.</p>}
-          <div className="flex flex-col gap-3">
+          {sources.length === 0 && <p className={styles.mutedText}>No sources attached.</p>}
+          <div className={styles.sourceList}>
             {sources.map((source, index) => (
-              <a key={`${source.url}-${index}`} href={source.url} target="_blank" rel="noreferrer" className="group border-t border-[#ebe4d8] pt-3 first:border-t-0 first:pt-0">
-                <span className="flex items-start justify-between gap-2">
-                  <span className="line-clamp-2 text-sm font-semibold text-[#162033]">{source.title || source.url}</span>
-                  <ArrowUpRight className="h-3.5 w-3.5 shrink-0 text-[#79827c] group-hover:text-[#162033]" />
+              <a key={`${source.url}-${index}`} href={source.url} target="_blank" rel="noreferrer" className={styles.sourceLink}>
+                <span className={styles.sourceTitleRow}>
+                  <span className={styles.sourceTitle}>{source.title || source.url}</span>
+                  <ArrowUpRight size={14} />
                 </span>
-                {source.url && <span className="mt-1 block truncate text-xs text-[#79827c]">{source.url}</span>}
+                {source.url && <span className={styles.sourceUrl}>{source.url}</span>}
               </a>
             ))}
           </div>

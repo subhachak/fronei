@@ -61,7 +61,8 @@ def test_technical_architecture_queries_are_provider_friendly():
         AgentV3Request(message=message, research_level="deep"),
         CoverageContract(cells=[CoverageCell(subject="Evidence binder and citation map", dimension="data model")]),
     )
-    assert plan.workers[0].rationale.startswith("Profile-level anchor")
+    assert plan.workers[0].discovery_domain == "academic"
+    assert any(worker.rationale.startswith("Profile-level anchor") for worker in plan.workers)
 
 
 def test_coverage_contract_fallback_has_cells(monkeypatch):
@@ -530,6 +531,38 @@ def test_worker_reports_update_coverage_from_typed_claims():
     assert state.contract.cells[0].status == "partial"
     assert state.contract.cells[0].evidence_ids == ["S1"]
     assert "typed claim" in state.contract.cells[0].notes
+
+
+def test_state_add_sources_upgrades_candidate_with_read_content():
+    from app.services.agent_v3.research_subtree import (
+        CoverageContract,
+        ResearchBrief,
+        ResearchPlan,
+        ResearchStateStore,
+    )
+
+    state = ResearchStateStore(
+        brief=ResearchBrief(objective="source merge test", source="heuristic"),
+        contract=CoverageContract(),
+        plan=ResearchPlan(source="heuristic"),
+    )
+
+    state.add_sources([Source(title="Snippet title", url="https://example.com/source", snippet="Short snippet")])
+    state.add_sources(
+        [
+            Source(
+                title="Full page title",
+                url="https://example.com/source",
+                content="Full page implementation detail with architecture, workflow, trace, and evidence.",
+                provider="Reader",
+            )
+        ]
+    )
+
+    assert len(state.all_sources) == 1
+    assert state.all_sources[0].title == "Full page title"
+    assert "Full page implementation detail" in state.all_sources[0].content
+    assert state.all_sources[0].provider == "Reader"
 
 
 def test_runtime_routes_deep_to_lead_loop(monkeypatch):

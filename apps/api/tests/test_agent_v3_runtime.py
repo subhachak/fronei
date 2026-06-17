@@ -983,7 +983,8 @@ def test_agent_v3_confirmed_deep_research_runs_deep_budget(monkeypatch):
     progress = [e.data for e in envelopes if e.type == "progress"]
     goal_event = next(event for event in progress if event["stage"] == "research_goal")
     assert goal_event["data"]["goal"]["research_level"] == "deep"
-    assert goal_event["data"]["budget_ledger"]["budget"]["max_sources"] == 18
+    assert goal_event["data"]["budget_ledger"]["budget"]["max_sources"] == 32
+    assert goal_event["data"]["budget_ledger"]["budget"]["max_results_per_worker"] == 12
     result = next(e.data for e in envelopes if e.type == "result")
     assert result["route"] == "research"
     assert result["sources"]

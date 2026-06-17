@@ -580,6 +580,45 @@ def test_agent_v3_api_stream(monkeypatch):
         app.dependency_overrides.clear()
 
 
+def test_agent_v3_api_stream_emits_keepalive_during_quiet_work(monkeypatch):
+    import time
+
+    from app.routers import agent_v3 as agent_v3_router
+    from app.services.agent_v3 import persistence
+    from app.services.agent_v3.models import Goal, StreamEnvelope
+
+    class SlowRuntime:
+        def run_stream(self, request, *, user_id: str):
+            goal = Goal(user_id=user_id, conversation_id=request.conversation_id, objective=request.message, route="direct")
+            yield StreamEnvelope(type="start", data={"turn_id": "turn_slow", "goal": goal.model_dump(mode="json")})
+            time.sleep(0.04)
+            yield StreamEnvelope(
+                type="result",
+                data={
+                    "turn_id": "turn_slow",
+                    "goal": goal.model_dump(mode="json"),
+                    "answer": "done",
+                    "route": "direct",
+                    "model_used": "fake",
+                },
+            )
+            yield StreamEnvelope(type="done", data={"turn_id": "turn_slow"})
+
+    Session = _sqlite_session()
+    monkeypatch.setattr(persistence, "SessionLocal", Session)
+    monkeypatch.setattr(agent_v3_router, "AgentV3Runtime", lambda: SlowRuntime())
+    monkeypatch.setattr(agent_v3_router, "AGENT_V3_SSE_HEARTBEAT_SECONDS", 0.01)
+    app.dependency_overrides[get_current_user_id] = lambda: "u1"
+    try:
+        with TestClient(app) as client:
+            response = client.post("/agent-v3/turns/stream", json={"message": "Hello from v3"})
+        assert response.status_code == 200
+        assert '"stage": "keepalive"' in response.text
+        assert "event: result" in response.text
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_agent_v3_stream_persists_turn_events_tools_and_artifacts(monkeypatch, tmp_path):
     _patch_completion(monkeypatch, "## Durable report\n\nDone.")
     from app.services.agent_v3 import persistence

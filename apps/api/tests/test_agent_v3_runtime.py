@@ -188,6 +188,37 @@ def test_agent_v3_research_streams_milestones(monkeypatch):
     assert result["sources"][0]["url"] == "https://example.com"
 
 
+def test_agent_v3_web_search_prefers_you_provider(monkeypatch):
+    import app.services.agent_v3.tools as tools_module
+
+    post_calls: list = []
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "hits": [
+                    {
+                        "title": "You result",
+                        "url": "https://you.example/result",
+                        "snippets": ["You.com snippet"],
+                    }
+                ]
+            }
+
+    monkeypatch.setattr(tools_module.httpx, "get", lambda *args, **kwargs: FakeResponse())
+    monkeypatch.setattr(tools_module.httpx, "post", lambda *args, **kwargs: post_calls.append((args, kwargs)))
+
+    sources, call = AgentV3Tools(you_api_key="you-key", tavily_api_key="tavily-key").search_web("query")
+
+    assert call.ok
+    assert call.output["provider"] == "You.com"
+    assert sources[0].url == "https://you.example/result"
+    assert post_calls == []
+
+
 def test_agent_v3_research_document_creates_artifact(monkeypatch):
     _patch_completion(monkeypatch, "## Report\n\n- Finding")
     runtime = AgentV3Runtime(tools=FakeTools())

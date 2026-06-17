@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     anthropic_api_key: str | None = None
     gemini_api_key: str | None = None
     openrouter_api_key: str | None = None
+    you_api_key: str | None = None
     tavily_api_key: str | None = None
     brave_api_key: str | None = None
     planner_model: str = "openrouter/qwen/qwen3.7-max"

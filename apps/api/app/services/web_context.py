@@ -1,7 +1,6 @@
 import re
 import socket
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from ipaddress import ip_address
 from dataclasses import dataclass
 from html.parser import HTMLParser
@@ -29,7 +28,7 @@ class WebSource:
 class WebContextResult:
     context: str | None
     status: str
-    provider: str       # "Tavily" | "Brave" | "DuckDuckGo" | "" (URL-only crawl)
+    provider: str       # "You.com" | "Tavily" | "Brave" | "DuckDuckGo" | "" (URL-only crawl)
     sources_count: int
     search_query: str | None
 
@@ -239,6 +238,39 @@ _BRAVE_FRESHNESS = {"day": "pd", "week": "pw", "month": "pm", "year": "py"}
 _DDGS_TIMELIMIT = {"day": "d", "week": "w", "month": "m", "year": "y"}
 
 
+def you_search(query: str, recency: str | None = None) -> list[WebSource]:
+    settings = get_settings()
+    if not settings.you_api_key:
+        return []
+    try:
+        with httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS) as client:
+            response = client.get(
+                "https://api.ydc-index.io/search",
+                headers={"X-API-Key": settings.you_api_key},
+                params={"query": query, "num_web_results": MAX_SEARCH_RESULTS},
+            )
+            response.raise_for_status()
+        data = response.json()
+    except Exception:
+        return []
+    sources: list[WebSource] = []
+    results = data.get("hits") or data.get("results") or data.get("web_results") or []
+    for item in results[:MAX_SEARCH_RESULTS]:
+        if not isinstance(item, dict):
+            continue
+        url = item.get("url") or item.get("link") or ""
+        title = item.get("title") or source_title(url)
+        snippets = item.get("snippets") or item.get("highlights") or []
+        if isinstance(snippets, list):
+            snippet = " ".join(str(part) for part in snippets)
+        else:
+            snippet = str(snippets or "")
+        content = snippet or item.get("description") or item.get("snippet") or item.get("content") or ""
+        if url and content:
+            sources.append(WebSource(title=title, url=url, content=normalize_text(content)[:MAX_SOURCE_CHARS]))
+    return sources
+
+
 def tavily_search(query: str, recency: str | None = None) -> list[WebSource]:
     settings = get_settings()
     if not settings.tavily_api_key:
@@ -327,6 +359,31 @@ def test_tavily_connection() -> dict:
         return {"success": False, "latency_ms": int((time.perf_counter() - started) * 1000), "error": str(exc)[:300]}
 
 
+def test_you_connection() -> dict:
+    """Minimal live ping to verify the You.com key. Used by the admin Providers tab."""
+    settings = get_settings()
+    if not settings.you_api_key:
+        return {"success": False, "error": "YOU_API_KEY not configured."}
+    started = time.perf_counter()
+    try:
+        with httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS) as client:
+            response = client.get(
+                "https://api.ydc-index.io/search",
+                headers={"X-API-Key": settings.you_api_key},
+                params={"query": "ping", "num_web_results": 1},
+            )
+            response.raise_for_status()
+        return {"success": True, "latency_ms": int((time.perf_counter() - started) * 1000)}
+    except httpx.HTTPStatusError as exc:
+        return {
+            "success": False,
+            "latency_ms": int((time.perf_counter() - started) * 1000),
+            "error": f"HTTP {exc.response.status_code}",
+        }
+    except Exception as exc:
+        return {"success": False, "latency_ms": int((time.perf_counter() - started) * 1000), "error": str(exc)[:300]}
+
+
 def test_brave_connection() -> dict:
     """Minimal live ping to verify the Brave key works. Used by the admin Providers tab."""
     settings = get_settings()
@@ -375,25 +432,24 @@ def ddg_search(query: str, recency: str | None = None) -> list[WebSource]:
 
 
 def search_web_sources(query: str, recency: str | None = None) -> tuple[str, list[WebSource]]:
-    """Race configured search providers and return the first non-empty result."""
+    """Try configured search providers by explicit priority and return the first non-empty result."""
     settings = get_settings()
     providers = []
+    if settings.you_api_key:
+        providers.append(("You.com", you_search))
     if settings.tavily_api_key:
         providers.append(("Tavily", tavily_search))
     if settings.brave_api_key:
         providers.append(("Brave", brave_search))
     providers.append(("DuckDuckGo", ddg_search))
 
-    with ThreadPoolExecutor(max_workers=len(providers)) as pool:
-        futures = {pool.submit(fn, query, recency): name for name, fn in providers}
-        for future in as_completed(futures):
-            provider = futures[future]
-            try:
-                sources = future.result()
-            except Exception:
-                sources = []
-            if sources:
-                return provider, sources
+    for provider, fn in providers:
+        try:
+            sources = fn(query, recency)
+        except Exception:
+            sources = []
+        if sources:
+            return provider, sources
     return "", []
 
 

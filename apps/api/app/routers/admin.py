@@ -66,7 +66,7 @@ from app.services.llm_gateway import (
 )
 from app.services.rate_limit import check_rate_limit
 from app.services.router import choose_route, load_policy
-from app.services.web_context import test_brave_connection, test_tavily_connection
+from app.services.web_context import test_brave_connection, test_tavily_connection, test_you_connection
 
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -1731,6 +1731,12 @@ def providers(admin: AdminPrincipal = Depends(require_admin)) -> dict:
                     "circuit": circuit_status.get("OpenRouter", default_circuit),
                 },
                 {
+                    "name": "You.com", "key": "YOU_API_KEY",
+                    "configured": bool(settings.you_api_key),
+                    "key_hint": _key_hint(settings.you_api_key),
+                    "testable": True,
+                },
+                {
                     "name": "Tavily", "key": "TAVILY_API_KEY",
                     "configured": bool(settings.tavily_api_key),
                     "key_hint": _key_hint(settings.tavily_api_key),
@@ -1757,6 +1763,8 @@ def providers_test(body: ProviderTestRequest, admin: AdminPrincipal = Depends(re
     check_rate_limit(f"admin-provider-test:{admin.user_id}:{provider}", 6, 60)
     if provider in PROVIDER_TEST_MODELS:
         result = test_provider_connection(provider)
+    elif provider == "You.com":
+        result = test_you_connection()
     elif provider == "Tavily":
         result = test_tavily_connection()
     elif provider == "Brave":

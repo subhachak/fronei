@@ -112,6 +112,16 @@ export default function AgentV3Page() {
     URL.revokeObjectURL(url)
   }
 
+  function eventChips(event: ProgressEvent): string[] {
+    const data = event.data || {}
+    const chips: string[] = []
+    for (const key of ['provider', 'tool_name', 'status', 'route', 'source_count', 'worker_index', 'filename']) {
+      const value = data[key]
+      if (value !== undefined && value !== null && value !== '') chips.push(`${key.replace('_', ' ')}: ${String(value)}`)
+    }
+    return chips
+  }
+
   return (
     <main className="min-h-screen bg-[#f7f4ed] text-[#17213a]">
       <section className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-6 py-10">
@@ -178,6 +188,15 @@ export default function AgentV3Page() {
                 <div key={`${event.stage}-${index}`} className="rounded border border-[#e2e7ef] p-3">
                   <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#7c879a]">{event.stage}</p>
                   <p className="mt-1 text-sm">{event.message}</p>
+                  {eventChips(event).length ? (
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {eventChips(event).map(chip => (
+                        <span key={chip} className="rounded border border-[#d8d2c5] bg-[#f7f4ed] px-2 py-1 text-[11px] font-medium text-[#536071]">
+                          {chip}
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
                 </div>
               ))}
             </div>

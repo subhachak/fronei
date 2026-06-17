@@ -23,7 +23,7 @@ class FakeTools(AgentV3Tools):
         sources = [Source(title="Example", url="https://example.com", snippet="A useful snippet")]
         from app.services.agent_v3.models import ToolCall
 
-        return sources, ToolCall(name="web_search", input={"query": query}, output={"source_count": 1}, latency_ms=1)
+        return sources, ToolCall(name="web_search", input={"query": query}, output={"provider": "FakeSearch", "source_count": 1}, latency_ms=1)
 
     def extract_urls(self, urls: list[str], max_chars_per_source: int = 2500):
         extracted = [Source(title="Example", url="https://example.com", content="Detailed evidence")]
@@ -48,6 +48,20 @@ def _patch_completion(monkeypatch, text="# Answer\n\nDone."):
                     }
                 ),
                 model_used="fake-research-planner",
+                latency_ms=2,
+                cost_usd=0.0,
+            )
+        if "document planner" in messages[0]["content"].lower():
+            return SimpleNamespace(
+                text=json.dumps(
+                    {
+                        "title": "Agent V3 Report",
+                        "format": "docx",
+                        "audience": "executives",
+                        "sections": ["Executive summary", "Evidence", "Next steps"],
+                    }
+                ),
+                model_used="fake-document-planner",
                 latency_ms=2,
                 cost_usd=0.0,
             )
@@ -165,7 +179,9 @@ def test_agent_v3_research_streams_milestones(monkeypatch):
     assert "Planning focused research questions." in progress_messages
     assert "Research plan ready with 2 search worker(s)." in progress_messages
     assert "Search worker 1 running." in progress_messages
+    assert "Search worker 1 used FakeSearch." in progress_messages
     assert "Search worker 2 running." in progress_messages
+    assert "Search worker 2 used FakeSearch." in progress_messages
     assert "Selected tool web_search." in progress_messages
     assert "Tool web_search completed." in progress_messages
     assert "Selected 1 unique source candidate(s)." in progress_messages
@@ -178,6 +194,7 @@ def test_agent_v3_research_streams_milestones(monkeypatch):
         "research_planning",
         "research_plan",
         "search_worker",
+        "search_worker_provider",
         "source_selection",
         "source_reader",
         "evidence_binder",
@@ -186,6 +203,8 @@ def test_agent_v3_research_streams_milestones(monkeypatch):
         assert stage in stages
     result = next(e.data for e in envelopes if e.type == "result")
     assert result["sources"][0]["url"] == "https://example.com"
+    provider_events = [e.data for e in envelopes if e.type == "progress" and e.data["stage"] == "search_worker_provider"]
+    assert provider_events[0]["data"]["provider"] == "FakeSearch"
 
 
 def test_agent_v3_web_search_prefers_you_provider(monkeypatch):
@@ -295,6 +314,20 @@ def test_agent_v3_research_document_creates_artifact(monkeypatch):
     assert result["route"] == "research_document"
     assert result["artifacts"][0]["filename"].endswith(".docx")
     assert result["artifacts"][0]["base64_data"]
+    progress_stages = [e.data["stage"] for e in envelopes if e.type == "progress"]
+    for stage in [
+        "document_planner",
+        "document_plan",
+        "document_writer",
+        "document_judge",
+        "document_judge_result",
+        "document_repair",
+        "artifact_builder",
+        "artifact_result",
+    ]:
+        assert stage in progress_stages
+    plan_event = next(e.data for e in envelopes if e.type == "progress" and e.data["stage"] == "document_plan")
+    assert plan_event["data"]["title"] == "Agent V3 Report"
     assert [call["name"] for call in result["tool_calls"]] == [
         "web_search",
         "web_search",

@@ -8,7 +8,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.auth import get_current_user_id
-from app.db.models import AgentV3Artifact, AgentV3Event, AgentV3ToolCall, AgentV3Turn, Base
+from app.db.models import AgentV3Artifact, AgentV3Conversation, AgentV3Event, AgentV3ToolCall, AgentV3Turn, AgentV3Workspace, Base
 from app.main import app
 from app.services.agent_v3.models import AgentV3Request, Source
 from app.services.agent_v3.runtime import AgentV3Runtime
@@ -101,6 +101,13 @@ def _sqlite_session():
     )
     Base.metadata.create_all(bind=engine)
     return sessionmaker(bind=engine)
+
+
+def _set_artifact_dir(monkeypatch, tmp_path):
+    from app.config import get_settings
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "agent_v3_artifact_storage_dir", str(tmp_path / "agent_v3_artifacts"))
 
 
 def test_agent_v3_direct_stream(monkeypatch):
@@ -353,10 +360,11 @@ def test_agent_v3_api_stream(monkeypatch):
         app.dependency_overrides.clear()
 
 
-def test_agent_v3_stream_persists_turn_events_tools_and_artifacts(monkeypatch):
+def test_agent_v3_stream_persists_turn_events_tools_and_artifacts(monkeypatch, tmp_path):
     _patch_completion(monkeypatch, "## Durable report\n\nDone.")
     from app.services.agent_v3 import persistence
 
+    _set_artifact_dir(monkeypatch, tmp_path)
     Session = _sqlite_session()
     monkeypatch.setattr(persistence, "SessionLocal", Session)
     app.dependency_overrides[get_current_user_id] = lambda: "u1"
@@ -379,12 +387,84 @@ def test_agent_v3_stream_persists_turn_events_tools_and_artifacts(monkeypatch):
             stored_payload = stored.json()
             assert stored_payload["turn_id"] == turn_id
             assert stored_payload["artifacts"][0]["filename"].endswith(".docx")
+            assert stored_payload["artifacts"][0]["download_url"].endswith("/download")
+
+            download = client.get(stored_payload["artifacts"][0]["download_url"])
+            assert download.status_code == 200
+            assert download.content
 
         with Session() as db:
             assert db.get(AgentV3Turn, turn_id).status == "completed"
             assert db.query(AgentV3Event).filter(AgentV3Event.turn_id == turn_id).count() >= 4
             assert db.query(AgentV3ToolCall).filter(AgentV3ToolCall.turn_id == turn_id).count() == 4
-            assert db.query(AgentV3Artifact).filter(AgentV3Artifact.turn_id == turn_id).count() == 1
+            artifact = db.query(AgentV3Artifact).filter(AgentV3Artifact.turn_id == turn_id).one()
+            assert artifact.base64_data == ""
+            assert artifact.storage_path
+            assert Path(artifact.storage_path).exists()
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_agent_v3_workspace_api_is_user_isolated(monkeypatch):
+    from app.services.agent_v3 import persistence
+
+    Session = _sqlite_session()
+    monkeypatch.setattr(persistence, "SessionLocal", Session)
+    app.dependency_overrides[get_current_user_id] = lambda: "u1"
+    try:
+        with TestClient(app) as client:
+            created = client.post("/agent-v3/workspaces", json={"name": "U1 workspace"})
+            assert created.status_code == 200
+            workspace_id = created.json()["id"]
+            conversation = client.post(f"/agent-v3/workspaces/{workspace_id}/conversations", json={"title": "Private work"})
+            assert conversation.status_code == 200
+
+            u1_list = client.get("/agent-v3/workspaces")
+            assert "U1 workspace" in json.dumps(u1_list.json())
+
+            app.dependency_overrides[get_current_user_id] = lambda: "u2"
+            u2_list = client.get("/agent-v3/workspaces")
+            assert u2_list.status_code == 200
+            assert "U1 workspace" not in json.dumps(u2_list.json())
+
+        with Session() as db:
+            assert db.query(AgentV3Workspace).filter(AgentV3Workspace.user_id == "u1").count() == 1
+            assert db.query(AgentV3Conversation).filter(AgentV3Conversation.user_id == "u1").count() == 1
+            assert db.query(AgentV3Workspace).filter(AgentV3Workspace.user_id == "u2").count() == 1
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_agent_v3_conversation_turns_are_conversation_scoped(monkeypatch, tmp_path):
+    _patch_completion(monkeypatch, "Stored answer.")
+    from app.services.agent_v3 import persistence
+
+    _set_artifact_dir(monkeypatch, tmp_path)
+    Session = _sqlite_session()
+    monkeypatch.setattr(persistence, "SessionLocal", Session)
+    app.dependency_overrides[get_current_user_id] = lambda: "u1"
+    try:
+        with TestClient(app) as client:
+            workspace = client.post("/agent-v3/workspaces", json={"name": "Workspace"}).json()
+            conversation = client.post(
+                f"/agent-v3/workspaces/{workspace['id']}/conversations",
+                json={"title": "Scoped conversation"},
+            ).json()
+            response = client.post(
+                "/agent-v3/turns/stream",
+                json={"message": "Hello scoped v3", "conversation_id": conversation["id"]},
+            )
+            assert response.status_code == 200
+            turns = client.get(f"/agent-v3/conversations/{conversation['id']}/turns?limit=6")
+            assert turns.status_code == 200
+            payload = turns.json()
+            assert len(payload["turns"]) == 1
+            assert payload["turns"][0]["goal"]["conversation_id"] == conversation["id"]
+
+            app.dependency_overrides[get_current_user_id] = lambda: "u2"
+            denied = client.get(f"/agent-v3/conversations/{conversation['id']}/turns?limit=6")
+            assert denied.status_code == 200
+            assert denied.json()["turns"] == []
     finally:
         app.dependency_overrides.clear()
 

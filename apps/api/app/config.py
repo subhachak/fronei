@@ -73,6 +73,11 @@ class Settings(BaseSettings):
     # point at a mounted volume, e.g. /data/fronei/document_templates.
     document_template_storage_dir: str = "./data/document_templates"
 
+    # Agent v3 generated artifacts. In production this should point at a
+    # mounted volume, e.g. /data/fronei/agent_v3_artifacts. Files are stored
+    # below a per-user directory and referenced from DB rows.
+    agent_v3_artifact_storage_dir: str = "./data/agent_v3_artifacts"
+
     # Whether to run LibreOffice/poppler-based PPTX render QA synchronously on
     # the document-generation request path. This can take up to ~60s per deck
     # (see pptx_render_qa.CONVERT_TIMEOUT_SECONDS). Disabled by default in

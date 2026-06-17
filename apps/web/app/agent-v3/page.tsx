@@ -27,8 +27,6 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import styles from './page.module.css'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
-const STUDIO_KEY = 'fronei-agent-v3-studio-workspaces'
-const LEGACY_LIBRARY_KEY = 'fronei-agent-v3-studio-library'
 const INITIAL_VISIBLE_TURNS = 6
 
 type QualityMode = 'draft' | 'standard' | 'executive'
@@ -44,9 +42,12 @@ type ProgressEvent = {
 }
 
 type Artifact = {
+  id?: string
   filename: string
   mime_type: string
-  base64_data: string
+  base64_data?: string
+  download_url?: string
+  size_bytes?: number
 }
 
 type Source = {
@@ -58,12 +59,18 @@ type Source = {
 
 type AgentResult = {
   turn_id: string
+  goal?: {
+    objective?: string
+    quality_mode?: string
+  }
   answer: string
   route: string
   model_used?: string
   latency_ms?: number
   sources?: Source[]
   artifacts?: Artifact[]
+  events?: ProgressEvent[]
+  created_at?: string
 }
 
 type WorkItem = {
@@ -87,6 +94,11 @@ type Conversation = {
   createdAt: string
   updatedAt: string
   turns: WorkItem[]
+  turnCount?: number
+  artifactCount?: number
+  sourceCount?: number
+  totalLatencyMs?: number
+  totalCostUsd?: number
 }
 
 type Workspace = {
@@ -95,6 +107,27 @@ type Workspace = {
   createdAt: string
   updatedAt: string
   conversations: Conversation[]
+}
+
+type ApiConversation = {
+  id: string
+  workspace_id: string
+  title: string
+  created_at: string
+  updated_at: string
+  turn_count?: number
+  artifact_count?: number
+  source_count?: number
+  total_latency_ms?: number
+  total_cost_usd?: number
+}
+
+type ApiWorkspace = {
+  id: string
+  name: string
+  created_at: string
+  updated_at: string
+  conversations: ApiConversation[]
 }
 
 const SUGGESTIONS = [
@@ -120,6 +153,7 @@ export default function AgentV3Page() {
   const [visibleTurnCount, setVisibleTurnCount] = useState(INITIAL_VISIBLE_TURNS)
   const eventsRef = useRef<ProgressEvent[]>([])
   const chatScrollRef = useRef<HTMLDivElement | null>(null)
+  const activeRunConversationIdRef = useRef<string | null>(null)
 
   const canRun = useMemo(() => isLoaded && isSignedIn && message.trim().length > 0 && !running, [isLoaded, isSignedIn, message, running])
   const activeEvents = useMemo(() => events.filter(event => !['tool_selection', 'tool_result'].includes(event.stage)), [events])
@@ -131,30 +165,63 @@ export default function AgentV3Page() {
   )
   const activeTurns = activeConversation?.turns || []
   const visibleTurns = activeTurns.slice(Math.max(0, activeTurns.length - visibleTurnCount))
+  const canLoadOlder = Boolean(activeConversation && (activeConversation.turnCount || activeTurns.length) > activeTurns.length)
   const latestTurn = activeTurns.at(-1) || null
   const latestArtifact = result?.artifacts?.[0] || latestTurn?.artifacts?.[0]
   const sources = result?.sources || []
 
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(STUDIO_KEY)
-      const legacyRaw = localStorage.getItem(LEGACY_LIBRARY_KEY)
-      const next = raw ? JSON.parse(raw) as Workspace[] : bootstrapWorkspaces(legacyRaw)
-      setWorkspaces(next)
-      setActiveWorkspaceId(next[0]?.id || null)
-      setActiveConversationId(next[0]?.conversations[0]?.id || null)
-    } catch {}
-  }, [])
-
-  useEffect(() => {
-    try {
-      if (workspaces.length) localStorage.setItem(STUDIO_KEY, JSON.stringify(workspaces))
-    } catch {}
-  }, [workspaces])
+    if (!isLoaded || !isSignedIn) return
+    void loadWorkspaces().catch(err => {
+      setError(err instanceof Error ? err.message : 'Could not load Agent v3 workspaces')
+    })
+  }, [isLoaded, isSignedIn])
 
   useEffect(() => {
     chatScrollRef.current?.scrollTo({ top: chatScrollRef.current.scrollHeight, behavior: 'smooth' })
   }, [visibleTurns.length, running, result?.turn_id, events.length])
+
+  async function authorizedFetch(path: string, init: RequestInit = {}) {
+    const token = await getToken()
+    return fetch(`${API_BASE}${path}`, {
+      ...init,
+      headers: {
+        ...(init.body ? { 'Content-Type': 'application/json' } : {}),
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(init.headers || {}),
+      },
+    })
+  }
+
+  async function loadWorkspaces(selectConversationId?: string) {
+    const response = await authorizedFetch('/agent-v3/workspaces')
+    if (!response.ok) throw new Error(await response.text() || 'Could not load workspaces')
+    const payload = await response.json() as { workspaces: ApiWorkspace[] }
+    const next = payload.workspaces.map(mapWorkspace)
+    setWorkspaces(next)
+    const selectedWorkspace = next.find(workspace => workspace.conversations.some(conversation => conversation.id === selectConversationId)) || next[0] || null
+    const selectedConversation = selectedWorkspace?.conversations.find(conversation => conversation.id === selectConversationId) || selectedWorkspace?.conversations[0] || null
+    setActiveWorkspaceId(selectedWorkspace?.id || null)
+    setActiveConversationId(selectedConversation?.id || null)
+    if (selectedConversation) await loadConversationTurns(selectedConversation.id, INITIAL_VISIBLE_TURNS)
+  }
+
+  async function loadConversationTurns(conversationId: string, limit = visibleTurnCount) {
+    const response = await authorizedFetch(`/agent-v3/conversations/${conversationId}/turns?limit=${limit}`)
+    if (!response.ok) throw new Error(await response.text() || 'Could not load conversation turns')
+    const payload = await response.json() as { turns: AgentResult[] }
+    const turns = payload.turns.map(mapTurn)
+    setWorkspaces(prev => prev.map(workspace => ({
+      ...workspace,
+      conversations: workspace.conversations.map(conversation => (
+        conversation.id === conversationId ? { ...conversation, turns } : conversation
+      )),
+    })))
+    const latest = turns.at(-1)
+    eventsRef.current = latest?.events || []
+    setEvents(eventsRef.current)
+    setResult(latest?.result || null)
+  }
 
   async function run() {
     if (!canRun) return
@@ -165,17 +232,14 @@ export default function AgentV3Page() {
     setRunning(true)
     setTraceOpen(false)
     setMobileView('work')
-    ensureActiveConversation(message)
     try {
-      const token = await getToken()
-      const response = await fetch(`${API_BASE}/agent-v3/turns/stream`, {
+      const conversationId = await ensureActiveConversation(message)
+      activeRunConversationIdRef.current = conversationId
+      const response = await authorizedFetch('/agent-v3/turns/stream', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
         body: JSON.stringify({
           message,
+          conversation_id: conversationId,
           quality_mode: qualityMode,
           output_format: outputFormat,
         }),
@@ -200,6 +264,7 @@ export default function AgentV3Page() {
       setError(err instanceof Error ? err.message : 'Unknown Agent v3 error')
     } finally {
       setRunning(false)
+      activeRunConversationIdRef.current = null
     }
   }
 
@@ -229,65 +294,72 @@ export default function AgentV3Page() {
         result: next,
         artifacts: next.artifacts || [],
         sourceCount: next.sources?.length || 0,
-      })
+      }, activeRunConversationIdRef.current || activeConversationId)
     } else if (eventType === 'error') {
       setError(data.message || 'Agent v3 failed')
     }
   }
 
-  function selectConversation(workspaceId: string, conversationId: string) {
+  async function selectConversation(workspaceId: string, conversationId: string) {
     if (running) return
     const workspace = workspaces.find(item => item.id === workspaceId)
     const conversation = workspace?.conversations.find(item => item.id === conversationId)
-    const lastTurn = conversation?.turns.at(-1)
     setActiveWorkspaceId(workspaceId)
     setActiveConversationId(conversationId)
     setVisibleTurnCount(INITIAL_VISIBLE_TURNS)
     setMessage('')
-    eventsRef.current = lastTurn?.events || []
-    setEvents(eventsRef.current)
-    setResult(lastTurn?.result || null)
+    eventsRef.current = []
+    setEvents([])
+    setResult(null)
     setError(null)
     setTraceOpen(false)
     setMobileView('work')
-    if (lastTurn?.qualityMode) setQualityMode(lastTurn.qualityMode)
-    if (lastTurn?.outputFormat) setOutputFormat(lastTurn.outputFormat)
+    if (conversation) await loadConversationTurns(conversationId, INITIAL_VISIBLE_TURNS)
   }
 
-  function createWorkspace() {
+  async function createWorkspace() {
     const name = window.prompt('Workspace name', 'New workspace')?.trim()
     if (!name) return
-    const workspace = newWorkspace(name)
+    const response = await authorizedFetch('/agent-v3/workspaces', {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    })
+    if (!response.ok) {
+      setError(await response.text() || 'Could not create workspace')
+      return
+    }
+    const workspace = mapWorkspace({ ...(await response.json()), conversations: [] })
     setWorkspaces(prev => [workspace, ...prev])
     setActiveWorkspaceId(workspace.id)
-    setActiveConversationId(workspace.conversations[0].id)
-    setVisibleTurnCount(INITIAL_VISIBLE_TURNS)
-    setMessage('')
-    setEvents([])
-    eventsRef.current = []
-    setResult(null)
+    await createConversation(workspace.id, 'New conversation')
   }
 
-  function deleteWorkspace(workspaceId: string) {
+  async function deleteWorkspace(workspaceId: string) {
     if (workspaces.length <= 1) return
     if (!window.confirm('Delete this workspace and all conversations inside it?')) return
-    setWorkspaces(prev => {
-      const next = prev.filter(workspace => workspace.id !== workspaceId)
-      if (activeWorkspaceId === workspaceId) {
-        setActiveWorkspaceId(next[0]?.id || null)
-        setActiveConversationId(next[0]?.conversations[0]?.id || null)
-      }
-      return next
-    })
+    const response = await authorizedFetch(`/agent-v3/workspaces/${workspaceId}`, { method: 'DELETE' })
+    if (!response.ok) {
+      setError(await response.text() || 'Could not delete workspace')
+      return
+    }
+    await loadWorkspaces()
   }
 
-  function createConversation(workspaceId: string) {
-    const title = window.prompt('Conversation title', 'New conversation')?.trim()
+  async function createConversation(workspaceId: string, titleOverride?: string) {
+    const title = titleOverride || window.prompt('Conversation title', 'New conversation')?.trim()
     if (!title) return
-    const conversation = newConversation(title)
+    const response = await authorizedFetch(`/agent-v3/workspaces/${workspaceId}/conversations`, {
+      method: 'POST',
+      body: JSON.stringify({ title }),
+    })
+    if (!response.ok) {
+      setError(await response.text() || 'Could not create conversation')
+      return
+    }
+    const conversation = mapConversation(await response.json())
     setWorkspaces(prev => prev.map(workspace => (
       workspace.id === workspaceId
-        ? { ...workspace, updatedAt: new Date().toISOString(), conversations: [conversation, ...workspace.conversations] }
+        ? { ...workspace, updatedAt: conversation.updatedAt, conversations: [conversation, ...workspace.conversations] }
         : workspace
     )))
     setActiveWorkspaceId(workspaceId)
@@ -299,31 +371,63 @@ export default function AgentV3Page() {
     setResult(null)
   }
 
-  function deleteConversation(workspaceId: string, conversationId: string) {
+  async function deleteConversation(workspaceId: string, conversationId: string) {
     if (!window.confirm('Delete this conversation?')) return
-    setWorkspaces(prev => prev.map(workspace => {
-      if (workspace.id !== workspaceId) return workspace
-      const conversations = workspace.conversations.filter(conversation => conversation.id !== conversationId)
-      const nextConversations = conversations.length ? conversations : [newConversation('New conversation')]
-      if (activeConversationId === conversationId) setActiveConversationId(nextConversations[0].id)
-      return { ...workspace, updatedAt: new Date().toISOString(), conversations: nextConversations }
-    }))
+    const response = await authorizedFetch(`/agent-v3/conversations/${conversationId}`, { method: 'DELETE' })
+    if (!response.ok) {
+      setError(await response.text() || 'Could not delete conversation')
+      return
+    }
+    setWorkspaces(prev => prev.map(workspace => (
+      workspace.id === workspaceId
+        ? { ...workspace, updatedAt: new Date().toISOString(), conversations: workspace.conversations.filter(conversation => conversation.id !== conversationId) }
+        : workspace
+    )))
+    if (activeConversationId === conversationId) {
+      const workspace = workspaces.find(item => item.id === workspaceId)
+      const nextConversation = workspace?.conversations.find(item => item.id !== conversationId)
+      setActiveConversationId(nextConversation?.id || null)
+      if (nextConversation) await loadConversationTurns(nextConversation.id, INITIAL_VISIBLE_TURNS)
+      else {
+        eventsRef.current = []
+        setEvents([])
+        setResult(null)
+      }
+    }
   }
 
-  function ensureActiveConversation(seedMessage: string) {
-    if (activeWorkspace && activeConversation) return
-    const workspace = newWorkspace('Personal workspace', titleFromMessage(seedMessage))
-    setWorkspaces(prev => [workspace, ...prev])
-    setActiveWorkspaceId(workspace.id)
-    setActiveConversationId(workspace.conversations[0].id)
+  async function ensureActiveConversation(seedMessage: string): Promise<string> {
+    if (activeConversation) return activeConversation.id
+    let workspace = activeWorkspace
+    if (!workspace) {
+      const response = await authorizedFetch('/agent-v3/workspaces', {
+        method: 'POST',
+        body: JSON.stringify({ name: 'Personal workspace' }),
+      })
+      if (!response.ok) throw new Error(await response.text() || 'Could not create workspace')
+      workspace = mapWorkspace({ ...(await response.json()), conversations: [] })
+      setWorkspaces(prev => [workspace as Workspace, ...prev])
+      setActiveWorkspaceId(workspace.id)
+    }
+    const response = await authorizedFetch(`/agent-v3/workspaces/${workspace.id}/conversations`, {
+      method: 'POST',
+      body: JSON.stringify({ title: titleFromMessage(seedMessage) }),
+    })
+    if (!response.ok) throw new Error(await response.text() || 'Could not create conversation')
+    const conversation = mapConversation(await response.json())
+    setWorkspaces(prev => prev.map(item => (
+      item.id === workspace.id
+        ? { ...item, updatedAt: conversation.updatedAt, conversations: [conversation, ...item.conversations] }
+        : item
+    )))
+    setActiveConversationId(conversation.id)
+    return conversation.id
   }
 
-  function appendTurnToActiveConversation(turn: WorkItem) {
+  function appendTurnToActiveConversation(turn: WorkItem, conversationId: string | null) {
     setWorkspaces(prev => {
-      const workspaceId = activeWorkspaceId || prev[0]?.id
-      const conversationId = activeConversationId || prev[0]?.conversations[0]?.id
       return prev.map(workspace => {
-        if (workspace.id !== workspaceId) return workspace
+        if (!workspace.conversations.some(conversation => conversation.id === conversationId)) return workspace
         return {
           ...workspace,
           updatedAt: turn.completedAt || turn.createdAt,
@@ -331,8 +435,12 @@ export default function AgentV3Page() {
             conversation.id === conversationId
               ? {
                 ...conversation,
-                title: conversation.turns.length ? conversation.title : turn.title,
+                title: conversation.turns.length || conversation.turnCount ? conversation.title : turn.title,
                 updatedAt: turn.completedAt || turn.createdAt,
+                turnCount: (conversation.turnCount || conversation.turns.length) + 1,
+                artifactCount: (conversation.artifactCount || 0) + turn.artifacts.length,
+                sourceCount: (conversation.sourceCount || 0) + turn.sourceCount,
+                totalLatencyMs: (conversation.totalLatencyMs || 0) + (turn.result?.latency_ms || 0),
                 turns: [...conversation.turns.filter(item => item.id !== turn.id), turn],
               }
               : conversation
@@ -342,15 +450,30 @@ export default function AgentV3Page() {
     })
   }
 
-  function downloadArtifact(artifact: Artifact) {
+  async function downloadArtifact(artifact: Artifact) {
+    if (artifact.download_url) {
+      const response = await authorizedFetch(artifact.download_url)
+      if (!response.ok) {
+        setError(await response.text() || 'Could not download artifact')
+        return
+      }
+      const blob = await response.blob()
+      triggerDownload(blob, artifact.filename)
+      return
+    }
+    if (!artifact.base64_data) return
     const byteString = atob(artifact.base64_data)
     const bytes = new Uint8Array(byteString.length)
     for (let i = 0; i < byteString.length; i += 1) bytes[i] = byteString.charCodeAt(i)
     const blob = new Blob([bytes], { type: artifact.mime_type })
+    triggerDownload(blob, artifact.filename)
+  }
+
+  function triggerDownload(blob: Blob, filename: string) {
     const url = URL.createObjectURL(blob)
     const link = document.createElement('a')
     link.href = url
-    link.download = artifact.filename
+    link.download = filename
     link.click()
     URL.revokeObjectURL(url)
   }
@@ -386,8 +509,16 @@ export default function AgentV3Page() {
         <section className={`${styles.workPane} ${mobileView === 'work' ? styles.mobileVisible : styles.mobileHidden}`}>
           <WorkbenchHeader running={running} result={result} />
           <div className={styles.workScroll} ref={chatScrollRef}>
-            {activeTurns.length > visibleTurns.length && (
-              <button type="button" className={styles.loadOlderButton} onClick={() => setVisibleTurnCount(count => count + INITIAL_VISIBLE_TURNS)}>
+            {canLoadOlder && (
+              <button
+                type="button"
+                className={styles.loadOlderButton}
+                onClick={() => {
+                  const nextCount = visibleTurnCount + INITIAL_VISIBLE_TURNS
+                  setVisibleTurnCount(nextCount)
+                  if (activeConversationId) void loadConversationTurns(activeConversationId, nextCount)
+                }}
+              >
                 Load older turns
               </button>
             )}
@@ -512,7 +643,7 @@ function StudioLibrary({
         )}
         {workspaces.map((workspace, index) => {
           const expanded = workspace.id === activeWorkspaceId || index === 0
-          const turnCount = workspace.conversations.reduce((total, conversation) => total + conversation.turns.length, 0)
+          const turnCount = workspace.conversations.reduce((total, conversation) => total + (conversation.turnCount || conversation.turns.length), 0)
           return (
             <details key={workspace.id} className={styles.workspaceGroup} open={expanded}>
               <summary className={styles.workspaceSummary}>
@@ -543,7 +674,7 @@ function StudioLibrary({
                       <MessageSquare size={15} />
                       <span className={styles.conversationText}>
                         <span>{conversation.title}</span>
-                        <small>{conversation.turns.length} turns | {formatRelativeTime(conversation.updatedAt)}</small>
+                        <small>{conversation.turnCount || conversation.turns.length} turns | {formatRelativeTime(conversation.updatedAt)}</small>
                       </span>
                     </button>
                     <button
@@ -682,7 +813,7 @@ function Timeline({
   traceOpen: boolean
   setTraceOpen: (open: boolean) => void
   eventChips: (event: ProgressEvent) => string[]
-  downloadArtifact: (artifact: Artifact) => void
+  downloadArtifact: (artifact: Artifact) => void | Promise<void>
 }) {
   return (
     <section className={styles.chatThread}>
@@ -765,7 +896,7 @@ function TurnPair({
 }: {
   turn: WorkItem
   confidenceCues?: string[]
-  downloadArtifact: (artifact: Artifact) => void
+  downloadArtifact: (artifact: Artifact) => void | Promise<void>
 }) {
   return (
     <>
@@ -879,7 +1010,7 @@ function ContextRail({
   latestArtifact?: Artifact
   activeConversation: Conversation | null
   currentMessage: string
-  downloadArtifact: (artifact: Artifact) => void
+  downloadArtifact: (artifact: Artifact) => void | Promise<void>
 }) {
   const providerEvents = events.filter(event => event.stage === 'search_worker_provider')
   const workSummary = buildWorkSummary({ result, events, sources, activeConversation, currentMessage })
@@ -1011,11 +1142,11 @@ function buildWorkSummary({
   const timeMs = result?.latency_ms || estimateDurationMs(events, latestTurn)
   return {
     title: activeConversation?.title || titleFromMessage(currentMessage),
-    turns: String(activeConversation?.turns.length || 0),
+    turns: String(activeConversation?.turnCount || activeConversation?.turns.length || 0),
     route: result?.route || latestTurn?.route || 'not routed',
-    time: timeMs ? formatDuration(timeMs) : 'waiting',
-    budget: cost ? `$${cost.toFixed(4)}` : 'not reported',
-    sources: String(sources.length || latestTurn?.sourceCount || 0),
+    time: timeMs ? formatDuration(timeMs) : activeConversation?.totalLatencyMs ? formatDuration(activeConversation.totalLatencyMs) : 'waiting',
+    budget: cost ? `$${cost.toFixed(4)}` : activeConversation?.totalCostUsd ? `$${activeConversation.totalCostUsd.toFixed(4)}` : 'not reported',
+    sources: String(sources.length || latestTurn?.sourceCount || activeConversation?.sourceCount || 0),
     events: String(events.length || latestTurn?.events?.length || 0),
   }
 }
@@ -1045,54 +1176,47 @@ function estimateDurationMs(events: ProgressEvent[], selectedWork: WorkItem | nu
   return Number.isFinite(start) && Number.isFinite(end) && end > start ? end - start : 0
 }
 
-function bootstrapWorkspaces(legacyRaw: string | null): Workspace[] {
-  const now = new Date().toISOString()
-  try {
-    const legacy = legacyRaw ? JSON.parse(legacyRaw) as WorkItem[] : []
-    if (Array.isArray(legacy) && legacy.length > 0) {
-      return [{
-        id: newId('workspace'),
-        name: 'Imported studio',
-        createdAt: now,
-        updatedAt: legacy[0]?.completedAt || legacy[0]?.createdAt || now,
-        conversations: [{
-          id: newId('conversation'),
-          title: 'Imported work',
-          createdAt: now,
-          updatedAt: legacy[0]?.completedAt || legacy[0]?.createdAt || now,
-          turns: legacy,
-        }],
-      }]
-    }
-  } catch {}
-  return [newWorkspace('Personal workspace')]
-}
-
-function newWorkspace(name: string, conversationTitle = 'New conversation'): Workspace {
-  const now = new Date().toISOString()
+function mapWorkspace(workspace: ApiWorkspace): Workspace {
   return {
-    id: newId('workspace'),
-    name,
-    createdAt: now,
-    updatedAt: now,
-    conversations: [newConversation(conversationTitle)],
+    id: workspace.id,
+    name: workspace.name,
+    createdAt: workspace.created_at,
+    updatedAt: workspace.updated_at,
+    conversations: (workspace.conversations || []).map(mapConversation),
   }
 }
 
-function newConversation(title: string): Conversation {
-  const now = new Date().toISOString()
+function mapConversation(conversation: ApiConversation): Conversation {
   return {
-    id: newId('conversation'),
-    title,
-    createdAt: now,
-    updatedAt: now,
+    id: conversation.id,
+    title: conversation.title,
+    createdAt: conversation.created_at,
+    updatedAt: conversation.updated_at,
     turns: [],
+    turnCount: conversation.turn_count || 0,
+    artifactCount: conversation.artifact_count || 0,
+    sourceCount: conversation.source_count || 0,
+    totalLatencyMs: conversation.total_latency_ms || 0,
+    totalCostUsd: conversation.total_cost_usd || 0,
   }
 }
 
-function newId(prefix: string): string {
-  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return `${prefix}_${crypto.randomUUID()}`
-  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2)}`
+function mapTurn(result: AgentResult): WorkItem {
+  const message = result?.goal?.objective || ''
+  return {
+    id: result.turn_id,
+    title: titleFromMessage(message || result.answer || result.route),
+    route: result.route,
+    createdAt: result.created_at || new Date().toISOString(),
+    completedAt: result.created_at || undefined,
+    message,
+    qualityMode: result?.goal?.quality_mode as QualityMode | undefined,
+    outputFormat: undefined,
+    events: result.events || [],
+    result,
+    artifacts: result.artifacts || [],
+    sourceCount: result.sources?.length || 0,
+  }
 }
 
 function formatDuration(ms: number): string {

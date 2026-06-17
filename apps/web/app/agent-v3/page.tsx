@@ -1032,7 +1032,7 @@ function Timeline({
       ))}
 
       {running && (
-        <LiveTurn message={draftMessage} events={events} eventChips={eventChips} />
+        <LiveTurn message={draftMessage} events={events} />
       )}
 
       {!running && result && turns.length === 0 && (
@@ -1140,7 +1140,7 @@ function TurnPair({
   )
 }
 
-function LiveTurn({ message, events, eventChips }: { message: string; events: ProgressEvent[]; eventChips: (event: ProgressEvent) => string[] }) {
+function LiveTurn({ message, events }: { message: string; events: ProgressEvent[] }) {
   return (
     <>
       <div className={styles.userBubble}>
@@ -1152,39 +1152,32 @@ function LiveTurn({ message, events, eventChips }: { message: string; events: Pr
           <span className={styles.companionMark}><Sparkles size={16} /></span>
           <div>
             <p className={styles.companionTitle}>Fronei</p>
-            <p className={styles.companionText}>Working through the route, tools, providers, and evidence.</p>
+            <p className={styles.companionText}>I’ll keep you posted in plain English while the work runs.</p>
           </div>
         </div>
-        <RollingCommentary events={events} eventChips={eventChips} />
+        <RollingCommentary events={events} />
       </div>
     </>
   )
 }
 
-function RollingCommentary({ events, eventChips }: { events: ProgressEvent[]; eventChips: (event: ProgressEvent) => string[] }) {
-  const visibleEvents = events.slice(-6)
+function RollingCommentary({ events }: { events: ProgressEvent[] }) {
+  const visibleEvents = plainCommentary(events).slice(-6)
   return (
     <div className={styles.rollingLog}>
       {visibleEvents.length === 0 && (
         <div className={styles.rollingEvent}>
           <span className={styles.liveDot} />
           <div>
-            <p className={styles.rollingStage}>Starting</p>
-            <p className={styles.rollingMessage}>Preparing the route and available tools.</p>
+            <p className={styles.rollingMessage}>I’m getting oriented and deciding the best way to handle this.</p>
           </div>
         </div>
       )}
-      {visibleEvents.map((event, index) => (
-        <div key={`${event.stage}-${index}`} className={styles.rollingEvent}>
+      {visibleEvents.map((message, index) => (
+        <div key={`${message}-${index}`} className={styles.rollingEvent}>
           <span className={styles.liveDot} />
           <div>
-            <p className={styles.rollingStage}>{humanizeStage(event.stage)}</p>
-            <p className={styles.rollingMessage}>{event.message}</p>
-            {eventChips(event).length ? (
-              <div className={styles.chipRow}>
-                {eventChips(event).map(chip => <span key={chip} className={styles.traceChip}>{chip}</span>)}
-              </div>
-            ) : null}
+            <p className={styles.rollingMessage}>{message}</p>
           </div>
         </div>
       ))}
@@ -1319,6 +1312,64 @@ function buildConfidenceCues(events: ProgressEvent[], result: AgentResult | null
   if (judge?.data?.status) cues.push(`Document judge: ${String(judge.data.status)}`)
   if (result?.artifacts?.length) cues.push('Artifact saved to library')
   return cues.slice(0, 4)
+}
+
+function plainCommentary(events: ProgressEvent[]): string[] {
+  const messages = events
+    .filter(event => !['tool_selection', 'tool_result'].includes(event.stage))
+    .map(event => plainCommentaryForEvent(event))
+    .filter(Boolean) as string[]
+  return messages.filter((message, index) => message !== messages[index - 1])
+}
+
+function plainCommentaryForEvent(event: ProgressEvent): string | null {
+  const data = event.data || {}
+  switch (event.stage) {
+    case 'route_decision':
+    case 'routing':
+      return 'I’ve chosen a path for this request and I’m setting up the work.'
+    case 'research_planner':
+    case 'query_decomposition':
+      return 'I’m breaking the question into focused research angles.'
+    case 'search_worker_provider': {
+      const provider = typeof data.provider === 'string' ? data.provider : ''
+      return provider ? `I’m checking the web with ${provider}.` : 'I’m checking the web for current information.'
+    }
+    case 'source_selection': {
+      const count = data.unique_count || data.source_count
+      return count ? `I found ${String(count)} useful source candidates to work from.` : 'I’m narrowing the source list to the most useful material.'
+    }
+    case 'source_reader':
+      return 'I’m reading the strongest sources now.'
+    case 'evidence_binder': {
+      const count = data.evidence_count || data.item_count
+      return count ? `I’ve pulled out ${String(count)} evidence points that look useful.` : 'I’m turning the source material into usable evidence.'
+    }
+    case 'synthesis':
+      return 'I’m drafting the answer from the evidence.'
+    case 'document_planner':
+      return 'I’m shaping the document structure before writing.'
+    case 'document_writer':
+      return 'I’m writing the main content now.'
+    case 'artifact_builder':
+    case 'document_artifact':
+      return 'I’m packaging the finished work into a downloadable file.'
+    case 'document_judge_result':
+    case 'judge':
+      return 'I’m doing a quality pass before handing it back.'
+    case 'repair':
+    case 'repair_loop':
+      return 'I found something to improve, so I’m tightening it up.'
+    case 'complete':
+    case 'result':
+      return 'The work is ready.'
+    default:
+      if (/search/i.test(event.stage)) return 'I’m checking the web for current information.'
+      if (/source/i.test(event.stage)) return 'I’m reviewing source material.'
+      if (/document|artifact/i.test(event.stage)) return 'I’m preparing the work product.'
+      if (/judge|quality|verify/i.test(event.stage)) return 'I’m checking the quality before finishing.'
+      return event.message && !/[{}_[\]]/.test(event.message) ? event.message : 'I’m making progress on the task.'
+  }
 }
 
 function buildWorkSummary({

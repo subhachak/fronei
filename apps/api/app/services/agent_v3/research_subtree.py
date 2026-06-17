@@ -15,6 +15,15 @@ from app.services.agent_v3.models import AgentV3Request, Source, ToolCall, new_i
 
 logger = logging.getLogger(__name__)
 
+ResearchProfile = Literal[
+    "general",
+    "technical_architecture",
+    "vendor_comparison",
+    "market_research",
+    "regulatory",
+    "academic_literature",
+]
+
 
 ResearchAgentId = Literal[
     "research_lead",
@@ -209,6 +218,7 @@ class SearchWorkerPlan(BaseModel):
 
 class ResearchPlan(BaseModel):
     goal_id: str = ""
+    research_profile: ResearchProfile = "general"
     questions: list[str] = Field(default_factory=list)
     search_queries: list[str] = Field(default_factory=list)
     workers: list[SearchWorkerPlan] = Field(default_factory=list)
@@ -288,6 +298,7 @@ class ResearchFeedbackLoop(BaseModel):
 class ResearchBrief(BaseModel):
     objective: str
     audience: str = "general business"
+    research_profile: ResearchProfile = "general"
     scope_in: list[str] = Field(default_factory=list)
     scope_out: list[str] = Field(default_factory=list)
     success_criteria: list[str] = Field(default_factory=list)
@@ -425,6 +436,12 @@ SYNTHESIS_PROMPT = """You are the Agent v3 synthesis agent.
 Write a source-grounded answer using only the evidence pack. Use clear structure,
 specific findings, and [S#] citations for claims tied to evidence. If evidence is
 thin, say what is missing instead of pretending certainty.
+
+For technical architecture research, produce a real architectural report, not a
+short overview. Include concrete components, control flow, data flow, agent
+roles, state/memory, tool boundaries, guardrails, failure handling, observability,
+latency/cost trade-offs, and implementation guidance. Prefer precise technical
+language over marketing phrasing. Include a compact text diagram when useful.
 """
 
 
@@ -441,6 +458,7 @@ BRIEF_PROMPT = """You are the Fronei research briefing agent.
 Convert the user request into a compact, frozen research brief. Return only JSON:
 {
   "objective": "precise one-sentence research objective",
+  "research_profile": "general|technical_architecture|vendor_comparison|market_research|regulatory|academic_literature",
   "audience": "intended audience",
   "scope_in": ["2-4 topics, entities, or dimensions explicitly in scope"],
   "scope_out": ["0-2 things explicitly out of scope"],
@@ -677,16 +695,16 @@ def research_budget_for(request: AgentV3Request) -> ResearchBudget:
         )
     if request.research_level == "deep":
         return ResearchBudget(
-            max_search_workers=4,
-            max_sources=12,
-            min_evidence_items=3,
+            max_search_workers=6,
+            max_sources=18,
+            min_evidence_items=8,
             repair_iterations=2,
             judge_threshold=0.78,
-            max_tool_calls=24,
-            max_model_calls=10,
-            max_cost_usd=0.25,
-            max_elapsed_ms=180_000,
-            max_deep_links=8,
+            max_tool_calls=36,
+            max_model_calls=14,
+            max_cost_usd=0.50,
+            max_elapsed_ms=300_000,
+            max_deep_links=12,
         )
     return ResearchBudget(
         max_search_workers=3,
@@ -745,6 +763,8 @@ def generate_research_brief(request: AgentV3Request) -> ResearchBrief:
         payload = _parse_json(response.text)
         brief = ResearchBrief.model_validate(payload)
         brief.objective = brief.objective or request.message
+        if brief.research_profile == "general":
+            brief.research_profile = infer_research_profile(request.message)
         brief.research_level = request.research_level if request.research_level != "auto" else "regular"
         brief.quality_mode = request.quality_mode
         brief.model_used = response.model_used
@@ -754,10 +774,12 @@ def generate_research_brief(request: AgentV3Request) -> ResearchBrief:
         return brief
     except Exception as exc:
         logger.warning("agent_v3 brief generation failed; using fallback: %s", exc)
+        profile = infer_research_profile(request.message)
         return ResearchBrief(
             objective=request.message,
+            research_profile=profile,
             scope_in=[request.message[:160]],
-            success_criteria=["Answer the user's question with source-grounded evidence."],
+            success_criteria=_fallback_success_criteria(profile),
             research_level=request.research_level if request.research_level != "auto" else "regular",
             quality_mode=request.quality_mode,
             source="heuristic",
@@ -765,7 +787,90 @@ def generate_research_brief(request: AgentV3Request) -> ResearchBrief:
         )
 
 
+def infer_research_profile(message: str) -> ResearchProfile:
+    text = (message or "").lower()
+    technical_terms = [
+        "architecture",
+        "system design",
+        "components",
+        "workflow",
+        "workflows",
+        "orchestration",
+        "multi-agent",
+        "multi agent",
+        "agentic",
+        "pipeline",
+        "runtime",
+        "implementation",
+        "data flow",
+        "stateful",
+        "mcp",
+        "guardrails",
+        "evidence binder",
+        "planner",
+        "critic",
+        "judge",
+    ]
+    if any(term in text for term in technical_terms):
+        return "technical_architecture"
+    if any(term in text for term in ("compare", "vendor", "pricing", "versus", " vs ", "tavily", "nimble", "you.com")):
+        return "vendor_comparison"
+    if any(term in text for term in ("regulation", "regulatory", "compliance", "law", "policy", "guideline")):
+        return "regulatory"
+    if any(term in text for term in ("market", "industry", "tam", "forecast", "share", "growth")):
+        return "market_research"
+    if any(term in text for term in ("paper", "literature", "academic", "arxiv", "benchmark")):
+        return "academic_literature"
+    return "general"
+
+
+def _fallback_success_criteria(profile: ResearchProfile) -> list[str]:
+    if profile == "technical_architecture":
+        return [
+            "Identify concrete system components and their responsibilities.",
+            "Explain end-to-end workflows, control loops, state, and data flow.",
+            "Cover implementation trade-offs, failure handling, guardrails, and evaluation.",
+            "Prioritize technically dense sources over high-level overview pages.",
+        ]
+    return ["Answer the user's question with source-grounded evidence."]
+
+
+def _technical_architecture_contract() -> CoverageContract:
+    subjects = [
+        "Lead agent and orchestration",
+        "Research planning and coverage contract",
+        "Search workers and provider strategy",
+        "Source reading and deep-link crawling",
+        "Evidence binder and citation map",
+        "Reflection, gap detection, and repair loop",
+        "Synthesis, judge, and quality gates",
+        "Runtime durability, budget ledger, and observability",
+        "Guardrails and security controls",
+    ]
+    dimensions = [
+        "responsibility",
+        "implementation pattern",
+        "data model",
+        "workflow",
+        "failure handling",
+        "trade-offs",
+    ]
+    cells = [
+        CoverageCell(subject=subject, dimension=dimension, required=True)
+        for subject in subjects
+        for dimension in dimensions
+    ]
+    return CoverageContract(
+        cells=cells,
+        subjects=subjects,
+        dimensions=dimensions,
+        source="profile:technical_architecture",
+    )
+
+
 def generate_coverage_contract(request: AgentV3Request, brief: ResearchBrief) -> CoverageContract:
+    if brief.research_profile == "technical_architecture":
+        return _technical_architecture_contract()
     try:
         response = model_client.complete(
             [
@@ -852,7 +957,29 @@ def plan_from_contract(
             break
     if not workers:
         workers = _fallback_plan(request, create_research_goal(request)).workers
+
+    # For technical_architecture + deep, prepend anchor queries that reliably
+    # surface arxiv papers, GitHub repos, and engineering reference material.
+    # These run before the contract-cell workers so wave 1 seeds the evidence
+    # pool with dense sources before the coverage check fires.
+    profile = infer_research_profile(request.message)
+    if profile == "technical_architecture" and request.research_level == "deep":
+        anchor_queries = _tech_arch_anchor_queries(request.message)
+        existing_queries = {w.query for w in workers}
+        anchor_workers = [
+            SearchWorkerPlan(
+                question=f"Anchor: {q}",
+                query=q,
+                rationale="Profile-level anchor to seed technically dense sources.",
+                max_results=5,
+            )
+            for q in anchor_queries
+            if q not in existing_queries
+        ]
+        workers = (anchor_workers + workers)[: budget.max_search_workers]
+
     return ResearchPlan(
+        research_profile=profile,
         questions=[worker.question for worker in workers],
         search_queries=[worker.query for worker in workers],
         workers=workers,
@@ -883,6 +1010,7 @@ def plan_from_targeted_queries(targeted_queries: list[str], state: ResearchState
         for query in new_queries
     ]
     return ResearchPlan(
+        research_profile=state.plan.research_profile,
         questions=[worker.question for worker in workers],
         search_queries=[worker.query for worker in workers],
         workers=workers,
@@ -1076,6 +1204,36 @@ def judge_research_final(request: AgentV3Request, state: ResearchStateStore, ans
     if len(answer or "") < 250:
         score -= 0.10
         issues.append("Answer too short for deep research.")
+    if state.plan.research_profile == "technical_architecture" and request.research_level == "deep":
+        section_count = len(re.findall(r"(?m)^(?:#{1,3}\s+|\d+\.\s+)[A-Z0-9][^\n]{3,}", answer or ""))
+        required_terms = [
+            "orchestr",
+            "workflow",
+            "evidence",
+            "guardrail",
+            "judge",
+            "runtime",
+            "failure",
+            "budget",
+            "trace",
+            "source",
+        ]
+        missing_terms = [term for term in required_terms if term not in (answer or "").lower()]
+        technical_sources = [
+            item for item in state.evidence.items if score_technical_density(Source(title=item.title, url=item.url, content=item.evidence)) >= 0.35
+        ]
+        if len(answer or "") < 4500:
+            score -= 0.18
+            issues.append("Deep technical architecture report is too short; expected a detailed multi-section report.")
+        if section_count < 8:
+            score -= 0.12
+            issues.append("Technical architecture report lacks enough concrete sections.")
+        if missing_terms:
+            score -= min(0.16, 0.025 * len(missing_terms))
+            issues.append("Technical architecture report misses required implementation concepts: " + ", ".join(missing_terms[:6]))
+        if len(technical_sources) < 4:
+            score -= 0.12
+            issues.append("Evidence pack has too few technically dense sources.")
     open_cells = state.contract.open_cells()
     if open_cells:
         score -= min(0.18, 0.025 * len(open_cells))
@@ -1202,6 +1360,7 @@ def synthesize_answer(request: AgentV3Request, plan: ResearchPlan, evidence: Evi
     )
     if not evidence_context:
         evidence_context = "No source evidence was available. Be transparent about that."
+    report_contract = _synthesis_report_contract(plan.research_profile, request)
     return model_client.simple_completion(
         SYNTHESIS_PROMPT,
         (
@@ -1209,11 +1368,13 @@ def synthesize_answer(request: AgentV3Request, plan: ResearchPlan, evidence: Evi
         )
         + (
             f"User request:\n{request.message}\n\n"
+            f"Research profile: {plan.research_profile}\n\n"
+            f"Required deliverable shape:\n{report_contract}\n\n"
             f"Research questions:\n{json.dumps(plan.questions, ensure_ascii=False)}\n\n"
             f"Evidence pack:\n{evidence_context}\n\n"
             f"Known gaps:\n{json.dumps(evidence.gaps, ensure_ascii=False)}"
         ),
-        max_tokens=1800 if request.quality_mode == "executive" else 1200,
+        max_tokens=_synthesis_token_budget(request, plan),
     )
 
 
@@ -1279,7 +1440,7 @@ def repair_research_answer(
             f"Evidence pack:\n{evidence_context}\n\n"
             f"Research questions:\n{json.dumps(plan.questions, ensure_ascii=False)}"
         ),
-        max_tokens=1800 if request.quality_mode == "executive" else 1200,
+        max_tokens=_synthesis_token_budget(request, plan),
     )
 
 
@@ -1293,8 +1454,15 @@ def rank_sources(sources: list[Source], plan: ResearchPlan) -> list[RankedSource
         source_type = classify_source_type(source.url)
         authority = score_source_authority(source.url)
         relevance = _estimate_relevance(source, plan.questions)
+        technical_density = score_technical_density(source) if plan.research_profile == "technical_architecture" else 0.0
         content_bonus = 0.08 if source.content else 0.0
-        score = max(0.0, min(1.0, (authority * 0.45) + (relevance * 0.45) + content_bonus))
+        if plan.research_profile == "technical_architecture":
+            score = max(
+                0.0,
+                min(1.0, (authority * 0.25) + (relevance * 0.30) + (technical_density * 0.40) + content_bonus),
+            )
+        else:
+            score = max(0.0, min(1.0, (authority * 0.45) + (relevance * 0.45) + content_bonus))
         ranked.append(
             RankedSource(
                 source=source,
@@ -1303,7 +1471,10 @@ def rank_sources(sources: list[Source], plan: ResearchPlan) -> list[RankedSource
                 source_type=source_type,
                 authority=authority,
                 relevance=relevance,
-                rationale=f"{source_type} source; authority={authority:.2f}; relevance={relevance:.2f}",
+                rationale=(
+                    f"{source_type} source; authority={authority:.2f}; relevance={relevance:.2f}; "
+                    f"technical_density={technical_density:.2f}"
+                ),
             )
         )
     ranked.sort(key=lambda item: item.score, reverse=True)
@@ -1723,13 +1894,17 @@ def classify_source_type(url: str) -> str:
     host = (parsed.hostname or "").lower()
     if path.endswith(".pdf"):
         return "pdf"
+    if "arxiv.org" in host or "papers.ssrn.com" in host or "aclanthology.org" in host:
+        return "academic"
+    if "github.com" in host or "gitlab.com" in host:
+        return "repository"
     if host.endswith(".gov") or ".gov." in host:
         return "government"
     if host.endswith(".edu") or ".edu." in host:
         return "academic"
     if any(token in host for token in ("sec.gov", "who.int", "oecd.org", "worldbank.org", "imf.org")):
         return "primary"
-    if any(token in host for token in ("docs.", "developer.", "support.", "help.")):
+    if any(token in host for token in ("docs.", "developer.", "support.", "help.", "readthedocs", "langchain", "llamaindex")):
         return "documentation"
     if any(token in host for token in ("reuters.com", "apnews.com", "bloomberg.com", "ft.com", "wsj.com")):
         return "news"
@@ -1742,12 +1917,90 @@ def score_source_authority(url: str) -> float:
         "government": 0.95,
         "primary": 0.92,
         "academic": 0.88,
+        "repository": 0.86,
         "documentation": 0.84,
         "pdf": 0.76,
         "news": 0.68,
         "web": 0.52,
     }
     return scores.get(source_type, 0.5)
+
+
+def score_technical_density(source: Source) -> float:
+    text = f"{source.title} {source.url} {source.snippet} {source.content}".lower()
+    signals = [
+        "architecture",
+        "component",
+        "workflow",
+        "orchestrator",
+        "planner",
+        "executor",
+        "critic",
+        "judge",
+        "guardrail",
+        "retrieval",
+        "citation",
+        "evidence",
+        "schema",
+        "state",
+        "memory",
+        "tool",
+        "mcp",
+        "api",
+        "latency",
+        "cost",
+        "evaluation",
+        "benchmark",
+        "failure",
+        "retry",
+        "queue",
+        "event",
+        "trace",
+        "github",
+        "arxiv",
+        "implementation",
+    ]
+    hits = sum(1 for signal in signals if signal in text)
+    type_bonus = {
+        "academic": 0.28,
+        "repository": 0.26,
+        "documentation": 0.22,
+        "pdf": 0.16,
+        "primary": 0.12,
+    }.get(classify_source_type(source.url), 0.0)
+    content_bonus = 0.12 if len(source.content or "") > 1200 else 0.0
+    return max(0.0, min(1.0, type_bonus + min(0.60, hits * 0.035) + content_bonus))
+
+
+def _synthesis_report_contract(profile: ResearchProfile, request: AgentV3Request) -> str:
+    if profile == "technical_architecture":
+        return "\n".join(
+            [
+                "Produce a detailed architectural report with these sections:",
+                "1. Executive summary and scope",
+                "2. Reference architecture and component map",
+                "3. Lead-agent orchestration and planning loop",
+                "4. Search/source acquisition workers and provider strategy",
+                "5. Source reading, deep-link crawling, and artifact handling",
+                "6. Evidence model, coverage contract, citation map, and contradiction handling",
+                "7. Reflection loop, gap repair, judge/critic gates, and termination rules",
+                "8. Runtime durability, event streaming, budgets, observability, and trace model",
+                "9. Guardrails, security controls, and failure modes",
+                "10. Implementation roadmap and trade-offs",
+                "Use [S#] citations throughout. Avoid generic definitions unless they support a concrete design decision.",
+            ]
+        )
+    if request.output_format in {"docx", "markdown"} or "report" in request.message.lower():
+        return "Produce a structured report with clear headings, evidence-backed findings, gaps, and recommendations."
+    return "Produce a source-grounded answer with clear headings and cited findings."
+
+
+def _synthesis_token_budget(request: AgentV3Request, plan: ResearchPlan) -> int:
+    if plan.research_profile == "technical_architecture" and request.research_level == "deep":
+        return 6500 if request.quality_mode == "executive" else 5200
+    if request.output_format in {"docx", "markdown"} or "report" in request.message.lower():
+        return 4200 if request.quality_mode == "executive" else 3200
+    return 1800 if request.quality_mode == "executive" else 1200
 
 
 def detect_contradictions(items: list[EvidenceItem]) -> list[str]:
@@ -1796,6 +2049,7 @@ def _fallback_plan(request: AgentV3Request, goal: ResearchGoal | None = None) ->
     )
     return ResearchPlan(
         goal_id=goal.id,
+        research_profile=infer_research_profile(request.message),
         questions=[request.message],
         search_queries=[request.message],
         workers=[worker],
@@ -1810,6 +2064,8 @@ def _fallback_plan(request: AgentV3Request, goal: ResearchGoal | None = None) ->
 
 def _normalize_plan(plan: ResearchPlan, request: AgentV3Request, goal: ResearchGoal | None = None) -> ResearchPlan:
     goal = goal or create_research_goal(request)
+    if plan.research_profile == "general":
+        plan.research_profile = infer_research_profile(request.message)
     if not plan.questions:
         plan.questions = [request.message]
     plan.questions = _dedupe(plan.questions)[:4]
@@ -1864,13 +2120,82 @@ def _derive_fallback_dimensions(criteria: list[str]) -> list[str]:
     return ["capabilities", "evidence", "risks"]
 
 
+def _tech_arch_anchor_queries(original_message: str) -> list[str]:
+    """Return 2-3 tight anchor queries for technical_architecture profile.
+
+    These are designed to surface arxiv papers, GitHub repos, and engineering
+    reference material — sources that generic keyword queries miss.
+    The queries are short and natural so search engines treat them well.
+    """
+    msg_lower = (original_message or "").lower()
+    # Determine the core subject from the user's message
+    if "deep research" in msg_lower or "deep_research" in msg_lower:
+        return [
+            "agentic deep research multi-agent architecture implementation",
+            "LLM research agent planning loop evidence retrieval site:arxiv.org OR site:github.com",
+            "autonomous research agent orchestration evidence synthesis 2024",
+        ]
+    if "multi-agent" in msg_lower or "multi agent" in msg_lower:
+        return [
+            "multi-agent LLM orchestration architecture patterns",
+            "multi-agent AI system design orchestrator planner executor",
+            "agentic workflow multi-agent framework implementation site:github.com OR site:arxiv.org",
+        ]
+    if "rag" in msg_lower or "retrieval" in msg_lower:
+        return [
+            "RAG architecture retrieval augmented generation production implementation",
+            "agentic RAG planning retrieval evidence grounding 2024",
+            "retrieval augmented generation system design components site:arxiv.org",
+        ]
+    # Generic technical architecture fallback
+    return [
+        f"{original_message[:80]} architecture implementation",
+        f"{original_message[:60]} system design components site:arxiv.org OR site:github.com",
+    ]
+
+
 def _targeted_query(subject: str, dimensions: list[str], original: str) -> str:
     subject = " ".join(str(subject or "").split())
-    dims = " ".join(_dedupe([str(dim) for dim in dimensions])[:4])
-    base = f"{subject} {dims}".strip()
+    # Pick the single most specific dimension to keep the query tight
+    primary_dim = dimensions[0] if dimensions else ""
+    primary_dim = " ".join(str(primary_dim or "").split())
+
+    if infer_research_profile(original) == "technical_architecture":
+        # Tight subject-focused query — don't pad with keyword lists.
+        # The search engine needs a natural, specific query, not a keyword dump.
+        # Append one grounding term to bias toward technical sources.
+        grounding = _tech_arch_grounding_term(subject)
+        query = f"{subject} {primary_dim} {grounding}".strip()
+        return query[:180]
+
     if subject and any(token in subject.lower() for token in ("tavily", "nimble", "you.com", "youcom")):
-        return f"{base} official docs pricing security API enterprise".strip()[:220]
+        return f"{subject} {primary_dim} official docs pricing security API enterprise".strip()[:180]
+
+    base = f"{subject} {primary_dim}".strip()
     return f"{base} {original}".strip()[:220]
+
+
+def _tech_arch_grounding_term(subject: str) -> str:
+    """Return a short grounding suffix that biases search toward technical sources
+    without keyword-stuffing. One term only."""
+    s = subject.lower()
+    if any(t in s for t in ("orchestrat", "lead agent", "planner")):
+        return "implementation"
+    if any(t in s for t in ("evidence", "citation", "binder")):
+        return "architecture"
+    if any(t in s for t in ("search", "worker", "provider", "retrieval")):
+        return "multi-agent"
+    if any(t in s for t in ("reflect", "gap", "repair", "judge", "critic")):
+        return "agentic loop"
+    if any(t in s for t in ("guardrail", "security", "safety")):
+        return "LLM guardrails"
+    if any(t in s for t in ("budget", "ledger", "observ", "latency", "cost")):
+        return "production"
+    if any(t in s for t in ("memory", "state", "stateful")):
+        return "stateful agent"
+    if any(t in s for t in ("synthesis", "synthesiz")):
+        return "RAG synthesis"
+    return "agentic AI"
 
 
 def _evidence_supports_cell(item: EvidenceItem, cell: CoverageCell) -> bool:

@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 from app.services.agent_v3 import model_client
 from app.services.agent_v3.models import AgentV3Request, Artifact, Source, ToolCall
-from app.services.agent_v3.research_subtree import EvidencePack, source_context_from_evidence
+from app.services.agent_v3.research_subtree import EvidencePack, infer_research_profile, source_context_from_evidence
 from app.services.agent_v3.tools import source_context
 
 logger = logging.getLogger(__name__)
@@ -122,7 +122,7 @@ def write_document(
     response = model_client.simple_completion(
         "You are the Agent v3 document writer. Produce only the document body in markdown.",
         prompt,
-        max_tokens=2600 if request.quality_mode == "executive" else 2200,
+        max_tokens=_document_writer_token_budget(request, research_answer=research_answer),
     )
     return DocumentDraft(
         markdown=response.text,
@@ -156,6 +156,15 @@ def choose_artifact_tool(request: AgentV3Request, plan: DocumentPlan) -> str:
     if request.output_format == "markdown" or plan.format == "markdown":
         return "make_markdown_artifact"
     return "make_docx_artifact"
+
+
+def _document_writer_token_budget(request: AgentV3Request, *, research_answer: str | None = None) -> int:
+    profile = infer_research_profile(request.message)
+    if profile == "technical_architecture" and research_answer:
+        return 7000 if request.quality_mode == "executive" else 5600
+    if research_answer and ("report" in request.message.lower() or request.output_format in {"docx", "markdown"}):
+        return 5200 if request.quality_mode == "executive" else 4000
+    return 2600 if request.quality_mode == "executive" else 2200
 
 
 def build_artifact(tool_registry, plan: DocumentPlan, draft: DocumentDraft, tool_name: str) -> tuple[Artifact, ToolCall]:

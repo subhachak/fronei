@@ -883,6 +883,18 @@ def load_turn(turn_id: str, user_id: str) -> AgentV3Result | None:
             quality_mode=turn.quality_mode,
             created_at=turn.created_at,
         )
+        progress_events = [
+            ProgressEvent(
+                event_id=row.id,
+                turn_id=row.turn_id,
+                stage=row.stage,
+                message=row.message,
+                data=_loads(row.data_json, {}),
+                created_at=row.created_at,
+            )
+            for row in events
+        ]
+        research_plan_preview = _research_plan_preview_from_events(progress_events)
         return AgentV3Result(
             turn_id=turn.id,
             goal=goal,
@@ -914,23 +926,57 @@ def load_turn(turn_id: str, user_id: str) -> AgentV3Result | None:
                 )
                 for row in artifact_rows
             ],
-            events=[
-                ProgressEvent(
-                    event_id=row.id,
-                    turn_id=row.turn_id,
-                    stage=row.stage,
-                    message=row.message,
-                    data=_loads(row.data_json, {}),
-                    created_at=row.created_at,
-                )
-                for row in events
-            ],
+            events=progress_events,
             latency_ms=turn.latency_ms,
             cost_usd=turn.cost_usd,
+            follow_up_options=_deep_research_followups(turn.objective, turn.route, research_plan_preview),
+            research_plan_preview=research_plan_preview,
             created_at=turn.created_at,
         )
     finally:
         db.close()
+
+
+def _research_plan_preview_from_events(events: list[ProgressEvent]) -> dict | None:
+    for event in reversed(events):
+        if event.stage == "research_plan_preview":
+            preview = event.data.get("research_plan_preview")
+            if isinstance(preview, dict):
+                return preview
+    return None
+
+
+def _deep_research_followups(objective: str, route: str, preview: dict | None) -> list[dict]:
+    if not preview:
+        return []
+    output_format = str(preview.get("output_format") or "chat")
+    target_route = route if route in {"research", "research_document"} else ("research_document" if output_format != "chat" else "research")
+    return [
+        {
+            "label": "Start research",
+            "message": objective,
+            "force_route": target_route,
+            "research_level": "deep",
+            "confirm_deep_research": True,
+            "output_format": output_format,
+        },
+        {
+            "label": "Use regular research",
+            "message": objective,
+            "force_route": target_route,
+            "research_level": "regular",
+            "confirm_deep_research": False,
+            "output_format": output_format,
+        },
+        {
+            "label": "Answer directly",
+            "message": objective,
+            "force_route": "direct",
+            "research_level": "easy",
+            "confirm_deep_research": False,
+            "output_format": "chat",
+        },
+    ]
 
 
 def list_conversation_turns(user_id: str, conversation_id: str, *, limit: int = 20, before: str | None = None) -> list[AgentV3Result]:

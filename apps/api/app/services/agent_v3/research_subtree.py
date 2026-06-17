@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from ipaddress import ip_address
 from collections.abc import Callable
@@ -298,6 +299,20 @@ class EvidencePack(BaseModel):
     contradictions: list[str] = Field(default_factory=list)
 
 
+class SearchWorkerReport(BaseModel):
+    worker_id: str
+    question: str
+    query: str
+    assigned_subject: str = ""
+    assigned_dimension: str = ""
+    sources: list[Source] = Field(default_factory=list)
+    claims: list[EvidenceClaim] = Field(default_factory=list)
+    self_assessed_confidence: float = 0.0
+    missing_evidence: list[str] = Field(default_factory=list)
+    retry_queries: list[str] = Field(default_factory=list)
+    provider_attempts: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class ResearchJudgeResult(BaseModel):
     agent_id: ResearchAgentId = "research_judge"
     status: Literal["pass", "repair", "fail"] = "pass"
@@ -401,6 +416,7 @@ class ResearchStateStore(BaseModel):
     query_history: list[str] = Field(default_factory=list)
     all_sources: list[Source] = Field(default_factory=list)
     all_tool_calls: list[ToolCall] = Field(default_factory=list)
+    worker_reports: list[SearchWorkerReport] = Field(default_factory=list)
     iteration: int = 0
     budget_ledger: ResearchBudgetLedger = Field(default_factory=lambda: ResearchBudgetLedger(budget=ResearchBudget()))
 
@@ -1070,6 +1086,25 @@ def update_contract_from_evidence(state: ResearchStateStore) -> None:
     for cell in state.contract.cells:
         if not cell.required or cell.status == "not_applicable":
             continue
+        worker_matches = [
+            report
+            for report in state.worker_reports
+            if report.assigned_subject == cell.subject
+            and report.assigned_dimension == cell.dimension
+            and report.claims
+            and report.self_assessed_confidence >= 0.42
+        ]
+        if worker_matches:
+            best = max(worker_matches, key=lambda report: report.self_assessed_confidence)
+            claim_source_ids = _dedupe([claim.source_id for claim in best.claims])
+            cell.evidence_ids = claim_source_ids
+            cell.confidence = best.self_assessed_confidence
+            cell.status = "filled" if best.self_assessed_confidence >= 0.68 and len(best.claims) >= 2 else "partial"
+            cell.notes = (
+                f"Worker {best.worker_id} reported {len(best.claims)} typed claim(s); "
+                f"confidence={best.self_assessed_confidence:.2f}."
+            )
+            continue
         matches: list[EvidenceItem] = []
         for item in state.evidence.items:
             if _evidence_supports_cell(item, cell):
@@ -1138,6 +1173,19 @@ def reflect(request: AgentV3Request, state: ResearchStateStore) -> ReflectionDec
                                 for cell in partial_cells[:8]
                             ],
                             "queries_already_tried": state.query_history[-10:],
+                            "worker_reports": [
+                                {
+                                    "question": report.question,
+                                    "query": report.query,
+                                    "assigned_subject": report.assigned_subject,
+                                    "assigned_dimension": report.assigned_dimension,
+                                    "confidence": report.self_assessed_confidence,
+                                    "claim_count": len(report.claims),
+                                    "missing_evidence": report.missing_evidence,
+                                    "retry_queries": report.retry_queries,
+                                }
+                                for report in state.worker_reports[-10:]
+                            ],
                             "source_count": len(state.source_inventory),
                             "iteration": state.iteration,
                             "budget_remaining": {
@@ -1368,6 +1416,95 @@ def plan_research(request: AgentV3Request) -> ResearchPlan:
         plan = _fallback_plan(request, goal)
         plan.fallback_reason = str(exc)
         return plan
+
+
+def build_research_plan_preview(request: AgentV3Request) -> dict[str, Any]:
+    """Build a human-reviewable research plan without executing web tools."""
+    started = time.perf_counter()
+    preview_request = request.model_copy(update={"research_level": "deep"})
+    brief = generate_research_brief(preview_request)
+    contract = generate_coverage_contract(preview_request, brief)
+    budget = research_budget_for(preview_request)
+    plan = plan_from_contract(preview_request, contract, budget)
+    investigate = _plan_preview_investigation_items(brief, contract, plan)
+    source_strategy = _plan_preview_source_strategy(brief.research_profile, plan)
+    return {
+        "title": _plan_preview_title(brief, request),
+        "goal": brief.objective,
+        "audience": brief.audience,
+        "research_profile": brief.research_profile,
+        "research_level": "deep",
+        "output_format": request.output_format,
+        "estimated_duration": "Ready in a few minutes",
+        "workflow": [
+            {"label": "Research websites", "description": "Search, read, and self-evaluate source candidates before spending the full read budget."},
+            {"label": "Analyze results", "description": "Bind evidence into typed claims, check coverage, and retry weak worker results."},
+            {"label": "Create report", "description": "Synthesize a cited answer or document from the verified evidence pack."},
+        ],
+        "investigate": investigate,
+        "source_strategy": source_strategy,
+        "workers": [worker.model_dump(mode="json") for worker in plan.workers],
+        "coverage": {
+            "subjects": contract.subjects,
+            "dimensions": contract.dimensions,
+            "required_cells": len([cell for cell in contract.cells if cell.required]),
+        },
+        "budget": budget.model_dump(mode="json"),
+        "model_used": _dedupe([value for value in [brief.model_used, contract.model_used, plan.model_used] if value]),
+        "latency_ms": int((time.perf_counter() - started) * 1000) + brief.latency_ms + contract.latency_ms + plan.latency_ms,
+        "fallback_reasons": _dedupe(
+            [value for value in [brief.fallback_reason, contract.fallback_reason, plan.fallback_reason] if value]
+        ),
+    }
+
+
+def _plan_preview_title(brief: ResearchBrief, request: AgentV3Request) -> str:
+    if brief.scope_in:
+        return " ".join(brief.scope_in[:2])[:90]
+    objective = re.sub(r"^(conduct|do|perform)\s+(deep\s+)?research\s+(on|about)?\s*", "", brief.objective, flags=re.I)
+    return objective.strip(" .")[:90] or request.message[:90] or "Research plan"
+
+
+def _plan_preview_investigation_items(
+    brief: ResearchBrief,
+    contract: CoverageContract,
+    plan: ResearchPlan,
+) -> list[str]:
+    items: list[str] = []
+    for criterion in brief.success_criteria:
+        cleaned = " ".join(str(criterion).split()).strip()
+        if cleaned:
+            items.append(cleaned.rstrip(".") + ".")
+    if len(items) < 5:
+        for worker in plan.workers:
+            cleaned = " ".join(worker.question.split()).strip()
+            if cleaned and cleaned not in items:
+                items.append(cleaned.rstrip(".") + ".")
+    if len(items) < 5:
+        for subject in contract.subjects:
+            for dimension in contract.dimensions[:2]:
+                items.append(f"Examine {subject} through the lens of {dimension}.")
+                if len(items) >= 7:
+                    break
+            if len(items) >= 7:
+                break
+    return _dedupe(items)[:8]
+
+
+def _plan_preview_source_strategy(profile: ResearchProfile, plan: ResearchPlan) -> list[str]:
+    base = [
+        "Web search across the configured provider chain",
+        "Source reading for high-value pages and documents",
+        "Worker self-evaluation and retry for weak result sets",
+        "Typed claim extraction with citation provenance",
+    ]
+    if profile == "technical_architecture":
+        base.extend(["Academic papers, GitHub repositories, framework docs, and engineering write-ups", "Implementation trade-offs, failure modes, and runtime patterns"])
+    elif profile == "vendor_comparison":
+        base.extend(["Official product docs, pricing pages, marketplace listings, and security/compliance material"])
+    elif profile == "regulatory":
+        base.extend(["Regulator, government, primary legal, and policy sources where available"])
+    return _dedupe(base)
 
 
 def bind_evidence(
@@ -1909,6 +2046,136 @@ def _chunk_urls(urls: list[str], *, size: int) -> list[list[str]]:
     return chunks
 
 
+def _assigned_cell_for_worker(worker: SearchWorkerPlan, contract: CoverageContract) -> CoverageCell | None:
+    if not contract.cells:
+        return None
+    haystack = f"{worker.question} {worker.query} {worker.rationale}".lower()
+    scored: list[tuple[int, CoverageCell]] = []
+    for cell in contract.cells:
+        terms = _cell_terms(cell.subject) + _cell_terms(cell.dimension)
+        hits = sum(1 for term in terms if term in haystack)
+        if hits:
+            scored.append((hits, cell))
+    if not scored:
+        return None
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    return scored[0][1]
+
+
+def _retry_query_for_worker(worker: SearchWorkerPlan, assigned_cell: CoverageCell | None, request: AgentV3Request) -> str:
+    if assigned_cell:
+        return _targeted_query(assigned_cell.subject, [assigned_cell.dimension], request.message)
+    grounding = _tech_arch_grounding_term(worker.question) if "architecture" in request.message.lower() else ""
+    return " ".join(part for part in [worker.question, grounding or "primary sources implementation evidence"] if part).strip()
+
+
+def _source_relevance_for_worker(source: Source, worker: SearchWorkerPlan) -> float:
+    question_score = _estimate_relevance(source, [worker.question])
+    query_score = _estimate_relevance(source, [worker.query])
+    density_bonus = min(0.18, score_technical_density(source) * 0.18)
+    return max(question_score, query_score) + density_bonus
+
+
+def _worker_confidence(
+    worker: SearchWorkerPlan,
+    sources: list[Source],
+    claims: list[EvidenceClaim],
+    assigned_cell: CoverageCell | None,
+) -> float:
+    if not sources:
+        return 0.0
+    relevance = sum(_source_relevance_for_worker(source, worker) for source in sources) / max(1, len(sources))
+    claim_bonus = min(0.28, len(claims) * 0.045)
+    authority = max((score_source_authority(source.url) for source in sources if source.url), default=0.0) * 0.14
+    assignment_bonus = 0.08 if assigned_cell else 0.0
+    return max(0.0, min(1.0, relevance * 0.55 + claim_bonus + authority + assignment_bonus))
+
+
+def _worker_missing_evidence(
+    worker: SearchWorkerPlan,
+    sources: list[Source],
+    claims: list[EvidenceClaim],
+    confidence: float,
+    assigned_cell: CoverageCell | None,
+) -> list[str]:
+    missing: list[str] = []
+    if not sources:
+        missing.append("No usable public sources found.")
+    if confidence < 0.45:
+        missing.append("Search results appear weak for the assigned question.")
+    if not claims:
+        missing.append("No typed evidence claims extracted from selected sources.")
+    if assigned_cell and not any(
+        _text_supports_cell(f"{claim.text} {claim.source_title} {claim.source_url}", assigned_cell)
+        for claim in claims
+    ):
+        missing.append(f"No claim clearly supports {assigned_cell.subject}/{assigned_cell.dimension}.")
+    return missing
+
+
+def _worker_claim_pack(worker: SearchWorkerPlan, assigned_cell: CoverageCell | None, sources: list[Source], plan: ResearchPlan) -> EvidencePack:
+    contract = None
+    if assigned_cell:
+        contract = CoverageContract(cells=[assigned_cell], subjects=[assigned_cell.subject], dimensions=[assigned_cell.dimension])
+    worker_plan = ResearchPlan(
+        research_profile=plan.research_profile,
+        questions=[worker.question],
+        search_queries=[worker.query],
+        workers=[worker],
+        max_sources=min(4, plan.max_sources),
+        min_evidence_items=1,
+    )
+    return bind_evidence(
+        sources,
+        plan=worker_plan,
+        contract=contract,
+        max_items=min(4, max(1, len(sources) * 2)),
+    )
+
+
+def _worker_report_from_sources(
+    worker: SearchWorkerPlan,
+    *,
+    assigned_cell: CoverageCell | None,
+    sources: list[Source],
+    plan: ResearchPlan,
+    provider_attempts: list[dict[str, Any]],
+    retry_queries: list[str] | None = None,
+) -> SearchWorkerReport:
+    pack = _worker_claim_pack(worker, assigned_cell, sources, plan)
+    confidence = _worker_confidence(worker, sources, pack.claims, assigned_cell)
+    return SearchWorkerReport(
+        worker_id=worker.worker_id,
+        question=worker.question,
+        query=worker.query,
+        assigned_subject=assigned_cell.subject if assigned_cell else "",
+        assigned_dimension=assigned_cell.dimension if assigned_cell else "",
+        sources=sources,
+        claims=pack.claims,
+        self_assessed_confidence=confidence,
+        missing_evidence=_worker_missing_evidence(worker, sources, pack.claims, confidence, assigned_cell),
+        retry_queries=retry_queries or [],
+        provider_attempts=provider_attempts,
+    )
+
+
+def _worker_report_message(index: int, report: SearchWorkerReport) -> str:
+    if report.self_assessed_confidence >= 0.70:
+        strength = "strong"
+    elif report.self_assessed_confidence >= 0.45:
+        strength = "usable"
+    else:
+        strength = "weak"
+    target = ""
+    if report.assigned_subject or report.assigned_dimension:
+        target = f" for {report.assigned_subject}/{report.assigned_dimension}".strip()
+    retry_note = " after a retry" if report.retry_queries else ""
+    return (
+        f"Search worker {index} found {strength} evidence{target}{retry_note}: "
+        f"{len(report.claims)} claim(s), {len(report.sources)} source(s)."
+    )
+
+
 def verify_claims(answer: str, evidence: EvidencePack) -> ClaimVerification:
     sentences = [part.strip() for part in re.split(r"(?<=[.!?])\s+", answer or "") if len(part.strip()) > 30]
     checked = min(12, len(sentences))
@@ -1999,6 +2266,7 @@ class LeadResearchAgent:
                     "coverage_ratio": state.contract.coverage_ratio(),
                     "open_cells": [cell.model_dump(mode="json") for cell in state.contract.open_cells()[:10]],
                     "partial_cells": [cell.model_dump(mode="json") for cell in state.contract.partial_cells()[:8]],
+                    "worker_reports": [report.model_dump(mode="json") for report in state.worker_reports[-8:]],
                     "iteration": iteration,
                     "budget_ledger": self.ledger.model_dump(mode="json"),
                 },
@@ -2041,6 +2309,7 @@ class LeadResearchAgent:
                 "coverage_ratio": state.contract.coverage_ratio(),
                 "open_cells": len(state.contract.open_cells()),
                 "evidence_items": len(state.evidence.items),
+                "worker_reports": len(state.worker_reports),
                 "iterations": state.iteration,
                 "budget_ledger": self.ledger.model_dump(mode="json"),
             },
@@ -2051,6 +2320,7 @@ class LeadResearchAgent:
             "evidence": state.evidence,
             "response": response["model_response"],
             "plan": state.plan,
+            "worker_reports": state.worker_reports,
             "feedback": feedback,
         }
 
@@ -2065,6 +2335,9 @@ class LeadResearchAgent:
             },
         )
         wave_sources: list[Source] = []
+        worker_sources: dict[str, list[Source]] = {}
+        provider_attempts_by_worker: dict[str, list[dict[str, Any]]] = {}
+        retry_queries_by_worker: dict[str, list[str]] = {}
         pending_workers: list[tuple[int, SearchWorkerPlan]] = []
         for index, worker in enumerate(state.plan.workers, start=1):
             if worker.query in state.query_history:
@@ -2121,7 +2394,69 @@ class LeadResearchAgent:
                     provider = call.output.get("provider") if isinstance(call.output, dict) else ""
                     _ensure_source_provenance(sources, query=worker.query, provider=str(provider or ""))
                     public_sources = [source for source in sources if is_public_source_url(source.url)]
+                    provider_attempts_by_worker.setdefault(worker.worker_id, []).append(
+                        {
+                            "query": worker.query,
+                            "provider": provider,
+                            "ok": call.ok,
+                            "error": call.error,
+                            "source_count": len(sources),
+                            "public_source_count": len(public_sources),
+                        }
+                    )
+                    assigned_cell = _assigned_cell_for_worker(worker, state.contract)
+                    avg_relevance = (
+                        sum(_source_relevance_for_worker(source, worker) for source in public_sources) / max(1, len(public_sources))
+                    )
+                    if (
+                        self.request.research_level != "easy"
+                        and avg_relevance < 0.35
+                        and self.ledger.can_start_tool("web_search")
+                    ):
+                        retry_query = _retry_query_for_worker(worker, assigned_cell, self.request)
+                        if retry_query and retry_query not in state.query_history:
+                            state.add_queries([retry_query])
+                            retry_queries_by_worker.setdefault(worker.worker_id, []).append(retry_query)
+                            self._progress(
+                                "search_worker_retry",
+                                f"Search worker {index} is refining a weak result set.",
+                                {
+                                    "worker_index": index,
+                                    "worker_id": worker.worker_id,
+                                    "retry_query": retry_query,
+                                    "initial_relevance": avg_relevance,
+                                },
+                            )
+                            try:
+                                retry_sources, retry_call = self.tools.search_web(retry_query, max_results=worker.max_results)
+                            except Exception as exc:
+                                logger.warning("agent_v3 retry search failed for query=%r: %s", retry_query, exc)
+                                retry_sources = []
+                                retry_call = ToolCall(
+                                    name="web_search",
+                                    input={"query": retry_query, "max_results": worker.max_results},
+                                    output={},
+                                    ok=False,
+                                    error=str(exc),
+                                )
+                            self.ledger.record_tool_call(latency_ms=retry_call.latency_ms, sources_seen=len(retry_sources))
+                            state.all_tool_calls.append(retry_call)
+                            retry_provider = retry_call.output.get("provider") if isinstance(retry_call.output, dict) else ""
+                            _ensure_source_provenance(retry_sources, query=retry_query, provider=str(retry_provider or provider or ""))
+                            retry_public = [source for source in retry_sources if is_public_source_url(source.url)]
+                            provider_attempts_by_worker.setdefault(worker.worker_id, []).append(
+                                {
+                                    "query": retry_query,
+                                    "provider": retry_provider,
+                                    "ok": retry_call.ok,
+                                    "error": retry_call.error,
+                                    "source_count": len(retry_sources),
+                                    "public_source_count": len(retry_public),
+                                }
+                            )
+                            public_sources.extend(retry_public)
                     added = state.add_sources(public_sources)
+                    worker_sources.setdefault(worker.worker_id, []).extend(added)
                     wave_sources.extend(added)
                     self._progress(
                         "search_worker_provider",
@@ -2133,6 +2468,8 @@ class LeadResearchAgent:
                             "error": call.error,
                             "source_count": len(sources),
                             "public_source_count": len(public_sources),
+                            "self_assessed_relevance": avg_relevance,
+                            "retry_queries": retry_queries_by_worker.get(worker.worker_id, []),
                             "parallel_workers": len(pending_workers),
                             "budget_ledger": self.ledger.model_dump(mode="json"),
                         },
@@ -2164,6 +2501,7 @@ class LeadResearchAgent:
                 for source in selected
                 if source.url
             }
+            extracted_by_url: dict[str, Source] = {}
             read_batches = _chunk_urls(read_urls, size=MAX_URLS_PER_READ_BATCH)
             read_batches = read_batches[: min(MAX_PARALLEL_READ_BATCHES, self.ledger.remaining_tool_calls())]
             self._progress(
@@ -2196,6 +2534,9 @@ class LeadResearchAgent:
                         self.ledger.record_tool_call(latency_ms=call.latency_ms, sources_read=len(batch))
                         state.all_tool_calls.append(call)
                         state.add_sources(extracted)
+                        for source in extracted:
+                            if source.url:
+                                extracted_by_url[source.url] = source
                         provider = call.output.get("provider") if isinstance(call.output, dict) else None
                         self._progress(
                             "source_reader_result",
@@ -2209,6 +2550,30 @@ class LeadResearchAgent:
                                 "budget_ledger": self.ledger.model_dump(mode="json"),
                             },
                         )
+            for index, worker in pending_workers:
+                assigned_cell = _assigned_cell_for_worker(worker, state.contract)
+                report_sources = [
+                    extracted_by_url.get(source.url, source)
+                    for source in worker_sources.get(worker.worker_id, [])
+                    if source.url
+                ]
+                report = _worker_report_from_sources(
+                    worker,
+                    assigned_cell=assigned_cell,
+                    sources=report_sources,
+                    plan=state.plan,
+                    provider_attempts=provider_attempts_by_worker.get(worker.worker_id, []),
+                    retry_queries=retry_queries_by_worker.get(worker.worker_id, []),
+                )
+                state.worker_reports.append(report)
+                self._progress(
+                    "search_worker_report",
+                    _worker_report_message(index, report),
+                    {
+                        "worker_index": index,
+                        "report": report.model_dump(mode="json"),
+                    },
+                )
         self._follow_deep_links(state, [*wave_sources, *selected])
 
     def _follow_deep_links(self, state: ResearchStateStore, sources: list[Source]) -> None:

@@ -1231,6 +1231,192 @@
   margin-top: 14px;
 }
 
+.researchPlanCard {
+  display: grid;
+  gap: 18px;
+  border: 1px solid #ded6c9;
+  border-radius: 8px;
+  background: #fbfaf6;
+  padding: 18px;
+}
+
+.researchPlanHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.planEyebrow,
+.researchPlanHeader h3,
+.planGoal,
+.planBlock h4,
+.planBlock ol,
+.planBlock ul,
+.planStep h4,
+.planStep p {
+  margin: 0;
+}
+
+.planEyebrow {
+  color: #79827c;
+  font-size: 11px;
+  font-weight: 850;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.researchPlanHeader h3 {
+  color: #162033;
+  font-size: 20px;
+  line-height: 1.2;
+}
+
+.planDuration {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid #d8cdbc;
+  border-radius: 999px;
+  color: #53615a;
+  font-size: 12px;
+  font-weight: 800;
+  padding: 7px 10px;
+}
+
+.planGoal {
+  color: #53615a;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.planStepper {
+  display: grid;
+  gap: 12px;
+  border-left: 2px solid #d8cdbc;
+  margin-left: 15px;
+  padding-left: 18px;
+}
+
+.planStep {
+  position: relative;
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 12px;
+}
+
+.planStepIcon {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border: 1px solid #d8cdbc;
+  border-radius: 999px;
+  background: #fffdf8;
+  color: #17614d;
+  margin-left: -36px;
+}
+
+.planStep h4,
+.planBlock h4 {
+  color: #1f6658;
+  font-size: 13px;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.planStep p {
+  color: #53615a;
+  font-size: 13px;
+  line-height: 1.55;
+  margin-top: 4px;
+}
+
+.planBlock {
+  display: grid;
+  gap: 10px;
+}
+
+.planBlock ol,
+.planBlock ul {
+  display: grid;
+  gap: 7px;
+  color: #53615a;
+  font-size: 14px;
+  line-height: 1.55;
+  padding-left: 20px;
+}
+
+.planMetaGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.planMetaGrid div {
+  display: grid;
+  gap: 3px;
+  border: 1px solid #ebe4d8;
+  background: #fffdf8;
+  padding: 10px;
+}
+
+.planMetaGrid span {
+  color: #79827c;
+  font-size: 10px;
+  font-weight: 850;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.planMetaGrid strong {
+  overflow: hidden;
+  color: #162033;
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.planActions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.planGhostButton,
+.planSecondaryButton,
+.planPrimaryButton {
+  display: inline-flex;
+  min-height: 38px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: 1px solid #d8cdbc;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 900;
+  padding: 0 14px;
+}
+
+.planGhostButton {
+  background: transparent;
+  color: #53615a;
+}
+
+.planSecondaryButton {
+  background: #fffdf8;
+  color: #162033;
+}
+
+.planPrimaryButton {
+  border-color: #162033;
+  background: #162033;
+  color: #fff;
+}
+
 .followUpButton {
   border: 1px solid #cfc6b8;
   background: #fbfaf6;

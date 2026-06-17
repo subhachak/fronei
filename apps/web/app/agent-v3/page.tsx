@@ -86,7 +86,25 @@ type AgentResult = {
   artifacts?: Artifact[]
   events?: ProgressEvent[]
   follow_up_options?: FollowUpOption[]
+  research_plan_preview?: ResearchPlanPreview | null
   created_at?: string
+}
+
+type ResearchPlanPreview = {
+  title?: string
+  goal?: string
+  audience?: string
+  research_profile?: string
+  research_level?: string
+  output_format?: OutputFormat
+  estimated_duration?: string
+  workflow?: Array<{ label?: string; description?: string }>
+  investigate?: string[]
+  source_strategy?: string[]
+  workers?: Array<{ question?: string; query?: string; rationale?: string; max_results?: number }>
+  coverage?: { subjects?: string[]; dimensions?: string[]; required_cells?: number }
+  budget?: Record<string, unknown>
+  fallback_reasons?: string[]
 }
 
 type AgentTurnStatus = {
@@ -1353,8 +1371,16 @@ function TurnPair({
             ))}
           </div>
         ) : null}
-        <MarkdownResult content={turn.result?.answer || ''} />
-        {turn.result?.follow_up_options?.length && onFollowUp ? (
+        {turn.result?.research_plan_preview ? (
+          <ResearchPlanCard
+            preview={turn.result.research_plan_preview}
+            followUpOptions={turn.result.follow_up_options || []}
+            onFollowUp={onFollowUp}
+          />
+        ) : (
+          <MarkdownResult content={turn.result?.answer || ''} />
+        )}
+        {turn.result?.follow_up_options?.length && onFollowUp && !turn.result?.research_plan_preview ? (
           <div className={styles.followUpRow}>
             {turn.result.follow_up_options.map(option => (
               <button
@@ -1384,6 +1410,104 @@ function TurnPair({
           </div>
         ) : null}
       </div>
+    </div>
+  )
+}
+
+function ResearchPlanCard({
+  preview,
+  followUpOptions,
+  onFollowUp,
+}: {
+  preview: ResearchPlanPreview
+  followUpOptions: FollowUpOption[]
+  onFollowUp?: (option: FollowUpOption) => void
+}) {
+  const startOption = followUpOptions.find(option => option.confirm_deep_research) || followUpOptions[0]
+  const regularOption = followUpOptions.find(option => option.research_level === 'regular')
+  const directOption = followUpOptions.find(option => option.force_route === 'direct')
+  return (
+    <div className={styles.researchPlanCard}>
+      <div className={styles.researchPlanHeader}>
+        <div>
+          <p className={styles.planEyebrow}>Research plan</p>
+          <h3>{preview.title || 'Deep research'}</h3>
+        </div>
+        <span className={styles.planDuration}><Clock3 size={14} /> {preview.estimated_duration || 'Ready in a few minutes'}</span>
+      </div>
+      {preview.goal && <p className={styles.planGoal}>{preview.goal}</p>}
+
+      <div className={styles.planStepper}>
+        {(preview.workflow || []).slice(0, 4).map((step, index) => (
+          <div key={`${step.label}-${index}`} className={styles.planStep}>
+            <span className={styles.planStepIcon}>
+              {index === 0 ? <BookOpen size={16} /> : index === 1 ? <Library size={16} /> : <Sparkles size={16} />}
+            </span>
+            <div>
+              <h4>{step.label || `Step ${index + 1}`}</h4>
+              {step.description && <p>{step.description}</p>}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {preview.investigate?.length ? (
+        <div className={styles.planBlock}>
+          <h4>I’ll investigate</h4>
+          <ol>
+            {preview.investigate.slice(0, 8).map((item, index) => (
+              <li key={`${item}-${index}`}>{item}</li>
+            ))}
+          </ol>
+        </div>
+      ) : null}
+
+      {preview.source_strategy?.length ? (
+        <div className={styles.planBlock}>
+          <h4>I’ll use</h4>
+          <ul>
+            {preview.source_strategy.slice(0, 8).map((item, index) => (
+              <li key={`${item}-${index}`}>{item}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      <div className={styles.planMetaGrid}>
+        <div>
+          <span>Coverage cells</span>
+          <strong>{preview.coverage?.required_cells ?? 'planned'}</strong>
+        </div>
+        <div>
+          <span>Workers</span>
+          <strong>{preview.workers?.length || 'planned'}</strong>
+        </div>
+        <div>
+          <span>Depth</span>
+          <strong>{preview.research_level || 'deep'}</strong>
+        </div>
+      </div>
+
+      {onFollowUp && (
+        <div className={styles.planActions}>
+          {directOption && (
+            <button type="button" className={styles.planGhostButton} onClick={() => onFollowUp(directOption)}>
+              Answer directly
+            </button>
+          )}
+          {regularOption && (
+            <button type="button" className={styles.planSecondaryButton} onClick={() => onFollowUp(regularOption)}>
+              Use regular research
+            </button>
+          )}
+          {startOption && (
+            <button type="button" className={styles.planPrimaryButton} onClick={() => onFollowUp(startOption)}>
+              <Send size={15} />
+              Start research
+            </button>
+          )}
+        </div>
+      )}
     </div>
   )
 }

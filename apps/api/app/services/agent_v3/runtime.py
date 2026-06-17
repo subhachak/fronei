@@ -5,12 +5,18 @@ from collections.abc import Iterator
 
 from app.services.agent_v3 import model_client
 from app.services.agent_v3.orchestrator import OrchestratorDecision, decide_with_options
+from app.services.agent_v3.research_subtree import (
+    EvidencePack,
+    bind_evidence,
+    plan_research,
+    source_context_from_evidence,
+    synthesize_answer,
+)
 from app.services.agent_v3.models import (
     AgentV3Request,
     AgentV3Result,
     Goal,
     ProgressEvent,
-    RouteName,
     Source,
     StreamEnvelope,
     new_id,
@@ -72,36 +78,18 @@ class AgentV3Runtime:
                 yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
                 result = self._run_direct(request, goal, turn_id, events, progress)
             elif route == "research":
-                event = progress("research", "Searching the web with the fresh v3 tool runner.")
-                yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
-                sources, search_call = yield from self._run_tool(
-                    progress,
-                    "web_search",
-                    {"query": request.message, "max_results": 8 if request.quality_mode == "executive" else 5},
-                )
-                event = progress("research", f"Found {len(sources)} candidate sources.", source_count=len(sources))
-                yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
-                extracted, read_call = yield from self._run_tool(
-                    progress,
-                    "read_url",
-                    {"urls": [s.url for s in sources if s.url]},
-                )
-                merged = self._merge_sources(sources, extracted)
-                event = progress("research", f"Read {len(extracted)} source pages.", source_count=len(extracted))
-                yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
-                event = progress("synthesis", "Synthesizing source-grounded answer.")
-                yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
-                response = self._synthesize_research(request, merged)
+                research = yield from self._run_research_subtree(request, progress)
+                response = research["response"]
                 result = AgentV3Result(
                     turn_id=turn_id,
                     goal=goal,
                     answer=response.text,
                     route=goal.route,
                     model_used=response.model_used,
-                    sources=merged,
-                    tool_calls=[search_call, read_call],
+                    sources=research["sources"],
+                    tool_calls=research["tool_calls"],
                     events=events,
-                    latency_ms=response.latency_ms + search_call.latency_ms + read_call.latency_ms,
+                    latency_ms=response.latency_ms + sum(call.latency_ms for call in research["tool_calls"]),
                     cost_usd=response.cost_usd,
                 )
             elif route == "document":
@@ -109,26 +97,7 @@ class AgentV3Runtime:
                 yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
                 result = self._run_document(request, goal, turn_id, events, progress, sources=[])
             elif route == "research_document":
-                event = progress("research", "Searching before writing the document.")
-                yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
-                sources, search_call = yield from self._run_tool(
-                    progress,
-                    "web_search",
-                    {"query": request.message, "max_results": 8},
-                )
-                event = progress("research", f"Found {len(sources)} candidate sources.", source_count=len(sources))
-                yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
-                extracted, read_call = yield from self._run_tool(
-                    progress,
-                    "read_url",
-                    {"urls": [s.url for s in sources if s.url]},
-                )
-                merged = self._merge_sources(sources, extracted)
-                event = progress("research", f"Read {len(extracted)} source pages.", source_count=len(extracted))
-                yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
-                event = progress("synthesis", "Synthesizing research before drafting.")
-                yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
-                research_response = self._synthesize_research(request, merged)
+                research = yield from self._run_research_subtree(request, progress)
                 event = progress("document", "Writing the downloadable document.")
                 yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
                 result = self._run_document(
@@ -137,10 +106,11 @@ class AgentV3Runtime:
                     turn_id,
                     events,
                     progress,
-                    sources=merged,
-                    research_answer=research_response.text,
+                    sources=research["sources"],
+                    research_answer=research["response"].text,
+                    evidence=research["evidence"],
                 )
-                result.tool_calls = [search_call, read_call, *result.tool_calls]
+                result.tool_calls = [*research["tool_calls"], *result.tool_calls]
             else:
                 result = self._run_clarify(
                     request,
@@ -185,6 +155,85 @@ class AgentV3Runtime:
         )
         yield StreamEnvelope(type="progress", data=result.model_dump(mode="json"))
         return output or [], call
+
+    def _run_research_subtree(self, request: AgentV3Request, progress):
+        event = progress(
+            "research_planning",
+            "Planning focused research questions.",
+            available_tools=self.tool_registry.tool_names_for_route("research"),
+        )
+        yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
+        plan = plan_research(request)
+        event = progress(
+            "research_plan",
+            f"Research plan ready with {len(plan.search_queries)} search worker(s).",
+            questions=plan.questions,
+            search_queries=plan.search_queries,
+            max_sources=plan.max_sources,
+            source=plan.source,
+            model_used=plan.model_used,
+            fallback_reason=plan.fallback_reason,
+        )
+        yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
+
+        search_sources: list[Source] = []
+        tool_calls = []
+        per_query_max = max(2, min(5, plan.max_sources))
+        for idx, query in enumerate(plan.search_queries, start=1):
+            event = progress(
+                "search_worker",
+                f"Search worker {idx} running.",
+                worker_index=idx,
+                query=query,
+                candidate_queries=plan.search_queries,
+            )
+            yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
+            sources, call = yield from self._run_tool(
+                progress,
+                "web_search",
+                {"query": query, "max_results": per_query_max},
+            )
+            tool_calls.append(call)
+            search_sources.extend(sources)
+
+        deduped = self._merge_sources(search_sources, [])
+        event = progress(
+            "source_selection",
+            f"Selected {min(len(deduped), plan.max_sources)} unique source candidate(s).",
+            candidate_count=len(search_sources),
+            unique_count=len(deduped),
+            selected_urls=[source.url for source in deduped[: plan.max_sources]],
+        )
+        yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
+
+        selected = deduped[: plan.max_sources]
+        event = progress("source_reader", "Reading selected source pages.", source_count=len(selected))
+        yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
+        extracted, read_call = yield from self._run_tool(
+            progress,
+            "read_url",
+            {"urls": [source.url for source in selected if source.url]},
+        )
+        tool_calls.append(read_call)
+        merged = self._merge_sources(selected, extracted)
+
+        evidence = bind_evidence(merged, max_items=plan.max_sources)
+        event = progress(
+            "evidence_binder",
+            f"Bound {len(evidence.items)} evidence item(s).",
+            evidence_items=[item.model_dump(mode="json") for item in evidence.items],
+        )
+        yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
+
+        event = progress("synthesis", "Synthesizing source-grounded answer from evidence.")
+        yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
+        response = synthesize_answer(request, evidence)
+        return {
+            "sources": merged,
+            "tool_calls": tool_calls,
+            "evidence": evidence,
+            "response": response,
+        }
 
     def _apply_decision(self, request: AgentV3Request, decision: OrchestratorDecision) -> AgentV3Request:
         updates = {}
@@ -231,17 +280,6 @@ class AgentV3Runtime:
             cost_usd=response.cost_usd,
         )
 
-    def _synthesize_research(self, request: AgentV3Request, sources: list[Source]):
-        context = source_context(sources)
-        return model_client.simple_completion(
-            (
-                "You are a source-grounded research analyst. Use the supplied sources, "
-                "cite claims with [S#], and say when evidence is thin."
-            ),
-            f"Question:\n{request.message}\n\nSources:\n{context or 'No sources available.'}",
-            max_tokens=1800 if request.quality_mode == "executive" else 1200,
-        )
-
     def _run_document(
         self,
         request,
@@ -252,8 +290,9 @@ class AgentV3Runtime:
         *,
         sources: list[Source],
         research_answer: str | None = None,
+        evidence: EvidencePack | None = None,
     ) -> AgentV3Result:
-        context = source_context(sources)
+        context = source_context_from_evidence(evidence) if evidence is not None else source_context(sources)
         prompt = (
             f"User request:\n{request.message}\n\n"
             f"Research summary:\n{research_answer or ''}\n\n"

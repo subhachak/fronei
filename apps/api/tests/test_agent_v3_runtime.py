@@ -36,6 +36,21 @@ def _patch_completion(monkeypatch, text="# Answer\n\nDone."):
     from app.services.agent_v3 import model_client
 
     def fake_complete(messages, *, preferred_model=None, timeout_s=30, max_tokens=1200):
+        if "research lead" in messages[0]["content"].lower():
+            user_payload = json.loads(messages[-1]["content"])
+            message = user_payload["message"]
+            return SimpleNamespace(
+                text=json.dumps(
+                    {
+                        "questions": ["What is changing?", "What evidence supports it?"],
+                        "search_queries": [message, f"{message} evidence"],
+                        "max_sources": 5,
+                    }
+                ),
+                model_used="fake-research-planner",
+                latency_ms=2,
+                cost_usd=0.0,
+            )
         user_payload = json.loads(messages[-1]["content"])
         lowered = user_payload["message"].lower()
         if "research" in lowered and ("report" in lowered or "docx" in lowered):
@@ -147,13 +162,28 @@ def test_agent_v3_research_streams_milestones(monkeypatch):
     envelopes = _collect_stream(runtime, AgentV3Request(message="Research current AI governance trends."))
 
     progress_messages = [e.data["message"] for e in envelopes if e.type == "progress"]
-    assert "Searching the web with the fresh v3 tool runner." in progress_messages
+    assert "Planning focused research questions." in progress_messages
+    assert "Research plan ready with 2 search worker(s)." in progress_messages
+    assert "Search worker 1 running." in progress_messages
+    assert "Search worker 2 running." in progress_messages
     assert "Selected tool web_search." in progress_messages
     assert "Tool web_search completed." in progress_messages
-    assert "Found 1 candidate sources." in progress_messages
+    assert "Selected 1 unique source candidate(s)." in progress_messages
     assert "Selected tool read_url." in progress_messages
     assert "Tool read_url completed." in progress_messages
-    assert "Read 1 source pages." in progress_messages
+    assert "Bound 1 evidence item(s)." in progress_messages
+    assert "Synthesizing source-grounded answer from evidence." in progress_messages
+    stages = [e.data["stage"] for e in envelopes if e.type == "progress"]
+    for stage in [
+        "research_planning",
+        "research_plan",
+        "search_worker",
+        "source_selection",
+        "source_reader",
+        "evidence_binder",
+        "synthesis",
+    ]:
+        assert stage in stages
     result = next(e.data for e in envelopes if e.type == "result")
     assert result["sources"][0]["url"] == "https://example.com"
 
@@ -174,7 +204,12 @@ def test_agent_v3_research_document_creates_artifact(monkeypatch):
     assert result["route"] == "research_document"
     assert result["artifacts"][0]["filename"].endswith(".docx")
     assert result["artifacts"][0]["base64_data"]
-    assert [call["name"] for call in result["tool_calls"]] == ["web_search", "read_url", "make_docx_artifact"]
+    assert [call["name"] for call in result["tool_calls"]] == [
+        "web_search",
+        "web_search",
+        "read_url",
+        "make_docx_artifact",
+    ]
 
 
 def test_agent_v3_api_stream(monkeypatch):
@@ -224,7 +259,7 @@ def test_agent_v3_stream_persists_turn_events_tools_and_artifacts(monkeypatch):
         with Session() as db:
             assert db.get(AgentV3Turn, turn_id).status == "completed"
             assert db.query(AgentV3Event).filter(AgentV3Event.turn_id == turn_id).count() >= 4
-            assert db.query(AgentV3ToolCall).filter(AgentV3ToolCall.turn_id == turn_id).count() == 3
+            assert db.query(AgentV3ToolCall).filter(AgentV3ToolCall.turn_id == turn_id).count() == 4
             assert db.query(AgentV3Artifact).filter(AgentV3Artifact.turn_id == turn_id).count() == 1
     finally:
         app.dependency_overrides.clear()

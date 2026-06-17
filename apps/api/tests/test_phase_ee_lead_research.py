@@ -618,6 +618,63 @@ def test_deep_technical_reader_uses_large_source_cap():
     assert _max_parallel_read_batches_for("deep") == 6
 
 
+def test_deep_technical_synthesis_uses_expansive_token_budget():
+    from app.services.agent_v3.research_subtree import ResearchPlan, _synthesis_token_budget
+
+    plan = ResearchPlan(research_profile="technical_architecture")
+
+    assert _synthesis_token_budget(AgentV3Request(message="architecture", research_level="deep"), plan) == 12000
+    assert (
+        _synthesis_token_budget(
+            AgentV3Request(message="architecture", research_level="deep", quality_mode="executive"),
+            plan,
+        )
+        == 14000
+    )
+
+
+def test_deep_document_writer_uses_expansive_budget_and_floor():
+    from app.services.agent_v3.document_subtree import (
+        DocumentDraft,
+        DocumentPlan,
+        _document_writer_token_budget,
+        judge_document,
+    )
+
+    request = AgentV3Request(
+        message="Conduct deep research and generate a detailed architectural report on agentic deep research AI.",
+        research_level="deep",
+        output_format="docx",
+    )
+    plan = DocumentPlan(title="Architecture", sections=[f"Section {index}" for index in range(10)])
+    short_draft = DocumentDraft(markdown="# Summary\n\nToo short. [S1]")
+
+    assert _document_writer_token_budget(request, research_answer="Research answer") == 10000
+    assert judge_document(short_draft, plan, source_count=1).status == "repair"
+
+
+def test_deep_document_planner_preserves_long_context_and_sections():
+    from app.services.agent_v3.document_subtree import (
+        DocumentPlan,
+        _normalize_plan,
+        _planner_research_summary,
+        _section_limit,
+    )
+
+    request = AgentV3Request(
+        message="Conduct deep research and generate a detailed architectural report on agentic deep research AI.",
+        research_level="deep",
+        output_format="docx",
+    )
+    sections = [f"Section {index}" for index in range(16)]
+    plan = _normalize_plan(DocumentPlan(title="Architecture", sections=sections), request)
+    research = "x" * 15000
+
+    assert len(plan.sections) == 14
+    assert _section_limit(request) == 14
+    assert len(_planner_research_summary(request, research)) == 12000
+
+
 def test_technical_architecture_ranker_prioritizes_primary_technical_sources():
     from app.services.agent_v3.research_subtree import ResearchPlan, rank_sources
 

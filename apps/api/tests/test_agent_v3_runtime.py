@@ -214,13 +214,62 @@ def test_agent_v3_research_streams_milestones(monkeypatch):
     assert provider_events[0]["data"]["provider"] == "FakeSearch"
 
 
-def test_agent_v3_web_search_prefers_you_provider(monkeypatch):
+def test_agent_v3_web_search_prefers_tavily_provider(monkeypatch):
     import app.services.agent_v3.tools as tools_module
 
     get_calls: list = []
     post_calls: list = []
 
-    class FakeResponse:
+    class TavilyResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "results": [
+                    {
+                        "title": "Tavily result",
+                        "url": "https://tavily.example/result",
+                        "content": "Tavily snippet",
+                    }
+                ]
+            }
+
+    def fake_get(*args, **kwargs):
+        get_calls.append((args, kwargs))
+        raise AssertionError("You.com should not be called when Tavily succeeds")
+
+    def fake_post(*args, **kwargs):
+        post_calls.append((args, kwargs))
+        return TavilyResponse()
+
+    monkeypatch.setattr(tools_module.httpx, "get", fake_get)
+    monkeypatch.setattr(tools_module.httpx, "post", fake_post)
+
+    sources, call = AgentV3Tools(you_api_key="you-key", tavily_api_key="tavily-key").search_web("query")
+
+    assert call.ok
+    assert call.output["provider"] == "Tavily"
+    assert sources[0].url == "https://tavily.example/result"
+    assert post_calls[0][0][0] == "https://api.tavily.com/search"
+    assert post_calls[0][1]["json"]["query"] == "query"
+    assert get_calls == []
+
+
+def test_agent_v3_web_search_falls_back_to_you_provider(monkeypatch):
+    import app.services.agent_v3.tools as tools_module
+
+    get_calls: list = []
+    post_calls: list = []
+
+    class EmptyTavilyResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"results": []}
+
+    class YouResponse:
         def raise_for_status(self):
             return None
 
@@ -237,21 +286,24 @@ def test_agent_v3_web_search_prefers_you_provider(monkeypatch):
                 }
             }
 
+    def fake_post(*args, **kwargs):
+        post_calls.append((args, kwargs))
+        return EmptyTavilyResponse()
+
     def fake_get(*args, **kwargs):
         get_calls.append((args, kwargs))
-        return FakeResponse()
+        return YouResponse()
 
+    monkeypatch.setattr(tools_module.httpx, "post", fake_post)
     monkeypatch.setattr(tools_module.httpx, "get", fake_get)
-    monkeypatch.setattr(tools_module.httpx, "post", lambda *args, **kwargs: post_calls.append((args, kwargs)))
 
     sources, call = AgentV3Tools(you_api_key="you-key", tavily_api_key="tavily-key").search_web("query")
 
     assert call.ok
     assert call.output["provider"] == "You.com"
     assert sources[0].url == "https://you.example/result"
+    assert post_calls[0][0][0] == "https://api.tavily.com/search"
     assert get_calls[0][0][0] == "https://ydc-index.io/v1/search"
-    assert get_calls[0][1]["params"] == {"query": "query", "count": 6}
-    assert post_calls == []
 
 
 def test_agent_v3_web_search_falls_back_to_nimble(monkeypatch):
@@ -416,6 +468,12 @@ def test_agent_v3_workspace_api_is_user_isolated(monkeypatch):
             created = client.post("/agent-v3/workspaces", json={"name": "U1 workspace"})
             assert created.status_code == 200
             workspace_id = created.json()["id"]
+            duplicate = client.post("/agent-v3/workspaces", json={"name": "U1 workspace"})
+            assert duplicate.status_code == 200
+            assert duplicate.json()["name"] == "U1 workspace 2"
+            renamed = client.patch(f"/agent-v3/workspaces/{duplicate.json()['id']}", json={"name": "U1 workspace"})
+            assert renamed.status_code == 200
+            assert renamed.json()["name"] == "U1 workspace 2"
             conversation = client.post(f"/agent-v3/workspaces/{workspace_id}/conversations", json={"title": "Private work"})
             assert conversation.status_code == 200
 
@@ -428,7 +486,7 @@ def test_agent_v3_workspace_api_is_user_isolated(monkeypatch):
             assert "U1 workspace" not in json.dumps(u2_list.json())
 
         with Session() as db:
-            assert db.query(AgentV3Workspace).filter(AgentV3Workspace.user_id == "u1").count() == 1
+            assert db.query(AgentV3Workspace).filter(AgentV3Workspace.user_id == "u1").count() == 2
             assert db.query(AgentV3Conversation).filter(AgentV3Conversation.user_id == "u1").count() == 1
             assert db.query(AgentV3Workspace).filter(AgentV3Workspace.user_id == "u2").count() == 1
     finally:

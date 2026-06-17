@@ -54,6 +54,24 @@ def _title_from_message(message: str) -> str:
     return cleaned[:90].strip(" .") or "New conversation"
 
 
+def _unique_workspace_name(db, user_id: str, requested_name: str, *, exclude_workspace_id: str | None = None) -> str:
+    base = " ".join((requested_name or "").split())[:160].strip() or "New workspace"
+    existing = {
+        row.name.lower()
+        for row in db.query(AgentV3Workspace.id, AgentV3Workspace.name)
+        .filter(AgentV3Workspace.user_id == user_id)
+        .all()
+        if row.id != exclude_workspace_id
+    }
+    if base.lower() not in existing:
+        return base
+    for index in range(2, 1000):
+        candidate = f"{base} {index}"
+        if candidate.lower() not in existing:
+            return candidate
+    return f"{base} {new_id('ws')[-6:]}"
+
+
 def _safe_path_segment(value: str) -> str:
     cleaned = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in value)
     return cleaned[:140] or "unknown"
@@ -209,7 +227,11 @@ def list_workspaces(user_id: str, *, ensure_default: bool = True) -> list[AgentV
 def create_workspace(user_id: str, name: str) -> AgentV3WorkspaceSummary:
     db = SessionLocal()
     try:
-        workspace = AgentV3Workspace(id=new_id("ws"), user_id=user_id, name=name.strip()[:160] or "New workspace")
+        workspace = AgentV3Workspace(
+            id=new_id("ws"),
+            user_id=user_id,
+            name=_unique_workspace_name(db, user_id, name),
+        )
         db.add(workspace)
         db.commit()
         db.refresh(workspace)
@@ -219,6 +241,33 @@ def create_workspace(user_id: str, name: str) -> AgentV3WorkspaceSummary:
             created_at=workspace.created_at,
             updated_at=workspace.updated_at,
             conversations=[],
+        )
+    finally:
+        db.close()
+
+
+def update_workspace(user_id: str, workspace_id: str, name: str) -> AgentV3WorkspaceSummary | None:
+    db = SessionLocal()
+    try:
+        workspace = db.get(AgentV3Workspace, workspace_id)
+        if workspace is None or workspace.user_id != user_id:
+            return None
+        workspace.name = _unique_workspace_name(db, user_id, name, exclude_workspace_id=workspace_id)
+        workspace.updated_at = _now()
+        db.commit()
+        db.refresh(workspace)
+        conversations = (
+            db.query(AgentV3Conversation)
+            .filter(AgentV3Conversation.workspace_id == workspace.id, AgentV3Conversation.user_id == user_id)
+            .order_by(AgentV3Conversation.updated_at.desc(), AgentV3Conversation.created_at.desc())
+            .all()
+        )
+        return AgentV3WorkspaceSummary(
+            id=workspace.id,
+            name=workspace.name,
+            created_at=workspace.created_at,
+            updated_at=workspace.updated_at,
+            conversations=[_conversation_summary(db, row) for row in conversations],
         )
     finally:
         db.close()

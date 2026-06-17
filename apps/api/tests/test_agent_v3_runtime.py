@@ -36,8 +36,8 @@ def _patch_completion(monkeypatch, text="# Answer\n\nDone."):
     from app.services.agent_v3 import model_client
 
     def fake_complete(messages, *, preferred_model=None, timeout_s=30, max_tokens=1200):
-        user_payload = messages[-1]["content"]
-        lowered = user_payload.lower()
+        user_payload = json.loads(messages[-1]["content"])
+        lowered = user_payload["message"].lower()
         if "research" in lowered and ("report" in lowered or "docx" in lowered):
             route = "research_document"
         elif "research" in lowered:
@@ -85,6 +85,8 @@ def test_agent_v3_direct_stream(monkeypatch):
     assert result["route"] == "direct"
     assert result["answer"] == "Plain answer."
     assert envelopes[1].data["data"]["model_used"] == "fake-orchestrator"
+    assert "available_routes" in envelopes[1].data["data"]
+    assert "web_search" in envelopes[1].data["data"]["available_tools"]
 
 
 def test_agent_v3_clarify_route(monkeypatch):
@@ -146,7 +148,11 @@ def test_agent_v3_research_streams_milestones(monkeypatch):
 
     progress_messages = [e.data["message"] for e in envelopes if e.type == "progress"]
     assert "Searching the web with the fresh v3 tool runner." in progress_messages
+    assert "Selected tool web_search." in progress_messages
+    assert "Tool web_search completed." in progress_messages
     assert "Found 1 candidate sources." in progress_messages
+    assert "Selected tool read_url." in progress_messages
+    assert "Tool read_url completed." in progress_messages
     assert "Read 1 source pages." in progress_messages
     result = next(e.data for e in envelopes if e.type == "result")
     assert result["sources"][0]["url"] == "https://example.com"
@@ -168,6 +174,7 @@ def test_agent_v3_research_document_creates_artifact(monkeypatch):
     assert result["route"] == "research_document"
     assert result["artifacts"][0]["filename"].endswith(".docx")
     assert result["artifacts"][0]["base64_data"]
+    assert [call["name"] for call in result["tool_calls"]] == ["web_search", "read_url", "make_docx_artifact"]
 
 
 def test_agent_v3_api_stream(monkeypatch):
@@ -217,7 +224,7 @@ def test_agent_v3_stream_persists_turn_events_tools_and_artifacts(monkeypatch):
         with Session() as db:
             assert db.get(AgentV3Turn, turn_id).status == "completed"
             assert db.query(AgentV3Event).filter(AgentV3Event.turn_id == turn_id).count() >= 4
-            assert db.query(AgentV3ToolCall).filter(AgentV3ToolCall.turn_id == turn_id).count() == 2
+            assert db.query(AgentV3ToolCall).filter(AgentV3ToolCall.turn_id == turn_id).count() == 3
             assert db.query(AgentV3Artifact).filter(AgentV3Artifact.turn_id == turn_id).count() == 1
     finally:
         app.dependency_overrides.clear()

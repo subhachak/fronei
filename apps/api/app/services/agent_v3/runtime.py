@@ -4,7 +4,7 @@ import time
 from collections.abc import Iterator
 
 from app.services.agent_v3 import model_client
-from app.services.agent_v3.orchestrator import OrchestratorDecision, decide as orchestrator_decide
+from app.services.agent_v3.orchestrator import OrchestratorDecision, decide_with_options
 from app.services.agent_v3.models import (
     AgentV3Request,
     AgentV3Result,
@@ -15,6 +15,7 @@ from app.services.agent_v3.models import (
     StreamEnvelope,
     new_id,
 )
+from app.services.agent_v3.tool_registry import ToolRegistry
 from app.services.agent_v3.tools import AgentV3Tools, source_context
 
 
@@ -22,12 +23,14 @@ class AgentV3Runtime:
     """Fresh isolated runtime with no dependency on the legacy/hybrid pipelines."""
 
     def __init__(self, tools: AgentV3Tools | None = None):
-        self.tools = tools or AgentV3Tools.from_settings()
+        self.tool_registry = ToolRegistry(tools or AgentV3Tools.from_settings())
 
     def run_stream(self, request: AgentV3Request, *, user_id: str) -> Iterator[StreamEnvelope]:
         turn_id = new_id("turn")
         started = time.perf_counter()
-        decision = orchestrator_decide(request)
+        available_routes = ["direct", "clarify", "research", "document", "research_document"]
+        available_tools = [tool["name"] for tool in self.tool_registry.describe()]
+        decision = decide_with_options(request, available_routes=available_routes, available_tools=available_tools)
         request = self._apply_decision(request, decision)
         route = decision.route
         goal = Goal(
@@ -54,6 +57,10 @@ class AgentV3Runtime:
             reason=decision.reason,
             source=decision.source,
             model_used=decision.model_used,
+            available_routes=decision.available_routes,
+            available_tools=decision.available_tools,
+            fallback_reason=decision.fallback_reason,
+            route_tools=self.tool_registry.tool_names_for_route(route),
         )
         yield StreamEnvelope(type="progress", data=first.model_dump(mode="json"))
 
@@ -67,13 +74,18 @@ class AgentV3Runtime:
             elif route == "research":
                 event = progress("research", "Searching the web with the fresh v3 tool runner.")
                 yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
-                sources, search_call = self.tools.search_web(
-                    request.message,
-                    max_results=8 if request.quality_mode == "executive" else 5,
+                sources, search_call = yield from self._run_tool(
+                    progress,
+                    "web_search",
+                    {"query": request.message, "max_results": 8 if request.quality_mode == "executive" else 5},
                 )
                 event = progress("research", f"Found {len(sources)} candidate sources.", source_count=len(sources))
                 yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
-                extracted, read_call = self.tools.extract_urls([s.url for s in sources if s.url])
+                extracted, read_call = yield from self._run_tool(
+                    progress,
+                    "read_url",
+                    {"urls": [s.url for s in sources if s.url]},
+                )
                 merged = self._merge_sources(sources, extracted)
                 event = progress("research", f"Read {len(extracted)} source pages.", source_count=len(extracted))
                 yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
@@ -99,10 +111,18 @@ class AgentV3Runtime:
             elif route == "research_document":
                 event = progress("research", "Searching before writing the document.")
                 yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
-                sources, search_call = self.tools.search_web(request.message, max_results=8)
+                sources, search_call = yield from self._run_tool(
+                    progress,
+                    "web_search",
+                    {"query": request.message, "max_results": 8},
+                )
                 event = progress("research", f"Found {len(sources)} candidate sources.", source_count=len(sources))
                 yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
-                extracted, read_call = self.tools.extract_urls([s.url for s in sources if s.url])
+                extracted, read_call = yield from self._run_tool(
+                    progress,
+                    "read_url",
+                    {"urls": [s.url for s in sources if s.url]},
+                )
                 merged = self._merge_sources(sources, extracted)
                 event = progress("research", f"Read {len(extracted)} source pages.", source_count=len(extracted))
                 yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
@@ -120,7 +140,7 @@ class AgentV3Runtime:
                     sources=merged,
                     research_answer=research_response.text,
                 )
-                result.tool_calls = [search_call, read_call]
+                result.tool_calls = [search_call, read_call, *result.tool_calls]
             else:
                 result = self._run_clarify(
                     request,
@@ -143,6 +163,28 @@ class AgentV3Runtime:
                 data={"turn_id": turn_id, "message": "Agent v3 failed.", "detail": str(exc)},
             )
             yield StreamEnvelope(type="done", data={"turn_id": turn_id, "failed": True})
+
+    def _run_tool(self, progress, name: str, inputs: dict):
+        selected = progress(
+            "tool_selection",
+            f"Selected tool {name}.",
+            tool_name=name,
+            tool_input=inputs,
+            available_tools=[tool["name"] for tool in self.tool_registry.describe()],
+        )
+        yield StreamEnvelope(type="progress", data=selected.model_dump(mode="json"))
+        output, call = self.tool_registry.run(name, inputs)
+        result = progress(
+            "tool_result",
+            f"Tool {name} {'completed' if call.ok else 'failed'}.",
+            tool_name=name,
+            ok=call.ok,
+            error=call.error,
+            latency_ms=call.latency_ms,
+            output_summary=call.output,
+        )
+        yield StreamEnvelope(type="progress", data=result.model_dump(mode="json"))
+        return output or [], call
 
     def _apply_decision(self, request: AgentV3Request, decision: OrchestratorDecision) -> AgentV3Request:
         updates = {}
@@ -224,10 +266,10 @@ class AgentV3Runtime:
             max_tokens=2200,
         )
         title = self._title_from_message(request.message)
-        artifact = (
-            self.tools.make_docx_artifact(title, response.text)
+        artifact, artifact_call = (
+            self._make_artifact("make_docx_artifact", title, response.text)
             if request.output_format in {"docx", "chat"} or "docx" in request.message.lower()
-            else self.tools.make_markdown_artifact(title, response.text)
+            else self._make_artifact("make_markdown_artifact", title, response.text)
         )
         answer = f"Done. I created `{artifact.filename}` with the fresh Agent v3 runtime."
         return AgentV3Result(
@@ -237,11 +279,24 @@ class AgentV3Runtime:
             route=goal.route,
             model_used=response.model_used,
             sources=sources,
+            tool_calls=[artifact_call],
             artifacts=[artifact],
             events=events,
             latency_ms=response.latency_ms,
             cost_usd=response.cost_usd,
         )
+
+    def _make_artifact(self, tool_name: str, title: str, markdown: str):
+        artifact, call = self.tool_registry.run(tool_name, {"title": title, "markdown": markdown})
+        if not call.ok or artifact is None:
+            fallback, fallback_call = self.tool_registry.run(
+                "make_markdown_artifact",
+                {"title": title, "markdown": markdown},
+            )
+            fallback_call.input["fallback_from"] = tool_name
+            fallback_call.input["fallback_reason"] = call.error
+            return fallback, fallback_call
+        return artifact, call
 
     def _merge_sources(self, search_sources: list[Source], extracted_sources: list[Source]) -> list[Source]:
         by_url = {source.url: source for source in search_sources if source.url}

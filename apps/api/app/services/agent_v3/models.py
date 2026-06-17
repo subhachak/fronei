@@ -62,6 +62,15 @@ class ToolCall(BaseModel):
     latency_ms: int = 0
 
 
+class ToolDefinition(BaseModel):
+    name: str
+    description: str
+    input_schema: dict[str, Any] = Field(default_factory=dict)
+    output_schema: dict[str, Any] = Field(default_factory=dict)
+    route_tags: list[RouteName] = Field(default_factory=list)
+    enabled: bool = True
+
+
 class Artifact(BaseModel):
     id: str = Field(default_factory=lambda: new_id("artifact"))
     kind: Literal["markdown", "docx"]

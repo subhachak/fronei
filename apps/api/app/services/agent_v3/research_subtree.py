@@ -296,9 +296,28 @@ class EvidenceClaim(BaseModel):
 class EvidencePack(BaseModel):
     items: list[EvidenceItem] = Field(default_factory=list)
     claims: list[EvidenceClaim] = Field(default_factory=list)
+    architecture_cards: list["ArchitectureExtractionCard"] = Field(default_factory=list)
     coverage: float = 0.0
     gaps: list[str] = Field(default_factory=list)
     contradictions: list[str] = Field(default_factory=list)
+
+
+class ArchitectureExtractionCard(BaseModel):
+    card_id: str = Field(default_factory=lambda: new_id("archcard"))
+    system: str
+    source_id: str
+    source_title: str = ""
+    source_url: str = ""
+    architecture_pattern: str = ""
+    agent_roles: list[str] = Field(default_factory=list)
+    state_objects: list[str] = Field(default_factory=list)
+    tools_or_renderers: list[str] = Field(default_factory=list)
+    validation_loop: str = ""
+    failure_modes: list[str] = Field(default_factory=list)
+    metrics: list[str] = Field(default_factory=list)
+    lesson_for_agentdeck: str = ""
+    quote: str = ""
+    confidence: float = 0.5
 
 
 class SearchWorkerReport(BaseModel):
@@ -1552,10 +1571,16 @@ def bind_evidence(
         # Evidence body cap: academic papers and repos are the richest technical
         # sources — give them more room so synthesis has dense material to work with.
         # Generic web pages are capped lower to avoid diluting the context.
-        if source_type in {"academic", "repository"} or profile == "technical_architecture":
-            body_cap = 2800
+        if profile == "technical_architecture" and source_type in {"academic", "pdf"}:
+            body_cap = 7000
+        elif profile == "technical_architecture" and source_type in {"repository", "documentation"}:
+            body_cap = 5600
+        elif profile == "technical_architecture":
+            body_cap = 3800
+        elif source_type in {"academic", "repository"}:
+            body_cap = 3200
         elif source_type in {"documentation", "pdf"}:
-            body_cap = 1800
+            body_cap = 2400
         else:
             body_cap = 900
         passages = _select_evidence_passages(
@@ -1595,6 +1620,7 @@ def bind_evidence(
     contradictions = detect_contradictions(items)
     pack = EvidencePack(items=items, coverage=coverage, gaps=gaps, contradictions=contradictions)
     pack.claims = extract_evidence_claims(pack, plan=plan)
+    pack.architecture_cards = extract_architecture_cards(pack, plan=plan)
     return pack
 
 
@@ -1631,6 +1657,229 @@ def extract_evidence_claims(
     claims.sort(key=lambda claim: (claim.confidence, _claim_type_priority(claim.claim_type)), reverse=True)
     max_claims = 40 if plan and plan.research_profile == "technical_architecture" else 24
     return claims[:max_claims]
+
+
+def extract_architecture_cards(
+    evidence: EvidencePack,
+    *,
+    plan: ResearchPlan | None = None,
+    max_cards: int = 18,
+) -> list[ArchitectureExtractionCard]:
+    if not plan or plan.research_profile != "technical_architecture":
+        return []
+    cards: list[ArchitectureExtractionCard] = []
+    for item in evidence.items:
+        text = item.evidence or ""
+        system = _architecture_system_name(item, text)
+        card = ArchitectureExtractionCard(
+            system=system,
+            source_id=item.source_id,
+            source_title=item.title,
+            source_url=item.url,
+            architecture_pattern=_extract_architecture_pattern(text),
+            agent_roles=_extract_architecture_terms(text, _AGENT_ROLE_TERMS, limit=8),
+            state_objects=_extract_architecture_terms(text, _STATE_OBJECT_TERMS, limit=8),
+            tools_or_renderers=_extract_architecture_terms(text, _TOOL_RENDERER_TERMS, limit=8),
+            validation_loop=_extract_validation_loop(text),
+            failure_modes=_extract_architecture_terms(text, _FAILURE_MODE_TERMS, limit=8),
+            metrics=_extract_metric_snippets(text),
+            lesson_for_agentdeck=_lesson_for_agentdeck(item, text),
+            quote=_best_architecture_quote(text),
+            confidence=_architecture_card_confidence(item, text),
+        )
+        if _architecture_card_has_signal(card):
+            cards.append(card)
+    cards.sort(key=lambda card: card.confidence, reverse=True)
+    return cards[:max_cards]
+
+
+_AGENT_ROLE_TERMS = [
+    "orchestrator",
+    "lead agent",
+    "planner",
+    "researcher",
+    "worker",
+    "subagent",
+    "writer",
+    "critic",
+    "reviewer",
+    "verifier",
+    "citation agent",
+    "formatter",
+    "layout agent",
+    "executor",
+]
+
+_STATE_OBJECT_TERMS = [
+    "outline",
+    "research brief",
+    "coverage contract",
+    "state graph",
+    "memory",
+    "scratchpad",
+    "evidence pack",
+    "citation map",
+    "schema",
+    "json",
+    "slide spec",
+    "render plan",
+    "theme",
+    "design tokens",
+]
+
+_TOOL_RENDERER_TERMS = [
+    "pptxgenjs",
+    "python-pptx",
+    "python-docx",
+    "openpyxl",
+    "html",
+    "css",
+    "soffice",
+    "pdftoppm",
+    "vlm",
+    "vision model",
+    "mcp",
+    "langgraph",
+    "rag",
+    "github",
+]
+
+_FAILURE_MODE_TERMS = [
+    "hallucination",
+    "overflow",
+    "overlap",
+    "truncation",
+    "invalid json",
+    "invalid code",
+    "corrupt",
+    "latency",
+    "cost",
+    "context",
+    "incoherent",
+    "disjoint",
+    "security",
+    "sandbox",
+]
+
+
+def _architecture_system_name(item: EvidenceItem, text: str) -> str:
+    haystack = f"{item.title} {item.url} {text}".lower()
+    known = [
+        "AgentDeck",
+        "PPTAgent",
+        "AutoPresent",
+        "STORM",
+        "LongWriter",
+        "AgentWrite",
+        "SlideBot",
+        "PPTEval",
+        "PaperFit",
+        "LangGraph",
+        "Open Deep Research",
+        "Gamma",
+        "Microsoft Copilot",
+        "Google Gemini",
+        "Anthropic",
+        "PptxGenJS",
+        "Presenton",
+        "MASFactory",
+    ]
+    for name in known:
+        if name.lower() in haystack:
+            return name
+    host = urlparse(item.url or "").netloc.lower().replace("www.", "")
+    return host or item.title[:80] or "Unknown system"
+
+
+def _extract_architecture_pattern(text: str) -> str:
+    candidates = _claim_candidate_sentences(text)
+    pattern_terms = ("architecture", "orchestr", "workflow", "pipeline", "plan", "render", "critique", "revise", "agent")
+    for sentence in candidates:
+        lower = sentence.lower()
+        if any(term in lower for term in pattern_terms):
+            return sentence[:500]
+    return candidates[0][:500] if candidates else ""
+
+
+def _extract_architecture_terms(text: str, terms: list[str], *, limit: int) -> list[str]:
+    lower = (text or "").lower()
+    found = [term for term in terms if term in lower]
+    return _dedupe(found)[:limit]
+
+
+def _extract_validation_loop(text: str) -> str:
+    candidates = _claim_candidate_sentences(text)
+    validation_terms = ("validate", "verification", "verify", "judge", "critic", "render", "inspect", "qa", "feedback", "repair")
+    for sentence in candidates:
+        if any(term in sentence.lower() for term in validation_terms):
+            return sentence[:500]
+    return ""
+
+
+def _extract_metric_snippets(text: str) -> list[str]:
+    snippets: list[str] = []
+    for sentence in _claim_candidate_sentences(text):
+        lower = sentence.lower()
+        if re.search(r"\b\d+(?:\.\d+)?\s*(?:%|percent|x|×|tokens|pearson|score|seconds|minutes|ms|calls)\b", lower):
+            snippets.append(sentence[:300])
+        elif any(term in lower for term in ("benchmark", "correlation", "evaluation", "outperform", "preferred by humans")):
+            snippets.append(sentence[:300])
+        if len(snippets) >= 5:
+            break
+    return snippets
+
+
+def _lesson_for_agentdeck(item: EvidenceItem, text: str) -> str:
+    lower = f"{item.title} {item.url} {text}".lower()
+    if any(term in lower for term in ("overflow", "overlap", "render", "vision", "vlm", "pdftoppm", "soffice")):
+        return "Use render-then-inspect QA with element-level repair before publishing."
+    if any(term in lower for term in ("schema", "json", "structured output", "grammar", "validation")):
+        return "Keep a schema-validated content contract before rendering."
+    if any(term in lower for term in ("orchestrator", "subagent", "worker", "parallel")):
+        return "Use a lead-agent plan with bounded specialist workers and a shared spine."
+    if any(term in lower for term in ("theme", "brand", "design token", "template")):
+        return "Treat the design system as a versioned contract, not a prompt hint."
+    if any(term in lower for term in ("citation", "ground", "source", "rag")):
+        return "Bind claims to source evidence before synthesis and verify citations after drafting."
+    return "Extract the reusable architectural mechanism and map it to AgentDeck's pipeline."
+
+
+def _best_architecture_quote(text: str) -> str:
+    scored: list[tuple[float, str]] = []
+    for sentence in _claim_candidate_sentences(text):
+        score = 0.0
+        lower = sentence.lower()
+        if any(term in lower for term in ("architecture", "workflow", "orchestr", "schema", "render", "verify", "agent")):
+            score += 2.0
+        if re.search(r"\b\d+(?:\.\d+)?\s*(?:%|percent|x|×|tokens|pearson|score)\b", lower):
+            score += 2.0
+        if any(term in lower for term in ("implementation", "component", "state", "tool", "validation")):
+            score += 1.0
+        scored.append((score, sentence[:500]))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    return scored[0][1] if scored and scored[0][0] > 0 else ""
+
+
+def _architecture_card_confidence(item: EvidenceItem, text: str) -> float:
+    signals = 0
+    lower = text.lower()
+    for terms in (_AGENT_ROLE_TERMS, _STATE_OBJECT_TERMS, _TOOL_RENDERER_TERMS, _FAILURE_MODE_TERMS):
+        if any(term in lower for term in terms):
+            signals += 1
+    if _extract_metric_snippets(text):
+        signals += 1
+    return max(0.35, min(0.94, item.confidence + signals * 0.06 + score_technical_density(Source(title=item.title, url=item.url, content=text)) * 0.12))
+
+
+def _architecture_card_has_signal(card: ArchitectureExtractionCard) -> bool:
+    return bool(
+        card.architecture_pattern
+        or card.agent_roles
+        or card.state_objects
+        or card.tools_or_renderers
+        or card.validation_loop
+        or card.metrics
+    )
 
 
 def _claim_candidate_sentences(text: str) -> list[str]:
@@ -1883,6 +2132,7 @@ def _passage_signature(text: str) -> str:
 
 
 def synthesize_answer(request: AgentV3Request, plan: ResearchPlan, evidence: EvidencePack):
+    architecture_context = _architecture_cards_context(evidence)
     claim_context = "\n".join(
         f"[{claim.source_id}] {claim.claim_type}/{claim.claim_role} "
         f"(confidence={claim.confidence:.2f}, freshness={claim.freshness_risk}): {claim.text}"
@@ -1912,6 +2162,7 @@ def synthesize_answer(request: AgentV3Request, plan: ResearchPlan, evidence: Evi
             f"Research profile: {plan.research_profile}\n\n"
             f"Required deliverable shape:\n{report_contract}\n\n"
             f"Research questions:\n{json.dumps(plan.questions, ensure_ascii=False)}\n\n"
+            f"Architecture extraction cards:\n{architecture_context}\n\n"
             f"Typed evidence claims:\n{claim_context}\n\n"
             f"Evidence pack:\n{evidence_context}\n\n"
             f"Known gaps:\n{json.dumps(evidence.gaps, ensure_ascii=False)}"
@@ -2162,6 +2413,18 @@ def _chunk_urls(urls: list[str], *, size: int) -> list[list[str]]:
         if chunk:
             chunks.append(chunk)
     return chunks
+
+
+def _read_cap_for_batch(urls: list[str], plan: ResearchPlan | None) -> int:
+    if plan and plan.research_profile == "technical_architecture":
+        if any(classify_source_type(url) in {"academic", "pdf"} for url in urls):
+            return 14000
+        if any(classify_source_type(url) in {"repository", "documentation"} for url in urls):
+            return 10000
+        return 6500
+    if any(classify_source_type(url) in {"academic", "pdf", "documentation"} for url in urls):
+        return 7000
+    return 3500
 
 
 def _assigned_cell_for_worker(worker: SearchWorkerPlan, contract: CoverageContract) -> CoverageCell | None:
@@ -2667,7 +2930,7 @@ class LeadResearchAgent:
                 max_read_workers = max(1, min(MAX_PARALLEL_READ_BATCHES, len(read_batches)))
                 with ThreadPoolExecutor(max_workers=max_read_workers) as executor:
                     futures = {
-                        executor.submit(self.tools.extract_urls, batch, max_chars_per_source=3500): batch
+                        executor.submit(self.tools.extract_urls, batch, max_chars_per_source=_read_cap_for_batch(batch, state.plan)): batch
                         for batch in read_batches
                     }
                     for future in as_completed(futures):
@@ -2798,7 +3061,7 @@ class LeadResearchAgent:
                 for candidate in candidates
             }
             try:
-                extracted, call = self.tools.extract_urls(urls, max_chars_per_source=3000)
+                extracted, call = self.tools.extract_urls(urls, max_chars_per_source=_read_cap_for_batch(urls, state.plan))
             except Exception as exc:
                 logger.warning("agent_v3 source graph expansion failed at depth=%d: %s", depth, exc)
                 extracted = []
@@ -2835,6 +3098,7 @@ class LeadResearchAgent:
                 "contradictions": state.evidence.contradictions,
                 "evidence_items": [item.model_dump(mode="json") for item in state.evidence.items],
                 "claims": [claim.model_dump(mode="json") for claim in state.evidence.claims[:20]],
+                "architecture_cards": [card.model_dump(mode="json") for card in state.evidence.architecture_cards[:16]],
             },
         )
         if not self.ledger.can_start_model("synthesis_agent"):
@@ -3096,6 +3360,8 @@ def _synthesis_report_contract(profile: ResearchProfile, request: AgentV3Request
             "Produce a detailed architectural report. "
             "Derive the section structure from the evidence — use the components, workflows, "
             "and architectural patterns that actually appear in the sources, not a generic template. "
+            "Use the architecture extraction cards as the primary spine: compare named systems, their state objects, "
+            "agent roles, renderers/tools, validation loops, metrics, and failure modes. "
             "Every section must be grounded in specific evidence with [S#] citations. "
             "Include concrete implementation details: data models, control flow, state transitions, "
             "failure handling, trade-offs, and design decisions. "
@@ -3145,6 +3411,7 @@ def is_public_source_url(url: str) -> bool:
 
 
 def source_context_from_evidence(evidence: EvidencePack) -> str:
+    architecture_context = _architecture_cards_context(evidence)
     claim_context = "\n".join(
         f"[{claim.source_id}] {claim.claim_type}/{claim.claim_role}: {claim.text}"
         for claim in evidence.claims[:30]
@@ -3154,8 +3421,35 @@ def source_context_from_evidence(evidence: EvidencePack) -> str:
         for item in evidence.items
     )
     if claim_context and passage_context:
-        return f"Typed evidence claims:\n{claim_context}\n\nEvidence passages:\n{passage_context}"
+        return f"Architecture extraction cards:\n{architecture_context}\n\nTyped evidence claims:\n{claim_context}\n\nEvidence passages:\n{passage_context}"
+    if architecture_context:
+        return f"Architecture extraction cards:\n{architecture_context}\n\nEvidence passages:\n{passage_context}"
     return passage_context
+
+
+def _architecture_cards_context(evidence: EvidencePack) -> str:
+    if not evidence.architecture_cards:
+        return "No architecture extraction cards were built. Use typed claims and passages, but disclose missing implementation detail."
+    lines: list[str] = []
+    for card in evidence.architecture_cards[:18]:
+        lines.append(
+            "\n".join(
+                [
+                    f"- [{card.source_id}] {card.system}",
+                    f"  Pattern: {card.architecture_pattern or 'unknown'}",
+                    f"  Agent roles: {', '.join(card.agent_roles) or 'unknown'}",
+                    f"  State objects: {', '.join(card.state_objects) or 'unknown'}",
+                    f"  Tools/renderers: {', '.join(card.tools_or_renderers) or 'unknown'}",
+                    f"  Validation loop: {card.validation_loop or 'unknown'}",
+                    f"  Failure modes: {', '.join(card.failure_modes) or 'unknown'}",
+                    f"  Metrics: {' | '.join(card.metrics) or 'unknown'}",
+                    f"  Lesson for AgentDeck: {card.lesson_for_agentdeck}",
+                    f"  Quote: {card.quote or 'none extracted'}",
+                    f"  URL: {card.source_url}",
+                ]
+            )
+        )
+    return "\n".join(lines)
 
 
 def _fallback_plan(request: AgentV3Request, goal: ResearchGoal | None = None) -> ResearchPlan:

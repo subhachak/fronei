@@ -83,6 +83,102 @@ class ResearchBudget(BaseModel):
     min_evidence_items: int = 2
     repair_iterations: int = 1
     judge_threshold: float = 0.72
+    max_tool_calls: int = 8
+    max_model_calls: int = 4
+    max_cost_usd: float = 0.08
+    max_elapsed_ms: int = 90_000
+    max_deep_links: int = 2
+
+
+class ResearchBudgetLedger(BaseModel):
+    budget: ResearchBudget
+    tool_calls: int = 0
+    model_calls: int = 0
+    sources_seen: int = 0
+    sources_read: int = 0
+    cost_usd: float = 0.0
+    elapsed_ms: int = 0
+    stopped: bool = False
+    stop_reason: str | None = None
+    decisions: list[str] = Field(default_factory=list)
+
+    def refresh_elapsed(self, elapsed_ms: int) -> None:
+        self.elapsed_ms = max(0, int(elapsed_ms))
+        if self.elapsed_ms >= self.budget.max_elapsed_ms and not self.stopped:
+            self.stop("elapsed time budget exhausted")
+
+    def record_model_call(self, *, cost_usd: float = 0.0, latency_ms: int = 0) -> None:
+        self.model_calls += 1
+        self.cost_usd += max(0.0, float(cost_usd or 0.0))
+        self.elapsed_ms += max(0, int(latency_ms or 0))
+        self._check_limits()
+
+    def record_tool_call(
+        self,
+        *,
+        latency_ms: int = 0,
+        sources_seen: int = 0,
+        sources_read: int = 0,
+        cost_usd: float = 0.0,
+    ) -> None:
+        self.tool_calls += 1
+        self.sources_seen += max(0, int(sources_seen or 0))
+        self.sources_read += max(0, int(sources_read or 0))
+        self.cost_usd += max(0.0, float(cost_usd or 0.0))
+        self.elapsed_ms += max(0, int(latency_ms or 0))
+        self._check_limits()
+
+    def can_start_tool(self, tool_name: str) -> bool:
+        if self.stopped:
+            return False
+        if self.tool_calls >= self.budget.max_tool_calls:
+            self.stop(f"tool budget exhausted before {tool_name}")
+            return False
+        return True
+
+    def can_start_model(self, agent_id: str) -> bool:
+        if self.model_calls >= self.budget.max_model_calls:
+            self.stop(f"model budget exhausted before {agent_id}")
+            return False
+        if self.cost_usd >= self.budget.max_cost_usd:
+            self.stop(f"cost budget exhausted before {agent_id}")
+            return False
+        if self.elapsed_ms >= self.budget.max_elapsed_ms:
+            self.stop(f"elapsed time budget exhausted before {agent_id}")
+            return False
+        return True
+
+    def can_read_more_sources(self) -> bool:
+        if self.stopped:
+            return False
+        if self.sources_read >= self.budget.max_sources + self.budget.max_deep_links:
+            self.stop("source read budget exhausted")
+            return False
+        return True
+
+    def remaining_tool_calls(self) -> int:
+        return max(0, self.budget.max_tool_calls - self.tool_calls)
+
+    def remaining_source_reads(self) -> int:
+        return max(0, self.budget.max_sources + self.budget.max_deep_links - self.sources_read)
+
+    def stop(self, reason: str) -> None:
+        self.stopped = True
+        self.stop_reason = self.stop_reason or reason
+        if reason not in self.decisions:
+            self.decisions.append(reason)
+
+    def _check_limits(self) -> None:
+        if self.stopped:
+            return
+        if self.tool_calls >= self.budget.max_tool_calls:
+            self.stop("tool budget exhausted")
+        elif self.model_calls >= self.budget.max_model_calls:
+            self.stop("model budget exhausted")
+        elif self.cost_usd >= self.budget.max_cost_usd:
+            self.stop("cost budget exhausted")
+        elif self.elapsed_ms >= self.budget.max_elapsed_ms:
+            self.stop("elapsed time budget exhausted")
 
 
 class ResearchGoal(BaseModel):
@@ -377,10 +473,43 @@ def get_research_registry() -> ResearchAgentRegistry:
 
 def research_budget_for(request: AgentV3Request) -> ResearchBudget:
     if request.quality_mode == "executive":
-        return ResearchBudget(max_search_workers=4, max_sources=8, min_evidence_items=3, repair_iterations=2, judge_threshold=0.78)
+        return ResearchBudget(
+            max_search_workers=4,
+            max_sources=8,
+            min_evidence_items=3,
+            repair_iterations=2,
+            judge_threshold=0.78,
+            max_tool_calls=12,
+            max_model_calls=5,
+            max_cost_usd=0.20,
+            max_elapsed_ms=180_000,
+            max_deep_links=4,
+        )
     if request.quality_mode == "draft":
-        return ResearchBudget(max_search_workers=2, max_sources=4, min_evidence_items=1, repair_iterations=0, judge_threshold=0.62)
-    return ResearchBudget(max_search_workers=3, max_sources=6, min_evidence_items=2, repair_iterations=1, judge_threshold=0.72)
+        return ResearchBudget(
+            max_search_workers=2,
+            max_sources=4,
+            min_evidence_items=1,
+            repair_iterations=0,
+            judge_threshold=0.62,
+            max_tool_calls=4,
+            max_model_calls=3,
+            max_cost_usd=0.02,
+            max_elapsed_ms=45_000,
+            max_deep_links=0,
+        )
+    return ResearchBudget(
+        max_search_workers=3,
+        max_sources=6,
+        min_evidence_items=2,
+        repair_iterations=1,
+        judge_threshold=0.72,
+        max_tool_calls=8,
+        max_model_calls=4,
+        max_cost_usd=0.08,
+        max_elapsed_ms=90_000,
+        max_deep_links=2,
+    )
 
 
 def create_research_goal(request: AgentV3Request) -> ResearchGoal:
@@ -413,6 +542,7 @@ def plan_research(request: AgentV3Request) -> ResearchPlan:
                     "content": json.dumps(
                         {
                             "message": request.message,
+                            "conversation_context": request.conversation_context[-5000:] if request.conversation_context else "",
                             "quality_mode": request.quality_mode,
                             "output_format": request.output_format,
                             "budget": goal.budget.model_dump(mode="json"),
@@ -483,6 +613,9 @@ def synthesize_answer(request: AgentV3Request, plan: ResearchPlan, evidence: Evi
     return model_client.simple_completion(
         SYNTHESIS_PROMPT,
         (
+            f"{request.conversation_context}\n\n" if request.conversation_context else ""
+        )
+        + (
             f"User request:\n{request.message}\n\n"
             f"Research questions:\n{json.dumps(plan.questions, ensure_ascii=False)}\n\n"
             f"Evidence pack:\n{evidence_context}\n\n"
@@ -545,6 +678,9 @@ def repair_research_answer(
     return model_client.simple_completion(
         REPAIR_PROMPT,
         (
+            f"{request.conversation_context}\n\n" if request.conversation_context else ""
+        )
+        + (
             f"User request:\n{request.message}\n\n"
             f"Original answer:\n{answer}\n\n"
             f"Judge feedback:\n{judge.model_dump_json()}\n\n"

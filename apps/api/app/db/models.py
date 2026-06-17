@@ -297,6 +297,8 @@ class AgentV3Workspace(Base):
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     user_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(160), nullable=False, default="Personal workspace")
+    context_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    context_updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(
         DateTime,
@@ -312,6 +314,8 @@ class AgentV3Conversation(Base):
     user_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     workspace_id: Mapped[str] = mapped_column(String(64), ForeignKey("agent_v3_workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
     title: Mapped[str] = mapped_column(String(180), nullable=False, default="New conversation")
+    context_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    context_updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(
         DateTime,

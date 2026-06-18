@@ -105,6 +105,14 @@ class AgentV3Runtime:
                 event = progress("direct_fast_answer", "Answering from the current conversation context.")
                 yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
                 response = answer_direct_fast(request)
+                event = progress(
+                    "direct_fast_result",
+                    f"Direct answer used {response.model_used or 'the configured direct model'}.",
+                    latency_ms=response.latency_ms,
+                    cost_usd=response.cost_usd,
+                    **model_client.telemetry_for_response(response),
+                )
+                yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
                 result = AgentV3Result(
                     turn_id=turn_id,
                     goal=goal,
@@ -149,6 +157,14 @@ class AgentV3Runtime:
                 sources=sources,
                 extracted_sources=extracted_sources,
             )
+            event = progress(
+                "web_fast_result",
+                f"Quick web answer used {response.model_used or 'the configured direct model'}.",
+                latency_ms=response.latency_ms,
+                cost_usd=response.cost_usd,
+                **model_client.telemetry_for_response(response),
+            )
+            yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
             tool_calls = [search_call, *([read_call] if read_call is not None else [])]
             result = AgentV3Result(
                 turn_id=turn_id,

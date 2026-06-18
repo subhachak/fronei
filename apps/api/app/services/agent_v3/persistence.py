@@ -134,7 +134,15 @@ def _normalize_context(ctx: dict, *, max_chars: int = 6000) -> dict:
     return _trim_context(ctx)
 
 
-def _render_context(ctx: dict, *, max_chars: int = 6000, label: str = "Conversation context") -> str:
+def _render_context(
+    ctx: dict,
+    *,
+    max_chars: int = 6000,
+    label: str = "Conversation context",
+    include_running_summary: bool = True,
+    include_key_facts: bool = True,
+    include_recent_turns: bool = True,
+) -> str:
     ctx = _normalize_context(ctx, max_chars=max_chars)
     lines = [f"{label}:"]
     profile = ctx.get("user_profile") or {}
@@ -147,12 +155,12 @@ def _render_context(ctx: dict, *, max_chars: int = 6000, label: str = "Conversat
     conversation = ctx.get("conversation") or {}
     if conversation.get("title"):
         lines.append(f"- Conversation: {conversation['title']}")
-    if ctx.get("running_summary"):
+    if include_running_summary and ctx.get("running_summary"):
         lines.append(f"- Running summary: {ctx['running_summary']}")
-    if ctx.get("key_facts"):
+    if include_key_facts and ctx.get("key_facts"):
         lines.append("- Key facts:")
         lines.extend(f"  - {fact}" for fact in ctx["key_facts"])
-    if ctx.get("recent_turns"):
+    if include_recent_turns and ctx.get("recent_turns"):
         lines.append("- Recent turns:")
         for turn in ctx["recent_turns"][-6:]:
             if turn.get("conversation"):
@@ -163,6 +171,21 @@ def _render_context(ctx: dict, *, max_chars: int = 6000, label: str = "Conversat
                 lines.append(f"    Artifacts: {', '.join(str(item) for item in turn['artifacts'][:3])}")
     rendered = "\n".join(lines)
     return rendered[-max_chars:]
+
+
+def _explicit_workspace_context_request(message: str | None) -> bool:
+    text = " ".join((message or "").lower().split())
+    if not text:
+        return False
+    signals = [
+        "workspace",
+        "across conversations",
+        "other conversations",
+        "shared context",
+        "what we know",
+        "what you know",
+    ]
+    return any(signal in text for signal in signals)
 
 
 def _trim_context(ctx: dict) -> dict:
@@ -320,7 +343,13 @@ def wait_for_context_updates(timeout_s: float = 5.0) -> None:
         future.result(timeout=timeout_s)
 
 
-def conversation_context_text(user_id: str, conversation_id: str | None, *, max_chars: int = 6000) -> str:
+def conversation_context_text(
+    user_id: str,
+    conversation_id: str | None,
+    *,
+    max_chars: int = 6000,
+    current_message: str | None = None,
+) -> str:
     if not conversation_id:
         return ""
     db = SessionLocal()
@@ -329,6 +358,14 @@ def conversation_context_text(user_id: str, conversation_id: str | None, *, max_
         if conversation is None or conversation.user_id != user_id:
             return ""
         workspace = db.get(AgentV3Workspace, conversation.workspace_id)
+        ctx = _loads(conversation.context_json, {})
+        if not ctx:
+            if workspace:
+                ctx = _initial_context(db, user_id, workspace, conversation)
+                conversation.context_json = _dumps(ctx)
+                conversation.context_updated_at = _now()
+                db.commit()
+        include_workspace_history = _explicit_workspace_context_request(current_message)
         workspace_text = ""
         if workspace and workspace.user_id == user_id:
             workspace_ctx = _loads(workspace.context_json, {})
@@ -337,16 +374,24 @@ def conversation_context_text(user_id: str, conversation_id: str | None, *, max_
                 workspace.context_json = _dumps(workspace_ctx)
                 workspace.context_updated_at = _now()
                 db.commit()
-            workspace_text = _render_context(workspace_ctx, max_chars=max(1200, max_chars // 3), label="Workspace context")
-        ctx = _loads(conversation.context_json, {})
-        if not ctx:
-            if workspace:
-                ctx = _initial_context(db, user_id, workspace, conversation)
-                conversation.context_json = _dumps(ctx)
-                conversation.context_updated_at = _now()
-                db.commit()
-        conversation_text = _render_context(ctx, max_chars=max(1200, max_chars - len(workspace_text)), label="Conversation context")
-        return "\n\n".join(part for part in [workspace_text, conversation_text] if part)[-max_chars:]
+            workspace_text = _render_context(
+                workspace_ctx,
+                max_chars=max(800, max_chars // 3),
+                label=(
+                    "Workspace context requested by user"
+                    if include_workspace_history
+                    else "Workspace background only; do not use this to resolve vague follow-ups"
+                ),
+                include_running_summary=include_workspace_history,
+                include_key_facts=include_workspace_history,
+                include_recent_turns=include_workspace_history,
+            )
+        conversation_text = _render_context(
+            ctx,
+            max_chars=max(1200, max_chars - len(workspace_text)),
+            label="Current conversation context; use this for pronouns and follow-ups",
+        )
+        return "\n\n".join(part for part in [conversation_text, workspace_text] if part)[-max_chars:]
     finally:
         db.close()
 

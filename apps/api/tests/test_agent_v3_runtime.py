@@ -564,6 +564,33 @@ def test_agent_v3_research_document_creates_artifact(monkeypatch):
     ]
 
 
+def test_agent_v3_markdown_output_renders_in_chat_without_artifact(monkeypatch):
+    markdown = "## Report\n\n- Finding"
+    _patch_completion(monkeypatch, markdown)
+    runtime = AgentV3Runtime(tools=FakeTools())
+
+    envelopes = _collect_stream(
+        runtime,
+        AgentV3Request(
+            message="Research current AI governance trends and create a markdown report.",
+            output_format="markdown",
+        ),
+    )
+
+    result = next(e.data for e in envelopes if e.type == "result")
+    assert result["route"] == "research_document"
+    assert result["answer"] == markdown
+    assert result["artifacts"] == []
+    assert [call["name"] for call in result["tool_calls"]] == [
+        "web_search",
+        "web_search",
+        "read_url",
+    ]
+    progress_stages = [e.data["stage"] for e in envelopes if e.type == "progress"]
+    assert "chat_renderer" in progress_stages
+    assert "artifact_builder" not in progress_stages
+
+
 def test_agent_v3_api_stream(monkeypatch):
     _patch_completion(monkeypatch, "API answer.")
     from app.services.agent_v3 import persistence
@@ -883,7 +910,7 @@ def test_agent_v3_workspace_context_is_shared_across_conversations(monkeypatch, 
             assert second.status_code == 200
             persistence.wait_for_context_updates()
 
-        assert "Workspace context:" in captured_prompts[-1]
+        assert "Workspace context requested by user:" in captured_prompts[-1]
         assert "Shared workspace context about platform modernization." in captured_prompts[-1]
         assert "Capture platform modernization context." in captured_prompts[-1]
         with Session() as db:
@@ -891,6 +918,66 @@ def test_agent_v3_workspace_context_is_shared_across_conversations(monkeypatch, 
             context = json.loads(row.context_json)
             assert context["running_summary"]
             assert len(context["recent_turns"]) == 2
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_agent_v3_vague_followup_does_not_import_other_workspace_conversation(monkeypatch, tmp_path):
+    from app.services.agent_v3 import model_client, persistence
+
+    _set_artifact_dir(monkeypatch, tmp_path)
+    Session = _sqlite_session()
+    monkeypatch.setattr(persistence, "SessionLocal", Session)
+
+    def fake_complete(messages, *, preferred_model=None, role=None, quality_mode="standard", timeout_s=30, max_tokens=1200):
+        return SimpleNamespace(
+            text=json.dumps({"route": "direct", "confidence": 0.9, "reason": "direct test"}),
+            model_used="fake-orchestrator",
+            latency_ms=1,
+            cost_usd=0.0,
+        )
+
+    answers = iter([
+        "Comparison between Tavily, Nimble, and You.com.",
+        "Bengali-style bonde recipe attempt.",
+    ])
+
+    def fake_simple_completion(system, user, *, max_tokens=1200, **kwargs):
+        return SimpleNamespace(text=next(answers), model_used="fake-model", latency_ms=1, cost_usd=0.0)
+
+    monkeypatch.setattr(model_client, "complete", fake_complete)
+    monkeypatch.setattr(model_client, "simple_completion", fake_simple_completion)
+    app.dependency_overrides[get_current_user_id] = lambda: "u1"
+    try:
+        with TestClient(app) as client:
+            workspace = client.post("/agent-v3/workspaces", json={"name": "Research workspace"}).json()
+            search_conversation = client.post(
+                f"/agent-v3/workspaces/{workspace['id']}/conversations",
+                json={"title": "Search providers"},
+            ).json()
+            recipe_conversation = client.post(
+                f"/agent-v3/workspaces/{workspace['id']}/conversations",
+                json={"title": "Bengali recipe"},
+            ).json()
+            first = client.post(
+                "/agent-v3/turns/stream",
+                json={"message": "Compare Tavily, Nimble, and You.com.", "conversation_id": search_conversation["id"]},
+            )
+            assert first.status_code == 200
+            persistence.wait_for_context_updates()
+            second = client.post(
+                "/agent-v3/turns/stream",
+                json={"message": "give me a recipe of bonde in bengai style", "conversation_id": recipe_conversation["id"]},
+            )
+            assert second.status_code == 200
+            persistence.wait_for_context_updates()
+
+        context = persistence.conversation_context_text("u1", recipe_conversation["id"], current_message="try again")
+        assert "Bengali-style bonde recipe attempt." in context
+        assert "give me a recipe of bonde" in context
+        assert "Tavily" not in context
+        assert "You.com" not in context
+        assert "Workspace background only" in context
     finally:
         app.dependency_overrides.clear()
 

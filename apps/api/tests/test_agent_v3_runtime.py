@@ -1289,6 +1289,70 @@ def test_agent_v3_research_level_budgets_are_distinct():
     assert deep.repair_iterations > regular.repair_iterations
 
 
+def test_agent_v3_deep_research_uses_brief_objective_for_followup_queries():
+    from app.services.agent_v3.research_subtree import (
+        CoverageContract,
+        ResearchBrief,
+        plan_from_brief_contract,
+        research_budget_for,
+    )
+
+    request = AgentV3Request(message="perform a deeper research and give me more accurate answer", research_level="deep")
+    brief = ResearchBrief(
+        objective=(
+            "Identify the best models available in the US market for a general-purpose chatbot "
+            "that delivers high fidelity, high accuracy, fast inference, and reasonable cost."
+        ),
+        research_profile="vendor_comparison",
+        secondary_profiles=["market_landscape"],
+    )
+    contract = CoverageContract(
+        cells=[],
+        subjects=["Pricing and licensing models"],
+        dimensions=["current state"],
+        source="profile:vendor_comparison",
+    )
+
+    plan = plan_from_brief_contract(request, brief, contract, research_budget_for(request))
+    queries = " ".join(worker.query.lower() for worker in plan.workers)
+
+    assert "deeper more accurate answer" not in queries
+    assert "openai" in queries
+    assert "anthropic" in queries
+    assert "google" in queries
+    assert "official" in queries
+
+
+def test_agent_v3_vendor_comparison_targets_official_llm_provider_lanes():
+    from app.services.agent_v3.research_subtree import (
+        CoverageCell,
+        CoverageContract,
+        plan_from_contract,
+        research_budget_for,
+    )
+
+    request = AgentV3Request(
+        message="What models should I use for a high fidelity fast affordable general purpose chatbot?",
+        research_level="deep",
+    )
+    contract = CoverageContract(
+        cells=[
+            CoverageCell(subject="Pricing and licensing models", dimension="current state"),
+            CoverageCell(subject="API capabilities and integration", dimension="specifics / evidence"),
+        ],
+        subjects=["Pricing and licensing models", "API capabilities and integration"],
+        dimensions=["current state", "specifics / evidence"],
+        source="profile:vendor_comparison",
+    )
+
+    plan = plan_from_contract(request, contract, research_budget_for(request))
+    queries = [worker.query.lower() for worker in plan.workers]
+
+    assert any("site:platform.openai.com" in query or "openai api models" in query for query in queries)
+    assert any("site:docs.anthropic.com" in query or "anthropic claude" in query for query in queries)
+    assert any("site:ai.google.dev" in query or "google gemini" in query for query in queries)
+
+
 def test_agent_v3_model_role_routing(monkeypatch):
     from app.config import get_settings
     from app.services.agent_v3 import model_client

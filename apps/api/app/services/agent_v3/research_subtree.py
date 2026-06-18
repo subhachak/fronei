@@ -994,6 +994,13 @@ def create_research_goal(request: AgentV3Request) -> ResearchGoal:
     )
 
 
+def _request_for_research_objective(request: AgentV3Request, brief: ResearchBrief) -> AgentV3Request:
+    objective = " ".join((brief.objective or "").split())
+    if not objective or objective == request.message:
+        return request
+    return request.model_copy(update={"message": objective})
+
+
 def generate_research_brief(request: AgentV3Request) -> ResearchBrief:
     try:
         prompt = resolve_prompt(
@@ -1575,6 +1582,15 @@ def plan_from_contract(
     )
 
 
+def plan_from_brief_contract(
+    request: AgentV3Request,
+    brief: ResearchBrief,
+    contract: CoverageContract,
+    budget: ResearchBudget | None = None,
+) -> ResearchPlan:
+    return plan_from_contract(_request_for_research_objective(request, brief), contract, budget)
+
+
 def _profile_from_contract(contract: CoverageContract) -> ResearchProfile | None:
     if not contract.source.startswith("profile:"):
         return None
@@ -2023,7 +2039,7 @@ def build_research_plan_preview(request: AgentV3Request) -> dict[str, Any]:
     brief = generate_research_brief(preview_request)
     contract = generate_coverage_contract(preview_request, brief)
     budget = research_budget_for(preview_request)
-    plan = plan_from_contract(preview_request, contract, budget)
+    plan = plan_from_brief_contract(preview_request, brief, contract, budget)
     investigate = _plan_preview_investigation_items(brief, contract, plan)
     source_strategy = _plan_preview_source_strategy(brief.research_profile, plan)
     return {
@@ -3314,8 +3330,9 @@ class LeadResearchAgent:
             },
         )
 
-        plan = plan_from_contract(self.request, contract, self.budget)
-        goal = create_research_goal(self.request)
+        planning_request = _request_for_research_objective(self.request, brief)
+        plan = plan_from_contract(planning_request, contract, self.budget)
+        goal = create_research_goal(planning_request)
         state = ResearchStateStore(brief=brief, contract=contract, plan=plan, budget_ledger=self.ledger)
         self._progress(
             "research_goal",
@@ -3499,7 +3516,11 @@ class LeadResearchAgent:
                         and avg_relevance < 0.35
                         and self.ledger.can_start_tool("web_search")
                     ):
-                        retry_query = _retry_query_for_worker(worker, assigned_cell, self.request)
+                        retry_query = _retry_query_for_worker(
+                            worker,
+                            assigned_cell,
+                            _request_for_research_objective(self.request, state.brief),
+                        )
                         if retry_query and retry_query not in state.query_history:
                             state.add_queries([retry_query])
                             retry_queries_by_worker.setdefault(worker.worker_id, []).append(retry_query)
@@ -3881,7 +3902,7 @@ class LeadResearchAgent:
         )
         if verdict.next_action == "research_more" and not self.ledger.stopped:
             state.plan = plan_from_targeted_queries(
-                [_targeted_query(cell.subject, [cell.dimension], self.request.message) for cell in state.contract.open_cells()[:4]],
+                [_targeted_query(cell.subject, [cell.dimension], state.brief.objective) for cell in state.contract.open_cells()[:4]],
                 state,
             )
             self._mark_attempts_for_open_cells(state)
@@ -4396,6 +4417,13 @@ def _tech_arch_anchor_queries(original_message: str) -> list[str]:
 
 def _vendor_comparison_anchor_queries(original_message: str) -> list[str]:
     """Anchor queries for vendor_comparison: surface pricing pages, analyst comparisons, and G2/Capterra reviews."""
+    if _llm_vendor_comparison_subject(original_message):
+        return [
+            "OpenAI API models pricing official docs GPT chatbot",
+            "Anthropic Claude API models pricing official docs chatbot",
+            "Google Gemini API models pricing official docs chatbot",
+            "LLM API model pricing comparison OpenAI Anthropic Google Gemini Claude GPT",
+        ]
     subject = _compact_search_subject(original_message)
     return [
         f"{subject} pricing comparison",
@@ -4444,6 +4472,37 @@ def _implementation_plan_anchor_queries(original_message: str) -> list[str]:
 
 def _domain_discovery_workers(request: AgentV3Request, profile: ResearchProfile, budget: ResearchBudget) -> list[SearchWorkerPlan]:
     subject = _compact_search_subject(request.message)
+    if profile == "vendor_comparison" and _llm_vendor_comparison_subject(request.message):
+        return [
+            SearchWorkerPlan(
+                question="Domain lane: OpenAI official model and pricing evidence",
+                query="site:platform.openai.com/docs/models OR site:openai.com/api/pricing OpenAI GPT API models pricing chatbot",
+                rationale="Find OpenAI-owned model catalog and pricing evidence.",
+                max_results=budget.max_results_per_worker,
+                discovery_domain="primary",
+            ),
+            SearchWorkerPlan(
+                question="Domain lane: Anthropic official Claude model and pricing evidence",
+                query="site:docs.anthropic.com OR site:anthropic.com/pricing Claude API models pricing chatbot",
+                rationale="Find Anthropic-owned model catalog and pricing evidence.",
+                max_results=budget.max_results_per_worker,
+                discovery_domain="primary",
+            ),
+            SearchWorkerPlan(
+                question="Domain lane: Google Gemini official model and pricing evidence",
+                query="site:ai.google.dev/gemini-api/docs/models OR site:ai.google.dev/gemini-api/docs/pricing Gemini API models pricing chatbot",
+                rationale="Find Google-owned Gemini model catalog and pricing evidence.",
+                max_results=budget.max_results_per_worker,
+                discovery_domain="primary",
+            ),
+            SearchWorkerPlan(
+                question="Domain lane: neutral LLM API comparison evidence",
+                query="LLM API model pricing benchmark comparison OpenAI Anthropic Google Gemini Claude GPT chatbot",
+                rationale="Find credible cross-provider comparisons and caveats.",
+                max_results=budget.max_results_per_worker,
+                discovery_domain="general",
+            ),
+        ][: max(0, min(4, budget.max_search_workers))]
     workers: list[SearchWorkerPlan] = []
     policy = PROFILE_POLICIES.get(profile, PROFILE_POLICIES["general"])
     for domain, query_template, rationale in policy.domain_specs:
@@ -4461,6 +4520,8 @@ def _domain_discovery_workers(request: AgentV3Request, profile: ResearchProfile,
 
 
 def _compact_search_subject(message: str) -> str:
+    if _llm_vendor_comparison_subject(message):
+        return "LLM API models OpenAI Anthropic Google Gemini Claude GPT chatbot"
     subject_phrase = _extract_search_subject_phrase(message)
     if subject_phrase:
         return subject_phrase
@@ -4619,8 +4680,32 @@ def _targeted_query(subject: str, dimensions: list[str], original: str) -> str:
     if subject and any(token in subject.lower() for token in ("tavily", "nimble", "you.com", "youcom")):
         return f"{subject} {primary_dim} official docs pricing security API enterprise".strip()[:180]
 
+    if infer_research_profile(original) == "vendor_comparison":
+        vendor_subject = _compact_search_subject(original)
+        if _llm_vendor_comparison_subject(original):
+            vendor_subject = "OpenAI Anthropic Google Gemini Claude GPT LLM API chatbot"
+        return f"{vendor_subject} {subject} {primary_dim} official docs pricing security API".strip()[:220]
+
     base = f"{subject} {primary_dim}".strip()
     return f"{base} {original}".strip()[:220]
+
+
+def _llm_vendor_comparison_subject(message: str) -> bool:
+    text = (message or "").lower()
+    model_terms = (
+        "llm",
+        "model",
+        "models",
+        "gpt",
+        "openai",
+        "anthropic",
+        "claude",
+        "gemini",
+        "google",
+        "chatbot",
+    )
+    api_terms = ("api", "provider", "vendor", "pricing", "cost", "cheap", "accuracy", "fast", "fidelity")
+    return any(term in text for term in model_terms) and any(term in text for term in api_terms)
 
 
 def _public_technical_subject(subject: str) -> str:

@@ -240,6 +240,56 @@ def test_agent_v3_web_fast_path_uses_optional_web_search(monkeypatch):
     assert result_event["data"]["failed_model_attempts"][0]["model"] == "gpt-4.1-mini"
 
 
+def test_agent_v3_model_recommendation_forces_web_fast(monkeypatch):
+    from app.services.agent_v3 import model_client
+
+    def fake_complete(messages, *, preferred_model=None, role=None, quality_mode="standard", timeout_s=30, max_tokens=1200):
+        assert role == "fast_router"
+        return SimpleNamespace(
+            text=json.dumps(
+                {
+                    "path": "direct_fast",
+                    "confidence": 0.94,
+                    "reason": "Router incorrectly thinks context is enough.",
+                }
+            ),
+            model_used="fake-fast-router",
+            latency_ms=2,
+            cost_usd=0.001,
+        )
+
+    def fake_simple_completion(system, user, *, max_tokens=1200, **kwargs):
+        payload = json.loads(user)
+        assert "OpenAI Anthropic Gemini API model pricing" in payload["web_query"]
+        return SimpleNamespace(
+            text="Use current model docs.",
+            model_used="fake-direct",
+            latency_ms=3,
+            cost_usd=0.002,
+            model_role="direct_answer",
+            preferred_model="gpt-4.1-mini",
+            attempted_models=["gpt-4.1-mini"],
+            failed_model_attempts=[],
+        )
+
+    monkeypatch.setattr(model_client, "complete", fake_complete)
+    monkeypatch.setattr(model_client, "simple_completion", fake_simple_completion)
+    runtime = AgentV3Runtime(tools=FakeTools())
+
+    envelopes = _collect_stream(
+        runtime,
+        AgentV3Request(message="Between OpenAI, Anthropic and Google, what models should I use for a general purpose chatbot?"),
+    )
+
+    result = next(e.data for e in envelopes if e.type == "result")
+    router_event = next(e.data for e in envelopes if e.type == "progress" and e.data["stage"] == "fast_router")
+    assert result["route"] == "research"
+    assert [call["name"] for call in result["tool_calls"]] == ["web_search", "read_url"]
+    assert router_event["data"]["path"] == "web_fast"
+    assert "current web check" in router_event["data"]["reason"]
+    assert "official docs" in router_event["data"]["web_query"]
+
+
 def test_agent_v3_clarify_route(monkeypatch):
     from app.services.agent_v3 import model_client
 

@@ -149,6 +149,9 @@ def test_agent_v3_direct_fast_path_skips_orchestrator(monkeypatch):
         )
 
     def fake_simple_completion(system, user, *, max_tokens=1200, **kwargs):
+        assert "Be clear and complete, not terse." in system
+        assert "definition, analogy or example" in system
+        assert max_tokens == 1600
         return SimpleNamespace(
             text="Fast answer.",
             model_used="fake-direct",

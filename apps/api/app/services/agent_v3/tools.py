@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import base64
-import io
 import logging
 import re
 import time
@@ -231,42 +230,29 @@ class AgentV3Tools:
             base64_data=encoded,
         )
 
-    def make_docx_artifact(self, title: str, markdown: str) -> Artifact:
+    def make_docx_artifact(self, title: str, markdown: str, expected_sections: list[str] | None = None) -> tuple[Artifact, list[str]]:
         try:
-            from docx import Document
+            from app.services.agent_v3.document_ast import render_docx_from_markdown
 
-            doc = Document()
-            doc.add_heading(title, level=0)
-            for line in markdown.splitlines():
-                stripped = line.strip()
-                if not stripped:
-                    continue
-                if stripped.startswith("# "):
-                    doc.add_heading(stripped[2:].strip(), level=1)
-                elif stripped.startswith("## "):
-                    doc.add_heading(stripped[3:].strip(), level=2)
-                elif stripped.startswith("- "):
-                    doc.add_paragraph(stripped[2:].strip(), style="List Bullet")
-                else:
-                    doc.add_paragraph(stripped)
-            buf = io.BytesIO()
-            doc.save(buf)
-            payload = buf.getvalue()
+            payload, qa_issues = render_docx_from_markdown(title, markdown, expected_sections=expected_sections)
             mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
             kind = "docx"
             filename = safe_filename(title, "docx")
+            issue_codes = [issue.code for issue in qa_issues]
         except Exception as exc:
             logger.warning("agent_v3 docx artifact failed; returning markdown: %s", exc)
             payload = markdown.encode("utf-8")
             mime = "text/markdown"
             kind = "markdown"
             filename = safe_filename(title, "md")
-        return Artifact(
+            issue_codes = ["docx_render_failed"]
+        artifact = Artifact(
             kind=kind,  # type: ignore[arg-type]
             filename=filename,
             mime_type=mime,
             base64_data=base64.b64encode(payload).decode("ascii"),
         )
+        return artifact, issue_codes
 
 
 def source_context(sources: list[Source]) -> str:

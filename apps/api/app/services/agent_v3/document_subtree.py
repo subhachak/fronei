@@ -689,7 +689,10 @@ def _minimum_document_headings(plan: DocumentPlan) -> int:
 
 
 def build_artifact(tool_registry, plan: DocumentPlan, draft: DocumentDraft, tool_name: str) -> tuple[Artifact, ToolCall]:
-    artifact, call = tool_registry.run(tool_name, {"title": plan.title, "markdown": draft.markdown})
+    inputs: dict[str, object] = {"title": plan.title, "markdown": draft.markdown}
+    if tool_name == "make_docx_artifact":
+        inputs["expected_sections"] = list(plan.sections or [])
+    artifact, call = tool_registry.run(tool_name, inputs)
     if call.ok and artifact is not None:
         return artifact, call
     fallback, fallback_call = tool_registry.run(

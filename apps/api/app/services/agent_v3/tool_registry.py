@@ -85,7 +85,7 @@ class ToolRegistry:
             ToolDefinition(
                 name="make_docx_artifact",
                 description="Create a downloadable DOCX artifact.",
-                input_schema={"title": "str", "markdown": "str"},
+                input_schema={"title": "str", "markdown": "str", "expected_sections": "list[str]"},
                 output_schema={"artifact": "Artifact"},
                 route_tags=["document", "research_document"],
             ),
@@ -115,9 +115,15 @@ class ToolRegistry:
     def _make_docx_artifact(self, inputs: dict[str, Any]) -> tuple[Artifact, ToolCall]:
         title = str(inputs.get("title") or "Agent v3 document")
         markdown = str(inputs.get("markdown") or "")
-        artifact = self.tools.make_docx_artifact(title, markdown)
+        expected_sections = [str(section) for section in (inputs.get("expected_sections") or []) if section]
+        artifact, qa_issue_codes = self.tools.make_docx_artifact(title, markdown, expected_sections=expected_sections)
         return artifact, ToolCall(
             name="make_docx_artifact",
-            input={"title": title, "markdown_chars": len(markdown)},
-            output={"artifact_id": artifact.id, "filename": artifact.filename, "kind": artifact.kind},
+            input={"title": title, "markdown_chars": len(markdown), "expected_sections": expected_sections},
+            output={
+                "artifact_id": artifact.id,
+                "filename": artifact.filename,
+                "kind": artifact.kind,
+                "qa_issue_codes": qa_issue_codes,
+            },
         )

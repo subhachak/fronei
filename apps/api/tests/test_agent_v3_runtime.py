@@ -149,7 +149,16 @@ def test_agent_v3_direct_fast_path_skips_orchestrator(monkeypatch):
         )
 
     def fake_simple_completion(system, user, *, max_tokens=1200, **kwargs):
-        return SimpleNamespace(text="Fast answer.", model_used="fake-direct", latency_ms=3, cost_usd=0.002)
+        return SimpleNamespace(
+            text="Fast answer.",
+            model_used="fake-direct",
+            latency_ms=3,
+            cost_usd=0.002,
+            model_role="direct_answer",
+            preferred_model="gpt-4.1-mini",
+            attempted_models=["gpt-4.1-mini"],
+            failed_model_attempts=[],
+        )
 
     monkeypatch.setattr(model_client, "complete", fake_complete)
     monkeypatch.setattr(model_client, "simple_completion", fake_simple_completion)
@@ -160,12 +169,16 @@ def test_agent_v3_direct_fast_path_skips_orchestrator(monkeypatch):
     progress_stages = [e.data["stage"] for e in envelopes if e.type == "progress"]
     result = next(e.data for e in envelopes if e.type == "result")
     assert calls == ["fast_router"]
-    assert progress_stages == ["fast_router", "direct_fast_answer"]
+    assert progress_stages == ["fast_router", "direct_fast_answer", "direct_fast_result"]
     assert result["route"] == "direct"
     assert result["answer"] == "Fast answer."
     assert result["tool_calls"] == []
     assert envelopes[1].data["data"]["path"] == "direct_fast"
     assert envelopes[1].data["data"]["model_role"] == "fast_router"
+    result_event = next(e.data for e in envelopes if e.type == "progress" and e.data["stage"] == "direct_fast_result")
+    assert result_event["data"]["actual_model"] == "fake-direct"
+    assert result_event["data"]["preferred_model"] == "gpt-4.1-mini"
+    assert result_event["data"]["attempted_models"] == ["gpt-4.1-mini"]
 
 
 def test_agent_v3_web_fast_path_uses_optional_web_search(monkeypatch):
@@ -191,7 +204,16 @@ def test_agent_v3_web_fast_path_uses_optional_web_search(monkeypatch):
         payload = json.loads(user)
         assert payload["web_query"] == "OpenAI CEO today"
         assert "Detailed evidence" in payload["source_context"]
-        return SimpleNamespace(text="Web fast answer.", model_used="fake-direct", latency_ms=3, cost_usd=0.002)
+        return SimpleNamespace(
+            text="Web fast answer.",
+            model_used="fake-direct",
+            latency_ms=3,
+            cost_usd=0.002,
+            model_role="direct_answer",
+            preferred_model="gpt-4.1-mini",
+            attempted_models=["gpt-4.1-mini", "claude-sonnet-4-6"],
+            failed_model_attempts=[{"model": "gpt-4.1-mini", "error_type": "Timeout", "error": "timed out"}],
+        )
 
     monkeypatch.setattr(model_client, "complete", fake_complete)
     monkeypatch.setattr(model_client, "simple_completion", fake_simple_completion)
@@ -208,6 +230,11 @@ def test_agent_v3_web_fast_path_uses_optional_web_search(monkeypatch):
     assert "orchestrator" not in progress_stages
     assert "fast_router" in progress_stages
     assert "web_fast_answer" in progress_stages
+    assert "web_fast_result" in progress_stages
+    result_event = next(e.data for e in envelopes if e.type == "progress" and e.data["stage"] == "web_fast_result")
+    assert result_event["data"]["actual_model"] == "fake-direct"
+    assert result_event["data"]["attempted_models"] == ["gpt-4.1-mini", "claude-sonnet-4-6"]
+    assert result_event["data"]["failed_model_attempts"][0]["model"] == "gpt-4.1-mini"
 
 
 def test_agent_v3_clarify_route(monkeypatch):

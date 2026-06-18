@@ -61,6 +61,7 @@ def model_for_role(role: str | None, *, quality_mode: str = "standard") -> str |
             return settings.agent_v3_synthesis_model_executive or settings.agent_v3_synthesis_model
         return settings.agent_v3_synthesis_model
     role_to_setting = {
+        "fast_router": "agent_v3_fast_router_model",
         "orchestrator": "agent_v3_orchestrator_model",
         "direct": "agent_v3_direct_model",
         "direct_answer": "agent_v3_direct_model",

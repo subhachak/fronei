@@ -127,6 +127,89 @@ def test_agent_v3_direct_stream(monkeypatch):
     assert "web_search" in envelopes[1].data["data"]["available_tools"]
 
 
+def test_agent_v3_direct_fast_path_skips_orchestrator(monkeypatch):
+    from app.services.agent_v3 import model_client
+
+    calls: list[str | None] = []
+
+    def fake_complete(messages, *, preferred_model=None, role=None, quality_mode="standard", timeout_s=30, max_tokens=1200):
+        calls.append(role)
+        assert role == "fast_router"
+        return SimpleNamespace(
+            text=json.dumps(
+                {
+                    "path": "direct_fast",
+                    "confidence": 0.92,
+                    "reason": "Ordinary chat request.",
+                }
+            ),
+            model_used="fake-fast-router",
+            latency_ms=2,
+            cost_usd=0.001,
+        )
+
+    def fake_simple_completion(system, user, *, max_tokens=1200, **kwargs):
+        return SimpleNamespace(text="Fast answer.", model_used="fake-direct", latency_ms=3, cost_usd=0.002)
+
+    monkeypatch.setattr(model_client, "complete", fake_complete)
+    monkeypatch.setattr(model_client, "simple_completion", fake_simple_completion)
+    runtime = AgentV3Runtime(tools=FakeTools())
+
+    envelopes = _collect_stream(runtime, AgentV3Request(message="Give me a quick recipe idea."))
+
+    progress_stages = [e.data["stage"] for e in envelopes if e.type == "progress"]
+    result = next(e.data for e in envelopes if e.type == "result")
+    assert calls == ["fast_router"]
+    assert progress_stages == ["fast_router", "direct_fast_answer"]
+    assert result["route"] == "direct"
+    assert result["answer"] == "Fast answer."
+    assert result["tool_calls"] == []
+    assert envelopes[1].data["data"]["path"] == "direct_fast"
+    assert envelopes[1].data["data"]["model_role"] == "fast_router"
+
+
+def test_agent_v3_web_fast_path_uses_optional_web_search(monkeypatch):
+    from app.services.agent_v3 import model_client
+
+    def fake_complete(messages, *, preferred_model=None, role=None, quality_mode="standard", timeout_s=30, max_tokens=1200):
+        assert role == "fast_router"
+        return SimpleNamespace(
+            text=json.dumps(
+                {
+                    "path": "web_fast",
+                    "confidence": 0.88,
+                    "reason": "A quick current lookup helps.",
+                    "web_query": "OpenAI CEO today",
+                }
+            ),
+            model_used="fake-fast-router",
+            latency_ms=2,
+            cost_usd=0.001,
+        )
+
+    def fake_simple_completion(system, user, *, max_tokens=1200, **kwargs):
+        payload = json.loads(user)
+        assert payload["web_query"] == "OpenAI CEO today"
+        assert "Detailed evidence" in payload["source_context"]
+        return SimpleNamespace(text="Web fast answer.", model_used="fake-direct", latency_ms=3, cost_usd=0.002)
+
+    monkeypatch.setattr(model_client, "complete", fake_complete)
+    monkeypatch.setattr(model_client, "simple_completion", fake_simple_completion)
+    runtime = AgentV3Runtime(tools=FakeTools())
+
+    envelopes = _collect_stream(runtime, AgentV3Request(message="Who is the CEO of OpenAI today?"))
+
+    progress_stages = [e.data["stage"] for e in envelopes if e.type == "progress"]
+    result = next(e.data for e in envelopes if e.type == "result")
+    assert result["route"] == "research"
+    assert result["answer"] == "Web fast answer."
+    assert [call["name"] for call in result["tool_calls"]] == ["web_search", "read_url"]
+    assert result["sources"][0]["content"] == "Detailed evidence"
+    assert "orchestrator" not in progress_stages
+    assert "fast_router" in progress_stages
+    assert "web_fast_answer" in progress_stages
+
+
 def test_agent_v3_clarify_route(monkeypatch):
     from app.services.agent_v3 import model_client
 
@@ -1023,7 +1106,9 @@ def test_agent_v3_model_role_routing(monkeypatch):
     monkeypatch.setattr(settings, "agent_v3_synthesis_model_executive", "opus-test")
     monkeypatch.setattr(settings, "agent_v3_research_planner_model", "planner-test")
     monkeypatch.setattr(settings, "agent_v3_brief_model", "brief-test")
+    monkeypatch.setattr(settings, "agent_v3_fast_router_model", "fast-router-test")
 
+    assert model_client.model_for_role("fast_router") == "fast-router-test"
     assert model_client.model_for_role("synthesis", quality_mode="standard") == "sonnet-test"
     assert model_client.model_for_role("synthesis", quality_mode="executive") == "opus-test"
     assert model_client.model_for_role("research_planner") == "planner-test"

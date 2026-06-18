@@ -73,7 +73,11 @@ def start_agent_v3_turn(request: AgentV3Request, user_id: str = CurrentUser) -> 
     request = request.model_copy(
         update={
             "conversation_id": conversation.id,
-            "conversation_context": persistence.conversation_context_text(user_id, conversation.id),
+            "conversation_context": persistence.conversation_context_text(
+                user_id,
+                conversation.id,
+                current_message=request.message,
+            ),
         }
     )
     turn_id = new_id("turn")
@@ -121,7 +125,11 @@ def stream_agent_v3_turn(request: AgentV3Request, user_id: str = CurrentUser) ->
     request = request.model_copy(
         update={
             "conversation_id": conversation.id,
-            "conversation_context": persistence.conversation_context_text(user_id, conversation.id),
+            "conversation_context": persistence.conversation_context_text(
+                user_id,
+                conversation.id,
+                current_message=request.message,
+            ),
         }
     )
 

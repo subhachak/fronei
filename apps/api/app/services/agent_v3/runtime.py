@@ -876,6 +876,29 @@ class AgentV3Runtime:
             draft.latency_ms += repaired.latency_ms
             draft.cost_usd += repaired.cost_usd
 
+        if plan.format == "markdown" or request.output_format == "markdown":
+            event = progress(
+                "chat_renderer",
+                "Rendering markdown in the chat response.",
+                title=plan.title,
+                format="markdown",
+                markdown_chars=len(draft.markdown or ""),
+            )
+            yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
+            return AgentV3Result(
+                turn_id=turn_id,
+                goal=goal,
+                answer=draft.markdown,
+                route=goal.route,
+                model_used=draft.model_used,
+                sources=sources,
+                tool_calls=[],
+                artifacts=[],
+                events=events,
+                latency_ms=plan.latency_ms + draft.latency_ms,
+                cost_usd=plan.cost_usd + draft.cost_usd,
+            )
+
         tool_name = choose_artifact_tool(request, plan)
         event = progress(
             "artifact_builder",
@@ -885,6 +908,29 @@ class AgentV3Runtime:
         )
         yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
         artifact, artifact_call = build_artifact(self.tool_registry, plan, draft, tool_name)
+        if artifact.kind == "markdown":
+            event = progress(
+                "chat_renderer",
+                "Artifact rendering fell back to markdown, so I am rendering it in chat.",
+                title=plan.title,
+                format="markdown",
+                fallback_from=tool_name,
+                markdown_chars=len(draft.markdown or ""),
+            )
+            yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
+            return AgentV3Result(
+                turn_id=turn_id,
+                goal=goal,
+                answer=draft.markdown,
+                route=goal.route,
+                model_used=draft.model_used,
+                sources=sources,
+                tool_calls=[artifact_call],
+                artifacts=[],
+                events=events,
+                latency_ms=plan.latency_ms + draft.latency_ms + artifact_call.latency_ms,
+                cost_usd=plan.cost_usd + draft.cost_usd,
+            )
         event = progress(
             "artifact_result",
             f"Artifact builder produced {artifact.filename}.",

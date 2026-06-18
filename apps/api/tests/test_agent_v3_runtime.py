@@ -9,7 +9,17 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.auth import get_current_user_id
-from app.db.models import AgentV3Artifact, AgentV3Conversation, AgentV3Event, AgentV3ToolCall, AgentV3Turn, AgentV3Workspace, Base
+from app.db.models import (
+    AgentV3Artifact,
+    AgentV3Conversation,
+    AgentV3Event,
+    AgentV3RoutingDecisionFeedback,
+    AgentV3RoutingSignalCandidate,
+    AgentV3ToolCall,
+    AgentV3Turn,
+    AgentV3Workspace,
+    Base,
+)
 from app.main import app
 from app.services.agent_v3.models import AgentV3Request, Source
 from app.services.agent_v3.runtime import AgentV3Runtime
@@ -288,6 +298,108 @@ def test_agent_v3_model_recommendation_forces_web_fast(monkeypatch):
     assert router_event["data"]["path"] == "web_fast"
     assert "current web check" in router_event["data"]["reason"]
     assert "official docs" in router_event["data"]["web_query"]
+    assert "volatile_product_catalog" in router_event["data"]["matched_signal_groups"]
+
+
+def test_agent_v3_routing_policy_bootstrap_escalates_current_recommendation():
+    from app.services.agent_v3.routing_policy import evaluate_routing_signals
+
+    decision = evaluate_routing_signals("Which model should I use today for chatbot pricing?")
+
+    assert decision.suggested_route == "web_fast"
+    assert "currentness" in decision.matched_groups
+    assert "volatile_product_catalog" in decision.matched_groups
+
+
+def test_agent_v3_routing_feedback_creates_candidate(monkeypatch):
+    from app.services.agent_v3 import routing_policy
+
+    Session = _sqlite_session()
+    monkeypatch.setattr(routing_policy, "SessionLocal", Session)
+
+    routing_policy.record_routing_feedback(
+        turn_id="turn_feedback_1",
+        user_id="u1",
+        conversation_id="conv1",
+        message="Need a live vendor matrix for model providers.",
+        selected_route="web_fast",
+        final_route="research",
+        matched_signals=[{"signal_group": "recommendation_selection", "phrase": "vendor matrix"}],
+    )
+
+    db = Session()
+    try:
+        feedback = db.get(AgentV3RoutingDecisionFeedback, "turn_feedback_1")
+        candidates = db.query(AgentV3RoutingSignalCandidate).all()
+        assert feedback is not None
+        assert feedback.selected_route == "web_fast"
+        assert candidates
+        assert candidates[0].status == "candidate"
+    finally:
+        db.close()
+
+
+def test_agent_v3_approved_learned_signal_forces_web_fast(monkeypatch):
+    from app.services.agent_v3 import model_client
+    from app.services.agent_v3 import routing_policy
+
+    Session = _sqlite_session()
+    db = Session()
+    try:
+        db.add(
+            AgentV3RoutingSignalCandidate(
+                id="sig_test_vendor_matrix",
+                phrase="special vendor matrix",
+                normalized_phrase="special vendor matrix",
+                signal_group="learned_vendor_selection",
+                suggested_route="web_fast",
+                confidence=0.96,
+                support_count=24,
+                false_positive_count=1,
+                example_turn_ids_json="[]",
+                status="approved",
+                source="learned",
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+    monkeypatch.setattr(routing_policy, "SessionLocal", Session)
+
+    def fake_complete(messages, *, preferred_model=None, role=None, quality_mode="standard", timeout_s=30, max_tokens=1200):
+        assert role == "fast_router"
+        return SimpleNamespace(
+            text=json.dumps({"path": "direct_fast", "confidence": 0.9, "reason": "Looks simple."}),
+            model_used="fake-fast-router",
+            latency_ms=2,
+            cost_usd=0.001,
+        )
+
+    def fake_simple_completion(system, user, *, max_tokens=1200, **kwargs):
+        return SimpleNamespace(
+            text="Learned signal web answer.",
+            model_used="fake-direct",
+            latency_ms=3,
+            cost_usd=0.002,
+            model_role="direct_answer",
+            preferred_model="gpt-4.1-mini",
+            attempted_models=["gpt-4.1-mini"],
+            failed_model_attempts=[],
+        )
+
+    monkeypatch.setattr(model_client, "complete", fake_complete)
+    monkeypatch.setattr(model_client, "simple_completion", fake_simple_completion)
+
+    envelopes = _collect_stream(
+        AgentV3Runtime(tools=FakeTools()),
+        AgentV3Request(message="Please update the special vendor matrix."),
+    )
+
+    router_event = next(e.data for e in envelopes if e.type == "progress" and e.data["stage"] == "fast_router")
+    result = next(e.data for e in envelopes if e.type == "result")
+    assert result["route"] == "research"
+    assert router_event["data"]["path"] == "web_fast"
+    assert router_event["data"]["matched_signals"][0]["source"] == "learned"
 
 
 def test_agent_v3_clarify_route(monkeypatch):

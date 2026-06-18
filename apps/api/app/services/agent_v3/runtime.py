@@ -93,6 +93,9 @@ class AgentV3Runtime:
                 web_query=fast_decision.web_query,
                 model_used=fast_decision.model_used,
                 fallback_reason=fast_decision.fallback_reason,
+                matched_signal_groups=fast_decision.matched_signal_groups,
+                matched_signals=fast_decision.matched_signals,
+                adaptive_policy_version="bootstrap_v1",
                 **model_client.telemetry_for_role(
                     "fast_router",
                     quality_mode=request.quality_mode,

@@ -409,6 +409,42 @@ class AgentV3PromptTemplate(Base):
     )
 
 
+class AgentV3RoutingSignalCandidate(Base):
+    __tablename__ = "agent_v3_routing_signal_candidates"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    phrase: Mapped[str] = mapped_column(Text, nullable=False)
+    normalized_phrase: Mapped[str] = mapped_column(String(240), nullable=False, index=True)
+    signal_group: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    suggested_route: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
+    support_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    false_positive_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    example_turn_ids_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="candidate", index=True)
+    source: Mapped[str] = mapped_column(String(32), nullable=False, default="learned")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+
+class AgentV3RoutingDecisionFeedback(Base):
+    __tablename__ = "agent_v3_routing_decision_feedback"
+
+    turn_id: Mapped[str] = mapped_column(String(64), ForeignKey("agent_v3_turns.id", ondelete="CASCADE"), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    conversation_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    selected_route: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    final_route: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    matched_signals_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    outcome: Mapped[str] = mapped_column(String(32), nullable=False, default="completed", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
 class RequestLog(Base):
     __tablename__ = "request_logs"
 

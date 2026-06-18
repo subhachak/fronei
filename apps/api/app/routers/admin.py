@@ -51,6 +51,7 @@ from app.db.models import (
 )
 from app.services.agent_v3 import persistence as agent_v3_persistence
 from app.services.agent_v3 import prompt_library as agent_v3_prompt_library
+from app.services.agent_v3 import routing_policy as agent_v3_routing_policy
 from app.services.document_templates import template_path_for_row
 from app.services.agent_runtime.db_models import DBPromptTemplate
 from app.services.agent_runtime.fixtures import PromptFixtureRunner
@@ -1239,6 +1240,49 @@ def admin_agent_v3_prompt_rollback(prompt_id: str, admin: AdminPrincipal = Depen
     finally:
         db.close()
     return {"rolled_back_to": rolled_back.id, "prompt": rolled_back.model_dump(mode="json")}
+
+
+@router.get("/agent-v3/routing-signals")
+def admin_agent_v3_routing_signals(
+    status: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    admin: AdminPrincipal = Depends(require_admin),
+) -> dict:
+    return agent_v3_routing_policy.list_signal_candidates(status=status, limit=limit)
+
+
+@router.post("/agent-v3/routing-signals/{candidate_id}/approve")
+def admin_agent_v3_routing_signal_approve(candidate_id: str, admin: AdminPrincipal = Depends(require_admin)) -> dict:
+    candidate = agent_v3_routing_policy.set_signal_candidate_status(candidate_id, "approved")
+    if candidate is None:
+        raise HTTPException(status_code=404, detail="Agent v3 routing signal candidate not found")
+    db = SessionLocal()
+    try:
+        _audit(db, admin, "agent_v3.routing_signal.approve", details={"candidate_id": candidate_id})
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+    return {"candidate": candidate}
+
+
+@router.post("/agent-v3/routing-signals/{candidate_id}/reject")
+def admin_agent_v3_routing_signal_reject(candidate_id: str, admin: AdminPrincipal = Depends(require_admin)) -> dict:
+    candidate = agent_v3_routing_policy.set_signal_candidate_status(candidate_id, "rejected")
+    if candidate is None:
+        raise HTTPException(status_code=404, detail="Agent v3 routing signal candidate not found")
+    db = SessionLocal()
+    try:
+        _audit(db, admin, "agent_v3.routing_signal.reject", details={"candidate_id": candidate_id})
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+    return {"candidate": candidate}
 
 
 @router.post("/turns/{turn_id}/cancel")

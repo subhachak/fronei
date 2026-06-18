@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field, field_validator
 from app.config import get_settings
 from app.services.agent_v3 import model_client
 from app.services.agent_v3.models import AgentV3Request, Source, ToolCall, new_id
+from app.services.agent_v3.prompt_library import resolve_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -26,10 +27,158 @@ ResearchProfile = Literal[
     "general",
     "technical_architecture",
     "vendor_comparison",
-    "market_research",
-    "regulatory",
+    "market_landscape",
+    "policy_regulatory",
+    "strategy_brief",
+    "implementation_plan",
     "academic_literature",
 ]
+
+
+_RESEARCH_PROFILES: tuple[ResearchProfile, ...] = (
+    "general",
+    "technical_architecture",
+    "vendor_comparison",
+    "market_landscape",
+    "policy_regulatory",
+    "strategy_brief",
+    "implementation_plan",
+    "academic_literature",
+)
+
+
+class ResearchProfilePolicy(BaseModel):
+    profile: ResearchProfile
+    source_lanes: list[str] = Field(default_factory=list)
+    domain_specs: list[tuple[str, str, str]] = Field(default_factory=list)
+    type_weights: dict[str, float] = Field(default_factory=dict)
+    allowed_gaps: list[str] = Field(default_factory=list)
+
+
+PROFILE_POLICIES: dict[ResearchProfile, ResearchProfilePolicy] = {
+    "general": ResearchProfilePolicy(
+        profile="general",
+        source_lanes=[
+            "balanced web discovery",
+            "official or primary sources when obvious",
+            "reputable explainers for background",
+        ],
+        domain_specs=[
+            ("primary", "{subject} official source documentation", "Find primary sources where available."),
+            ("general", "{subject} analysis evidence recent", "Find broad supporting sources."),
+        ],
+        type_weights={"primary": 0.08, "documentation": 0.05, "academic": 0.05, "web": 0.02},
+        allowed_gaps=["Specialized source quotas are not enforced for general research."],
+    ),
+    "technical_architecture": ResearchProfilePolicy(
+        profile="technical_architecture",
+        source_lanes=[
+            "arXiv and academic papers",
+            "GitHub repositories and READMEs",
+            "official framework docs",
+            "engineering blogs and postmortems",
+        ],
+        domain_specs=[
+            ("academic", "{subject} site:arxiv.org", "Find academic papers and cited research."),
+            ("academic", "{subject} site:semanticscholar.org", "Find citation graph and related academic work."),
+            ("repository", "{subject} site:github.com implementation", "Find open implementations, repositories, and README architecture notes."),
+            ("documentation", "{subject} documentation architecture implementation", "Find framework docs and engineering references."),
+        ],
+        type_weights={"academic": 0.18, "repository": 0.17, "documentation": 0.14, "pdf": 0.13, "primary": 0.08, "news": -0.04},
+    ),
+    "academic_literature": ResearchProfilePolicy(
+        profile="academic_literature",
+        source_lanes=["arXiv", "Semantic Scholar", "publisher pages", "benchmark repositories"],
+        domain_specs=[
+            ("academic", "{subject} site:arxiv.org", "Find academic papers and cited research."),
+            ("academic", "{subject} site:semanticscholar.org", "Find citation graph and related academic work."),
+            ("repository", "{subject} benchmark implementation site:github.com", "Find benchmark code and replications."),
+        ],
+        type_weights={"academic": 0.18, "pdf": 0.15, "repository": 0.10, "documentation": 0.05},
+    ),
+    "vendor_comparison": ResearchProfilePolicy(
+        profile="vendor_comparison",
+        source_lanes=[
+            "official product docs",
+            "pricing pages",
+            "API/reference docs",
+            "security and compliance pages",
+            "marketplaces and credible review sites",
+        ],
+        domain_specs=[
+            ("primary", "{subject} official docs pricing security", "Find vendor-owned product, pricing, and security pages."),
+            ("documentation", "{subject} API docs integration guide", "Find implementation documentation."),
+            ("primary", "{subject} SOC 2 security compliance marketplace", "Find security, compliance, and marketplace evidence."),
+            ("general", "{subject} comparison review limitations", "Find external comparisons and caveats."),
+        ],
+        type_weights={"primary": 0.18, "documentation": 0.16, "marketplace": 0.12, "web": 0.02, "news": 0.02},
+        allowed_gaps=["Enterprise pricing may be sales-gated, but the gap must be explicit."],
+    ),
+    "policy_regulatory": ResearchProfilePolicy(
+        profile="policy_regulatory",
+        source_lanes=[
+            "regulator sites",
+            "statutes and official guidance",
+            "enforcement actions",
+            "reputable legal analysis as secondary context",
+        ],
+        domain_specs=[
+            ("primary", "{subject} regulator official guidance", "Find regulator and government material."),
+            ("primary", "{subject} enforcement action penalty compliance requirement", "Find enforcement and penalty specifics."),
+            ("news", "{subject} latest update legal analysis", "Find recent developments and practitioner commentary."),
+        ],
+        type_weights={"primary": 0.22, "pdf": 0.14, "news": 0.04, "web": -0.02},
+    ),
+    "market_landscape": ResearchProfilePolicy(
+        profile="market_landscape",
+        source_lanes=[
+            "analyst/research reports",
+            "company filings and investor relations",
+            "press releases",
+            "industry associations",
+            "credible industry media",
+        ],
+        domain_specs=[
+            ("primary", "{subject} market size growth forecast", "Find market sizing and growth data."),
+            ("primary", "{subject} investor relations earnings market", "Find company filings and earnings evidence."),
+            ("news", "{subject} competitive landscape industry analysis", "Find credible industry coverage."),
+        ],
+        type_weights={"primary": 0.14, "news": 0.08, "pdf": 0.08, "web": 0.02},
+        allowed_gaps=["Analyst estimates may conflict; cite ranges and source disagreements."],
+    ),
+    "strategy_brief": ResearchProfilePolicy(
+        profile="strategy_brief",
+        source_lanes=[
+            "case studies",
+            "benchmarks",
+            "financial and operational evidence",
+            "analyst views",
+            "competitor examples",
+        ],
+        domain_specs=[
+            ("primary", "{subject} case study ROI outcomes", "Find named case studies and outcome data."),
+            ("general", "{subject} strategic analysis business case", "Find decision-grade analysis."),
+            ("news", "{subject} competitor example benchmark", "Find comparable examples and benchmarks."),
+        ],
+        type_weights={"primary": 0.12, "documentation": 0.08, "news": 0.06, "web": 0.02},
+    ),
+    "implementation_plan": ResearchProfilePolicy(
+        profile="implementation_plan",
+        source_lanes=[
+            "official implementation docs",
+            "migration guides",
+            "reference architectures",
+            "playbooks",
+            "engineering postmortems",
+        ],
+        domain_specs=[
+            ("documentation", "{subject} implementation guide best practices", "Find official implementation guidance."),
+            ("documentation", "{subject} migration guide reference architecture", "Find migration and reference architecture material."),
+            ("news", "{subject} rollout lessons learned postmortem", "Find lessons learned and failure modes."),
+        ],
+        type_weights={"documentation": 0.16, "primary": 0.10, "repository": 0.08, "news": 0.04},
+    ),
+}
 
 
 ResearchAgentId = Literal[
@@ -228,6 +377,8 @@ class SearchWorkerPlan(BaseModel):
 class ResearchPlan(BaseModel):
     goal_id: str = ""
     research_profile: ResearchProfile = "general"
+    secondary_profiles: list[ResearchProfile] = Field(default_factory=list)
+    source_lanes: list[str] = Field(default_factory=list)
     questions: list[str] = Field(default_factory=list)
     search_queries: list[str] = Field(default_factory=list)
     workers: list[SearchWorkerPlan] = Field(default_factory=list)
@@ -379,6 +530,10 @@ class ResearchBrief(BaseModel):
     objective: str
     audience: str = "general business"
     research_profile: ResearchProfile = "general"
+    secondary_profiles: list[ResearchProfile] = Field(default_factory=list)
+    profile_confidence: float = 0.0
+    classification_reason: str = ""
+    domain_strategy_hints: list[str] = Field(default_factory=list)
     scope_in: list[str] = Field(default_factory=list)
     scope_out: list[str] = Field(default_factory=list)
     success_criteria: list[str] = Field(default_factory=list)
@@ -549,7 +704,11 @@ BRIEF_PROMPT = """You are the Fronei research briefing agent.
 Convert the user request into a compact, frozen research brief. Return only JSON:
 {
   "objective": "precise one-sentence research objective",
-  "research_profile": "general|technical_architecture|vendor_comparison|market_research|regulatory|academic_literature",
+  "research_profile": "general|technical_architecture|vendor_comparison|market_landscape|policy_regulatory|strategy_brief|implementation_plan|academic_literature",
+  "secondary_profiles": ["0-2 secondary profiles from the same enum"],
+  "profile_confidence": 0.0-1.0,
+  "classification_reason": "short reason for the profile decision",
+  "domain_strategy_hints": ["2-5 source lanes or named source families that should be prioritized"],
   "audience": "intended audience",
   "scope_in": ["2-4 topics, entities, or dimensions explicitly in scope"],
   "scope_out": ["0-2 things explicitly out of scope"],
@@ -558,6 +717,9 @@ Convert the user request into a compact, frozen research brief. Return only JSON
   "assumptions": ["0-2 assumptions the research makes"]
 }
 Infer carefully from the request. Do not invent facts.
+Use vendor_comparison when named products/providers are being compared, even if the user also asks for a recommendation.
+Use policy_regulatory only for legal, compliance, regulator, statutory, or jurisdictional questions — not for generic brand, routing, or product policy wording.
+Use general when no specialized profile is clearly dominant.
 """
 
 
@@ -834,9 +996,16 @@ def create_research_goal(request: AgentV3Request) -> ResearchGoal:
 
 def generate_research_brief(request: AgentV3Request) -> ResearchBrief:
     try:
+        prompt = resolve_prompt(
+            "agent_v3.research.brief.default",
+            agent_id="research_brief",
+            fallback_system_prompt=BRIEF_PROMPT,
+            variables=["message", "conversation_context", "quality_mode", "research_level", "output_format"],
+            profile=infer_research_profile(request.message),
+        )
         response = model_client.complete(
             [
-                {"role": "system", "content": BRIEF_PROMPT},
+                {"role": "system", "content": prompt.system_prompt},
                 {
                     "role": "user",
                     "content": json.dumps(
@@ -859,14 +1028,14 @@ def generate_research_brief(request: AgentV3Request) -> ResearchBrief:
         payload = _parse_json(response.text)
         brief = ResearchBrief.model_validate(payload)
         brief.objective = brief.objective or request.message
-        if brief.research_profile == "general":
-            brief.research_profile = infer_research_profile(request.message)
+        brief = _apply_profile_decision_guardrails(brief, request)
         brief.research_level = request.research_level if request.research_level != "auto" else "regular"
         brief.quality_mode = request.quality_mode
         brief.model_used = response.model_used
         brief.latency_ms = response.latency_ms
         brief.cost_usd = response.cost_usd
         brief.source = "llm"
+        brief.classification_reason = brief.classification_reason or f"Prompt {prompt.id}@{prompt.version} classified this request."
         return brief
     except Exception as exc:
         logger.warning("agent_v3 brief generation failed; using fallback: %s", exc)
@@ -874,6 +1043,10 @@ def generate_research_brief(request: AgentV3Request) -> ResearchBrief:
         return ResearchBrief(
             objective=request.message,
             research_profile=profile,
+            secondary_profiles=_secondary_profiles_for(request.message, profile),
+            profile_confidence=0.55 if profile != "general" else 0.35,
+            classification_reason="Heuristic fallback after brief model failure.",
+            domain_strategy_hints=PROFILE_POLICIES[profile].source_lanes[:4],
             scope_in=[request.message[:160]],
             success_criteria=_fallback_success_criteria(profile),
             research_level=request.research_level if request.research_level != "auto" else "regular",
@@ -883,8 +1056,135 @@ def generate_research_brief(request: AgentV3Request) -> ResearchBrief:
         )
 
 
+def _apply_profile_decision_guardrails(brief: ResearchBrief, request: AgentV3Request) -> ResearchBrief:
+    text = request.message or ""
+    deterministic = infer_research_profile(text)
+    profile = brief.research_profile or "general"
+    secondary = list(brief.secondary_profiles or [])
+
+    # High-precision deterministic overrides keep sensitive/vendor work from
+    # drifting into generic strategy because of vague recommendation language.
+    if _vendor_comparison_signal(text) and profile in {"general", "strategy_brief", "market_landscape"}:
+        if profile != "vendor_comparison" and profile not in secondary:
+            secondary.append(profile)
+        profile = "vendor_comparison"
+    elif _regulatory_signal(text) and profile not in {"policy_regulatory"}:
+        if profile != "general" and profile not in secondary:
+            secondary.append(profile)
+        profile = "policy_regulatory"
+    elif profile == "general" or float(brief.profile_confidence or 0.0) < 0.40:
+        profile = deterministic
+
+    secondary = [item for item in _dedupe([*secondary, *_secondary_profiles_for(text, profile)]) if item != profile]
+    brief.research_profile = profile
+    brief.secondary_profiles = [item for item in secondary if item in _RESEARCH_PROFILES][:2]
+    brief.profile_confidence = max(0.0, min(1.0, float(brief.profile_confidence or (0.55 if profile != "general" else 0.35))))
+    if not brief.classification_reason:
+        brief.classification_reason = f"Classified as {profile} from model brief with deterministic guardrails."
+    if not brief.domain_strategy_hints:
+        brief.domain_strategy_hints = PROFILE_POLICIES[profile].source_lanes[:4]
+    return brief
+
+
+def _secondary_profiles_for(message: str, primary: ResearchProfile) -> list[ResearchProfile]:
+    text = (message or "").lower()
+    secondary: list[ResearchProfile] = []
+    if primary == "vendor_comparison" and _strategy_signal(text):
+        secondary.append("strategy_brief")
+    if primary == "strategy_brief" and _vendor_comparison_signal(text):
+        secondary.append("vendor_comparison")
+    if primary != "implementation_plan" and _implementation_signal(text):
+        secondary.append("implementation_plan")
+    if primary != "technical_architecture" and _technical_signal(text):
+        secondary.append("technical_architecture")
+    return secondary[:2]
+
+
+def _vendor_comparison_signal(message: str) -> bool:
+    text = (message or "").lower()
+    comparison_terms = ("compare", "comparing", "comparison", "versus", " vs ", "alternatives", "shortlist", "rfi", "rfp", "which tool", "which platform")
+    known_vendor_terms = ("tavily", "nimble", "you.com", "brave", "exa", "perplexity", "serpapi")
+    vendorish = any(term in text for term in ("vendor", "pricing", "provider", "platform", "tool", *known_vendor_terms))
+    return vendorish and any(term in text for term in comparison_terms)
+
+
+def _regulatory_signal(message: str) -> bool:
+    text = (message or "").lower()
+    return any(term in text for term in (
+        "regulation", "regulatory", "compliance law", "compliance requirement",
+        "compliance obligation", "compliance obligations", "legal requirement", "legal obligation",
+        "legal obligations", "privacy law", "data protection law",
+        "gdpr", "hipaa", "sox", "ccpa", "pci dss", "jurisdiction", "enforcement",
+        "penalty", "directive", "statute", "regulator", "official guidance",
+    ))
+
+
+def _strategy_signal(message: str) -> bool:
+    text = (message or "").lower()
+    return any(term in text for term in (
+        "strategy", "strategic", "business case", "executive brief", "executive summary",
+        "decision", "options analysis", "recommendation", "go/no-go", "make or buy",
+        "build vs buy", "pivot", "investment thesis",
+    ))
+
+
+def _implementation_signal(message: str) -> bool:
+    text = (message or "").lower()
+    return any(term in text for term in (
+        "implementation plan", "implementation roadmap", "rollout plan", "deployment plan",
+        "migration plan", "project plan", "roadmap", "milestones", "sprint plan",
+        "phased rollout", "go-live", "cutover",
+    ))
+
+
+def _technical_signal(message: str) -> bool:
+    text = (message or "").lower()
+    return any(term in text for term in (
+        "architecture", "system design", "workflow", "workflows", "orchestration",
+        "multi-agent", "agentic", "data flow", "control flow", "state machine",
+        "runtime", "pipeline", "component", "components", "implementation detail",
+    ))
+
+
 def infer_research_profile(message: str) -> ResearchProfile:
     text = (message or "").lower()
+
+    # policy_regulatory — check before technical to avoid misclassifying compliance
+    # architecture queries. "policy" alone is omitted — too broad (routing policy,
+    # model policy, AI policy document) — require stronger legal/regulatory signals.
+    if _regulatory_signal(text) or any(term in text for term in ("law ", "laws", "legislation")):
+        return "policy_regulatory"
+
+    # vendor_comparison before strategy: named options plus decision language is
+    # still fundamentally comparison research; strategy can tune the output.
+    if _vendor_comparison_signal(text):
+        return "vendor_comparison"
+
+    # strategy_brief — executive decision framing
+    if _strategy_signal(text):
+        return "strategy_brief"
+
+    # implementation_plan — roadmap and execution framing
+    if _implementation_signal(text):
+        return "implementation_plan"
+
+    # vendor_comparison — named product/vendor comparisons
+    if any(term in text for term in (
+        "compare", "vendor", "pricing", "versus", " vs ", "alternatives",
+        "evaluate", "evaluation", "shortlist", "rfi", "rfp", "make or buy",
+        "tavily", "nimble", "you.com", "which tool", "which platform",
+    )):
+        return "vendor_comparison"
+
+    # market_landscape — market/industry analysis
+    if any(term in text for term in (
+        "market", "industry", "tam", "forecast", "market share", "growth rate",
+        "competitive landscape", "players", "adoption", "ecosystem", "trends",
+        "landscape", "category", "segment",
+    )):
+        return "market_landscape"
+
+    # technical_architecture — system/implementation depth
     technical_terms = [
         "architecture",
         "system design",
@@ -909,14 +1209,10 @@ def infer_research_profile(message: str) -> ResearchProfile:
     ]
     if any(term in text for term in technical_terms):
         return "technical_architecture"
-    if any(term in text for term in ("compare", "vendor", "pricing", "versus", " vs ", "tavily", "nimble", "you.com")):
-        return "vendor_comparison"
-    if any(term in text for term in ("regulation", "regulatory", "compliance", "law", "policy", "guideline")):
-        return "regulatory"
-    if any(term in text for term in ("market", "industry", "tam", "forecast", "share", "growth")):
-        return "market_research"
+
     if any(term in text for term in ("paper", "literature", "academic", "arxiv", "benchmark")):
         return "academic_literature"
+
     return "general"
 
 
@@ -927,6 +1223,41 @@ def _fallback_success_criteria(profile: ResearchProfile) -> list[str]:
             "Explain end-to-end workflows, control loops, state, and data flow.",
             "Cover implementation trade-offs, failure handling, guardrails, and evaluation.",
             "Prioritize technically dense sources over high-level overview pages.",
+        ]
+    if profile == "vendor_comparison":
+        return [
+            "Cover all named vendors/tools with pricing, capabilities, and SLA specifics.",
+            "Identify clear differentiators, strengths, and weaknesses for each option.",
+            "Include vendor risk, lock-in, and migration cost considerations.",
+            "Conclude with a grounded recommendation or shortlist rationale.",
+        ]
+    if profile == "market_landscape":
+        return [
+            "Identify the main market categories and the key players in each.",
+            "Include quantitative metrics: market size, growth rate, adoption figures.",
+            "Cover technology and product trends with specific examples.",
+            "Provide business model and competitive dynamic analysis.",
+        ]
+    if profile == "policy_regulatory":
+        return [
+            "Identify the authoritative regulatory source and enforcement body.",
+            "Specify jurisdiction, effective dates, and applicability scope.",
+            "List specific compliance obligations with penalties for non-compliance.",
+            "Cover recent enforcement actions and pending regulatory changes.",
+        ]
+    if profile == "strategy_brief":
+        return [
+            "Frame the business context and the core decision to be made.",
+            "Present at least two strategic options with trade-offs.",
+            "Deliver a clear recommendation with rationale.",
+            "Identify top risks and the immediate next steps with owners.",
+        ]
+    if profile == "implementation_plan":
+        return [
+            "Define scope, objectives, and measurable success criteria.",
+            "Break down workstreams with task dependencies and owners.",
+            "Provide a milestone timeline with key decision points.",
+            "Include a risk register with mitigations and rollback options.",
         ]
     return ["Answer the user's question with source-grounded evidence."]
 
@@ -964,13 +1295,140 @@ def _technical_architecture_contract() -> CoverageContract:
     )
 
 
+def _vendor_comparison_contract() -> CoverageContract:
+    subjects = [
+        "Pricing and licensing models",
+        "API capabilities and integration",
+        "Security and compliance posture",
+        "SLAs, reliability, and support",
+        "Use-case fit and feature gaps",
+        "Vendor stability and lock-in risk",
+        "Migration and switching costs",
+    ]
+    dimensions = ["current state", "specifics / evidence", "strengths", "weaknesses / risks"]
+    cells = [
+        CoverageCell(subject=subject, dimension=dimension, required=True)
+        for subject in subjects
+        for dimension in dimensions
+    ]
+    return CoverageContract(
+        cells=cells, subjects=subjects, dimensions=dimensions,
+        source="profile:vendor_comparison",
+    )
+
+
+def _market_landscape_contract() -> CoverageContract:
+    subjects = [
+        "Market categories and segmentation",
+        "Key players and competitive positioning",
+        "Market size, growth, and adoption metrics",
+        "Technology and product trends",
+        "Buyer behavior and use-case patterns",
+        "Business model and monetization dynamics",
+        "Barriers to entry and competitive moat",
+    ]
+    dimensions = ["current state", "quantitative data", "key examples", "trend direction", "business implication"]
+    cells = [
+        CoverageCell(subject=subject, dimension=dimension, required=True)
+        for subject in subjects
+        for dimension in dimensions
+    ]
+    return CoverageContract(
+        cells=cells, subjects=subjects, dimensions=dimensions,
+        source="profile:market_landscape",
+    )
+
+
+def _policy_regulatory_contract() -> CoverageContract:
+    subjects = [
+        "Primary regulations and legislative source",
+        "Regulatory authority and enforcement body",
+        "Jurisdiction scope and applicability",
+        "Specific compliance requirements and obligations",
+        "Penalties, enforcement history, and precedents",
+        "Industry guidance and safe-harbor interpretations",
+        "Pending changes and regulatory direction",
+    ]
+    dimensions = ["source / authority", "effective date / jurisdiction", "specific requirement", "compliance impact", "recent developments"]
+    cells = [
+        CoverageCell(subject=subject, dimension=dimension, required=True)
+        for subject in subjects
+        for dimension in dimensions
+    ]
+    return CoverageContract(
+        cells=cells, subjects=subjects, dimensions=dimensions,
+        source="profile:policy_regulatory",
+    )
+
+
+def _strategy_brief_contract() -> CoverageContract:
+    subjects = [
+        "Business context and problem statement",
+        "Strategic options and alternatives",
+        "Recommended course of action",
+        "Key risks and mitigations",
+        "Resource, cost, and timeline implications",
+        "Success metrics and decision criteria",
+        "Immediate next steps and owners",
+    ]
+    dimensions = ["current state / evidence", "analysis", "recommendation", "risks"]
+    cells = [
+        CoverageCell(subject=subject, dimension=dimension, required=True)
+        for subject in subjects
+        for dimension in dimensions
+    ]
+    return CoverageContract(
+        cells=cells, subjects=subjects, dimensions=dimensions,
+        source="profile:strategy_brief",
+    )
+
+
+def _implementation_plan_contract() -> CoverageContract:
+    subjects = [
+        "Scope, objectives, and success criteria",
+        "Workstream breakdown and task dependencies",
+        "Milestone timeline and phasing",
+        "Resource requirements and ownership model",
+        "Risk register and mitigation actions",
+        "Governance, change management, and communication",
+        "Rollback and contingency planning",
+    ]
+    dimensions = ["deliverable / definition", "dependencies", "owner / team", "timeline", "risk / blocker"]
+    cells = [
+        CoverageCell(subject=subject, dimension=dimension, required=True)
+        for subject in subjects
+        for dimension in dimensions
+    ]
+    return CoverageContract(
+        cells=cells, subjects=subjects, dimensions=dimensions,
+        source="profile:implementation_plan",
+    )
+
+
 def generate_coverage_contract(request: AgentV3Request, brief: ResearchBrief) -> CoverageContract:
     if brief.research_profile == "technical_architecture":
         return _technical_architecture_contract()
+    if brief.research_profile == "vendor_comparison":
+        return _vendor_comparison_contract()
+    if brief.research_profile == "market_landscape":
+        return _market_landscape_contract()
+    if brief.research_profile == "policy_regulatory":
+        return _policy_regulatory_contract()
+    if brief.research_profile == "strategy_brief":
+        return _strategy_brief_contract()
+    if brief.research_profile == "implementation_plan":
+        return _implementation_plan_contract()
     try:
+        prompt = resolve_prompt(
+            "agent_v3.research.coverage_contract.default",
+            agent_id="coverage_contract",
+            fallback_system_prompt=COVERAGE_CONTRACT_PROMPT,
+            variables=["message", "brief"],
+            profile=brief.research_profile,
+        )
         response = model_client.complete(
             [
-                {"role": "system", "content": COVERAGE_CONTRACT_PROMPT},
+                {"role": "system", "content": prompt.system_prompt},
                 {
                     "role": "user",
                     "content": json.dumps(
@@ -1059,16 +1517,24 @@ def plan_from_contract(
     # For technical_architecture + deep, include anchor queries that reliably
     # surface arxiv papers, GitHub repos, and engineering reference material.
     # Keep only a small fixed slice so contract-cell workers still execute.
-    profile = infer_research_profile(request.message)
+    profile = _profile_from_contract(contract) or infer_research_profile(request.message)
     anchor_workers: list[SearchWorkerPlan] = []
-    if profile == "technical_architecture" and request.research_level == "deep":
-        anchor_queries = _tech_arch_anchor_queries(request.message)
+    _anchor_query_fns: dict[str, Any] = {
+        "technical_architecture": _tech_arch_anchor_queries,
+        "vendor_comparison": _vendor_comparison_anchor_queries,
+        "market_landscape": _market_landscape_anchor_queries,
+        "policy_regulatory": _policy_regulatory_anchor_queries,
+        "strategy_brief": _strategy_brief_anchor_queries,
+        "implementation_plan": _implementation_plan_anchor_queries,
+    }
+    if profile in _anchor_query_fns and request.research_level == "deep":
+        anchor_queries = _anchor_query_fns[profile](request.message)
         existing_queries = {w.query for w in workers}
         anchor_workers = [
             SearchWorkerPlan(
                 question=f"Anchor: {q}",
                 query=q,
-                rationale="Profile-level anchor to seed technically dense sources.",
+                rationale="Profile-level anchor to seed high-quality sources.",
                 max_results=budget.max_results_per_worker,
                 discovery_domain=_domain_for_query(q),
             )
@@ -1095,6 +1561,8 @@ def plan_from_contract(
 
     return ResearchPlan(
         research_profile=profile,
+        secondary_profiles=_secondary_profiles_for(request.message, profile),
+        source_lanes=PROFILE_POLICIES[profile].source_lanes,
         questions=[worker.question for worker in workers],
         search_queries=[worker.query for worker in workers],
         workers=workers,
@@ -1105,6 +1573,13 @@ def plan_from_contract(
         guardrails=create_research_goal(request).guardrails,
         source="contract",
     )
+
+
+def _profile_from_contract(contract: CoverageContract) -> ResearchProfile | None:
+    if not contract.source.startswith("profile:"):
+        return None
+    candidate = contract.source.split(":", 1)[1]
+    return candidate if candidate in _RESEARCH_PROFILES else None  # type: ignore[return-value]
 
 
 def _dedupe_workers(workers: list[SearchWorkerPlan]) -> list[SearchWorkerPlan]:
@@ -1249,9 +1724,16 @@ def reflect(request: AgentV3Request, state: ResearchStateStore) -> ReflectionDec
             source="heuristic",
         )
     try:
+        prompt = resolve_prompt(
+            "agent_v3.research.reflection.default",
+            agent_id="reflection",
+            fallback_system_prompt=REFLECTION_PROMPT,
+            variables=["state"],
+            profile=state.plan.research_profile,
+        )
         response = model_client.complete(
             [
-                {"role": "system", "content": REFLECTION_PROMPT},
+                {"role": "system", "content": prompt.system_prompt},
                 {
                     "role": "user",
                     "content": json.dumps(
@@ -1337,9 +1819,15 @@ def verify_citations_semantically(answer: str, evidence: EvidencePack) -> Citati
             source="heuristic",
         )
     try:
+        prompt = resolve_prompt(
+            "agent_v3.research.citation_verifier.default",
+            agent_id="citation_verifier",
+            fallback_system_prompt=CITATION_VERIFICATION_PROMPT,
+            variables=["answer", "evidence_pack"],
+        )
         response = model_client.complete(
             [
-                {"role": "system", "content": CITATION_VERIFICATION_PROMPT},
+                {"role": "system", "content": prompt.system_prompt},
                 {
                     "role": "user",
                     "content": json.dumps(
@@ -1478,9 +1966,16 @@ def plan_research(request: AgentV3Request) -> ResearchPlan:
     try:
         registry = get_research_registry()
         prompt = registry.prompt_for("research_lead")
+        resolved_prompt = resolve_prompt(
+            "agent_v3.research.lead.default",
+            agent_id="research_lead",
+            fallback_system_prompt=prompt.system_prompt,
+            variables=["message", "conversation_context", "quality_mode", "research_level", "output_format", "budget"],
+            profile=infer_research_profile(request.message),
+        )
         response = model_client.complete(
             [
-                {"role": "system", "content": prompt.system_prompt},
+                {"role": "system", "content": resolved_prompt.system_prompt},
                 {
                     "role": "user",
                     "content": json.dumps(
@@ -1595,8 +2090,9 @@ def _plan_preview_investigation_items(
 
 
 def _plan_preview_source_strategy(profile: ResearchProfile, plan: ResearchPlan) -> list[str]:
+    policy = PROFILE_POLICIES.get(profile, PROFILE_POLICIES["general"])
     base = [
-        "Domain-specific discovery lanes across academic, repository, docs, primary, and general web sources",
+        "Profile-specific discovery lanes: " + ", ".join(policy.source_lanes[:4]),
         "Web search across the configured provider chain",
         "Candidate source inventory before expensive page reading",
         "Source reading for high-value pages and documents",
@@ -1605,12 +2101,8 @@ def _plan_preview_source_strategy(profile: ResearchProfile, plan: ResearchPlan) 
         "Typed claim extraction with citation provenance",
         "Fact-check/rewrite pass to replace vague claims with named-source specifics",
     ]
-    if profile == "technical_architecture":
-        base.extend(["Academic papers, GitHub repositories, framework docs, and engineering write-ups", "Implementation trade-offs, failure modes, and runtime patterns"])
-    elif profile == "vendor_comparison":
-        base.extend(["Official product docs, pricing pages, marketplace listings, and security/compliance material"])
-    elif profile == "regulatory":
-        base.extend(["Regulator, government, primary legal, and policy sources where available"])
+    if policy.allowed_gaps:
+        base.extend(policy.allowed_gaps)
     return _dedupe(base)
 
 
@@ -2231,14 +2723,23 @@ def synthesize_answer(request: AgentV3Request, plan: ResearchPlan, evidence: Evi
     if not evidence_context:
         evidence_context = "No source evidence was available. Be transparent about that."
     report_contract = _synthesis_report_contract(plan.research_profile, request)
+    prompt = resolve_prompt(
+        "agent_v3.research.synthesis.default",
+        agent_id="synthesis",
+        fallback_system_prompt=SYNTHESIS_PROMPT,
+        variables=["message", "evidence_pack", "profile"],
+        profile=plan.research_profile,
+    )
     return model_client.simple_completion(
-        SYNTHESIS_PROMPT,
+        prompt.system_prompt,
         (
             f"{request.conversation_context}\n\n" if request.conversation_context else ""
         )
         + (
             f"User request:\n{request.message}\n\n"
             f"Research profile: {plan.research_profile}\n\n"
+            f"Secondary profiles: {json.dumps(plan.secondary_profiles, ensure_ascii=False)}\n\n"
+            f"Source lanes used: {json.dumps(plan.source_lanes, ensure_ascii=False)}\n\n"
             f"Required deliverable shape:\n{report_contract}\n\n"
             f"Research questions:\n{json.dumps(plan.questions, ensure_ascii=False)}\n\n"
             f"Architecture extraction cards:\n{architecture_context}\n\n"
@@ -2303,8 +2804,15 @@ def repair_research_answer(
     judge: ResearchJudgeResult,
 ):
     evidence_context = source_context_from_evidence(evidence) or "No source evidence was available."
+    prompt = resolve_prompt(
+        "agent_v3.research.repair.default",
+        agent_id="repair",
+        fallback_system_prompt=REPAIR_PROMPT,
+        variables=["answer", "judge", "evidence_pack"],
+        profile=plan.research_profile,
+    )
     return model_client.simple_completion(
-        REPAIR_PROMPT,
+        prompt.system_prompt,
         (
             f"{request.conversation_context}\n\n" if request.conversation_context else ""
         )
@@ -2335,14 +2843,7 @@ def rank_sources(sources: list[Source], plan: ResearchPlan) -> list[RankedSource
         technical_density = score_technical_density(source) if plan.research_profile == "technical_architecture" else 0.0
         content_bonus = 0.08 if source.content else 0.0
         if plan.research_profile == "technical_architecture":
-            type_bonus = {
-                "academic": 0.18,
-                "repository": 0.17,
-                "documentation": 0.14,
-                "pdf": 0.13,
-                "primary": 0.08,
-                "news": -0.04,
-            }.get(source_type, 0.0)
+            type_bonus = PROFILE_POLICIES["technical_architecture"].type_weights.get(source_type, 0.0)
             host = urlparse(source.url or "").netloc.lower()
             if "medium.com" in host or "substack.com" in host:
                 type_bonus -= 0.08
@@ -2358,7 +2859,9 @@ def rank_sources(sources: list[Source], plan: ResearchPlan) -> list[RankedSource
                 ),
             )
         else:
-            score = max(0.0, min(1.0, (authority * 0.45) + (relevance * 0.45) + content_bonus))
+            policy = PROFILE_POLICIES.get(plan.research_profile, PROFILE_POLICIES["general"])
+            type_bonus = policy.type_weights.get(source_type, 0.0)
+            score = max(0.0, min(1.0, (authority * 0.38) + (relevance * 0.46) + type_bonus + content_bonus))
         ranked.append(
             RankedSource(
                 source=source,
@@ -2774,6 +3277,12 @@ class LeadResearchAgent:
                     model_used=brief.model_used,
                 ),
                 "source": brief.source,
+                "research_profile": brief.research_profile,
+                "secondary_profiles": brief.secondary_profiles,
+                "profile_confidence": brief.profile_confidence,
+                "classification_reason": brief.classification_reason,
+                "source_lanes": PROFILE_POLICIES[brief.research_profile].source_lanes,
+                "domain_strategy_hints": brief.domain_strategy_hints,
                 "latency_ms": brief.latency_ms,
                 "cost_usd": brief.cost_usd,
             },
@@ -3597,19 +4106,95 @@ def _synthesis_report_contract(profile: ResearchProfile, request: AgentV3Request
             "architecture brief: concrete mechanisms, named systems, implementation patterns, trade-offs, failure "
             "modes, and source-backed examples. Do not compress the report into a short summary."
         )
+    if profile == "vendor_comparison":
+        return (
+            "Produce a structured vendor comparison report. "
+            "Open with a 1-paragraph executive summary naming the top recommendation and the key differentiator. "
+            "Then evaluate each vendor or option against: pricing and licensing, API capabilities, security and compliance, "
+            "SLAs and reliability, use-case fit, vendor risk, and switching costs. "
+            "Use a consistent evaluation framework across all vendors so the reader can compare directly. "
+            "Every claim must be [S#] cited — do not fill in gaps with generic vendor marketing language. "
+            "Close with a scored or ranked recommendation matrix and a clear rationale for the top pick. "
+            "Where data is missing or unverifiable, flag it explicitly as a gap rather than omitting it."
+        )
+    if profile == "market_landscape":
+        return (
+            "Produce a market landscape analysis. "
+            "Open with a 1-paragraph market framing: what the space is, why it matters now, and the key dynamic. "
+            "Then cover: market segmentation and categories, key players with positioning, "
+            "quantitative metrics (market size, growth rate, adoption), technology trends, "
+            "business model patterns, buyer behavior, and competitive dynamics. "
+            "Ground every claim in [S#] cited evidence — prefer analyst reports, earnings calls, and primary sources. "
+            "Where metrics conflict across sources, present both and note the discrepancy. "
+            "Close with business implications: what the trends mean for a buyer, investor, or competitive entrant."
+        )
+    if profile == "policy_regulatory":
+        return (
+            "Produce a regulatory analysis. "
+            "Lead with a plain-language summary of the primary obligation and who it applies to. "
+            "For each regulation: name the authoritative source, the enforcement body, the jurisdiction, "
+            "the effective date, and the specific compliance requirements. "
+            "Cover penalties and enforcement history with [S#] citations to enforcement actions. "
+            "Distinguish between binding requirements and guidance/safe-harbor interpretations. "
+            "Flag pending regulatory changes or open consultations that could shift requirements. "
+            "Do not conflate jurisdictions — keep requirements for each jurisdiction clearly separated. "
+            "Close with a compliance action checklist: what an organization must do, by when."
+        )
+    if profile == "strategy_brief":
+        return (
+            "Produce an executive strategy brief. "
+            "Open with a 1-paragraph executive summary: the decision, the recommendation, and the key rationale. "
+            "Then: frame the business context and problem with evidence; present 2-4 strategic options "
+            "with trade-offs; state the recommended option with clear rationale and risk acknowledgment; "
+            "identify the top 3-5 risks with mitigations; quantify resource, cost, and timeline implications; "
+            "define success metrics. Close with a concrete next-steps section: owner, action, deadline. "
+            "Use crisp, decision-grade language — avoid hedging. "
+            "Every factual claim must be [S#] cited."
+        )
+    if profile == "implementation_plan":
+        return (
+            "Produce a structured implementation plan. "
+            "Open with scope, objectives, and measurable success criteria. "
+            "Then: break work into named workstreams with tasks and inter-dependencies; "
+            "define milestones with dates or relative timelines; assign owner roles to each workstream; "
+            "present a risk register with likelihood, impact, and mitigation for each risk; "
+            "describe governance, communication cadence, and change management approach; "
+            "include rollback and contingency scenarios. "
+            "Use tables or structured lists for the workstream breakdown, milestone timeline, and risk register. "
+            "Ground planning assumptions in [S#] cited evidence where relevant. "
+            "Close with a go/no-go decision checklist for the first milestone gate."
+        )
     if request.output_format in {"docx", "markdown"} or "report" in request.message.lower():
         return "Produce a structured report with clear headings, evidence-backed findings, gaps, and recommendations."
     return "Produce a source-grounded answer with clear headings and cited findings."
 
 
 def _synthesis_token_budget(request: AgentV3Request, plan: ResearchPlan) -> int:
-    if plan.research_profile == "technical_architecture" and request.research_level == "deep":
+    profile = plan.research_profile
+    is_deep = request.research_level == "deep"
+    is_exec = request.quality_mode == "executive"
+    if profile == "technical_architecture" and is_deep:
         # Deep technical report: needs room for 10 detailed sections with citations,
         # diagrams, trade-off tables, and implementation specifics.
-        return 14000 if request.quality_mode == "executive" else 12000
+        return 14000 if is_exec else 12000
+    if profile == "vendor_comparison":
+        # Comparison table + per-vendor sections + recommendation matrix
+        return (10000 if is_deep else 7000) if is_exec else (8000 if is_deep else 5500)
+    if profile == "market_landscape":
+        # Market overview + player profiles + trends + business implications
+        return (9000 if is_deep else 6500) if is_exec else (7500 if is_deep else 5000)
+    if profile == "policy_regulatory":
+        # Per-regulation breakdown + jurisdiction table + compliance checklist
+        return (9000 if is_deep else 6000) if is_exec else (7500 if is_deep else 5000)
+    if profile == "strategy_brief":
+        # Executive brief — dense but not sprawling; options analysis + rec + next steps
+        return (7000 if is_deep else 4500) if is_exec else (6000 if is_deep else 3500)
+    if profile == "implementation_plan":
+        # Workstream breakdown, milestones, risk register, governance
+        return (9000 if is_deep else 6000) if is_exec else (7500 if is_deep else 5000)
     if request.output_format in {"docx", "markdown"} or "report" in request.message.lower():
-        return 6500 if request.quality_mode == "executive" else 5200
-    return 1800 if request.quality_mode == "executive" else 1200
+        return 6500 if is_exec else 5200
+    return 1800 if is_exec else 1200
 
 
 def detect_contradictions(items: list[EvidenceItem]) -> list[str]:
@@ -3682,6 +4267,7 @@ def _architecture_cards_context(evidence: EvidencePack) -> str:
 
 def _fallback_plan(request: AgentV3Request, goal: ResearchGoal | None = None) -> ResearchPlan:
     goal = goal or create_research_goal(request)
+    profile = infer_research_profile(request.message)
     rationale = "Fallback worker from the original request."
     if request.research_level == "easy":
         rationale = "Easy research uses one narrow source-grounding search."
@@ -3693,7 +4279,9 @@ def _fallback_plan(request: AgentV3Request, goal: ResearchGoal | None = None) ->
     )
     return ResearchPlan(
         goal_id=goal.id,
-        research_profile=infer_research_profile(request.message),
+        research_profile=profile,
+        secondary_profiles=_secondary_profiles_for(request.message, profile),
+        source_lanes=PROFILE_POLICIES[profile].source_lanes,
         questions=[request.message],
         search_queries=[request.message],
         workers=[worker],
@@ -3710,6 +4298,11 @@ def _normalize_plan(plan: ResearchPlan, request: AgentV3Request, goal: ResearchG
     goal = goal or create_research_goal(request)
     if plan.research_profile == "general":
         plan.research_profile = infer_research_profile(request.message)
+    plan.secondary_profiles = [
+        item for item in _dedupe([*plan.secondary_profiles, *_secondary_profiles_for(request.message, plan.research_profile)])
+        if item != plan.research_profile
+    ][:2]
+    plan.source_lanes = plan.source_lanes or PROFILE_POLICIES[plan.research_profile].source_lanes
     if not plan.questions:
         plan.questions = [request.message]
     plan.questions = _dedupe(plan.questions)[:4]
@@ -3801,42 +4394,60 @@ def _tech_arch_anchor_queries(original_message: str) -> list[str]:
     ]
 
 
+def _vendor_comparison_anchor_queries(original_message: str) -> list[str]:
+    """Anchor queries for vendor_comparison: surface pricing pages, analyst comparisons, and G2/Capterra reviews."""
+    subject = _compact_search_subject(original_message)
+    return [
+        f"{subject} pricing comparison",
+        f"{subject} vs alternatives review site:g2.com OR site:capterra.com",
+        f"{subject} analyst comparison 2024 2025",
+    ]
+
+
+def _market_landscape_anchor_queries(original_message: str) -> list[str]:
+    """Anchor queries for market_landscape: surface analyst reports, market sizing, and industry coverage."""
+    subject = _compact_search_subject(original_message)
+    return [
+        f"{subject} market size growth forecast 2024 2025",
+        f"{subject} competitive landscape report site:gartner.com OR site:forrester.com OR site:idc.com",
+        f"{subject} industry analysis market share",
+    ]
+
+
+def _policy_regulatory_anchor_queries(original_message: str) -> list[str]:
+    """Anchor queries for policy_regulatory: surface government sources, enforcement actions, and official guidance."""
+    subject = _compact_search_subject(original_message)
+    return [
+        f"{subject} regulation official guidance site:gov OR site:europa.eu",
+        f"{subject} enforcement action penalty compliance requirement",
+        f"{subject} regulatory update 2024 2025",
+    ]
+
+
+def _strategy_brief_anchor_queries(original_message: str) -> list[str]:
+    """Anchor queries for strategy_brief: surface analyst opinions, case studies, and decision frameworks."""
+    subject = _compact_search_subject(original_message)
+    return [
+        f"{subject} strategic analysis business case",
+        f"{subject} case study ROI outcomes",
+    ]
+
+
+def _implementation_plan_anchor_queries(original_message: str) -> list[str]:
+    """Anchor queries for implementation_plan: surface implementation guides, playbooks, and project templates."""
+    subject = _compact_search_subject(original_message)
+    return [
+        f"{subject} implementation guide best practices",
+        f"{subject} rollout plan milestones lessons learned",
+    ]
+
+
 def _domain_discovery_workers(request: AgentV3Request, profile: ResearchProfile, budget: ResearchBudget) -> list[SearchWorkerPlan]:
     subject = _compact_search_subject(request.message)
     workers: list[SearchWorkerPlan] = []
-    specs: list[tuple[str, str, str, str]] = []
-    if profile in {"technical_architecture", "academic_literature"}:
-        specs.extend(
-            [
-                ("academic", f"{subject} site:arxiv.org", "Find academic papers and cited research."),
-                ("academic", f"{subject} site:semanticscholar.org", "Find citation graph and related academic work."),
-                ("repository", f"{subject} site:github.com implementation", "Find open implementations, repositories, and README architecture notes."),
-                ("documentation", f"{subject} documentation architecture implementation", "Find framework docs and engineering references."),
-            ]
-        )
-    elif profile == "vendor_comparison":
-        specs.extend(
-            [
-                ("primary", f"{subject} official docs pricing security", "Find vendor-owned product, pricing, and security pages."),
-                ("documentation", f"{subject} API docs integration guide", "Find implementation documentation."),
-                ("general", f"{subject} comparison review limitations", "Find external comparisons and caveats."),
-            ]
-        )
-    elif profile == "regulatory":
-        specs.extend(
-            [
-                ("primary", f"{subject} regulator official guidance", "Find regulator and government material."),
-                ("news", f"{subject} latest update analysis", "Find recent developments and practitioner commentary."),
-            ]
-        )
-    else:
-        specs.extend(
-            [
-                ("primary", f"{subject} official source documentation", "Find primary sources where available."),
-                ("general", f"{subject} analysis evidence recent", "Find broad supporting sources."),
-            ]
-        )
-    for domain, query, rationale in specs:
+    policy = PROFILE_POLICIES.get(profile, PROFILE_POLICIES["general"])
+    for domain, query_template, rationale in policy.domain_specs:
+        query = query_template.format(subject=subject)
         workers.append(
             SearchWorkerPlan(
                 question=f"Domain lane: {domain} evidence for {subject}",

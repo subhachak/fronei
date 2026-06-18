@@ -114,6 +114,110 @@ def test_domain_discovery_queries_use_clean_subjects():
     assert any("site:arxiv.org" in query for query in queries)
 
 
+def test_research_profile_classifier_handles_non_architecture_profiles():
+    from app.services.agent_v3.research_subtree import infer_research_profile
+
+    cases = [
+        (
+            "Build vs buy: compare Tavily and You.com for our search provider decision.",
+            "vendor_comparison",
+        ),
+        (
+            "Analyze RBI digital lending guidelines and compliance obligations.",
+            "policy_regulatory",
+        ),
+        (
+            "Create brand guidelines for Fronei.",
+            "general",
+        ),
+        (
+            "Create an implementation roadmap for migrating Agent v3 to production.",
+            "implementation_plan",
+        ),
+        (
+            "Research the enterprise AI governance market landscape and adoption trends.",
+            "market_landscape",
+        ),
+    ]
+
+    for prompt, expected in cases:
+        assert infer_research_profile(prompt) == expected
+
+
+def test_model_brief_vendor_guardrail_overrides_strategy(monkeypatch):
+    from app.services.agent_v3 import model_client
+    from app.services.agent_v3.research_subtree import generate_research_brief
+
+    response = SimpleNamespace(
+        text=(
+            '{"objective":"Choose a provider","research_profile":"strategy_brief",'
+            '"secondary_profiles":[],"profile_confidence":0.82,'
+            '"classification_reason":"decision framing","domain_strategy_hints":[],'
+            '"audience":"CTO","scope_in":["Tavily","You.com"],"scope_out":[],'
+            '"success_criteria":["Compare providers"],"output_type":"comparison","assumptions":[]}'
+        ),
+        model_used="test-model",
+        latency_ms=12,
+        cost_usd=0.001,
+    )
+    monkeypatch.setattr(model_client, "complete", lambda *a, **kw: response)
+
+    brief = generate_research_brief(
+        AgentV3Request(
+            message="Build vs buy: compare Tavily and You.com for our search provider decision.",
+            research_level="deep",
+        )
+    )
+
+    assert brief.research_profile == "vendor_comparison"
+    assert "strategy_brief" in brief.secondary_profiles
+    assert brief.source == "llm"
+
+
+def test_plan_from_contract_uses_profile_source_for_execution_policy():
+    from app.services.agent_v3.research_subtree import CoverageCell, CoverageContract, plan_from_contract
+
+    contract = CoverageContract(
+        cells=[CoverageCell(subject="Tavily", dimension="pricing")],
+        subjects=["Tavily"],
+        dimensions=["pricing"],
+        source="profile:vendor_comparison",
+    )
+
+    plan = plan_from_contract(
+        AgentV3Request(
+            message="Build vs buy: compare Tavily and You.com for our search provider decision.",
+            research_level="deep",
+        ),
+        contract,
+    )
+
+    assert plan.research_profile == "vendor_comparison"
+    assert "official product docs" in plan.source_lanes
+    assert any("pricing" in worker.query.lower() for worker in plan.workers)
+
+
+def test_profile_execution_policies_drive_domain_workers_and_anchor_queries():
+    from app.services.agent_v3.research_subtree import (
+        _domain_discovery_workers,
+        _vendor_comparison_anchor_queries,
+        research_budget_for,
+    )
+
+    request = AgentV3Request(
+        message="Conduct deep research comparing Tavily, You.com, and Nimble search providers.",
+        research_level="deep",
+    )
+
+    anchors = _vendor_comparison_anchor_queries(request.message)
+    workers = _domain_discovery_workers(request, "vendor_comparison", research_budget_for(request))
+
+    assert all(not query.lower().startswith("conduct deep research") for query in anchors)
+    assert any("pricing" in query.lower() for query in anchors)
+    assert any("official docs pricing security" in worker.query for worker in workers)
+    assert any(worker.discovery_domain == "documentation" for worker in workers)
+
+
 def test_coverage_contract_fallback_has_cells(monkeypatch):
     from app.services.agent_v3 import model_client
     from app.services.agent_v3.research_subtree import ResearchBrief, generate_coverage_contract

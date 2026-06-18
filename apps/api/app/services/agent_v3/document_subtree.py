@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from app.config import get_settings
 from app.services.agent_v3 import model_client
 from app.services.agent_v3.models import AgentV3Request, Artifact, Source, ToolCall
+from app.services.agent_v3.prompt_library import resolve_prompt
 from app.services.agent_v3.research_subtree import EvidencePack, infer_research_profile, source_context_from_evidence
 from app.services.agent_v3.tools import source_context
 
@@ -83,9 +84,16 @@ def plan_document(
     evidence: EvidencePack | None = None,
 ) -> DocumentPlan:
     try:
+        prompt = resolve_prompt(
+            "agent_v3.document.plan.default",
+            agent_id="document_planner",
+            fallback_system_prompt=PLAN_PROMPT,
+            variables=["message", "research_answer", "output_format"],
+            profile=infer_research_profile(request.message),
+        )
         response = model_client.complete(
             [
-                {"role": "system", "content": PLAN_PROMPT},
+                {"role": "system", "content": prompt.system_prompt},
                 {
                     "role": "user",
                     "content": json.dumps(
@@ -171,8 +179,15 @@ def _write_document_single_call(
     if repair_instruction:
         prompt += f"Repair instruction:\n{repair_instruction}\n\n"
     prompt += _document_writer_instruction(request, research_answer=research_answer)
+    system_prompt = resolve_prompt(
+        "agent_v3.document.write.default",
+        agent_id="document_writer",
+        fallback_system_prompt="You are the Agent v3 document writer. Produce only the document body in markdown.",
+        variables=["message", "plan", "research_answer"],
+        profile=infer_research_profile(request.message),
+    )
     response = model_client.simple_completion(
-        "You are the Agent v3 document writer. Produce only the document body in markdown.",
+        system_prompt.system_prompt,
         prompt,
         max_tokens=_document_writer_token_budget(request, research_answer=research_answer),
         role="document_writer",
@@ -282,8 +297,15 @@ def _write_one_section(
         prior_context=_neighbor_section_context(sections, section_index),
         repair_instruction=repair_instruction,
     )
+    system_prompt = resolve_prompt(
+        "agent_v3.document.section_write.default",
+        agent_id="document_section_writer",
+        fallback_system_prompt="You are the Agent v3 document section writer. Write only the requested section in markdown.",
+        variables=["section", "outline", "research_answer", "source_context"],
+        profile=infer_research_profile(request.message),
+    )
     response = model_client.simple_completion(
-        "You are the Agent v3 document section writer. Write only the requested section in markdown.",
+        system_prompt.system_prompt,
         prompt,
         max_tokens=_section_token_budget(depth, request=request),
         role="document_writer",
@@ -345,18 +367,31 @@ def choose_artifact_tool(request: AgentV3Request, plan: DocumentPlan) -> str:
 
 def _document_writer_token_budget(request: AgentV3Request, *, research_answer: str | None = None) -> int:
     profile = infer_research_profile(request.message)
-    if profile == "technical_architecture" and request.research_level == "deep" and research_answer:
-        return 12000 if request.quality_mode == "executive" else 10000
+    is_deep = request.research_level == "deep"
+    is_exec = request.quality_mode == "executive"
+    if profile == "technical_architecture" and is_deep and research_answer:
+        return 12000 if is_exec else 10000
     if profile == "technical_architecture" and research_answer:
-        return 9000 if request.quality_mode == "executive" else 7600
+        return 9000 if is_exec else 7600
+    if profile == "vendor_comparison" and research_answer:
+        return (10000 if is_deep else 7500) if is_exec else (8500 if is_deep else 6000)
+    if profile == "market_landscape" and research_answer:
+        return (9000 if is_deep else 7000) if is_exec else (7500 if is_deep else 5500)
+    if profile == "policy_regulatory" and research_answer:
+        return (9000 if is_deep else 6500) if is_exec else (7500 if is_deep else 5500)
+    if profile == "strategy_brief" and research_answer:
+        return (7000 if is_deep else 4500) if is_exec else (6000 if is_deep else 3500)
+    if profile == "implementation_plan" and research_answer:
+        return (9000 if is_deep else 6500) if is_exec else (7500 if is_deep else 5500)
     if research_answer and ("report" in request.message.lower() or request.output_format in {"docx", "markdown"}):
-        return 7200 if request.quality_mode == "executive" else 6000
-    return 2600 if request.quality_mode == "executive" else 2200
+        return 7200 if is_exec else 6000
+    return 2600 if is_exec else 2200
 
 
 def _document_writer_instruction(request: AgentV3Request, *, research_answer: str | None = None) -> str:
     profile = infer_research_profile(request.message)
-    if profile == "technical_architecture" and request.research_level == "deep" and research_answer:
+    is_deep = request.research_level == "deep"
+    if profile == "technical_architecture" and is_deep and research_answer:
         return (
             "Write the complete document body in markdown. Do not summarize the research into a short memo. "
             "Produce a deep technical report with 10-14 substantive sections, source-backed implementation detail, "
@@ -365,6 +400,58 @@ def _document_writer_instruction(request: AgentV3Request, *, research_answer: st
             "practical design recommendations. Include compact tables or text diagrams when they clarify the architecture. "
             "Use citations from the research summary and sources throughout."
         )
+    if profile == "vendor_comparison" and research_answer:
+        return (
+            "Write the complete document body in markdown. "
+            "Open with a 1-paragraph executive summary naming the top recommendation and its key differentiator. "
+            "Evaluate each vendor/option with consistent criteria: pricing, API capabilities, security/compliance, "
+            "SLAs, use-case fit, vendor risk, and switching cost. "
+            "Include a comparison table where the criteria and vendors intersect. "
+            "Close with a scored or ranked recommendation matrix and clear rationale. "
+            "Every factual claim must have a [S#] citation."
+        )
+    if profile == "market_landscape" and research_answer:
+        return (
+            "Write the complete document body in markdown. "
+            "Open with a 1-paragraph market framing: what the space is, why it matters now, and the key dynamic. "
+            "Cover: market segmentation, key players with positioning, quantitative size/growth metrics, "
+            "technology and product trends, business model patterns, buyer behavior, and competitive dynamics. "
+            "Use tables for player comparisons and metric summaries. "
+            "Close with business implications for a buyer, investor, or entrant. "
+            "All metrics and claims must be [S#] cited."
+        )
+    if profile == "policy_regulatory" and research_answer:
+        return (
+            "Write the complete document body in markdown. "
+            "Lead with a plain-language summary of the primary obligation and who it applies to. "
+            "For each regulation: name the authoritative source, enforcement body, jurisdiction, effective date, "
+            "and specific compliance requirements. "
+            "Cover penalties with [S#] citations to actual enforcement actions. "
+            "Distinguish binding requirements from guidance/safe-harbor. "
+            "Flag pending changes. Keep jurisdictions clearly separated. "
+            "Close with a compliance action checklist: what to do, by when."
+        )
+    if profile == "strategy_brief" and research_answer:
+        return (
+            "Write the complete document body in markdown. "
+            "Open with a 1-paragraph executive summary: the decision, the recommendation, and the key rationale. "
+            "Then: business context and problem with evidence; 2-4 strategic options with trade-offs; "
+            "recommended option with rationale and risk acknowledgment; top 3-5 risks with mitigations; "
+            "resource, cost, and timeline implications; success metrics. "
+            "Close with next steps: owner, action, deadline. "
+            "Use crisp, decision-grade language. Every factual claim must have a [S#] citation."
+        )
+    if profile == "implementation_plan" and research_answer:
+        return (
+            "Write the complete document body in markdown. "
+            "Open with scope, objectives, and measurable success criteria. "
+            "Use tables for: workstream breakdown (workstream, tasks, dependencies, owner, timeline), "
+            "milestone tracker (milestone, target date, owner, status), "
+            "and risk register (risk, likelihood, impact, mitigation, owner). "
+            "Include governance, communication cadence, and change management. "
+            "Close with a go/no-go checklist for the first milestone gate. "
+            "Ground planning assumptions in [S#] cited evidence where available."
+        )
     if research_answer and ("report" in request.message.lower() or request.output_format in {"docx", "markdown"}):
         return (
             "Write the complete document body in markdown. Produce a substantial report with clear headings, "
@@ -372,6 +459,16 @@ def _document_writer_instruction(request: AgentV3Request, *, research_answer: st
             "into a brief summary unless the user explicitly asked for concision."
         )
     return "Write the complete document body in markdown. Use clear headings and complete, useful paragraphs."
+
+
+_BY_SECTION_PROFILES = {
+    "technical_architecture",
+    "vendor_comparison",
+    "market_landscape",
+    "policy_regulatory",
+    "implementation_plan",
+    # strategy_brief is intentionally excluded — it's a concise brief, not a long document
+}
 
 
 def _should_write_by_section(
@@ -386,6 +483,9 @@ def _should_write_by_section(
         return False
     if len(plan.sections or []) < 6:
         return False
+    profile = infer_research_profile(request.message)
+    if profile in _BY_SECTION_PROFILES:
+        return True
     return "report" in request.message.lower() or request.output_format in {"docx", "markdown"}
 
 
@@ -433,31 +533,38 @@ def _section_writer_prompt(
 
 def _section_depth(heading: str, *, index: int, total: int, request: AgentV3Request) -> str:
     lower = heading.lower()
-    if index == 0 or any(token in lower for token in ("executive summary", "introduction", "scope")):
+    profile = infer_research_profile(request.message)
+    if index == 0 or any(token in lower for token in ("executive summary", "introduction", "scope", "overview")):
         return "brief"
-    if index == total - 1 or any(token in lower for token in ("recommendation", "conclusion", "summary")):
+    if index == total - 1 or any(token in lower for token in ("recommendation", "conclusion", "summary", "next steps", "checklist")):
         return "standard"
-    deep_terms = (
-        "architecture",
-        "workflow",
-        "orchestration",
-        "agent",
-        "llm",
-        "integration",
-        "evidence",
-        "memory",
-        "state",
-        "tool",
-        "render",
-        "verification",
-        "reflection",
-        "guardrail",
-        "failure",
-        "security",
-        "trade-off",
-        "cost",
-        "latency",
-    )
+    # Profile-specific deep-section triggers
+    deep_terms_by_profile: dict[str, tuple[str, ...]] = {
+        "technical_architecture": (
+            "architecture", "workflow", "orchestration", "agent", "llm", "integration",
+            "evidence", "memory", "state", "tool", "render", "verification", "reflection",
+            "guardrail", "failure", "security", "trade-off", "cost", "latency",
+        ),
+        "vendor_comparison": (
+            "pricing", "api", "capabilities", "security", "compliance", "sla", "reliability",
+            "use-case", "fit", "lock-in", "migration", "switching",
+        ),
+        "market_landscape": (
+            "players", "competitive", "market size", "growth", "trends", "business model",
+            "adoption", "barriers", "buyer", "segment",
+        ),
+        "policy_regulatory": (
+            "regulation", "compliance", "enforcement", "jurisdiction", "obligation",
+            "penalty", "guidance", "safe-harbor", "pending",
+        ),
+        "implementation_plan": (
+            "workstream", "milestone", "dependencies", "risk", "resource", "owner",
+            "timeline", "governance", "rollback", "contingency",
+        ),
+    }
+    deep_terms = deep_terms_by_profile.get(profile, (
+        "architecture", "workflow", "integration", "evidence", "security", "trade-off",
+    ))
     if request.research_level == "deep" and any(term in lower for term in deep_terms):
         return "deep"
     return "standard"
@@ -638,9 +745,15 @@ def _section_guidance(request: AgentV3Request, *, research_answer: str | None = 
 
 def _section_limit(request: AgentV3Request) -> int:
     profile = infer_research_profile(request.message)
-    if profile == "technical_architecture" and request.research_level == "deep":
+    is_deep = request.research_level == "deep"
+    # strategy_brief is intentionally compact even at deep level
+    if profile == "strategy_brief":
+        return 8 if is_deep else 6
+    if profile == "technical_architecture" and is_deep:
         return 14
-    if request.research_level == "deep":
+    if profile in {"vendor_comparison", "market_landscape", "policy_regulatory", "implementation_plan"} and is_deep:
+        return 12
+    if is_deep:
         return 10
     return 7
 

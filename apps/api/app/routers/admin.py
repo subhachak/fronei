@@ -50,6 +50,7 @@ from app.db.models import (
     set_turn_runtime_config,
 )
 from app.services.agent_v3 import persistence as agent_v3_persistence
+from app.services.agent_v3 import prompt_library as agent_v3_prompt_library
 from app.services.document_templates import template_path_for_row
 from app.services.agent_runtime.db_models import DBPromptTemplate
 from app.services.agent_runtime.fixtures import PromptFixtureRunner
@@ -129,6 +130,18 @@ class RouteTestRequest(BaseModel):
 
 class AdminTurnCancelRequest(BaseModel):
     reason: str | None = Field(default=None, max_length=500)
+
+
+class AgentV3PromptUpsertRequest(BaseModel):
+    id: str = Field(min_length=1, max_length=128)
+    agent_id: str = Field(min_length=1, max_length=128)
+    system_prompt: str = Field(min_length=1)
+    developer_prompt: str | None = None
+    variables: list[str] = Field(default_factory=list)
+    profile: str | None = Field(default=None, max_length=64)
+    version: str = Field(default="1.0.0", max_length=32)
+    status: Literal["draft", "active", "archived"] = "draft"
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 def require_admin(request: Request, payload: dict = Depends(get_current_user_payload)) -> AdminPrincipal:
@@ -1138,6 +1151,94 @@ def admin_agent_v3_workspaces(
             for uid in user_ids
         ]
     }
+
+
+@router.get("/agent-v3/prompts")
+def admin_agent_v3_prompts(admin: AdminPrincipal = Depends(require_admin)) -> dict:
+    return {"prompts": [item.model_dump(mode="json") for item in agent_v3_prompt_library.list_prompts()]}
+
+
+@router.post("/agent-v3/prompts/seed")
+def admin_agent_v3_prompt_seed(admin: AdminPrincipal = Depends(require_admin)) -> dict:
+    counts = agent_v3_prompt_library.seed_defaults()
+    db = SessionLocal()
+    try:
+        _audit(db, admin, "agent_v3.prompt.seed", details=counts)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+    return {"seeded": counts}
+
+
+@router.post("/agent-v3/prompts")
+def admin_agent_v3_prompt_upsert(
+    body: AgentV3PromptUpsertRequest,
+    admin: AdminPrincipal = Depends(require_admin),
+) -> dict:
+    spec = agent_v3_prompt_library.AgentV3PromptSpec(**body.model_dump())
+    saved = agent_v3_prompt_library.upsert_prompt(spec)
+    db = SessionLocal()
+    try:
+        _audit(
+            db,
+            admin,
+            "agent_v3.prompt.upsert",
+            details={"prompt_id": saved.id, "agent_id": saved.agent_id, "status": saved.status},
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+    return {"prompt": saved.model_dump(mode="json")}
+
+
+@router.post("/agent-v3/prompts/{prompt_id}/activate")
+def admin_agent_v3_prompt_activate(prompt_id: str, admin: AdminPrincipal = Depends(require_admin)) -> dict:
+    activated = agent_v3_prompt_library.activate_prompt(prompt_id)
+    if activated is None:
+        raise HTTPException(status_code=404, detail="Agent v3 prompt not found")
+    db = SessionLocal()
+    try:
+        _audit(
+            db,
+            admin,
+            "agent_v3.prompt.activate",
+            details={"prompt_id": activated.id, "agent_id": activated.agent_id, "profile": activated.profile},
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+    return {"activated": activated.id, "prompt": activated.model_dump(mode="json")}
+
+
+@router.post("/agent-v3/prompts/{prompt_id}/rollback")
+def admin_agent_v3_prompt_rollback(prompt_id: str, admin: AdminPrincipal = Depends(require_admin)) -> dict:
+    rolled_back = agent_v3_prompt_library.rollback_prompt(prompt_id)
+    if rolled_back is None:
+        raise HTTPException(status_code=409, detail="No previous Agent v3 prompt version exists")
+    db = SessionLocal()
+    try:
+        _audit(
+            db,
+            admin,
+            "agent_v3.prompt.rollback",
+            details={"prompt_id": prompt_id, "rolled_back_to": rolled_back.id},
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+    return {"rolled_back_to": rolled_back.id, "prompt": rolled_back.model_dump(mode="json")}
 
 
 @router.post("/turns/{turn_id}/cancel")

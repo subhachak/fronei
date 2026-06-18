@@ -389,6 +389,26 @@ class AgentV3Artifact(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
+class AgentV3PromptTemplate(Base):
+    __tablename__ = "agent_v3_prompt_templates"
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    agent_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    profile: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    version: Mapped[str] = mapped_column(String(32), nullable=False, default="1.0.0")
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="draft", index=True)
+    system_prompt: Mapped[str] = mapped_column(Text, nullable=False)
+    developer_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    variables_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    metadata_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+
 class RequestLog(Base):
     __tablename__ = "request_logs"
 

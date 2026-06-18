@@ -42,6 +42,7 @@ Rules:
 - If requested_output_format is not "chat", choose agentic.
 - If the user asks for a document, deck, report file, DOCX, PPTX, deep research, broad comparison, strategy, legal/regulatory/financial advice, or high-stakes decision support, choose agentic.
 - Use web_fast only for quick current facts or one narrow lookup. Do not use it for full research.
+- Use web_fast for current AI model/provider/pricing/API recommendation questions, because model catalogs and prices change frequently.
 - For vague follow-ups, use direct_fast only if the current conversation context clearly contains the target. Otherwise choose agentic.
 
 Return only compact JSON:
@@ -196,6 +197,11 @@ def _normalize_fast_decision(request: AgentV3Request, decision: FastPathDecision
         decision.reason = "Non-chat output should use the full agentic runtime."
         return decision
     text = request.message.lower()
+    if _needs_current_model_lookup(text):
+        decision.path = "web_fast"
+        decision.reason = "Model/provider recommendations need a quick current web check."
+        decision.web_query = _model_lookup_query(request.message)
+        return decision
     if decision.path in {"direct_fast", "web_fast"} and any(term in text for term in _agentic_terms()):
         decision.path = "agentic"
         decision.reason = "Escalated because the request asks for agentic work."
@@ -218,6 +224,45 @@ def _parse_json(raw: str) -> dict:
 
 def _clean_web_query(message: str) -> str:
     return " ".join((message or "").replace("\n", " ").split())[:240]
+
+
+def _needs_current_model_lookup(text: str) -> bool:
+    model_terms = [
+        "model",
+        "models",
+        "llm",
+        "openai",
+        "anthropic",
+        "claude",
+        "gemini",
+        "google",
+        "gpt",
+        "api",
+    ]
+    selection_terms = [
+        "recommend",
+        "should i use",
+        "what should i use",
+        "best",
+        "pricing",
+        "price",
+        "cheap",
+        "cost",
+        "fallback",
+        "chatbot",
+        "general purpose",
+        "provider",
+        "providers",
+    ]
+    return any(term in text for term in model_terms) and any(term in text for term in selection_terms)
+
+
+def _model_lookup_query(message: str) -> str:
+    cleaned = _clean_web_query(message)
+    return (
+        f"{cleaned} current OpenAI Anthropic Gemini API model pricing "
+        "official docs"
+    )[:240]
 
 
 def _web_terms() -> list[str]:

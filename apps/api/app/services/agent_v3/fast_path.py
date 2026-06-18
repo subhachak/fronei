@@ -8,6 +8,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from app.services.agent_v3 import model_client
+from app.services.agent_v3 import routing_policy
 from app.services.agent_v3.models import AgentV3Request, Source
 from app.services.agent_v3.tools import source_context
 
@@ -29,6 +30,8 @@ class FastPathDecision(BaseModel):
     cost_usd: float = 0.0
     source: str = "llm"
     fallback_reason: str | None = None
+    matched_signal_groups: list[str] = Field(default_factory=list)
+    matched_signals: list[dict] = Field(default_factory=list)
 
 
 FAST_ROUTER_PROMPT = """You are Fronei's fast path router.
@@ -138,6 +141,9 @@ def heuristic_fast_path(request: AgentV3Request) -> FastPathDecision:
         return FastPathDecision(path="agentic", confidence=1.0, reason="Fast path guardrail.", source="heuristic")
     if any(term in text for term in _agentic_terms()):
         return FastPathDecision(path="agentic", confidence=0.72, reason="The request looks multi-step or work-product oriented.", source="heuristic")
+    signal_decision = routing_policy.evaluate_routing_signals(request.message)
+    if signal_decision.suggested_route:
+        return _decision_from_signals(request, signal_decision, source="heuristic")
     if any(term in text for term in _web_terms()):
         return FastPathDecision(
             path="web_fast",
@@ -197,14 +203,36 @@ def _normalize_fast_decision(request: AgentV3Request, decision: FastPathDecision
         decision.reason = "Non-chat output should use the full agentic runtime."
         return decision
     text = request.message.lower()
+    if decision.path in {"direct_fast", "web_fast"} and any(term in text for term in _agentic_terms()):
+        decision.path = "agentic"
+        decision.reason = "Escalated because the request asks for agentic work."
+        return decision
+    signal_decision = routing_policy.evaluate_routing_signals(request.message)
+    if signal_decision.matched_signals:
+        decision.matched_signal_groups = signal_decision.matched_groups
+        decision.matched_signals = [match.as_dict() for match in signal_decision.matched_signals]
+    if decision.path == "agentic":
+        return decision
+    if signal_decision.suggested_route == "agentic":
+        signal_override = _decision_from_signals(request, signal_decision, source=decision.source)
+        decision.path = signal_override.path
+        decision.reason = signal_override.reason
+        decision.web_query = signal_override.web_query
+        decision.matched_signal_groups = signal_override.matched_signal_groups
+        decision.matched_signals = signal_override.matched_signals
+        return decision
+    if signal_decision.suggested_route == "web_fast" and decision.path == "direct_fast":
+        signal_override = _decision_from_signals(request, signal_decision, source=decision.source)
+        decision.path = signal_override.path
+        decision.reason = signal_override.reason
+        decision.web_query = signal_override.web_query
+        decision.matched_signal_groups = signal_override.matched_signal_groups
+        decision.matched_signals = signal_override.matched_signals
+        return decision
     if _needs_current_model_lookup(text):
         decision.path = "web_fast"
         decision.reason = "Model/provider recommendations need a quick current web check."
         decision.web_query = _model_lookup_query(request.message)
-        return decision
-    if decision.path in {"direct_fast", "web_fast"} and any(term in text for term in _agentic_terms()):
-        decision.path = "agentic"
-        decision.reason = "Escalated because the request asks for agentic work."
         return decision
     if decision.path == "web_fast" and not decision.web_query:
         decision.web_query = _clean_web_query(request.message)
@@ -212,6 +240,33 @@ def _normalize_fast_decision(request: AgentV3Request, decision: FastPathDecision
         decision.path = "agentic"
         decision.reason = "Fast router confidence was too low."
     return decision
+
+
+def _decision_from_signals(
+    request: AgentV3Request,
+    signal_decision: routing_policy.RoutingSignalDecision,
+    *,
+    source: str,
+) -> FastPathDecision:
+    signals = [match.as_dict() for match in signal_decision.matched_signals]
+    if signal_decision.suggested_route == "agentic":
+        return FastPathDecision(
+            path="agentic",
+            confidence=0.92,
+            reason="Routing signals escalated this turn to the full agentic runtime.",
+            source=source,
+            matched_signal_groups=signal_decision.matched_groups,
+            matched_signals=signals,
+        )
+    return FastPathDecision(
+        path="web_fast",
+        confidence=0.9,
+        reason="Routing signals indicate this answer needs a quick current web check.",
+        web_query=_signal_lookup_query(request.message, signal_decision),
+        source=source,
+        matched_signal_groups=signal_decision.matched_groups,
+        matched_signals=signals,
+    )
 
 
 def _parse_json(raw: str) -> dict:
@@ -263,6 +318,16 @@ def _model_lookup_query(message: str) -> str:
         f"{cleaned} current OpenAI Anthropic Gemini API model pricing "
         "official docs"
     )[:240]
+
+
+def _signal_lookup_query(message: str, signal_decision: routing_policy.RoutingSignalDecision) -> str:
+    groups = set(signal_decision.matched_groups)
+    cleaned = _clean_web_query(message)
+    if "recommendation_selection" in groups and "volatile_product_catalog" in groups:
+        return _model_lookup_query(message)
+    if "currentness" in groups:
+        return f"{cleaned} current official sources"[:240]
+    return f"{cleaned} current authoritative sources"[:240]
 
 
 def _web_terms() -> list[str]:

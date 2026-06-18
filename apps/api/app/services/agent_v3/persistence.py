@@ -20,6 +20,7 @@ from app.db.models import (
     SessionLocal,
     User,
 )
+from app.services.agent_v3 import routing_policy
 from app.services.agent_v3.models import (
     AgentV3ConversationSummary,
     AgentV3Result,
@@ -856,8 +857,30 @@ def complete_turn(result: AgentV3Result) -> None:
         db.commit()
     finally:
         db.close()
+    _record_routing_feedback(result)
     if should_update_context:
         _submit_context_update(context_snapshot)
+
+
+def _record_routing_feedback(result: AgentV3Result) -> None:
+    try:
+        router_event = next((event for event in result.events if event.stage == "fast_router"), None)
+        if router_event is None:
+            return
+        data = router_event.data or {}
+        selected_route = str(data.get("path") or result.route)
+        matched_signals = data.get("matched_signals")
+        routing_policy.record_routing_feedback(
+            turn_id=result.turn_id,
+            user_id=result.goal.user_id,
+            conversation_id=result.goal.conversation_id,
+            message=result.goal.objective,
+            selected_route=selected_route,
+            final_route=result.route,
+            matched_signals=matched_signals if isinstance(matched_signals, list) else [],
+        )
+    except Exception:
+        logger.exception("Agent v3 routing feedback capture failed")
 
 
 def fail_turn(turn_id: str, message: str) -> None:

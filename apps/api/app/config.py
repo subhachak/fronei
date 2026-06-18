@@ -26,9 +26,9 @@ class Settings(BaseSettings):
     # Agent v3 uses explicit per-role model routing. Cheap/fast stages can use
     # the planner model, while quality-critical long-form stages can be pinned
     # to stronger models without changing the legacy planner.
-    agent_v3_fast_router_model: str = "openrouter/qwen/qwen3.7-max"
+    agent_v3_fast_router_model: str = "gpt-4.1-mini"
     agent_v3_orchestrator_model: str = "openrouter/qwen/qwen3.7-max"
-    agent_v3_direct_model: str = "openrouter/qwen/qwen3.7-max"
+    agent_v3_direct_model: str = "gpt-4.1-mini"
     agent_v3_brief_model: str = "openrouter/qwen/qwen3.7-max"
     agent_v3_contract_model: str = "openrouter/qwen/qwen3.7-max"
     agent_v3_research_planner_model: str = "claude-sonnet-4-6"

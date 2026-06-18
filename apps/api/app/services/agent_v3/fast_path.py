@@ -90,10 +90,6 @@ def decide_fast_path(request: AgentV3Request) -> FastPathDecision:
             reason="Deep research confirmation or explicit deep mode requires the full runtime.",
             source="guardrail",
         )
-    direct_shortcut = _obvious_direct_fast(request)
-    if direct_shortcut is not None:
-        return direct_shortcut
-
     payload = json.dumps(
         {
             "message": request.message,
@@ -216,58 +212,6 @@ def _parse_json(raw: str) -> dict:
 
 def _clean_web_query(message: str) -> str:
     return " ".join((message or "").replace("\n", " ").split())[:240]
-
-
-def _obvious_direct_fast(request: AgentV3Request) -> FastPathDecision | None:
-    text = _clean_web_query(request.message)
-    lowered = text.lower()
-    if not text or len(text) > 260:
-        return None
-    if any(term in lowered for term in _agentic_terms()):
-        return None
-    if any(term in lowered for term in _web_terms()):
-        return None
-    if _looks_like_vague_followup(lowered):
-        return None
-    if not _looks_like_standalone_direct_request(lowered):
-        return None
-    return FastPathDecision(
-        path="direct_fast",
-        confidence=0.96,
-        reason="Obvious standalone chat request; skipped router model.",
-        source="deterministic",
-    )
-
-
-def _looks_like_standalone_direct_request(lowered: str) -> bool:
-    patterns = [
-        r"^explain\b",
-        r"^what(?:'s| is| are)\b",
-        r"^how (?:does|do|would|can|should)\b",
-        r"^why (?:does|do|is|are)\b",
-        r"^define\b",
-        r"^give me (?:a |an |the )?(?:quick |simple )?recipe\b",
-        r"^write (?:a |an )?(?:short |quick |simple )?(?:reply|email|note|message)\b",
-        r"^summarize (?:this|the above|that)\b",
-    ]
-    return any(re.search(pattern, lowered) for pattern in patterns)
-
-
-def _looks_like_vague_followup(lowered: str) -> bool:
-    vague = {
-        "try again",
-        "again",
-        "continue",
-        "go on",
-        "make it better",
-        "make it shorter",
-        "make it longer",
-        "rewrite it",
-        "do that",
-        "yes",
-        "ok",
-    }
-    return lowered.strip(" .!?") in vague
 
 
 def _web_terms() -> list[str]:

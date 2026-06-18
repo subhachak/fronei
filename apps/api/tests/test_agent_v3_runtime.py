@@ -1102,6 +1102,9 @@ def test_agent_v3_model_role_routing(monkeypatch):
     from app.services.agent_v3 import model_client
 
     settings = get_settings()
+    monkeypatch.setattr(settings, "agent_v3_fallback_models", "fallback-a,fallback-b")
+    monkeypatch.setattr(settings, "agent_v3_orchestrator_model", "direct-orchestrator-test")
+    monkeypatch.setattr(settings, "agent_v3_direct_model", "direct-answer-test")
     monkeypatch.setattr(settings, "agent_v3_synthesis_model", "sonnet-test")
     monkeypatch.setattr(settings, "agent_v3_synthesis_model_executive", "opus-test")
     monkeypatch.setattr(settings, "agent_v3_research_planner_model", "planner-test")
@@ -1109,10 +1112,13 @@ def test_agent_v3_model_role_routing(monkeypatch):
     monkeypatch.setattr(settings, "agent_v3_fast_router_model", "fast-router-test")
 
     assert model_client.model_for_role("fast_router") == "fast-router-test"
+    assert model_client.model_for_role("orchestrator") == "direct-orchestrator-test"
+    assert model_client.model_for_role("direct_answer") == "direct-answer-test"
     assert model_client.model_for_role("synthesis", quality_mode="standard") == "sonnet-test"
     assert model_client.model_for_role("synthesis", quality_mode="executive") == "opus-test"
     assert model_client.model_for_role("research_planner") == "planner-test"
     assert model_client.model_for_role("research_brief") == "brief-test"
+    assert model_client._candidate_models("preferred-test") == ["preferred-test", "fallback-a", "fallback-b"]
 
 
 def test_agent_v3_deep_research_requires_confirmation(monkeypatch):

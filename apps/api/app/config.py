@@ -26,19 +26,20 @@ class Settings(BaseSettings):
     # Agent v3 uses explicit per-role model routing. Cheap/fast stages can use
     # the planner model, while quality-critical long-form stages can be pinned
     # to stronger models without changing the legacy planner.
+    agent_v3_fallback_models: str = "gpt-4.1-mini,claude-sonnet-4-6,gemini/gemini-2.5-flash"
     agent_v3_fast_router_model: str = "gpt-4.1-mini"
-    agent_v3_orchestrator_model: str = "openrouter/qwen/qwen3.7-max"
+    agent_v3_orchestrator_model: str = "gpt-4.1-mini"
     agent_v3_direct_model: str = "gpt-4.1-mini"
-    agent_v3_brief_model: str = "openrouter/qwen/qwen3.7-max"
-    agent_v3_contract_model: str = "openrouter/qwen/qwen3.7-max"
+    agent_v3_brief_model: str = "gpt-4.1-mini"
+    agent_v3_contract_model: str = "gpt-4.1-mini"
     agent_v3_research_planner_model: str = "claude-sonnet-4-6"
     agent_v3_reflection_model: str = "claude-sonnet-4-6"
     agent_v3_synthesis_model: str = "claude-sonnet-4-6"
     agent_v3_synthesis_model_executive: str = "claude-opus-4-8"
     agent_v3_judge_model: str = "claude-sonnet-4-6"
     agent_v3_repair_model: str = "claude-sonnet-4-6"
-    agent_v3_citation_verifier_model: str = "openrouter/qwen/qwen3.7-max"
-    agent_v3_document_planner_model: str = "openrouter/qwen/qwen3.7-max"
+    agent_v3_citation_verifier_model: str = "gpt-4.1-mini"
+    agent_v3_document_planner_model: str = "gpt-4.1-mini"
     agent_v3_document_writer_model: str = "claude-sonnet-4-6"
     agent_v3_document_writer_concurrency: int = 3
     agent_v3_longform_timeout_s: int = 300
@@ -163,6 +164,10 @@ class Settings(BaseSettings):
     @property
     def planner_fallback_model_list(self) -> list[str]:
         return [v.strip() for v in self.planner_fallback_models.split(",") if v.strip()]
+
+    @property
+    def agent_v3_fallback_model_list(self) -> list[str]:
+        return [v.strip() for v in self.agent_v3_fallback_models.split(",") if v.strip()]
 
     @property
     def should_seed_registry_on_startup(self) -> bool:

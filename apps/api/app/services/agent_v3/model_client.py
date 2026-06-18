@@ -38,7 +38,7 @@ def _configure_keys() -> None:
 def _candidate_models(preferred: str | None = None) -> list[str]:
     settings = get_settings()
     models: list[str] = []
-    for model in [preferred, settings.planner_model, *settings.planner_fallback_model_list]:
+    for model in [preferred, *settings.agent_v3_fallback_model_list]:
         if model and model not in models:
             models.append(model)
     return models or ["gpt-4.1-mini"]

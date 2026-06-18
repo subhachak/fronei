@@ -122,9 +122,31 @@ def test_agent_v3_direct_stream(monkeypatch):
     result = envelopes[3].data
     assert result["route"] == "direct"
     assert result["answer"] == "Plain answer."
-    assert envelopes[1].data["data"]["model_used"] == "fake-orchestrator"
-    assert "available_routes" in envelopes[1].data["data"]
-    assert "web_search" in envelopes[1].data["data"]["available_tools"]
+    assert envelopes[1].data["data"]["source"] == "deterministic"
+    assert envelopes[1].data["data"]["path"] == "direct_fast"
+
+
+def test_agent_v3_obvious_direct_fast_path_skips_router_model(monkeypatch):
+    from app.services.agent_v3 import model_client
+
+    def fail_complete(*args, **kwargs):
+        raise AssertionError("obvious direct requests should skip the router model")
+
+    def fake_simple_completion(system, user, *, max_tokens=1200, **kwargs):
+        return SimpleNamespace(text="One-call answer.", model_used="fake-direct", latency_ms=3, cost_usd=0.002)
+
+    monkeypatch.setattr(model_client, "complete", fail_complete)
+    monkeypatch.setattr(model_client, "simple_completion", fake_simple_completion)
+    runtime = AgentV3Runtime(tools=FakeTools())
+
+    envelopes = _collect_stream(runtime, AgentV3Request(message="Explain API gateway rate limiting in plain English."))
+
+    progress = [e.data for e in envelopes if e.type == "progress"]
+    result = next(e.data for e in envelopes if e.type == "result")
+    assert [event["stage"] for event in progress] == ["fast_router", "direct_fast_answer"]
+    assert progress[0]["data"]["source"] == "deterministic"
+    assert result["route"] == "direct"
+    assert result["answer"] == "One-call answer."
 
 
 def test_agent_v3_direct_fast_path_skips_orchestrator(monkeypatch):
@@ -155,7 +177,7 @@ def test_agent_v3_direct_fast_path_skips_orchestrator(monkeypatch):
     monkeypatch.setattr(model_client, "simple_completion", fake_simple_completion)
     runtime = AgentV3Runtime(tools=FakeTools())
 
-    envelopes = _collect_stream(runtime, AgentV3Request(message="Give me a quick recipe idea."))
+    envelopes = _collect_stream(runtime, AgentV3Request(message="Help me think through a friendly birthday toast."))
 
     progress_stages = [e.data["stage"] for e in envelopes if e.type == "progress"]
     result = next(e.data for e in envelopes if e.type == "result")

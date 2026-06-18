@@ -58,7 +58,13 @@ Return only compact JSON:
 
 DIRECT_FAST_PROMPT = """You are Fronei, a fast and helpful general-purpose assistant.
 
-Answer the current user request directly. Use the provided current-conversation context for pronouns and follow-ups, but do not import unrelated workspace topics. Be concise unless the user asks for depth.
+Answer the current user request directly. Use the provided current-conversation context for pronouns and follow-ups, but do not import unrelated workspace topics.
+
+Default quality bar:
+- Be clear and complete, not terse.
+- For "explain", "what is", "how does", and plain-English technical questions, give a practical answer with a definition, analogy or example, why it matters, common variants/details when useful, and a crisp one-sentence takeaway.
+- Use Markdown headings or bullets when they make the answer easier to scan.
+- Keep it focused; do not turn ordinary chat into research or a formal report.
 """
 
 
@@ -149,7 +155,7 @@ def answer_direct_fast(request: AgentV3Request) -> model_client.ModelResponse:
     return model_client.simple_completion(
         DIRECT_FAST_PROMPT,
         user_prompt,
-        max_tokens=900,
+        max_tokens=1600,
         role="direct_answer",
         quality_mode=request.quality_mode,
         timeout_s=14,

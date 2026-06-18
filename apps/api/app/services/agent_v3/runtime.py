@@ -11,6 +11,11 @@ from app.services.agent_v3.document_subtree import (
     plan_document,
     write_document,
 )
+from app.services.agent_v3.fast_path import (
+    answer_direct_fast,
+    answer_web_fast,
+    decide_fast_path,
+)
 from app.services.agent_v3.orchestrator import OrchestratorDecision, decide_with_options
 from app.services.agent_v3.research_subtree import (
     EvidencePack,
@@ -54,6 +59,113 @@ class AgentV3Runtime:
         started = time.perf_counter()
         available_routes = ["direct", "clarify", "research", "document", "research_document"]
         available_tools = [tool["name"] for tool in self.tool_registry.describe()]
+
+        fast_decision = decide_fast_path(request)
+        if fast_decision.path in {"direct_fast", "web_fast"}:
+            goal_route = "research" if fast_decision.path == "web_fast" else "direct"
+            goal = Goal(
+                user_id=user_id,
+                conversation_id=request.conversation_id,
+                objective=request.message,
+                route=goal_route,
+                quality_mode=request.quality_mode,
+            )
+            events: list[ProgressEvent] = []
+
+            yield StreamEnvelope(type="start", data={"turn_id": turn_id, "goal": goal.model_dump(mode="json")})
+
+            def progress(stage: str, message: str, **data) -> ProgressEvent:
+                event = ProgressEvent(turn_id=turn_id, stage=stage, message=message, data=data)
+                events.append(event)
+                return event
+
+            first = progress(
+                "fast_router",
+                (
+                    "I can answer this directly."
+                    if fast_decision.path == "direct_fast"
+                    else "I'm checking the web quickly before answering."
+                ),
+                path=fast_decision.path,
+                confidence=fast_decision.confidence,
+                reason=fast_decision.reason,
+                source=fast_decision.source,
+                web_query=fast_decision.web_query,
+                model_used=fast_decision.model_used,
+                fallback_reason=fast_decision.fallback_reason,
+                **model_client.telemetry_for_role(
+                    "fast_router",
+                    quality_mode=request.quality_mode,
+                    model_used=fast_decision.model_used,
+                ),
+            )
+            yield StreamEnvelope(type="progress", data=first.model_dump(mode="json"))
+
+            if fast_decision.path == "direct_fast":
+                event = progress("direct_fast_answer", "Answering from the current conversation context.")
+                yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
+                response = answer_direct_fast(request)
+                result = AgentV3Result(
+                    turn_id=turn_id,
+                    goal=goal,
+                    answer=response.text,
+                    route=goal.route,
+                    model_used=response.model_used,
+                    tool_calls=[],
+                    sources=[],
+                    events=events,
+                    latency_ms=int((time.perf_counter() - started) * 1000),
+                    cost_usd=response.cost_usd + fast_decision.cost_usd,
+                )
+                yield StreamEnvelope(type="result", data=result.model_dump(mode="json"))
+                yield StreamEnvelope(type="done", data={"turn_id": turn_id, "latency_ms": result.latency_ms})
+                return
+
+            web_query = fast_decision.web_query or request.message
+            sources, search_call = yield from self._run_tool(
+                progress,
+                "web_search",
+                {"query": web_query, "max_results": 3},
+            )
+            public_urls = [source.url for source in sources[:2] if source.url]
+            extracted_sources: list[Source] = []
+            read_call = None
+            if public_urls:
+                extracted_sources, read_call = yield from self._run_tool(
+                    progress,
+                    "read_url",
+                    {"urls": public_urls, "max_chars_per_source": 1800},
+                )
+            event = progress(
+                "web_fast_answer",
+                "Answering from the quick web check.",
+                source_count=len(sources),
+                read_count=len(extracted_sources),
+            )
+            yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
+            response = answer_web_fast(
+                request,
+                web_query=web_query,
+                sources=sources,
+                extracted_sources=extracted_sources,
+            )
+            tool_calls = [search_call, *([read_call] if read_call is not None else [])]
+            result = AgentV3Result(
+                turn_id=turn_id,
+                goal=goal,
+                answer=response.text,
+                route=goal.route,
+                model_used=response.model_used,
+                sources=self._merge_sources(sources, extracted_sources),
+                tool_calls=tool_calls,
+                events=events,
+                latency_ms=int((time.perf_counter() - started) * 1000),
+                cost_usd=response.cost_usd + fast_decision.cost_usd,
+            )
+            yield StreamEnvelope(type="result", data=result.model_dump(mode="json"))
+            yield StreamEnvelope(type="done", data={"turn_id": turn_id, "latency_ms": result.latency_ms})
+            return
+
         decision = decide_with_options(request, available_routes=available_routes, available_tools=available_tools)
         request = self._apply_decision(request, decision)
         route = decision.route

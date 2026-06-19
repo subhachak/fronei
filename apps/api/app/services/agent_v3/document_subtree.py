@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 class DocumentPlan(BaseModel):
     title: str = "Agent v3 document"
-    format: Literal["markdown", "docx"] = "docx"
+    format: Literal["markdown", "docx", "pptx"] = "docx"
     audience: str = "general business audience"
     sections: list[str] = Field(default_factory=list)
     source: str = "llm"
@@ -65,7 +65,7 @@ PLAN_PROMPT = """You are the Agent v3 document planner.
 Create a document plan sized to the user request. Return only JSON:
 {
   "title": "short document title",
-  "format": "markdown|docx",
+  "format": "markdown|docx|pptx",
   "audience": "intended audience",
   "sections": ["concrete section headings"]
 }
@@ -73,6 +73,7 @@ For ordinary documents, use 4-7 sections. For deep technical reports, use 10-14
 substantive sections that preserve the important architecture, implementation,
 evidence, trade-off, failure-mode, and recommendation areas from the research.
 Prefer docx when the user asks for a downloadable report/document.
+Prefer pptx when the user asks for slides, a deck, presentation, or PowerPoint.
 """
 
 
@@ -362,6 +363,8 @@ def judge_document(draft: DocumentDraft, plan: DocumentPlan, *, source_count: in
 def choose_artifact_tool(request: AgentV3Request, plan: DocumentPlan) -> str:
     if request.output_format == "markdown" or plan.format == "markdown":
         return "make_markdown_artifact"
+    if request.output_format == "pptx" or plan.format == "pptx":
+        return "make_pptx_artifact"
     return "make_docx_artifact"
 
 
@@ -383,7 +386,7 @@ def _document_writer_token_budget(request: AgentV3Request, *, research_answer: s
         return (7000 if is_deep else 4500) if is_exec else (6000 if is_deep else 3500)
     if profile == "implementation_plan" and research_answer:
         return (9000 if is_deep else 6500) if is_exec else (7500 if is_deep else 5500)
-    if research_answer and ("report" in request.message.lower() or request.output_format in {"docx", "markdown"}):
+    if research_answer and ("report" in request.message.lower() or request.output_format in {"docx", "markdown", "pptx"}):
         return 7200 if is_exec else 6000
     return 2600 if is_exec else 2200
 
@@ -392,6 +395,14 @@ def _document_writer_instruction(request: AgentV3Request, *, research_answer: st
     profile = infer_research_profile(request.message)
     is_deep = request.research_level == "deep"
     if profile == "technical_architecture" and is_deep and research_answer:
+        if request.output_format == "pptx":
+            return (
+                "Write a structured slide deck plan in markdown. Do not write an essay. "
+                "Start with an H1 deck title, then use one H2 per slide. For each slide, include: "
+                "one assertion-style slide title, 2-3 sparse bullets, optional table/chart data when useful, "
+                "and speaker notes with the deeper explanation and citations. Every slide should have a clear "
+                "visual job such as compare, map architecture, show workflow, quantify impact, or recommend action."
+            )
         return (
             "Write the complete document body in markdown. Do not summarize the research into a short memo. "
             "Produce a deep technical report with 10-14 substantive sections, source-backed implementation detail, "
@@ -401,6 +412,12 @@ def _document_writer_instruction(request: AgentV3Request, *, research_answer: st
             "Use citations from the research summary and sources throughout."
         )
     if profile == "vendor_comparison" and research_answer:
+        if request.output_format == "pptx":
+            return (
+                "Write a structured vendor-comparison slide deck plan in markdown. Do not write a report. "
+                "Use one H2 per slide, sparse visible bullets, a comparison table slide, recommendation slide, "
+                "risk/switching-cost slide, and speaker notes with cited detail."
+            )
         return (
             "Write the complete document body in markdown. "
             "Open with a 1-paragraph executive summary naming the top recommendation and its key differentiator. "
@@ -409,6 +426,14 @@ def _document_writer_instruction(request: AgentV3Request, *, research_answer: st
             "Include a comparison table where the criteria and vendors intersect. "
             "Close with a scored or ranked recommendation matrix and clear rationale. "
             "Every factual claim must have a [S#] citation."
+        )
+    if request.output_format == "pptx" or _presentation_requested(request.message):
+        return (
+            "Write a structured slide deck plan in markdown. Do not write a prose report. "
+            "Start with an H1 deck title, then use one H2 per slide. Keep visible slide text sparse: "
+            "2-4 concise bullets, compact tables where useful, and no long paragraphs on slides. "
+            "For each slide, include speaker notes with the deeper explanation, evidence, citations, and presenter talking points. "
+            "Make the deck flow from context to findings, implications, recommendations, and next steps."
         )
     if profile == "market_landscape" and research_answer:
         return (
@@ -485,7 +510,11 @@ def _should_write_by_section(
         return False
     profile = infer_research_profile(request.message)
     if profile in _BY_SECTION_PROFILES:
+        if request.output_format == "pptx" or plan.format == "pptx":
+            return False
         return True
+    if request.output_format == "pptx" or plan.format == "pptx":
+        return False
     return "report" in request.message.lower() or request.output_format in {"docx", "markdown"}
 
 
@@ -692,6 +721,8 @@ def build_artifact(tool_registry, plan: DocumentPlan, draft: DocumentDraft, tool
     inputs: dict[str, object] = {"title": plan.title, "markdown": draft.markdown}
     if tool_name == "make_docx_artifact":
         inputs["expected_sections"] = list(plan.sections or [])
+    if tool_name == "make_pptx_artifact":
+        inputs["expected_slides"] = list(plan.sections or [])
     artifact, call = tool_registry.run(tool_name, inputs)
     if call.ok and artifact is not None:
         return artifact, call
@@ -707,7 +738,7 @@ def build_artifact(tool_registry, plan: DocumentPlan, draft: DocumentDraft, tool
 def _fallback_plan(request: AgentV3Request) -> DocumentPlan:
     return DocumentPlan(
         title=_title_from_message(request.message),
-        format="markdown" if request.output_format == "markdown" else "docx",
+        format=_fallback_format(request),
         sections=["Executive summary", "Key findings", "Recommended next steps"],
         source="heuristic",
     )
@@ -718,6 +749,8 @@ def _normalize_plan(plan: DocumentPlan, request: AgentV3Request) -> DocumentPlan
         plan.title = _title_from_message(request.message)
     if request.output_format == "markdown":
         plan.format = "markdown"
+    elif request.output_format == "pptx" or _presentation_requested(request.message):
+        plan.format = "pptx"
     elif request.output_format == "docx" or "docx" in request.message.lower():
         plan.format = "docx"
     if not plan.sections:
@@ -739,6 +772,8 @@ def _planner_research_summary(request: AgentV3Request, research_answer: str | No
 
 def _section_guidance(request: AgentV3Request, *, research_answer: str | None = None) -> str:
     profile = infer_research_profile(request.message)
+    if request.output_format == "pptx" or _presentation_requested(request.message):
+        return "Use 8-12 slides. Each section becomes a slide with sparse visible text and speaker-note depth."
     if profile == "technical_architecture" and request.research_level == "deep" and research_answer:
         return "Use 10-14 sections. Preserve implementation detail; do not compress the research into an executive memo."
     if research_answer and request.research_level == "deep":
@@ -749,6 +784,8 @@ def _section_guidance(request: AgentV3Request, *, research_answer: str | None = 
 def _section_limit(request: AgentV3Request) -> int:
     profile = infer_research_profile(request.message)
     is_deep = request.research_level == "deep"
+    if request.output_format == "pptx" or _presentation_requested(request.message):
+        return 14 if is_deep else 10
     # strategy_brief is intentionally compact even at deep level
     if profile == "strategy_brief":
         return 8 if is_deep else 6
@@ -759,6 +796,19 @@ def _section_limit(request: AgentV3Request) -> int:
     if is_deep:
         return 10
     return 7
+
+
+def _fallback_format(request: AgentV3Request) -> Literal["markdown", "docx", "pptx"]:
+    if request.output_format in {"markdown", "docx", "pptx"}:
+        return request.output_format
+    if _presentation_requested(request.message):
+        return "pptx"
+    return "docx"
+
+
+def _presentation_requested(message: str) -> bool:
+    text = (message or "").lower()
+    return any(term in text for term in ("pptx", "powerpoint", "presentation", "slides", "slide deck", "deck"))
 
 
 def _title_from_message(message: str) -> str:

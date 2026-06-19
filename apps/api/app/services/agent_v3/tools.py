@@ -5,6 +5,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass
+from io import BytesIO
 from typing import Any
 
 import httpx
@@ -253,6 +254,129 @@ class AgentV3Tools:
             base64_data=base64.b64encode(payload).decode("ascii"),
         )
         return artifact, issue_codes
+
+    def make_pptx_artifact(self, title: str, markdown: str, expected_slides: list[str] | None = None) -> tuple[Artifact, dict[str, Any]]:
+        try:
+            from app.services.pptx_render_qa import run_pptx_render_qa
+
+            payload = render_pptx_from_markdown(title=title, markdown=markdown)
+            qa = run_pptx_render_qa(payload)
+            issue_codes = [str(issue.get("type") or "unknown") for issue in qa.get("issues", []) if isinstance(issue, dict)]
+            mime = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+            kind = "pptx"
+            filename = safe_filename(title, "pptx")
+            metadata: dict[str, Any] = {
+                "qa_available": bool(qa.get("available")),
+                "qa_issue_codes": issue_codes,
+                "slide_count": qa.get("slide_count"),
+                "expected_slide_count": len(expected_slides or []),
+            }
+        except Exception as exc:
+            logger.warning("agent_v3 pptx artifact failed; returning markdown: %s", exc)
+            payload = markdown.encode("utf-8")
+            mime = "text/markdown"
+            kind = "markdown"
+            filename = safe_filename(title, "md")
+            metadata = {
+                "qa_available": False,
+                "qa_issue_codes": ["pptx_render_failed"],
+                "error": str(exc),
+                "expected_slide_count": len(expected_slides or []),
+            }
+        artifact = Artifact(
+            kind=kind,  # type: ignore[arg-type]
+            filename=filename,
+            mime_type=mime,
+            base64_data=base64.b64encode(payload).decode("ascii"),
+        )
+        return artifact, metadata
+
+
+def render_pptx_from_markdown(title: str, markdown: str) -> bytes:
+    from pptx import Presentation
+    from pptx.enum.text import PP_ALIGN
+    from pptx.util import Inches, Pt
+
+    deck = Presentation()
+    deck.slide_width = Inches(13.333)
+    deck.slide_height = Inches(7.5)
+    slides = _slides_from_markdown(title, markdown)
+    for index, slide_spec in enumerate(slides):
+        layout = deck.slide_layouts[0] if index == 0 else deck.slide_layouts[1]
+        slide = deck.slides.add_slide(layout)
+        slide.shapes.title.text = slide_spec["title"]
+        if index == 0:
+            subtitle = slide.placeholders[1] if len(slide.placeholders) > 1 else None
+            if subtitle is not None:
+                subtitle.text = slide_spec.get("subtitle") or "Prepared by Fronei"
+        else:
+            body = slide.placeholders[1]
+            body.text = ""
+            frame = body.text_frame
+            frame.clear()
+            bullets = slide_spec.get("bullets") or ["No visible slide bullets were generated."]
+            for bullet_index, bullet in enumerate(bullets[:6]):
+                paragraph = frame.paragraphs[0] if bullet_index == 0 else frame.add_paragraph()
+                paragraph.text = bullet
+                paragraph.level = 0
+                paragraph.font.size = Pt(22)
+        notes = slide.notes_slide.notes_text_frame
+        notes.text = slide_spec.get("notes") or ""
+        if index == 0:
+            slide.shapes.title.text_frame.paragraphs[0].alignment = PP_ALIGN.LEFT
+    package = BytesIO()
+    deck.save(package)
+    return package.getvalue()
+
+
+def _slides_from_markdown(title: str, markdown: str) -> list[dict[str, Any]]:
+    deck_title = title.strip() or "Agent v3 presentation"
+    slides: list[dict[str, Any]] = [{"title": deck_title, "subtitle": "Agent v3 slide deck", "bullets": [], "notes": ""}]
+    current: dict[str, Any] | None = None
+    in_notes = False
+    for raw_line in (markdown or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith("# "):
+            deck_title = line[2:].strip() or deck_title
+            slides[0]["title"] = deck_title
+            continue
+        if line.startswith("## "):
+            current = {"title": line[3:].strip() or "Slide", "bullets": [], "notes": ""}
+            slides.append(current)
+            in_notes = False
+            continue
+        if current is None:
+            continue
+        lowered = line.lower()
+        if lowered.startswith(("notes:", "speaker notes:", "presenter notes:")):
+            current["notes"] = line.split(":", 1)[1].strip()
+            in_notes = True
+            continue
+        if line.startswith(("- ", "* ")):
+            current["bullets"].append(_clean_slide_text(line[2:]))
+            in_notes = False
+            continue
+        if re.match(r"^\d+[.)]\s+", line):
+            current["bullets"].append(_clean_slide_text(re.sub(r"^\d+[.)]\s+", "", line)))
+            in_notes = False
+            continue
+        if in_notes:
+            current["notes"] = (current.get("notes", "") + " " + line).strip()
+        elif len(current["bullets"]) < 4:
+            current["bullets"].append(_clean_slide_text(line))
+        else:
+            current["notes"] = (current.get("notes", "") + " " + line).strip()
+    if len(slides) == 1:
+        slides.append({"title": "Overview", "bullets": [_clean_slide_text(markdown or "Presentation content")], "notes": ""})
+    return slides[:24]
+
+
+def _clean_slide_text(value: str) -> str:
+    text = re.sub(r"\*\*([^*]+)\*\*", r"\1", value or "")
+    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
+    return text.strip()
 
 
 def source_context(sources: list[Source]) -> str:

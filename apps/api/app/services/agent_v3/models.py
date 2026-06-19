@@ -27,7 +27,7 @@ class AgentV3Request(BaseModel):
     research_level: ResearchLevel = "auto"
     confirm_deep_research: bool = False
     force_route: RouteName | None = None
-    output_format: Literal["chat", "markdown", "docx"] = "chat"
+    output_format: Literal["chat", "markdown", "docx", "pptx"] = "chat"
 
 
 class Goal(BaseModel):
@@ -79,7 +79,7 @@ class ToolDefinition(BaseModel):
 
 class Artifact(BaseModel):
     id: str = Field(default_factory=lambda: new_id("artifact"))
-    kind: Literal["markdown", "docx"]
+    kind: Literal["markdown", "docx", "pptx"]
     filename: str
     mime_type: str
     base64_data: str = ""

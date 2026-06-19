@@ -91,6 +91,16 @@ class ToolRegistry:
             ),
             self._make_docx_artifact,
         )
+        self.register(
+            ToolDefinition(
+                name="make_pptx_artifact",
+                description="Create a downloadable PPTX presentation artifact.",
+                input_schema={"title": "str", "markdown": "str", "expected_slides": "list[str]"},
+                output_schema={"artifact": "Artifact"},
+                route_tags=["document", "research_document"],
+            ),
+            self._make_pptx_artifact,
+        )
 
     def _web_search(self, inputs: dict[str, Any]) -> tuple[list[Source], ToolCall]:
         query = str(inputs.get("query") or "")
@@ -125,5 +135,21 @@ class ToolRegistry:
                 "filename": artifact.filename,
                 "kind": artifact.kind,
                 "qa_issue_codes": qa_issue_codes,
+            },
+        )
+
+    def _make_pptx_artifact(self, inputs: dict[str, Any]) -> tuple[Artifact, ToolCall]:
+        title = str(inputs.get("title") or "Agent v3 presentation")
+        markdown = str(inputs.get("markdown") or "")
+        expected_slides = [str(slide) for slide in (inputs.get("expected_slides") or []) if slide]
+        artifact, metadata = self.tools.make_pptx_artifact(title, markdown, expected_slides=expected_slides)
+        return artifact, ToolCall(
+            name="make_pptx_artifact",
+            input={"title": title, "markdown_chars": len(markdown), "expected_slides": expected_slides},
+            output={
+                "artifact_id": artifact.id,
+                "filename": artifact.filename,
+                "kind": artifact.kind,
+                **metadata,
             },
         )

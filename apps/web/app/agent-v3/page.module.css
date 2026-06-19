@@ -20,6 +20,10 @@
   font: inherit;
 }
 
+.hiddenInput {
+  display: none;
+}
+
 .root button {
   cursor: pointer;
 }
@@ -1045,6 +1049,20 @@
   font-weight: 800;
 }
 
+.secondaryIconButton {
+  display: inline-flex;
+  min-height: 42px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px solid #c8bba8;
+  background: #fffdf8;
+  color: #162033;
+  font-size: 13px;
+  font-weight: 850;
+  padding: 9px 12px;
+}
+
 .desktopHeader {
   display: none;
   border-bottom: 1px solid #ded6c9;
@@ -1102,6 +1120,19 @@
   margin-top: 6px;
   border-top: 1px solid #ebe4d8;
   padding-top: 8px;
+}
+
+.composerActionRow {
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1fr);
+  gap: 8px;
+}
+
+.composerStatus {
+  margin: 0;
+  color: #146152;
+  font-size: 12px;
+  font-weight: 750;
 }
 
 .selectGrid {
@@ -1621,6 +1652,87 @@
   width: 100%;
   margin-top: 12px;
   padding: 10px 12px;
+}
+
+.templateActionRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.templateActionRow .fullDarkButton {
+  margin-top: 0;
+}
+
+.inlineError {
+  margin: 10px 0 0;
+  border-left: 3px solid #d85d4b;
+  background: #fff4f1;
+  color: #8c3025;
+  font-size: 12px;
+  font-weight: 750;
+  line-height: 1.5;
+  padding: 8px 10px;
+}
+
+.templateList {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.templateItem {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  border-top: 1px solid #ebe4d8;
+  padding-top: 10px;
+}
+
+.templateItemMain {
+  min-width: 0;
+}
+
+.templateItemMain strong,
+.templateItemMain span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.templateItemMain strong {
+  color: #162033;
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.templateItemMain span {
+  color: #79827c;
+  font-size: 11px;
+  font-weight: 750;
+  margin-top: 2px;
+}
+
+.inlineConfirm {
+  display: flex;
+  gap: 6px;
+}
+
+.inlineConfirm button {
+  border: 1px solid #d8cdbc;
+  background: #fffdf8;
+  color: #162033;
+  font-size: 11px;
+  font-weight: 850;
+  padding: 6px 8px;
+}
+
+.inlineConfirm button:first-child {
+  border-color: #e8b7ad;
+  color: #9a3c30;
 }
 
 .sourceLink {

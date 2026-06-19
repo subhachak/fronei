@@ -11,6 +11,7 @@ from app.services.agent_v3.document_subtree import (
     plan_document,
     write_document,
 )
+from app.services.agent_v3.deck_subtree import plan_deck
 from app.services.agent_v3.fast_path import (
     answer_direct_fast,
     answer_web_fast,
@@ -948,6 +949,118 @@ class AgentV3Runtime:
         )
         yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
 
+        tool_name = choose_artifact_tool(request, plan)
+        if tool_name == "make_pptx_artifact":
+            event = progress(
+                "deck_planner",
+                "Planning a native slide storyboard and visual structure.",
+                template_id=request.template_id,
+                planned_sections=list(plan.sections or []),
+            )
+            event.data.update(model_client.telemetry_for_role("document_planner", quality_mode=request.quality_mode))
+            yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
+            deck = plan_deck(
+                request,
+                plan,
+                sources=sources,
+                research_answer=research_answer,
+                evidence=evidence,
+                user_id=goal.user_id,
+            )
+            event = progress(
+                "deck_plan",
+                f"Deck plan ready with {len(deck.render_plan.slides)} slide(s).",
+                title=deck.title,
+                design_system=deck.design_system_id,
+                slide_count=len(deck.render_plan.slides),
+                repair_actions=deck.repair_actions,
+                **model_client.telemetry_for_response(
+                    model_client.ModelResponse(
+                        text="",
+                        model_used=deck.model_used,
+                        latency_ms=deck.latency_ms,
+                        cost_usd=deck.cost_usd,
+                        model_role="document_planner",
+                        preferred_model=deck.preferred_model,
+                        attempted_models=deck.attempted_models,
+                        failed_model_attempts=deck.failed_model_attempts,
+                    )
+                ),
+                latency_ms=deck.latency_ms,
+                cost_usd=deck.cost_usd,
+            )
+            yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
+            event = progress(
+                "pptx_design_plan",
+                "Composing validated design-system slides.",
+                template_id=request.template_id,
+                design_system=deck.design_system_id,
+                design_ledger=deck.design_ledger,
+            )
+            yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
+            event = progress("artifact_builder", "Building artifact with make_pptx_artifact.", tool_name=tool_name, title=deck.title)
+            yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
+            artifact, artifact_call = self.tool_registry.run(
+                "make_pptx_artifact",
+                {
+                    "title": deck.title,
+                    "markdown": deck.summary_markdown,
+                    "expected_slides": [slide.section_title or slide.closing_text or slide.hero_title or "" for slide in deck.doc_plan.sections],
+                    "template_id": request.template_id,
+                    "user_id": goal.user_id,
+                    "render_plan": deck.render_plan.to_payload(),
+                    "design_system_id": deck.design_system_id,
+                    "repair_actions": deck.repair_actions,
+                },
+            )
+            if artifact.kind == "markdown":
+                event = progress(
+                    "chat_renderer",
+                    "PPTX rendering fell back to a deck summary in chat.",
+                    title=deck.title,
+                    format="markdown",
+                    markdown_chars=len(deck.summary_markdown or ""),
+                    error=artifact_call.error,
+                )
+                yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
+                return AgentV3Result(
+                    turn_id=turn_id,
+                    goal=goal,
+                    answer=deck.summary_markdown,
+                    route=goal.route,
+                    model_used=deck.model_used,
+                    sources=sources,
+                    tool_calls=[artifact_call],
+                    artifacts=[],
+                    events=events,
+                    latency_ms=plan.latency_ms + deck.latency_ms + artifact_call.latency_ms,
+                    cost_usd=plan.cost_usd + deck.cost_usd,
+                )
+            event = progress(
+                "artifact_result",
+                f"Artifact builder produced {artifact.filename}.",
+                tool_name=artifact_call.name,
+                filename=artifact.filename,
+                ok=artifact_call.ok,
+                error=artifact_call.error,
+                deck_source=artifact_call.output.get("deck_source"),
+                design_system=artifact_call.output.get("design_system"),
+            )
+            yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
+            return AgentV3Result(
+                turn_id=turn_id,
+                goal=goal,
+                answer=f"Done. I created `{artifact.filename}` from a native deck plan.",
+                route=goal.route,
+                model_used=deck.model_used,
+                sources=sources,
+                tool_calls=[artifact_call],
+                artifacts=[artifact],
+                events=events,
+                latency_ms=plan.latency_ms + deck.latency_ms + artifact_call.latency_ms,
+                cost_usd=plan.cost_usd + deck.cost_usd,
+            )
+
         event = progress("document_writer", "Writing document draft.", plan_title=plan.title)
         event.data.update(model_client.telemetry_for_role("document_writer", quality_mode=request.quality_mode))
         yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
@@ -1030,15 +1143,6 @@ class AgentV3Runtime:
                 cost_usd=plan.cost_usd + draft.cost_usd,
             )
 
-        tool_name = choose_artifact_tool(request, plan)
-        if tool_name == "make_pptx_artifact":
-            event = progress(
-                "pptx_design_plan",
-                "Mapping the deck into design-system slides.",
-                template_id=request.template_id,
-                expected_slides=list(plan.sections or []),
-            )
-            yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
         event = progress(
             "artifact_builder",
             f"Building artifact with {tool_name}.",

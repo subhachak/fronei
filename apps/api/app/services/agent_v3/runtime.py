@@ -780,7 +780,7 @@ class AgentV3Runtime:
 
     def _apply_decision(self, request: AgentV3Request, decision: OrchestratorDecision) -> AgentV3Request:
         updates = {}
-        if decision.output_format in {"chat", "markdown", "docx"}:
+        if decision.output_format in {"chat", "markdown", "docx", "pptx"}:
             updates["output_format"] = decision.output_format
         if decision.research_level in {"easy", "regular", "deep"}:
             updates["research_level"] = decision.research_level

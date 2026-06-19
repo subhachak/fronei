@@ -4185,7 +4185,7 @@ def _synthesis_report_contract(profile: ResearchProfile, request: AgentV3Request
             "Ground planning assumptions in [S#] cited evidence where relevant. "
             "Close with a go/no-go decision checklist for the first milestone gate."
         )
-    if request.output_format in {"docx", "markdown"} or "report" in request.message.lower():
+    if request.output_format in {"docx", "markdown", "pptx"} or "report" in request.message.lower():
         return "Produce a structured report with clear headings, evidence-backed findings, gaps, and recommendations."
     return "Produce a source-grounded answer with clear headings and cited findings."
 
@@ -4213,7 +4213,7 @@ def _synthesis_token_budget(request: AgentV3Request, plan: ResearchPlan) -> int:
     if profile == "implementation_plan":
         # Workstream breakdown, milestones, risk register, governance
         return (9000 if is_deep else 6000) if is_exec else (7500 if is_deep else 5000)
-    if request.output_format in {"docx", "markdown"} or "report" in request.message.lower():
+    if request.output_format in {"docx", "markdown", "pptx"} or "report" in request.message.lower():
         return 6500 if is_exec else 5200
     return 1800 if is_exec else 1200
 

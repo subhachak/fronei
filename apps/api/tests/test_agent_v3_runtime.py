@@ -1,5 +1,8 @@
+import base64
 import json
 import time
+import zipfile
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -864,6 +867,49 @@ def test_agent_v3_markdown_output_renders_in_chat_without_artifact(monkeypatch):
     progress_stages = [e.data["stage"] for e in envelopes if e.type == "progress"]
     assert "chat_renderer" in progress_stages
     assert "artifact_builder" not in progress_stages
+
+
+def test_agent_v3_pptx_output_creates_presentation_artifact(monkeypatch):
+    from app.services import pptx_render_qa
+
+    markdown = """# AI governance briefing
+
+## Executive summary
+
+- Governance is becoming an operating model.
+- Leaders need clear ownership and controls.
+
+Notes: Use this slide to frame the decision.
+
+## Recommended next steps
+
+- Define policy owners.
+- Map controls to high-risk workflows.
+
+Notes: Close with the implementation path.
+"""
+    _patch_completion(monkeypatch, markdown)
+    monkeypatch.setattr(pptx_render_qa, "run_pptx_render_qa", lambda payload: {"available": False, "issues": [], "slide_count": 2})
+    runtime = AgentV3Runtime(tools=FakeTools())
+
+    envelopes = _collect_stream(
+        runtime,
+        AgentV3Request(
+            message="Create a pptx deck about enterprise AI governance.",
+            output_format="pptx",
+            force_route="document",
+        ),
+    )
+
+    result = next(e.data for e in envelopes if e.type == "result")
+    artifact = result["artifacts"][0]
+    assert result["route"] == "document"
+    assert artifact["kind"] == "pptx"
+    assert artifact["filename"].endswith(".pptx")
+    with zipfile.ZipFile(BytesIO(base64.b64decode(artifact["base64_data"]))) as package:
+        assert "[Content_Types].xml" in package.namelist()
+        assert any(name.startswith("ppt/slides/slide") for name in package.namelist())
+    assert [call["name"] for call in result["tool_calls"]] == ["make_pptx_artifact"]
 
 
 def test_agent_v3_api_stream(monkeypatch):

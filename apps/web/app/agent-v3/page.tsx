@@ -43,7 +43,7 @@ const TURN_POLL_INTERVAL_MS = 1200
 const TURN_POLL_RECOVERY_WINDOW_MS = 20 * 60 * 1000
 
 type QualityMode = 'draft' | 'standard' | 'executive'
-type OutputFormat = 'chat' | 'markdown' | 'docx'
+type OutputFormat = 'chat' | 'markdown' | 'docx' | 'pptx'
 type ResearchLevel = 'auto' | 'easy' | 'regular' | 'deep'
 type MobileView = 'work' | 'library' | 'context'
 type MobileNavItem = [MobileView, LucideIcon, string]
@@ -1345,7 +1345,7 @@ function Composer({
       <div className={styles.composerFooter}>
         <div className={styles.selectGrid}>
           <StudioSelect label="Quality" value={qualityMode} onChange={value => setQualityMode(value as QualityMode)} options={['draft', 'standard', 'executive']} />
-          <StudioSelect label="Output" value={outputFormat} onChange={value => setOutputFormat(value as OutputFormat)} options={['chat', 'markdown', 'docx']} />
+          <StudioSelect label="Output" value={outputFormat} onChange={value => setOutputFormat(value as OutputFormat)} options={['chat', 'markdown', 'docx', 'pptx']} />
           <StudioSelect label="Research" value={researchLevel} onChange={value => setResearchLevel(value as ResearchLevel)} options={['auto', 'easy', 'regular', 'deep']} />
         </div>
         <div className={styles.composerActionRow}>

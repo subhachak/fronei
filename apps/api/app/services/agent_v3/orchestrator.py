@@ -57,7 +57,7 @@ Return only compact JSON with this schema:
   "confidence": 0.0-1.0,
   "reason": "short reason",
   "clarification_question": "required only for clarify",
-  "output_format": "chat|markdown|docx|null",
+  "output_format": "chat|markdown|docx|pptx|null",
   "research_level": "easy|regular|deep",
   "requires_confirmation": true|false,
   "confirmation_message": "required only when requires_confirmation is true",
@@ -147,7 +147,7 @@ def heuristic_decide(
     available_routes = available_routes or ["direct", "clarify", "research", "document", "research_document"]
     available_tools = available_tools or []
     text = request.message.lower()
-    asks_doc = any(term in text for term in ["document", "report", "docx", "memo", "briefing", "deck", "ppt"])
+    asks_doc = any(term in text for term in ["document", "report", "docx", "memo", "briefing", "deck", "ppt", "slides", "presentation", "powerpoint"])
     asks_research = any(
         term in text
         for term in [
@@ -176,7 +176,7 @@ def heuristic_decide(
         route: RouteName = "research_document"
     elif asks_research:
         route = "research"
-    elif asks_doc or request.output_format in {"docx", "markdown"}:
+    elif asks_doc or request.output_format in {"docx", "markdown", "pptx"}:
         route = "document"
     else:
         route = "direct"
@@ -229,7 +229,7 @@ def choose_research_level(request: AgentV3Request, route: RouteName) -> Literal[
         "board-ready",
     ]
     easy_terms = ["quick", "briefly", "check", "current", "latest", "what is", "when is", "find out"]
-    asks_doc = any(term in text for term in ["document", "report", "docx", "memo", "briefing", "deck", "ppt"])
+    asks_doc = any(term in text for term in ["document", "report", "docx", "memo", "briefing", "deck", "ppt", "slides", "presentation", "powerpoint"])
     if any(term in text for term in deep_terms) or any(term in text for term in high_stakes_terms):
         return "deep"
     explicit_research = "research" in text
@@ -243,7 +243,10 @@ def choose_research_level(request: AgentV3Request, route: RouteName) -> Literal[
 def _normalize_research_decision(request: AgentV3Request, decision: OrchestratorDecision) -> OrchestratorDecision:
     text = request.message.lower()
     asks_research = "research" in text or decision.route in {"research", "research_document"}
-    asks_doc = any(term in text for term in ["document", "report", "docx", "memo", "briefing", "deck", "ppt"])
+    asks_doc = any(
+        term in text
+        for term in ["document", "report", "docx", "memo", "briefing", "deck", "ppt", "slides", "presentation", "powerpoint"]
+    )
     if decision.route == "research" and asks_research and asks_doc:
         decision.route = "research_document"
         decision.output_format = decision.output_format or request.output_format

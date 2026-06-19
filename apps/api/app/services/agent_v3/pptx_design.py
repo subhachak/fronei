@@ -68,6 +68,27 @@ def render_agentdeck_pptx_from_markdown(
     )
 
 
+def render_agentdeck_pptx_from_render_plan(
+    render_plan: PptxRenderPlan,
+    *,
+    design_system_id: str = DEFAULT_DESIGN_SYSTEM,
+    repair_actions: list[dict[str, Any]] | None = None,
+) -> PptxDesignResult:
+    payload = _render_agentdeck_plan(render_plan)
+    layout_counts: dict[str, int] = {}
+    for slide in render_plan.slides:
+        layout_counts[slide.slide_layout] = layout_counts.get(slide.slide_layout, 0) + 1
+    return PptxDesignResult(
+        payload=payload,
+        design_system_id=design_system_id,
+        theme=render_plan.theme,
+        slide_count=len(render_plan.slides),
+        layout_counts=layout_counts,
+        design_ledger=_design_ledger(render_plan),
+        repair_actions=repair_actions or [],
+    )
+
+
 def agentdeck_render_plan_from_markdown(
     title: str,
     markdown: str,

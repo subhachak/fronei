@@ -80,6 +80,45 @@ def _patch_completion(monkeypatch, text="# Answer\n\nDone."):
                 latency_ms=2,
                 cost_usd=0.0,
             )
+        if "presentation architect" in messages[0]["content"].lower():
+            return SimpleNamespace(
+                text=json.dumps(
+                    {
+                        "title": "AI Governance Briefing",
+                        "subtitle": "Native deck plan",
+                        "audience": "executives",
+                        "slides": [
+                            {
+                                "title": "Governance is becoming an operating model",
+                                "purpose": "context",
+                                "layout": "cards",
+                                "message": "Frame the decision.",
+                                "bullets": [
+                                    "Leaders need ownership",
+                                    "Controls need workflow fit",
+                                    "Adoption needs measurement",
+                                ],
+                                "notes": "Use this slide to frame the decision.",
+                            },
+                            {
+                                "title": "Recommended next steps",
+                                "purpose": "decision",
+                                "layout": "decision",
+                                "left": ["Define policy owners", "Map controls to high-risk workflows"],
+                                "right": ["Monitor adoption gaps", "Review evidence quality"],
+                                "notes": "Close with the implementation path.",
+                            },
+                        ],
+                    }
+                ),
+                model_used="fake-deck-planner",
+                latency_ms=2,
+                cost_usd=0.0,
+                model_role="document_planner",
+                preferred_model="fake-deck-planner",
+                attempted_models=["fake-deck-planner"],
+                failed_model_attempts=[],
+            )
         user_payload = json.loads(messages[-1]["content"])
         lowered = user_payload["message"].lower()
         if "research" in lowered and ("report" in lowered or "docx" in lowered):
@@ -926,7 +965,9 @@ Notes: Close with the implementation path.
         assert any(name.startswith("ppt/slides/slide") for name in package.namelist())
     assert [call["name"] for call in result["tool_calls"]] == ["make_pptx_artifact"]
     assert result["tool_calls"][0]["output"]["design_system"] == "agentdeck_v1"
-    assert result["tool_calls"][0]["output"]["layout_counts"]["CONTENT_2COL"] == 1
+    assert result["tool_calls"][0]["output"]["deck_source"] == "structured_deck_plan"
+    assert result["tool_calls"][0]["output"]["layout_counts"]["CONTENT_3COL"] == 1
+    assert result["tool_calls"][0]["input"]["render_plan"] is True
 
 
 def test_agent_v3_pptx_markdown_maps_to_agentdeck_layouts():

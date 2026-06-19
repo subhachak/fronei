@@ -262,12 +262,26 @@ class AgentV3Tools:
         expected_slides: list[str] | None = None,
         template_id: str | None = None,
         user_id: str | None = None,
+        render_plan: dict[str, Any] | None = None,
+        design_system_id: str | None = None,
+        repair_actions: list[dict[str, Any]] | None = None,
     ) -> tuple[Artifact, dict[str, Any]]:
         try:
-            from app.services.agent_v3.pptx_design import render_agentdeck_pptx_from_markdown
+            from app.services.agent_v3.pptx_design import render_agentdeck_pptx_from_markdown, render_agentdeck_pptx_from_render_plan
             from app.services.pptx_render_qa import run_pptx_render_qa
+            from app.services.components.render_plan import PptxRenderPlan
 
-            design = render_agentdeck_pptx_from_markdown(title=title, markdown=markdown, template_id=template_id, user_id=user_id)
+            if render_plan:
+                plan = PptxRenderPlan.model_validate(render_plan)
+                design = render_agentdeck_pptx_from_render_plan(
+                    plan,
+                    design_system_id=design_system_id or "agentdeck_v1",
+                    repair_actions=repair_actions,
+                )
+                source = "structured_deck_plan"
+            else:
+                design = render_agentdeck_pptx_from_markdown(title=title, markdown=markdown, template_id=template_id, user_id=user_id)
+                source = "markdown_bridge"
             payload = design.payload
             qa = run_pptx_render_qa(payload)
             issue_codes = [str(issue.get("type") or "unknown") for issue in qa.get("issues", []) if isinstance(issue, dict)]
@@ -279,6 +293,7 @@ class AgentV3Tools:
                 "theme": design.theme,
                 "template_id": template_id,
                 "template_applied": bool(template_id and design.design_system_id != "agentdeck_v1"),
+                "deck_source": source,
                 "qa_available": bool(qa.get("available")),
                 "qa_issue_codes": issue_codes,
                 "slide_count": qa.get("slide_count") or design.slide_count,
@@ -299,6 +314,7 @@ class AgentV3Tools:
                 "error": str(exc),
                 "template_id": template_id,
                 "template_applied": False,
+                "deck_source": "structured_deck_plan" if render_plan else "markdown_bridge",
                 "expected_slide_count": len(expected_slides or []),
             }
         artifact = Artifact(

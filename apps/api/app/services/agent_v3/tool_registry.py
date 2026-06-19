@@ -95,7 +95,16 @@ class ToolRegistry:
             ToolDefinition(
                 name="make_pptx_artifact",
                 description="Create a downloadable PPTX presentation artifact.",
-                input_schema={"title": "str", "markdown": "str", "expected_slides": "list[str]", "template_id": "Optional[str]", "user_id": "Optional[str]"},
+                input_schema={
+                    "title": "str",
+                    "markdown": "str",
+                    "expected_slides": "list[str]",
+                    "template_id": "Optional[str]",
+                    "user_id": "Optional[str]",
+                    "render_plan": "Optional[dict]",
+                    "design_system_id": "Optional[str]",
+                    "repair_actions": "Optional[list[dict]]",
+                },
                 output_schema={"artifact": "Artifact"},
                 route_tags=["document", "research_document"],
             ),
@@ -144,10 +153,30 @@ class ToolRegistry:
         expected_slides = [str(slide) for slide in (inputs.get("expected_slides") or []) if slide]
         template_id = str(inputs.get("template_id") or "") or None
         user_id = str(inputs.get("user_id") or "") or None
-        artifact, metadata = self.tools.make_pptx_artifact(title, markdown, expected_slides=expected_slides, template_id=template_id, user_id=user_id)
+        render_plan = inputs.get("render_plan") if isinstance(inputs.get("render_plan"), dict) else None
+        design_system_id = str(inputs.get("design_system_id") or "") or None
+        repair_actions = inputs.get("repair_actions") if isinstance(inputs.get("repair_actions"), list) else None
+        artifact, metadata = self.tools.make_pptx_artifact(
+            title,
+            markdown,
+            expected_slides=expected_slides,
+            template_id=template_id,
+            user_id=user_id,
+            render_plan=render_plan,
+            design_system_id=design_system_id,
+            repair_actions=repair_actions,  # type: ignore[arg-type]
+        )
         return artifact, ToolCall(
             name="make_pptx_artifact",
-            input={"title": title, "markdown_chars": len(markdown), "expected_slides": expected_slides, "template_id": template_id, "user_id": user_id},
+            input={
+                "title": title,
+                "markdown_chars": len(markdown),
+                "expected_slides": expected_slides,
+                "template_id": template_id,
+                "user_id": user_id,
+                "render_plan": bool(render_plan),
+                "design_system_id": design_system_id,
+            },
             output={
                 "artifact_id": artifact.id,
                 "filename": artifact.filename,

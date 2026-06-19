@@ -217,6 +217,105 @@ def _infer_slide_role(slide) -> str:
     return "content"
 
 
+def _layout_placeholder_types(layout) -> list:
+    return [ph.placeholder_format.type for ph in layout.placeholders]
+
+
+def _placeholder_name(value) -> str:
+    try:
+        return value.name
+    except Exception:
+        return str(value)
+
+
+def _classify_layout_roles(layout) -> set[str]:
+    from pptx.enum.shapes import PP_PLACEHOLDER_TYPE as PPT
+
+    types = _layout_placeholder_types(layout)
+    has_title = PPT.TITLE in types or PPT.CENTER_TITLE in types
+    has_subtitle = PPT.SUBTITLE in types
+    object_count = sum(1 for t in types if t == PPT.OBJECT)
+    body_count = sum(1 for t in types if t == PPT.BODY)
+    content_count = object_count + body_count
+
+    roles: set[str] = set()
+    if PPT.CENTER_TITLE in types and has_subtitle:
+        roles.add("title")
+    if has_title and object_count >= 2:
+        roles.add("two_content")
+    if has_title and content_count == 1:
+        roles.add("content")
+        if body_count == 1 and object_count == 0:
+            roles.add("section")
+    if has_title and content_count == 0:
+        roles.add("title_only")
+    return roles
+
+
+def _template_archetypes_for_layout(name: str, roles: list[str], placeholder_types: list[str]) -> list[str]:
+    text = " ".join([name, *roles, *placeholder_types]).lower()
+    archetypes: list[str] = []
+    if "title" in roles or "center_title" in text or "subtitle" in text:
+        archetypes.append("cover")
+    if "section" in roles or "divider" in text or "agenda" in text:
+        archetypes.append("section_divider")
+    if "two_content" in roles or "comparison" in text or "two column" in text:
+        archetypes.extend(["two_column_comparison", "recommendation"])
+    if "content" in roles:
+        archetypes.extend(["executive_summary", "process_steps", "architecture_map"])
+    if "table" in text or "chart" in text or "object" in text:
+        archetypes.extend(["data_exhibit", "risk_matrix", "financial_exhibit"])
+    if "blank" in text or "title_only" in roles:
+        archetypes.extend(["takeaways", "recommendation"])
+    return list(dict.fromkeys(archetypes))
+
+
+def _layout_inventory(prs: Presentation) -> list[dict[str, object]]:
+    inventory: list[dict[str, object]] = []
+    for index, layout in enumerate(prs.slide_layouts):
+        roles = sorted(_classify_layout_roles(layout))
+        placeholder_types = [_placeholder_name(ph.placeholder_format.type) for ph in layout.placeholders]
+        placeholder_names = [str(getattr(ph, "name", "") or "") for ph in layout.placeholders if str(getattr(ph, "name", "") or "")]
+        inventory.append(
+            {
+                "index": index,
+                "name": layout.name or f"Layout {index}",
+                "roles": roles,
+                "placeholder_count": len(placeholder_types),
+                "placeholder_types": placeholder_types,
+                "placeholder_names": placeholder_names[:8],
+                "supports": _template_archetypes_for_layout(layout.name or "", roles, placeholder_types),
+            }
+        )
+    return inventory
+
+
+def _slide_types_from_layout_inventory(inventory: list[dict[str, object]]) -> list[str]:
+    found: list[str] = []
+    for layout in inventory:
+        for archetype in layout.get("supports") or []:
+            found.append(str(archetype))
+    return list(dict.fromkeys(found))
+
+
+def _preferred_v3_layouts(inventory: list[dict[str, object]], observed_roles: list[str]) -> list[str]:
+    archetypes = set(_slide_types_from_layout_inventory(inventory) + list(observed_roles))
+    preferred: list[str] = []
+    if {"data_exhibit", "financial_exhibit", "risk_matrix"} & archetypes:
+        preferred.append("table")
+    if {"two_column_comparison", "recommendation"} & archetypes:
+        preferred.extend(["decision", "cards"])
+    if {"process_steps", "architecture_map"} & archetypes:
+        preferred.append("timeline")
+    if {"executive_summary", "takeaways", "three_card_system", "governance_grid"} & archetypes:
+        preferred.extend(["cards", "bullets"])
+    if {"hero_cover"} & archetypes:
+        preferred.append("stat")
+    if not preferred:
+        preferred = ["cards", "bullets", "table", "timeline", "decision"]
+    return list(dict.fromkeys(preferred))
+
+
 # Cache of computed grammars, keyed by (path, mtime, size) so an edited or
 # re-uploaded template (same path, new content) is re-inspected, but repeat
 # requests for an unchanged template avoid re-parsing the whole .pptx
@@ -309,6 +408,7 @@ def template_grammar_for_path(path: Path) -> dict[str, object]:
 
     prs = Presentation(str(path))
     layout_names = [layout.name for layout in prs.slide_layouts if layout.name]
+    layout_inventory = _layout_inventory(prs)
     slide_roles = [_infer_slide_role(slide) for slide in prs.slides]
     role_counts = Counter(slide_roles)
     observed_roles = [role for role, _count in role_counts.most_common()]
@@ -323,8 +423,10 @@ def template_grammar_for_path(path: Path) -> dict[str, object]:
         "source": "pptx_template",
         "slide_count": len(prs.slides),
         "layout_names": layout_names[:12],
+        "layout_inventory": layout_inventory[:16],
         "observed_slide_roles": observed_roles[:8],
-        "available_slide_types": list(dict.fromkeys(observed_roles + TEMPLATE_FOLLOWING_SLIDE_TYPES)),
+        "available_slide_types": list(dict.fromkeys(observed_roles + _slide_types_from_layout_inventory(layout_inventory) + TEMPLATE_FOLLOWING_SLIDE_TYPES)),
+        "preferred_v3_layouts": _preferred_v3_layouts(layout_inventory, observed_roles),
         "fonts": _font_names(prs),
         "colors": _theme_colors(prs),
         "guidance": [

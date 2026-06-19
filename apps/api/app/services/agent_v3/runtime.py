@@ -1031,6 +1031,14 @@ class AgentV3Runtime:
             )
 
         tool_name = choose_artifact_tool(request, plan)
+        if tool_name == "make_pptx_artifact":
+            event = progress(
+                "pptx_design_plan",
+                "Mapping the deck into design-system slides.",
+                template_id=request.template_id,
+                expected_slides=list(plan.sections or []),
+            )
+            yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
         event = progress(
             "artifact_builder",
             f"Building artifact with {tool_name}.",
@@ -1038,7 +1046,7 @@ class AgentV3Runtime:
             title=plan.title,
         )
         yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
-        artifact, artifact_call = build_artifact(self.tool_registry, plan, draft, tool_name)
+        artifact, artifact_call = build_artifact(self.tool_registry, plan, draft, tool_name, request, user_id=goal.user_id)
         if artifact.kind == "markdown":
             event = progress(
                 "chat_renderer",

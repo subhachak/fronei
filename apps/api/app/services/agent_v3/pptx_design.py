@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Any
 
 from app.services.components.render_plan import PptxRenderPlan, PptxSlidePlan, ZoneInstance
+from app.services.design_systems.brand_generator import design_system_id_for_template
+from app.services.design_systems.registry import DEFAULT_DESIGN_SYSTEM, get_design_system
 
 
 @dataclass
@@ -17,6 +19,7 @@ class SlideSpec:
     bullets: list[str] = field(default_factory=list)
     notes: str = ""
     table: list[list[str]] = field(default_factory=list)
+    source_index: int = 0
 
 
 @dataclass
@@ -26,29 +29,55 @@ class PptxDesignResult:
     theme: str
     slide_count: int
     layout_counts: dict[str, int]
+    design_ledger: list[dict[str, Any]]
+    repair_actions: list[dict[str, Any]]
 
 
 class AgentDeckRenderError(RuntimeError):
     pass
 
 
-def render_agentdeck_pptx_from_markdown(title: str, markdown: str, *, theme: str = "dark") -> PptxDesignResult:
-    render_plan = agentdeck_render_plan_from_markdown(title, markdown, theme=theme)
+def render_agentdeck_pptx_from_markdown(
+    title: str,
+    markdown: str,
+    *,
+    theme: str = "dark",
+    template_id: str | None = None,
+    user_id: str | None = None,
+) -> PptxDesignResult:
+    design_system_id = _design_system_id_for_template(template_id, user_id)
+    render_plan, repair_actions = agentdeck_render_plan_from_markdown(
+        title,
+        markdown,
+        theme=theme,
+        design_system_id=design_system_id,
+        return_repairs=True,
+    )
     payload = _render_agentdeck_plan(render_plan)
     layout_counts: dict[str, int] = {}
     for slide in render_plan.slides:
         layout_counts[slide.slide_layout] = layout_counts.get(slide.slide_layout, 0) + 1
     return PptxDesignResult(
         payload=payload,
-        design_system_id="agentdeck_v1",
+        design_system_id=design_system_id,
         theme=theme,
         slide_count=len(render_plan.slides),
         layout_counts=layout_counts,
+        design_ledger=_design_ledger(render_plan),
+        repair_actions=repair_actions,
     )
 
 
-def agentdeck_render_plan_from_markdown(title: str, markdown: str, *, theme: str = "dark") -> PptxRenderPlan:
+def agentdeck_render_plan_from_markdown(
+    title: str,
+    markdown: str,
+    *,
+    theme: str = "dark",
+    design_system_id: str = "agentdeck_v1",
+    return_repairs: bool = False,
+) -> PptxRenderPlan | tuple[PptxRenderPlan, list[dict[str, Any]]]:
     deck_title, deck_subtitle, slides = _parse_deck_markdown(title, markdown)
+    slides, repair_actions = _repair_slide_specs(slides)
     slide_plans: list[PptxSlidePlan] = [
         PptxSlidePlan(
             slide_layout="TITLE",
@@ -77,7 +106,10 @@ def agentdeck_render_plan_from_markdown(title: str, markdown: str, *, theme: str
         )
     )
     resolved_theme = "light" if theme == "light" else "dark"
-    return PptxRenderPlan.build(slide_plans[:26], theme=resolved_theme)  # title + 24 content + closing
+    render_plan = PptxRenderPlan.build(slide_plans[:26], theme=resolved_theme, design_system_id=design_system_id)  # title + 24 content + closing
+    if return_repairs:
+        return render_plan, repair_actions
+    return render_plan
 
 
 def _parse_deck_markdown(title: str, markdown: str) -> tuple[str, str | None, list[SlideSpec]]:
@@ -106,7 +138,7 @@ def _parse_deck_markdown(title: str, markdown: str) -> tuple[str, str | None, li
             continue
         if line.startswith("## "):
             flush_table()
-            current = SlideSpec(title=_clean_inline(line[3:]) or "Slide")
+            current = SlideSpec(title=_clean_inline(line[3:]) or "Slide", source_index=len(slides) + 1)
             slides.append(current)
             in_notes = False
             continue
@@ -230,6 +262,132 @@ def _render_agentdeck_plan(render_plan: PptxRenderPlan) -> bytes:
         error = proc.stderr.decode("utf-8", errors="ignore")[-1200:]
         raise AgentDeckRenderError(error or f"AgentDeck renderer exited with {proc.returncode}")
     return proc.stdout
+
+
+def _design_system_id_for_template(template_id: str | None, user_id: str | None = None) -> str:
+    """Resolve a PPTX template selection to a registered design-system id.
+
+    Uploaded templates generate user-scoped design systems named from
+    (user_id, template_id). Built-in template ids may also be passed directly
+    if they are already registered design-system ids. Any miss falls back to
+    the base AgentDeck system instead of failing the whole artifact.
+    """
+    normalized = str(template_id or "").strip()
+    if not normalized or normalized == "fronei-default":
+        return DEFAULT_DESIGN_SYSTEM
+
+    candidates: list[str] = []
+    if user_id:
+        candidates.append(design_system_id_for_template(user_id, normalized))
+    candidates.append(normalized)
+
+    for candidate in candidates:
+        try:
+            get_design_system(candidate)
+            return candidate
+        except Exception:
+            continue
+    return DEFAULT_DESIGN_SYSTEM
+
+
+def _repair_slide_specs(slides: list[SlideSpec]) -> tuple[list[SlideSpec], list[dict[str, Any]]]:
+    repaired: list[SlideSpec] = []
+    actions: list[dict[str, Any]] = []
+
+    for slide in slides:
+        bullets = [_shorten_bullet_for_slide(item) for item in slide.bullets if item]
+        long_bullet_count = sum(1 for original, shortened in zip(slide.bullets, bullets) if original != shortened)
+        if long_bullet_count:
+            actions.append(
+                {
+                    "type": "compact_long_bullets",
+                    "source_slide": slide.source_index,
+                    "title": slide.title,
+                    "count": long_bullet_count,
+                }
+            )
+
+        table = slide.table
+        if table and (len(table) > 8 or any(len(row) > 5 for row in table)):
+            table = [row[:5] for row in table[:8]]
+            actions.append(
+                {
+                    "type": "trim_table",
+                    "source_slide": slide.source_index,
+                    "title": slide.title,
+                    "max_rows": 8,
+                    "max_columns": 5,
+                }
+            )
+
+        if len(bullets) <= 6:
+            repaired.append(SlideSpec(title=slide.title, bullets=bullets, notes=slide.notes, table=table, source_index=slide.source_index))
+            continue
+
+        chunks = [bullets[i : i + 5] for i in range(0, len(bullets), 5)]
+        actions.append(
+            {
+                "type": "split_dense_slide",
+                "source_slide": slide.source_index,
+                "title": slide.title,
+                "chunks": len(chunks),
+            }
+        )
+        for index, chunk in enumerate(chunks, start=1):
+            suffix = f" ({index}/{len(chunks)})" if len(chunks) > 1 else ""
+            repaired.append(
+                SlideSpec(
+                    title=f"{slide.title}{suffix}",
+                    bullets=chunk,
+                    notes=slide.notes if index == len(chunks) else "",
+                    table=table if index == 1 else [],
+                    source_index=slide.source_index,
+                )
+            )
+
+    return repaired, actions
+
+
+def _design_ledger(render_plan: PptxRenderPlan) -> list[dict[str, Any]]:
+    ledger: list[dict[str, Any]] = []
+    for index, slide in enumerate(render_plan.slides, start=1):
+        zones = slide.zones or {}
+        components: list[dict[str, Any]] = []
+        for zone_name, zone in zones.items():
+            if isinstance(zone, list):
+                component_ids = [item.component_id for item in zone]
+            else:
+                component_ids = [zone.component_id]
+            components.append({"zone": zone_name, "components": component_ids})
+        ledger.append(
+            {
+                "slide": index,
+                "layout": slide.slide_layout,
+                "visual_role": _visual_role_for_slide(slide),
+                "title": slide.hero_title or slide.title or slide.closing_text or "",
+                "components": components,
+                "notes": bool(slide.notes),
+            }
+        )
+    return ledger
+
+
+def _visual_role_for_slide(slide: PptxSlidePlan) -> str:
+    if slide.slide_layout == "TITLE":
+        return "opening"
+    if slide.slide_layout == "CLOSING":
+        return "close"
+    if slide.slide_layout == "CONTENT_HERO_STAT":
+        return "metric_focus"
+    if slide.slide_layout == "CONTENT_TABLE_SIDEBAR":
+        return "comparison"
+    if slide.slide_layout == "CONTENT_SPLIT_DECISIONS":
+        return "decision"
+    return "explanation"
+
+
+def _shorten_bullet_for_slide(text: str) -> str:
+    return _shorten(text, 210)
 
 
 def _header_bar(index: int) -> dict[str, Any]:

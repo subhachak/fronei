@@ -255,12 +255,19 @@ class AgentV3Tools:
         )
         return artifact, issue_codes
 
-    def make_pptx_artifact(self, title: str, markdown: str, expected_slides: list[str] | None = None) -> tuple[Artifact, dict[str, Any]]:
+    def make_pptx_artifact(
+        self,
+        title: str,
+        markdown: str,
+        expected_slides: list[str] | None = None,
+        template_id: str | None = None,
+        user_id: str | None = None,
+    ) -> tuple[Artifact, dict[str, Any]]:
         try:
             from app.services.agent_v3.pptx_design import render_agentdeck_pptx_from_markdown
             from app.services.pptx_render_qa import run_pptx_render_qa
 
-            design = render_agentdeck_pptx_from_markdown(title=title, markdown=markdown)
+            design = render_agentdeck_pptx_from_markdown(title=title, markdown=markdown, template_id=template_id, user_id=user_id)
             payload = design.payload
             qa = run_pptx_render_qa(payload)
             issue_codes = [str(issue.get("type") or "unknown") for issue in qa.get("issues", []) if isinstance(issue, dict)]
@@ -270,10 +277,14 @@ class AgentV3Tools:
             metadata: dict[str, Any] = {
                 "design_system": design.design_system_id,
                 "theme": design.theme,
+                "template_id": template_id,
+                "template_applied": bool(template_id and design.design_system_id != "agentdeck_v1"),
                 "qa_available": bool(qa.get("available")),
                 "qa_issue_codes": issue_codes,
                 "slide_count": qa.get("slide_count") or design.slide_count,
                 "layout_counts": design.layout_counts,
+                "design_ledger": design.design_ledger,
+                "repair_actions": design.repair_actions,
                 "expected_slide_count": len(expected_slides or []),
             }
         except Exception as exc:
@@ -286,6 +297,8 @@ class AgentV3Tools:
                 "qa_available": False,
                 "qa_issue_codes": ["pptx_render_failed"],
                 "error": str(exc),
+                "template_id": template_id,
+                "template_applied": False,
                 "expected_slide_count": len(expected_slides or []),
             }
         artifact = Artifact(

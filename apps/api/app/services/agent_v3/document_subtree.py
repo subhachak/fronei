@@ -717,12 +717,24 @@ def _minimum_document_headings(plan: DocumentPlan) -> int:
     return max(2, min(5, section_count))
 
 
-def build_artifact(tool_registry, plan: DocumentPlan, draft: DocumentDraft, tool_name: str) -> tuple[Artifact, ToolCall]:
+def build_artifact(
+    tool_registry,
+    plan: DocumentPlan,
+    draft: DocumentDraft,
+    tool_name: str,
+    request: AgentV3Request | None = None,
+    *,
+    user_id: str | None = None,
+) -> tuple[Artifact, ToolCall]:
     inputs: dict[str, object] = {"title": plan.title, "markdown": draft.markdown}
     if tool_name == "make_docx_artifact":
         inputs["expected_sections"] = list(plan.sections or [])
     if tool_name == "make_pptx_artifact":
         inputs["expected_slides"] = list(plan.sections or [])
+        if request is not None and request.template_id:
+            inputs["template_id"] = request.template_id
+        if user_id:
+            inputs["user_id"] = user_id
     artifact, call = tool_registry.run(tool_name, inputs)
     if call.ok and artifact is not None:
         return artifact, call

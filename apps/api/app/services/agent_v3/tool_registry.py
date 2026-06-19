@@ -95,7 +95,7 @@ class ToolRegistry:
             ToolDefinition(
                 name="make_pptx_artifact",
                 description="Create a downloadable PPTX presentation artifact.",
-                input_schema={"title": "str", "markdown": "str", "expected_slides": "list[str]"},
+                input_schema={"title": "str", "markdown": "str", "expected_slides": "list[str]", "template_id": "Optional[str]", "user_id": "Optional[str]"},
                 output_schema={"artifact": "Artifact"},
                 route_tags=["document", "research_document"],
             ),
@@ -142,10 +142,12 @@ class ToolRegistry:
         title = str(inputs.get("title") or "Agent v3 presentation")
         markdown = str(inputs.get("markdown") or "")
         expected_slides = [str(slide) for slide in (inputs.get("expected_slides") or []) if slide]
-        artifact, metadata = self.tools.make_pptx_artifact(title, markdown, expected_slides=expected_slides)
+        template_id = str(inputs.get("template_id") or "") or None
+        user_id = str(inputs.get("user_id") or "") or None
+        artifact, metadata = self.tools.make_pptx_artifact(title, markdown, expected_slides=expected_slides, template_id=template_id, user_id=user_id)
         return artifact, ToolCall(
             name="make_pptx_artifact",
-            input={"title": title, "markdown_chars": len(markdown), "expected_slides": expected_slides},
+            input={"title": title, "markdown_chars": len(markdown), "expected_slides": expected_slides, "template_id": template_id, "user_id": user_id},
             output={
                 "artifact_id": artifact.id,
                 "filename": artifact.filename,

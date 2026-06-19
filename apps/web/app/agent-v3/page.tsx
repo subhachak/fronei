@@ -225,6 +225,7 @@ export default function AgentV3Page() {
   const [templateStatus, setTemplateStatus] = useState('')
   const [templateError, setTemplateError] = useState('')
   const [templateDeleteId, setTemplateDeleteId] = useState<string | null>(null)
+  const [selectedTemplateId, setSelectedTemplateId] = useState('')
   const [uploadSource, setUploadSource] = useState<'composer' | 'profile'>('profile')
   const eventsRef = useRef<ProgressEvent[]>([])
   const chatScrollRef = useRef<HTMLDivElement | null>(null)
@@ -246,6 +247,7 @@ export default function AgentV3Page() {
   const latestTurn = activeTurns.at(-1) || null
   const latestArtifact = result?.artifacts?.[0] || latestTurn?.artifacts?.[0]
   const sources = result?.sources || []
+  const selectedTemplateExists = !selectedTemplateId || templates.some(template => template.id === selectedTemplateId)
 
   useEffect(() => {
     if (!isLoaded || !isSignedIn) return
@@ -308,6 +310,7 @@ export default function AgentV3Page() {
       if (!response.ok) throw new Error(await response.text() || 'Template upload failed')
       const uploaded = await response.json() as DocumentTemplateOption
       setTemplates(prev => [uploaded, ...prev.filter(template => template.id !== uploaded.id)])
+      setSelectedTemplateId(uploaded.id)
       setTemplateStatus(uploadSource === 'composer' ? 'Template saved to your profile.' : 'Template uploaded.')
       setTemplatesLoaded(true)
     } catch (err) {
@@ -323,6 +326,7 @@ export default function AgentV3Page() {
       const response = await authorizedFetch(`/documents/templates/${encodeURIComponent(templateId)}`, { method: 'DELETE' })
       if (!response.ok) throw new Error(await response.text() || 'Template delete failed')
       setTemplates(prev => prev.filter(template => template.id !== templateId))
+      if (selectedTemplateId === templateId) setSelectedTemplateId('')
       setTemplateDeleteId(null)
       setTemplateStatus('Template deleted.')
     } catch (err) {
@@ -390,6 +394,7 @@ export default function AgentV3Page() {
           conversation_id: conversationId,
           quality_mode: qualityMode,
           output_format: option?.output_format || outputFormat,
+          template_id: selectedTemplateExists ? selectedTemplateId || undefined : undefined,
           research_level: option?.research_level || researchLevel,
           confirm_deep_research: Boolean(option?.confirm_deep_research),
           force_route: option?.force_route || undefined,
@@ -907,6 +912,9 @@ export default function AgentV3Page() {
               canRun={canRun}
               run={() => run()}
               onUploadTemplate={() => openTemplateUpload('composer')}
+              templates={templates}
+              selectedTemplateId={selectedTemplateExists ? selectedTemplateId : ''}
+              setSelectedTemplateId={setSelectedTemplateId}
               templateStatus={uploadSource === 'composer' ? templateStatus : ''}
             />
           </div>
@@ -1312,6 +1320,9 @@ function Composer({
   canRun,
   run,
   onUploadTemplate,
+  templates,
+  selectedTemplateId,
+  setSelectedTemplateId,
   templateStatus,
 }: {
   message: string
@@ -1326,6 +1337,9 @@ function Composer({
   canRun: boolean
   run: () => void
   onUploadTemplate: () => void
+  templates: DocumentTemplateOption[]
+  selectedTemplateId: string
+  setSelectedTemplateId: (templateId: string) => void
   templateStatus: string
 }) {
   return (
@@ -1347,6 +1361,15 @@ function Composer({
           <StudioSelect label="Quality" value={qualityMode} onChange={value => setQualityMode(value as QualityMode)} options={['draft', 'standard', 'executive']} />
           <StudioSelect label="Output" value={outputFormat} onChange={value => setOutputFormat(value as OutputFormat)} options={['chat', 'markdown', 'docx', 'pptx']} />
           <StudioSelect label="Research" value={researchLevel} onChange={value => setResearchLevel(value as ResearchLevel)} options={['auto', 'easy', 'regular', 'deep']} />
+          <label className={styles.studioSelect}>
+            <span>Template</span>
+            <select value={selectedTemplateId} onChange={event => setSelectedTemplateId(event.target.value)} className={styles.selectInput}>
+              <option value="">Default</option>
+              {templates.map(template => (
+                <option key={template.id} value={template.id}>{template.name}</option>
+              ))}
+            </select>
+          </label>
         </div>
         <div className={styles.composerActionRow}>
           <button

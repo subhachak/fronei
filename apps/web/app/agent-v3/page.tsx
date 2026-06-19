@@ -24,6 +24,7 @@ import {
   Send,
   Sparkles,
   Trash2,
+  Upload,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { marked } from 'marked'
@@ -50,6 +51,16 @@ type PendingDelete =
   | { type: 'workspace'; workspaceId: string }
   | { type: 'conversation'; workspaceId: string; conversationId: string }
   | null
+
+type DocumentTemplateOption = {
+  id: string
+  name: string
+  description?: string
+  recommended?: boolean
+  user_template?: boolean
+  design_mode?: string
+  design_system?: string
+}
 
 type ProgressEvent = {
   stage: string
@@ -209,10 +220,17 @@ export default function AgentV3Page() {
   const [leftRailCollapsed, setLeftRailCollapsed] = useState(false)
   const [rightRailCollapsed, setRightRailCollapsed] = useState(false)
   const [copiedKey, setCopiedKey] = useState<string | null>(null)
+  const [templates, setTemplates] = useState<DocumentTemplateOption[]>([])
+  const [templatesLoaded, setTemplatesLoaded] = useState(false)
+  const [templateStatus, setTemplateStatus] = useState('')
+  const [templateError, setTemplateError] = useState('')
+  const [templateDeleteId, setTemplateDeleteId] = useState<string | null>(null)
+  const [uploadSource, setUploadSource] = useState<'composer' | 'profile'>('profile')
   const eventsRef = useRef<ProgressEvent[]>([])
   const chatScrollRef = useRef<HTMLDivElement | null>(null)
   const activeRunConversationIdRef = useRef<string | null>(null)
   const activeRunMessageRef = useRef<string | null>(null)
+  const templateUploadRef = useRef<HTMLInputElement | null>(null)
 
   const canRun = useMemo(() => isLoaded && isSignedIn && message.trim().length > 0 && !running, [isLoaded, isSignedIn, message, running])
   const activeEvents = useMemo(() => events.filter(event => !['tool_selection', 'tool_result'].includes(event.stage)), [events])
@@ -234,6 +252,7 @@ export default function AgentV3Page() {
     void loadWorkspaces().catch(err => {
       setError(err instanceof Error ? err.message : 'Could not load Agent v3 workspaces')
     })
+    void loadTemplates()
   }, [isLoaded, isSignedIn])
 
   useEffect(() => {
@@ -242,14 +261,74 @@ export default function AgentV3Page() {
 
   async function authorizedFetch(path: string, init: RequestInit = {}) {
     const token = await getToken()
+    const isFormData = typeof FormData !== 'undefined' && init.body instanceof FormData
+    const headers = {
+      ...(!isFormData && init.body ? { 'Content-Type': 'application/json' } : {}),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(init.headers || {}),
+    }
     return fetch(`${API_BASE}${path}`, {
       ...init,
-      headers: {
-        ...(init.body ? { 'Content-Type': 'application/json' } : {}),
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        ...(init.headers || {}),
-      },
+      headers,
     })
+  }
+
+  async function loadTemplates() {
+    setTemplateError('')
+    try {
+      const response = await authorizedFetch('/documents/templates?doc_type=presentation')
+      if (!response.ok) throw new Error(await response.text() || 'Could not load templates')
+      const payload = await response.json() as { templates: DocumentTemplateOption[] }
+      setTemplates(payload.templates || [])
+      setTemplatesLoaded(true)
+    } catch (err) {
+      setTemplateError(err instanceof Error ? err.message : 'Could not load templates')
+      setTemplatesLoaded(true)
+    }
+  }
+
+  function openTemplateUpload(source: 'composer' | 'profile') {
+    setUploadSource(source)
+    templateUploadRef.current?.click()
+  }
+
+  async function uploadTemplate(file: File | null) {
+    if (!file) return
+    if (!file.name.toLowerCase().endsWith('.pptx')) {
+      setTemplateError('Template must be a .pptx PowerPoint file.')
+      return
+    }
+    setTemplateStatus(uploadSource === 'composer' ? 'Saving this template to your profile...' : 'Uploading template...')
+    setTemplateError('')
+    try {
+      const form = new FormData()
+      form.append('file', file)
+      form.append('name', file.name.replace(/\.pptx$/i, '').replace(/[-_]+/g, ' '))
+      const response = await authorizedFetch('/documents/templates', { method: 'POST', body: form })
+      if (!response.ok) throw new Error(await response.text() || 'Template upload failed')
+      const uploaded = await response.json() as DocumentTemplateOption
+      setTemplates(prev => [uploaded, ...prev.filter(template => template.id !== uploaded.id)])
+      setTemplateStatus(uploadSource === 'composer' ? 'Template saved to your profile.' : 'Template uploaded.')
+      setTemplatesLoaded(true)
+    } catch (err) {
+      setTemplateError(err instanceof Error ? err.message : 'Template upload failed')
+      setTemplateStatus('')
+    }
+  }
+
+  async function deleteTemplate(templateId: string) {
+    setTemplateStatus('Deleting template...')
+    setTemplateError('')
+    try {
+      const response = await authorizedFetch(`/documents/templates/${encodeURIComponent(templateId)}`, { method: 'DELETE' })
+      if (!response.ok) throw new Error(await response.text() || 'Template delete failed')
+      setTemplates(prev => prev.filter(template => template.id !== templateId))
+      setTemplateDeleteId(null)
+      setTemplateStatus('Template deleted.')
+    } catch (err) {
+      setTemplateError(err instanceof Error ? err.message : 'Template delete failed')
+      setTemplateStatus('')
+    }
   }
 
   async function loadWorkspaces(selectConversationId?: string) {
@@ -723,6 +802,16 @@ export default function AgentV3Page() {
 
   return (
     <main className={styles.root}>
+      <input
+        ref={templateUploadRef}
+        type="file"
+        accept=".pptx"
+        className={styles.hiddenInput}
+        onChange={event => {
+          void uploadTemplate(event.target.files?.[0] ?? null)
+          event.target.value = ''
+        }}
+      />
       <div
         className={styles.shell}
         style={{
@@ -817,6 +906,8 @@ export default function AgentV3Page() {
               running={running}
               canRun={canRun}
               run={() => run()}
+              onUploadTemplate={() => openTemplateUpload('composer')}
+              templateStatus={uploadSource === 'composer' ? templateStatus : ''}
             />
           </div>
         </section>
@@ -846,6 +937,16 @@ export default function AgentV3Page() {
                 copiedKey={copiedKey}
                 onCopyText={copyText}
                 onCollapse={() => setRightRailCollapsed(true)}
+                templates={templates}
+                templatesLoaded={templatesLoaded}
+                templateStatus={templateStatus}
+                templateError={templateError}
+                templateDeleteId={templateDeleteId}
+                onUploadTemplate={() => openTemplateUpload('profile')}
+                onRefreshTemplates={loadTemplates}
+                onRequestDeleteTemplate={setTemplateDeleteId}
+                onCancelDeleteTemplate={() => setTemplateDeleteId(null)}
+                onDeleteTemplate={deleteTemplate}
               />
             </>
           )}
@@ -1210,6 +1311,8 @@ function Composer({
   running,
   canRun,
   run,
+  onUploadTemplate,
+  templateStatus,
 }: {
   message: string
   setMessage: (message: string) => void
@@ -1222,6 +1325,8 @@ function Composer({
   running: boolean
   canRun: boolean
   run: () => void
+  onUploadTemplate: () => void
+  templateStatus: string
 }) {
   return (
     <section className={styles.composer}>
@@ -1243,15 +1348,28 @@ function Composer({
           <StudioSelect label="Output" value={outputFormat} onChange={value => setOutputFormat(value as OutputFormat)} options={['chat', 'markdown', 'docx']} />
           <StudioSelect label="Research" value={researchLevel} onChange={value => setResearchLevel(value as ResearchLevel)} options={['auto', 'easy', 'regular', 'deep']} />
         </div>
-        <button
-          type="button"
-          onClick={run}
-          disabled={!canRun}
-          className={styles.primaryButton}
-        >
-          {running ? <Loader2 size={16} className={styles.spin} /> : <Send size={16} />}
-          {running ? 'Working' : 'Start'}
-        </button>
+        <div className={styles.composerActionRow}>
+          <button
+            type="button"
+            onClick={onUploadTemplate}
+            className={styles.secondaryIconButton}
+            title="Upload a PowerPoint template to your profile"
+            aria-label="Upload a PowerPoint template to your profile"
+          >
+            <Upload size={16} />
+            <span>Template</span>
+          </button>
+          <button
+            type="button"
+            onClick={run}
+            disabled={!canRun}
+            className={styles.primaryButton}
+          >
+            {running ? <Loader2 size={16} className={styles.spin} /> : <Send size={16} />}
+            {running ? 'Working' : 'Start'}
+          </button>
+        </div>
+        {templateStatus && <p className={styles.composerStatus}>{templateStatus}</p>}
       </div>
     </section>
   )
@@ -1660,6 +1778,16 @@ function ContextRail({
   copiedKey,
   onCopyText,
   onCollapse,
+  templates,
+  templatesLoaded,
+  templateStatus,
+  templateError,
+  templateDeleteId,
+  onUploadTemplate,
+  onRefreshTemplates,
+  onRequestDeleteTemplate,
+  onCancelDeleteTemplate,
+  onDeleteTemplate,
 }: {
   result: AgentResult | null
   events: ProgressEvent[]
@@ -1674,6 +1802,16 @@ function ContextRail({
   copiedKey: string | null
   onCopyText: (value: string, key: string) => void | Promise<void>
   onCollapse: () => void
+  templates: DocumentTemplateOption[]
+  templatesLoaded: boolean
+  templateStatus: string
+  templateError: string
+  templateDeleteId: string | null
+  onUploadTemplate: () => void
+  onRefreshTemplates: () => void | Promise<void>
+  onRequestDeleteTemplate: (templateId: string) => void
+  onCancelDeleteTemplate: () => void
+  onDeleteTemplate: (templateId: string) => void | Promise<void>
 }) {
   const workSummary = buildWorkSummary({ result, events, sources, activeConversation, currentMessage })
   return (
@@ -1705,6 +1843,61 @@ function ContextRail({
             </div>
           </div>
         </details>
+
+        <section className={styles.contextCard}>
+          <div className={styles.contextCardHeader}>
+            <Upload size={16} />
+            <h3>Profile templates</h3>
+          </div>
+          <p className={styles.contextBody}>
+            Upload PowerPoint templates once, then use them from any conversation.
+          </p>
+          <div className={styles.templateActionRow}>
+            <button type="button" className={styles.fullDarkButton} onClick={onUploadTemplate}>
+              <Upload size={16} />
+              Upload PPTX
+            </button>
+            <button type="button" className={styles.secondaryIconButton} onClick={() => onRefreshTemplates()}>
+              Refresh
+            </button>
+          </div>
+          {templateStatus && <p className={styles.mutedSmall}>{templateStatus}</p>}
+          {templateError && <p className={styles.inlineError}>{templateError}</p>}
+          {!templatesLoaded && <p className={styles.mutedText}>Loading templates...</p>}
+          {templatesLoaded && templates.length === 0 && (
+            <p className={styles.mutedText}>No saved templates yet.</p>
+          )}
+          {templates.length > 0 && (
+            <div className={styles.templateList}>
+              {templates.map(template => (
+                <div key={template.id} className={styles.templateItem}>
+                  <div className={styles.templateItemMain}>
+                    <strong>{template.name}</strong>
+                    <span>{template.user_template ? 'Uploaded template' : 'Built-in template'}</span>
+                  </div>
+                  {template.user_template && (
+                    templateDeleteId === template.id ? (
+                      <div className={styles.inlineConfirm}>
+                        <button type="button" onClick={() => onDeleteTemplate(template.id)}>Delete</button>
+                        <button type="button" onClick={onCancelDeleteTemplate}>Keep</button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        className={styles.smallIconButton}
+                        onClick={() => onRequestDeleteTemplate(template.id)}
+                        aria-label={`Delete ${template.name}`}
+                        title={`Delete ${template.name}`}
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    )
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
 
         <section className={styles.contextCard}>
           <div className={styles.contextCardHeader}>

@@ -1124,8 +1124,9 @@
 
 .composerActionRow {
   display: grid;
-  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) 40px 40px;
   gap: 8px;
+  align-items: center;
 }
 
 .composerStatus {
@@ -1135,10 +1136,64 @@
   font-weight: 750;
 }
 
-.selectGrid {
+.composerUtilityButton,
+.composerIconButton,
+.composerSendButton {
+  display: inline-flex;
+  min-height: 40px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px solid #ded6c9;
+  background: #fbfaf6;
+  color: #162033;
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.composerUtilityButton {
+  min-width: 0;
+  justify-content: flex-start;
+  overflow: hidden;
+  padding: 0 12px;
+}
+
+.composerUtilityButton span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composerIconButton,
+.composerSendButton {
+  width: 40px;
+  padding: 0;
+}
+
+.composerIconButton {
+  color: #59645f;
+}
+
+.composerSendButton {
+  border-color: #162033;
+  background: #162033;
+  color: #fff;
+}
+
+.composerSendButton:disabled {
+  border-color: #a8afa7;
+  background: #a8afa7;
+  cursor: not-allowed;
+}
+
+.composerOptions {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
+  border: 1px solid #ebe4d8;
+  background: #fffdf8;
+  padding: 8px;
 }
 
 .studioSelect {
@@ -1153,6 +1208,17 @@
   font-size: 12px;
   font-weight: 800;
   padding: 7px 10px;
+}
+
+.optionHint {
+  grid-column: 1 / -1;
+  margin: 0;
+  overflow: hidden;
+  color: #7b857e;
+  font-size: 12px;
+  font-weight: 750;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .selectInput {
@@ -1923,17 +1989,17 @@
   }
 
   .composerFooter {
-    flex-direction: row;
-    align-items: center;
-    justify-content: space-between;
+    flex-direction: column;
+    align-items: stretch;
+    justify-content: flex-start;
   }
 
-  .selectGrid {
-    display: flex;
+  .composerOptions {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 
   .studioSelect {
-    min-width: 132px;
+    min-width: 0;
   }
 
   .cueGrid {

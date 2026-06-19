@@ -973,6 +973,9 @@ class AgentV3Runtime:
                 title=deck.title,
                 design_system=deck.design_system_id,
                 slide_count=len(deck.render_plan.slides),
+                template_mode=deck.template_grammar.get("mode"),
+                template_slide_types=deck.template_grammar.get("available_slide_types"),
+                template_preferred_layouts=deck.template_grammar.get("preferred_v3_layouts"),
                 repair_actions=deck.repair_actions,
                 **model_client.telemetry_for_response(
                     model_client.ModelResponse(
@@ -995,6 +998,8 @@ class AgentV3Runtime:
                 "Composing validated design-system slides.",
                 template_id=request.template_id,
                 design_system=deck.design_system_id,
+                template_mode=deck.template_grammar.get("mode"),
+                template_layout_inventory=deck.template_grammar.get("layout_inventory"),
                 design_ledger=deck.design_ledger,
             )
             yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))

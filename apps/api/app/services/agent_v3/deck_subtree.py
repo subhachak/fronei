@@ -9,6 +9,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, ValidationError
 
 from app.config import get_settings
+from app.db.models import SessionLocal
 from app.services.agent_v3 import model_client
 from app.services.agent_v3.document_subtree import DocumentPlan
 from app.services.agent_v3.models import AgentV3Request, Source
@@ -23,6 +24,7 @@ from app.services.agent_v3.research_subtree import EvidencePack, infer_research_
 from app.services.agent_v3.tools import source_context
 from app.services.components.compose_docplan import compose_docplan_to_pptx_render_plan
 from app.services.components.render_plan import ContentBlock, DocPlan, PptxRenderPlan, SectionPlan, ZoneInstance
+from app.services.document_templates import template_design_context, template_grammar_for_selection
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +43,7 @@ class DeckDraft:
     render_plan: PptxRenderPlan
     summary_markdown: str
     design_system_id: str
+    template_grammar: dict[str, Any]
     design_ledger: list[dict[str, Any]]
     repair_actions: list[dict[str, Any]]
     model_used: str = ""
@@ -95,6 +98,8 @@ def plan_deck(
     user_id: str | None = None,
 ) -> DeckDraft:
     design_system_id = _design_system_id_for_template(request.template_id, user_id)
+    template_grammar = _template_grammar_for_request(request, user_id=user_id, document_plan=document_plan)
+    template_context = template_design_context(template_grammar)
     context = source_context_from_evidence(evidence) if evidence is not None else source_context(sources)
     prompt_payload = {
         "message": request.message,
@@ -106,6 +111,9 @@ def plan_deck(
         "sources": context[:9000],
         "recommended_slide_count": _recommended_slide_count(request, document_plan, bool(research_answer)),
         "profile": infer_research_profile(request.message),
+        "template_grammar": template_grammar,
+        "template_design_context": template_context,
+        "allowed_visual_layouts": template_grammar.get("preferred_v3_layouts") or ["cards", "bullets", "table", "timeline", "decision", "stat"],
     }
     try:
         response = model_client.complete(
@@ -125,6 +133,7 @@ def plan_deck(
             document_plan,
             result,
             design_system_id=design_system_id,
+            template_grammar=template_grammar,
             model_used=response.model_used,
             latency_ms=response.latency_ms,
             cost_usd=response.cost_usd,
@@ -144,6 +153,7 @@ def _deck_from_result(
     result: DeckPlanResult,
     *,
     design_system_id: str,
+    template_grammar: dict[str, Any],
     model_used: str,
     latency_ms: int,
     cost_usd: float,
@@ -155,7 +165,7 @@ def _deck_from_result(
     repair_actions: list[dict[str, Any]] = []
     slides = result.slides[:22] or []
     for index, raw in enumerate(slides, start=1):
-        section, repairs = _section_from_raw_slide(raw, index=index)
+        section, repairs = _section_from_raw_slide(raw, index=index, template_grammar=template_grammar)
         sections.append(section)
         repair_actions.extend(repairs)
     if not sections:
@@ -180,6 +190,7 @@ def _deck_from_result(
         render_plan=render_plan,
         summary_markdown=_deck_summary_markdown(doc_plan),
         design_system_id=design_system_id,
+        template_grammar=template_grammar,
         design_ledger=_design_ledger(render_plan),
         repair_actions=repair_actions,
         model_used=model_used,
@@ -191,9 +202,10 @@ def _deck_from_result(
     )
 
 
-def _section_from_raw_slide(raw: dict[str, Any], *, index: int) -> tuple[SectionPlan, list[dict[str, Any]]]:
+def _section_from_raw_slide(raw: dict[str, Any], *, index: int, template_grammar: dict[str, Any] | None = None) -> tuple[SectionPlan, list[dict[str, Any]]]:
     title = _clean_text(raw.get("title") or raw.get("section_title") or f"Slide {index}", 90)
-    layout_hint = str(raw.get("layout") or raw.get("visual") or "").lower()
+    requested_layout_hint = str(raw.get("layout") or raw.get("visual") or "").lower()
+    layout_hint = _coerce_layout_hint(requested_layout_hint, template_grammar)
     purpose = _purpose(raw.get("purpose"))
     message = _clean_text(raw.get("message") or "", 220) or None
     notes = _clean_text(raw.get("notes") or raw.get("speaker_notes") or "", 2000) or None
@@ -205,6 +217,15 @@ def _section_from_raw_slide(raw: dict[str, Any], *, index: int) -> tuple[Section
 
     repairs: list[dict[str, Any]] = []
     try:
+        if layout_hint != requested_layout_hint and requested_layout_hint:
+            repairs.append(
+                {
+                    "type": "template_layout_coercion",
+                    "slide": index,
+                    "requested": requested_layout_hint,
+                    "used": layout_hint,
+                }
+            )
         if layout_hint == "closing" or purpose == "closing":
             return _closing_section(index, title=title, body=notes or message or "Align on owners, timing, and next steps."), repairs
         if table:
@@ -369,6 +390,7 @@ def _closing_section(index: int, title: str = "Next steps", body: str = "Confirm
 
 
 def _fallback_deck(request: AgentV3Request, document_plan: DocumentPlan, *, design_system_id: str, reason: str) -> DeckDraft:
+    template_grammar = _template_grammar_for_request(request, user_id=None, document_plan=document_plan)
     sections = _fallback_sections(document_plan.sections or ["Executive summary", "Key findings", "Next steps"])
     sections.append(_closing_section(len(sections) + 1))
     doc_plan = DocPlan(
@@ -386,6 +408,7 @@ def _fallback_deck(request: AgentV3Request, document_plan: DocumentPlan, *, desi
         render_plan=render_plan,
         summary_markdown=_deck_summary_markdown(doc_plan),
         design_system_id=design_system_id,
+        template_grammar=template_grammar,
         design_ledger=_design_ledger(render_plan),
         repair_actions=[{"type": "deterministic_deck_fallback", "reason": reason[:300]}],
         preferred_model=model_client.model_for_role("document_planner", quality_mode=request.quality_mode) or "",
@@ -433,6 +456,60 @@ def _deck_planner_token_budget(request: AgentV3Request, *, has_research: bool) -
     if request.quality_mode == "executive" or request.research_level == "deep":
         return 6500 if has_research else 4500
     return 3800 if has_research else 2800
+
+
+def _template_grammar_for_request(
+    request: AgentV3Request,
+    *,
+    user_id: str | None,
+    document_plan: DocumentPlan,
+) -> dict[str, Any]:
+    brief = {
+        "title": document_plan.title,
+        "audience": document_plan.audience,
+        "sections": document_plan.sections,
+        "output_format": "pptx",
+    }
+    try:
+        with SessionLocal() as db:
+            grammar = template_grammar_for_selection(db, user_id or "", request.template_id, brief)
+            return dict(grammar or {})
+    except Exception as exc:
+        logger.warning("agent_v3 template grammar fetch failed; using default grammar: %s", exc)
+        return {
+            "mode": "fronei_premium_freehand",
+            "template_id": request.template_id or "fronei-default",
+            "fallback_reason": str(exc),
+            "preferred_v3_layouts": ["cards", "bullets", "table", "timeline", "decision", "stat"],
+        }
+
+
+def _coerce_layout_hint(layout_hint: str, template_grammar: dict[str, Any] | None) -> str:
+    normalized = (layout_hint or "cards").strip().lower()
+    aliases = {
+        "bullet": "bullets",
+        "card": "cards",
+        "comparison": "table",
+        "matrix": "table",
+        "data": "table",
+        "metric": "stat",
+        "roadmap": "timeline",
+        "process": "timeline",
+        "recommendation": "decision",
+    }
+    normalized = aliases.get(normalized, normalized)
+    supported_all = {"bullets", "cards", "table", "stat", "timeline", "decision", "closing"}
+    if normalized not in supported_all:
+        normalized = "cards"
+    if normalized == "closing":
+        return normalized
+    preferred = [str(item).lower() for item in (template_grammar or {}).get("preferred_v3_layouts", [])]
+    if not preferred or normalized in preferred:
+        return normalized
+    for candidate in preferred:
+        if candidate in supported_all and candidate != "closing":
+            return candidate
+    return "cards"
 
 
 def _parse_json(raw: str) -> dict[str, Any]:

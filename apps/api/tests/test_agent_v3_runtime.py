@@ -871,6 +871,8 @@ def test_agent_v3_markdown_output_renders_in_chat_without_artifact(monkeypatch):
 
 def test_agent_v3_pptx_output_creates_presentation_artifact(monkeypatch):
     from app.services import pptx_render_qa
+    from app.services.agent_v3 import pptx_design
+    from app.services.agent_v3.tools import render_pptx_from_markdown
 
     markdown = """# AI governance briefing
 
@@ -890,6 +892,17 @@ Notes: Close with the implementation path.
 """
     _patch_completion(monkeypatch, markdown)
     monkeypatch.setattr(pptx_render_qa, "run_pptx_render_qa", lambda payload: {"available": False, "issues": [], "slide_count": 2})
+    monkeypatch.setattr(
+        pptx_design,
+        "render_agentdeck_pptx_from_markdown",
+        lambda title, markdown, theme="dark": pptx_design.PptxDesignResult(
+            payload=render_pptx_from_markdown(title, markdown),
+            design_system_id="agentdeck_v1",
+            theme=theme,
+            slide_count=3,
+            layout_counts={"TITLE": 1, "CONTENT_2COL": 1, "CLOSING": 1},
+        ),
+    )
     runtime = AgentV3Runtime(tools=FakeTools())
 
     envelopes = _collect_stream(
@@ -910,6 +923,44 @@ Notes: Close with the implementation path.
         assert "[Content_Types].xml" in package.namelist()
         assert any(name.startswith("ppt/slides/slide") for name in package.namelist())
     assert [call["name"] for call in result["tool_calls"]] == ["make_pptx_artifact"]
+    assert result["tool_calls"][0]["output"]["design_system"] == "agentdeck_v1"
+    assert result["tool_calls"][0]["output"]["layout_counts"]["CONTENT_2COL"] == 1
+
+
+def test_agent_v3_pptx_markdown_maps_to_agentdeck_layouts():
+    from app.services.agent_v3.pptx_design import agentdeck_render_plan_from_markdown
+
+    markdown = """# Board briefing
+
+## Executive summary
+
+- Governance is shifting from policy to operating model.
+- Owners need controls embedded in operating processes.
+- Adoption starts with clear operating controls.
+
+## Vendor comparison
+
+| Vendor | Fit | Risk |
+| --- | --- | --- |
+| Tavily | Agent search | Medium |
+| You.com | Search and contents | Low |
+
+## Roadmap
+
+- Phase 1: Inventory current usage
+- Phase 2: Define controls
+- Phase 3: Monitor adoption
+"""
+
+    plan = agentdeck_render_plan_from_markdown("Board briefing", markdown)
+    layouts = [slide.slide_layout for slide in plan.slides]
+    assert layouts[0] == "TITLE"
+    assert "CONTENT_3COL" in layouts
+    assert "CONTENT_TABLE_SIDEBAR" in layouts
+    assert "CONTENT_1COL" in layouts
+    assert layouts[-1] == "CLOSING"
+    roadmap_slide = next(slide for slide in plan.slides if slide.title == "Roadmap")
+    assert roadmap_slide.zones["body"].component_id == "timeline"
 
 
 def test_agent_v3_api_stream(monkeypatch):

@@ -257,18 +257,23 @@ class AgentV3Tools:
 
     def make_pptx_artifact(self, title: str, markdown: str, expected_slides: list[str] | None = None) -> tuple[Artifact, dict[str, Any]]:
         try:
+            from app.services.agent_v3.pptx_design import render_agentdeck_pptx_from_markdown
             from app.services.pptx_render_qa import run_pptx_render_qa
 
-            payload = render_pptx_from_markdown(title=title, markdown=markdown)
+            design = render_agentdeck_pptx_from_markdown(title=title, markdown=markdown)
+            payload = design.payload
             qa = run_pptx_render_qa(payload)
             issue_codes = [str(issue.get("type") or "unknown") for issue in qa.get("issues", []) if isinstance(issue, dict)]
             mime = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
             kind = "pptx"
             filename = safe_filename(title, "pptx")
             metadata: dict[str, Any] = {
+                "design_system": design.design_system_id,
+                "theme": design.theme,
                 "qa_available": bool(qa.get("available")),
                 "qa_issue_codes": issue_codes,
-                "slide_count": qa.get("slide_count"),
+                "slide_count": qa.get("slide_count") or design.slide_count,
+                "layout_counts": design.layout_counts,
                 "expected_slide_count": len(expected_slides or []),
             }
         except Exception as exc:

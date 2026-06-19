@@ -895,12 +895,14 @@ Notes: Close with the implementation path.
     monkeypatch.setattr(
         pptx_design,
         "render_agentdeck_pptx_from_markdown",
-        lambda title, markdown, theme="dark": pptx_design.PptxDesignResult(
+        lambda title, markdown, theme="dark", template_id=None, user_id=None: pptx_design.PptxDesignResult(
             payload=render_pptx_from_markdown(title, markdown),
             design_system_id="agentdeck_v1",
             theme=theme,
             slide_count=3,
             layout_counts={"TITLE": 1, "CONTENT_2COL": 1, "CLOSING": 1},
+            design_ledger=[{"slide": 1, "layout": "TITLE"}],
+            repair_actions=[],
         ),
     )
     runtime = AgentV3Runtime(tools=FakeTools())
@@ -961,6 +963,48 @@ def test_agent_v3_pptx_markdown_maps_to_agentdeck_layouts():
     assert layouts[-1] == "CLOSING"
     roadmap_slide = next(slide for slide in plan.slides if slide.title == "Roadmap")
     assert roadmap_slide.zones["body"].component_id == "timeline"
+
+
+def test_agent_v3_pptx_template_resolves_brand_design_system(monkeypatch):
+    from app.services.agent_v3 import pptx_design
+    from app.services.design_systems.brand_generator import design_system_id_for_template
+
+    expected = design_system_id_for_template("user_123", "tpl-abc")
+    seen: list[str] = []
+
+    def fake_get_design_system(design_system_id: str):
+        seen.append(design_system_id)
+        if design_system_id != expected:
+            raise KeyError(design_system_id)
+        return object()
+
+    monkeypatch.setattr(pptx_design, "get_design_system", fake_get_design_system)
+
+    assert pptx_design._design_system_id_for_template("tpl-abc", "user_123") == expected
+    assert seen[0] == expected
+
+
+def test_agent_v3_pptx_repairs_dense_slides():
+    from app.services.agent_v3.pptx_design import agentdeck_render_plan_from_markdown
+
+    markdown = """# Dense deck
+
+## Findings
+
+- First point
+- Second point
+- Third point
+- Fourth point
+- Fifth point
+- Sixth point
+- Seventh point
+- Eighth point
+"""
+
+    plan, repairs = agentdeck_render_plan_from_markdown("Dense deck", markdown, return_repairs=True)
+    assert any(repair["type"] == "split_dense_slide" for repair in repairs)
+    finding_slides = [slide for slide in plan.slides if slide.title and slide.title.startswith("Findings")]
+    assert len(finding_slides) == 2
 
 
 def test_agent_v3_api_stream(monkeypatch):

@@ -28,6 +28,7 @@ class AgentV3Request(BaseModel):
     confirm_deep_research: bool = False
     force_route: RouteName | None = None
     output_format: Literal["chat", "markdown", "docx", "pptx"] = "chat"
+    template_id: str | None = None
 
 
 class Goal(BaseModel):

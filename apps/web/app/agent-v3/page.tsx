@@ -8,6 +8,7 @@ import {
   Check,
   CheckCircle2,
   ChevronDown,
+  ChevronUp,
   ChevronsLeft,
   ChevronsRight,
   Clock3,
@@ -1342,6 +1343,8 @@ function Composer({
   setSelectedTemplateId: (templateId: string) => void
   templateStatus: string
 }) {
+  const [optionsOpen, setOptionsOpen] = useState(false)
+  const selectedTemplateName = templates.find(template => template.id === selectedTemplateId)?.name || 'Default'
   return (
     <section className={styles.composer}>
       <textarea
@@ -1357,41 +1360,53 @@ function Composer({
         placeholder="Give Fronei a task..."
       />
       <div className={styles.composerFooter}>
-        <div className={styles.selectGrid}>
-          <StudioSelect label="Quality" value={qualityMode} onChange={value => setQualityMode(value as QualityMode)} options={['draft', 'standard', 'executive']} />
-          <StudioSelect label="Output" value={outputFormat} onChange={value => setOutputFormat(value as OutputFormat)} options={['chat', 'markdown', 'docx', 'pptx']} />
-          <StudioSelect label="Research" value={researchLevel} onChange={value => setResearchLevel(value as ResearchLevel)} options={['auto', 'easy', 'regular', 'deep']} />
-          <label className={styles.studioSelect}>
-            <span>Template</span>
-            <select value={selectedTemplateId} onChange={event => setSelectedTemplateId(event.target.value)} className={styles.selectInput}>
-              <option value="">Default</option>
-              {templates.map(template => (
-                <option key={template.id} value={template.id}>{template.name}</option>
-              ))}
-            </select>
-          </label>
-        </div>
         <div className={styles.composerActionRow}>
           <button
             type="button"
+            onClick={() => setOptionsOpen(open => !open)}
+            className={styles.composerUtilityButton}
+            aria-expanded={optionsOpen}
+            title="Task options"
+          >
+            {optionsOpen ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+            <span>{outputFormat}{researchLevel !== 'auto' ? ` · ${researchLevel}` : ''}</span>
+          </button>
+          <button
+            type="button"
             onClick={onUploadTemplate}
-            className={styles.secondaryIconButton}
+            className={styles.composerIconButton}
             title="Upload a PowerPoint template to your profile"
             aria-label="Upload a PowerPoint template to your profile"
           >
             <Upload size={16} />
-            <span>Template</span>
           </button>
           <button
             type="button"
             onClick={run}
             disabled={!canRun}
-            className={styles.primaryButton}
+            className={styles.composerSendButton}
+            aria-label={running ? 'Working' : 'Start'}
           >
             {running ? <Loader2 size={16} className={styles.spin} /> : <Send size={16} />}
-            {running ? 'Working' : 'Start'}
           </button>
         </div>
+        {optionsOpen && (
+          <div className={styles.composerOptions}>
+            <StudioSelect label="Quality" value={qualityMode} onChange={value => setQualityMode(value as QualityMode)} options={['draft', 'standard', 'executive']} />
+            <StudioSelect label="Output" value={outputFormat} onChange={value => setOutputFormat(value as OutputFormat)} options={['chat', 'markdown', 'docx', 'pptx']} />
+            <StudioSelect label="Research" value={researchLevel} onChange={value => setResearchLevel(value as ResearchLevel)} options={['auto', 'easy', 'regular', 'deep']} />
+            <label className={styles.studioSelect}>
+              <span>Template</span>
+              <select value={selectedTemplateId} onChange={event => setSelectedTemplateId(event.target.value)} className={styles.selectInput}>
+                <option value="">Default</option>
+                {templates.map(template => (
+                  <option key={template.id} value={template.id}>{template.name}</option>
+                ))}
+              </select>
+            </label>
+            <p className={styles.optionHint}>Template: {selectedTemplateName}</p>
+          </div>
+        )}
         {templateStatus && <p className={styles.composerStatus}>{templateStatus}</p>}
       </div>
     </section>

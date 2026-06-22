@@ -98,6 +98,7 @@ export function AgentShell() {
       onDeleteConversation={agent.deleteConversation}
       onSelectConversation={(workspaceId, conversationId) => {
         void agent.selectConversation(workspaceId, conversationId)
+        setView('chat')
         setLibrarySheetOpen(false)
       }}
       expandedWorkspaceIds={agent.expandedWorkspaceIds}

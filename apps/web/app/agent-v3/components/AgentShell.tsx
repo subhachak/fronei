@@ -1,8 +1,9 @@
 'use client'
 
-import { CheckCircle2, ChevronsLeft, ChevronsRight, Library, Loader2, PanelRight, Sparkles } from 'lucide-react'
+import { CheckCircle2, ChevronsLeft, ChevronsRight, Library, Loader2, Moon, PanelRight, Sparkles, Sun } from 'lucide-react'
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { useAgentV3 } from '../hooks/useAgentV3'
+import { useTheme } from '../hooks/useTheme'
 import { clamp } from '../lib/format'
 import { Composer } from './Composer'
 import { ContextPanel } from './ContextPanel'
@@ -21,6 +22,7 @@ const MAX_COMPOSER_HEIGHT = 340
 
 export function AgentShell() {
   const agent = useAgentV3()
+  const { theme, toggleTheme } = useTheme()
 
   const [librarySheetOpen, setLibrarySheetOpen] = useState(false)
   const [contextSheetOpen, setContextSheetOpen] = useState(false)
@@ -161,6 +163,15 @@ export function AgentShell() {
             )}
             <button
               type="button"
+              onClick={toggleTheme}
+              aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+              title={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+              className="grid h-8 w-8 place-items-center rounded-full border border-neutral-200 text-neutral-600 dark:border-neutral-800 dark:text-neutral-300"
+            >
+              {theme === 'dark' ? <Sun size={15} /> : <Moon size={15} />}
+            </button>
+            <button
+              type="button"
               onClick={() => setLibrarySheetOpen(true)}
               aria-label="Open library"
               className="grid h-8 w-8 place-items-center rounded-full border border-neutral-200 text-neutral-600 dark:border-neutral-800 dark:text-neutral-300"
@@ -226,6 +237,16 @@ export function AgentShell() {
                   {agent.running ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
                   {agent.running ? 'Working' : 'Ready'}
                 </Badge>
+                <Button
+                  variant="outline"
+                  size="icon-sm"
+                  onClick={toggleTheme}
+                  aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+                  title={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+                  className="rounded-full"
+                >
+                  {theme === 'dark' ? <Sun size={15} /> : <Moon size={15} />}
+                </Button>
               </div>
             </div>
           </header>

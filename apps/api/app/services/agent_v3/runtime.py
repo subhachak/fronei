@@ -101,6 +101,7 @@ class AgentV3Runtime:
                     "fast_router",
                     quality_mode=request.quality_mode,
                     model_used=fast_decision.model_used,
+                    overrides=request.model_overrides,
                 ),
             )
             yield StreamEnvelope(type="progress", data=first.model_dump(mode="json"))
@@ -114,7 +115,7 @@ class AgentV3Runtime:
                     f"Direct answer used {response.model_used or 'the configured direct model'}.",
                     latency_ms=response.latency_ms,
                     cost_usd=response.cost_usd,
-                    **model_client.telemetry_for_response(response),
+                    **model_client.telemetry_for_response(response, overrides=request.model_overrides),
                 )
                 yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
                 result = AgentV3Result(
@@ -166,7 +167,7 @@ class AgentV3Runtime:
                 f"Quick web answer used {response.model_used or 'the configured direct model'}.",
                 latency_ms=response.latency_ms,
                 cost_usd=response.cost_usd,
-                **model_client.telemetry_for_response(response),
+                **model_client.telemetry_for_response(response, overrides=request.model_overrides),
             )
             yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
             tool_calls = [search_call, *([read_call] if read_call is not None else [])]
@@ -219,6 +220,7 @@ class AgentV3Runtime:
                 "orchestrator",
                 quality_mode=request.quality_mode,
                 model_used=decision.model_used,
+                overrides=request.model_overrides,
             ),
             available_routes=decision.available_routes,
             available_tools=decision.available_tools,
@@ -408,6 +410,7 @@ class AgentV3Runtime:
                 "research_planner",
                 quality_mode=request.quality_mode,
                 model_used=plan.model_used,
+                overrides=request.model_overrides,
             ),
             fallback_reason=plan.fallback_reason,
             agent_id="research_lead",
@@ -655,7 +658,7 @@ class AgentV3Runtime:
             "Synthesizing source-grounded answer from evidence.",
             agent_id="synthesis_agent",
             prompt_template_id=registry.agent("synthesis_agent").prompt_template_id,
-            **model_client.telemetry_for_role("synthesis", quality_mode=request.quality_mode),
+            **model_client.telemetry_for_role("synthesis", quality_mode=request.quality_mode, overrides=request.model_overrides),
             budget_ledger=ledger.model_dump(mode="json"),
         )
         yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
@@ -669,6 +672,7 @@ class AgentV3Runtime:
                 "synthesis",
                 quality_mode=request.quality_mode,
                 model_used=response.model_used,
+                overrides=request.model_overrides,
             ),
             latency_ms=response.latency_ms,
             cost_usd=response.cost_usd,
@@ -681,7 +685,7 @@ class AgentV3Runtime:
             "Checking research quality before publishing.",
             agent_id="research_judge",
             prompt_template_id=registry.agent("research_judge").prompt_template_id,
-            **model_client.telemetry_for_role("research_judge", quality_mode=request.quality_mode),
+            **model_client.telemetry_for_role("research_judge", quality_mode=request.quality_mode, overrides=request.model_overrides),
         )
         yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
         event = progress(
@@ -707,6 +711,7 @@ class AgentV3Runtime:
                 "citation_verifier",
                 quality_mode="standard",
                 model_used=getattr(verification, "model_used", ""),
+                overrides=request.model_overrides,
             ),
             budget_ledger=ledger.model_dump(mode="json"),
         )
@@ -725,7 +730,7 @@ class AgentV3Runtime:
                 prompt_template_id=registry.agent("repair_agent").prompt_template_id,
                 repair_instruction=judge.repair_instruction,
                 issues=judge.issues,
-                **model_client.telemetry_for_role("repair", quality_mode=request.quality_mode),
+                **model_client.telemetry_for_role("repair", quality_mode=request.quality_mode, overrides=request.model_overrides),
                 budget_ledger=ledger.model_dump(mode="json"),
             )
             yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
@@ -751,6 +756,7 @@ class AgentV3Runtime:
                     "repair",
                     quality_mode=request.quality_mode,
                     model_used=repaired.model_used,
+                    overrides=request.model_overrides,
                 ),
                 budget_ledger=ledger.model_dump(mode="json"),
             )
@@ -892,6 +898,7 @@ class AgentV3Runtime:
             max_tokens=900,
             role="direct_answer",
             quality_mode=request.quality_mode,
+            overrides=request.model_overrides,
         )
         return AgentV3Result(
             turn_id=turn_id,
@@ -903,6 +910,7 @@ class AgentV3Runtime:
                 "direct_answer",
                 quality_mode=request.quality_mode,
                 model_used=response.model_used,
+                overrides=request.model_overrides,
             ),
             events=events,
             latency_ms=response.latency_ms,
@@ -944,6 +952,7 @@ class AgentV3Runtime:
                 "document_planner",
                 quality_mode=request.quality_mode,
                 model_used=plan.model_used,
+                overrides=request.model_overrides,
             ),
             fallback_reason=plan.fallback_reason,
         )
@@ -957,7 +966,7 @@ class AgentV3Runtime:
                 template_id=request.template_id,
                 planned_sections=list(plan.sections or []),
             )
-            event.data.update(model_client.telemetry_for_role("document_planner", quality_mode=request.quality_mode))
+            event.data.update(model_client.telemetry_for_role("document_planner", quality_mode=request.quality_mode, overrides=request.model_overrides))
             yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
             deck = plan_deck(
                 request,
@@ -987,7 +996,8 @@ class AgentV3Runtime:
                         preferred_model=deck.preferred_model,
                         attempted_models=deck.attempted_models,
                         failed_model_attempts=deck.failed_model_attempts,
-                    )
+                    ),
+                    overrides=request.model_overrides,
                 ),
                 latency_ms=deck.latency_ms,
                 cost_usd=deck.cost_usd,
@@ -1067,7 +1077,7 @@ class AgentV3Runtime:
             )
 
         event = progress("document_writer", "Writing document draft.", plan_title=plan.title)
-        event.data.update(model_client.telemetry_for_role("document_writer", quality_mode=request.quality_mode))
+        event.data.update(model_client.telemetry_for_role("document_writer", quality_mode=request.quality_mode, overrides=request.model_overrides))
         yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
         draft = write_document(request, plan, sources=sources, research_answer=research_answer, evidence=evidence)
         event = progress(
@@ -1084,7 +1094,8 @@ class AgentV3Runtime:
                     preferred_model=draft.preferred_model,
                     attempted_models=draft.attempted_models,
                     failed_model_attempts=draft.failed_model_attempts,
-                )
+                ),
+                overrides=request.model_overrides,
             ),
             latency_ms=draft.latency_ms,
             cost_usd=draft.cost_usd,

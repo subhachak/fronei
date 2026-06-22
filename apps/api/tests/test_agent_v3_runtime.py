@@ -11,7 +11,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.auth import get_current_user_id
+from app.auth import get_current_user_id, get_current_user_is_admin
 from app.db.models import (
     AgentV3Artifact,
     AgentV3Conversation,
@@ -49,7 +49,7 @@ class FakeTools(AgentV3Tools):
 def _patch_completion(monkeypatch, text="# Answer\n\nDone."):
     from app.services.agent_v3 import model_client
 
-    def fake_complete(messages, *, preferred_model=None, role=None, quality_mode="standard", timeout_s=30, max_tokens=1200):
+    def fake_complete(messages, *, preferred_model=None, role=None, quality_mode="standard", timeout_s=30, max_tokens=1200, **_kwargs):
         if "research lead" in messages[0]["content"].lower():
             user_payload = json.loads(messages[-1]["content"])
             message = user_payload["message"]
@@ -184,7 +184,7 @@ def test_agent_v3_direct_fast_path_skips_orchestrator(monkeypatch):
 
     calls: list[str | None] = []
 
-    def fake_complete(messages, *, preferred_model=None, role=None, quality_mode="standard", timeout_s=30, max_tokens=1200):
+    def fake_complete(messages, *, preferred_model=None, role=None, quality_mode="standard", timeout_s=30, max_tokens=1200, **_kwargs):
         calls.append(role)
         assert role == "fast_router"
         return SimpleNamespace(
@@ -239,7 +239,7 @@ def test_agent_v3_direct_fast_path_skips_orchestrator(monkeypatch):
 def test_agent_v3_web_fast_path_uses_optional_web_search(monkeypatch):
     from app.services.agent_v3 import model_client
 
-    def fake_complete(messages, *, preferred_model=None, role=None, quality_mode="standard", timeout_s=30, max_tokens=1200):
+    def fake_complete(messages, *, preferred_model=None, role=None, quality_mode="standard", timeout_s=30, max_tokens=1200, **_kwargs):
         assert role == "fast_router"
         return SimpleNamespace(
             text=json.dumps(
@@ -295,7 +295,7 @@ def test_agent_v3_web_fast_path_uses_optional_web_search(monkeypatch):
 def test_agent_v3_model_recommendation_forces_web_fast(monkeypatch):
     from app.services.agent_v3 import model_client
 
-    def fake_complete(messages, *, preferred_model=None, role=None, quality_mode="standard", timeout_s=30, max_tokens=1200):
+    def fake_complete(messages, *, preferred_model=None, role=None, quality_mode="standard", timeout_s=30, max_tokens=1200, **_kwargs):
         assert role == "fast_router"
         return SimpleNamespace(
             text=json.dumps(
@@ -408,7 +408,7 @@ def test_agent_v3_approved_learned_signal_forces_web_fast(monkeypatch):
         db.close()
     monkeypatch.setattr(routing_policy, "SessionLocal", Session)
 
-    def fake_complete(messages, *, preferred_model=None, role=None, quality_mode="standard", timeout_s=30, max_tokens=1200):
+    def fake_complete(messages, *, preferred_model=None, role=None, quality_mode="standard", timeout_s=30, max_tokens=1200, **_kwargs):
         assert role == "fast_router"
         return SimpleNamespace(
             text=json.dumps({"path": "direct_fast", "confidence": 0.9, "reason": "Looks simple."}),
@@ -447,7 +447,7 @@ def test_agent_v3_approved_learned_signal_forces_web_fast(monkeypatch):
 def test_agent_v3_clarify_route(monkeypatch):
     from app.services.agent_v3 import model_client
 
-    def fake_complete(messages, *, preferred_model=None, role=None, quality_mode="standard", timeout_s=30, max_tokens=1200):
+    def fake_complete(messages, *, preferred_model=None, role=None, quality_mode="standard", timeout_s=30, max_tokens=1200, **_kwargs):
         return SimpleNamespace(
             text=json.dumps(
                 {
@@ -644,7 +644,7 @@ def test_agent_v3_research_source_ranking_and_deep_link_helpers():
 def test_agent_v3_research_repair_loop_runs_when_judge_requests_repair(monkeypatch):
     from app.services.agent_v3 import model_client
 
-    def fake_complete(messages, *, preferred_model=None, role=None, quality_mode="standard", timeout_s=30, max_tokens=1200):
+    def fake_complete(messages, *, preferred_model=None, role=None, quality_mode="standard", timeout_s=30, max_tokens=1200, **_kwargs):
         if "research lead" in messages[0]["content"].lower():
             user_payload = json.loads(messages[-1]["content"])
             message = user_payload["message"]
@@ -1055,6 +1055,7 @@ def test_agent_v3_api_stream(monkeypatch):
     Session = _sqlite_session()
     monkeypatch.setattr(persistence, "SessionLocal", Session)
     app.dependency_overrides[get_current_user_id] = lambda: "u1"
+    app.dependency_overrides[get_current_user_is_admin] = lambda: False
     try:
         with TestClient(app) as client:
             response = client.post("/agent-v3/turns/stream", json={"message": "Hello from v3"})
@@ -1072,6 +1073,7 @@ def test_agent_v3_background_turn_persists_and_polls_status(monkeypatch):
     Session = _sqlite_session()
     monkeypatch.setattr(persistence, "SessionLocal", Session)
     app.dependency_overrides[get_current_user_id] = lambda: "u1"
+    app.dependency_overrides[get_current_user_is_admin] = lambda: False
     try:
         with TestClient(app) as client:
             started = client.post("/agent-v3/turns", json={"message": "Hello from background v3"})
@@ -1127,6 +1129,7 @@ def test_agent_v3_api_stream_emits_keepalive_during_quiet_work(monkeypatch):
     monkeypatch.setattr(agent_v3_router, "AgentV3Runtime", lambda: SlowRuntime())
     monkeypatch.setattr(agent_v3_router, "AGENT_V3_SSE_HEARTBEAT_SECONDS", 0.01)
     app.dependency_overrides[get_current_user_id] = lambda: "u1"
+    app.dependency_overrides[get_current_user_is_admin] = lambda: False
     try:
         with TestClient(app) as client:
             response = client.post("/agent-v3/turns/stream", json={"message": "Hello from v3"})
@@ -1145,6 +1148,7 @@ def test_agent_v3_stream_persists_turn_events_tools_and_artifacts(monkeypatch, t
     Session = _sqlite_session()
     monkeypatch.setattr(persistence, "SessionLocal", Session)
     app.dependency_overrides[get_current_user_id] = lambda: "u1"
+    app.dependency_overrides[get_current_user_is_admin] = lambda: False
     try:
         with TestClient(app) as client:
             response = client.post(
@@ -1197,6 +1201,7 @@ def test_agent_v3_workspace_api_is_user_isolated(monkeypatch):
     Session = _sqlite_session()
     monkeypatch.setattr(persistence, "SessionLocal", Session)
     app.dependency_overrides[get_current_user_id] = lambda: "u1"
+    app.dependency_overrides[get_current_user_is_admin] = lambda: False
     try:
         with TestClient(app) as client:
             created = client.post("/agent-v3/workspaces", json={"name": "U1 workspace"})
@@ -1215,6 +1220,7 @@ def test_agent_v3_workspace_api_is_user_isolated(monkeypatch):
             assert "U1 workspace" in json.dumps(u1_list.json())
 
             app.dependency_overrides[get_current_user_id] = lambda: "u2"
+            app.dependency_overrides[get_current_user_is_admin] = lambda: False
             u2_list = client.get("/agent-v3/workspaces")
             assert u2_list.status_code == 200
             assert "U1 workspace" not in json.dumps(u2_list.json())
@@ -1235,6 +1241,7 @@ def test_agent_v3_conversation_turns_are_conversation_scoped(monkeypatch, tmp_pa
     Session = _sqlite_session()
     monkeypatch.setattr(persistence, "SessionLocal", Session)
     app.dependency_overrides[get_current_user_id] = lambda: "u1"
+    app.dependency_overrides[get_current_user_is_admin] = lambda: False
     try:
         with TestClient(app) as client:
             workspace = client.post("/agent-v3/workspaces", json={"name": "Workspace"}).json()
@@ -1254,6 +1261,7 @@ def test_agent_v3_conversation_turns_are_conversation_scoped(monkeypatch, tmp_pa
             assert payload["turns"][0]["goal"]["conversation_id"] == conversation["id"]
 
             app.dependency_overrides[get_current_user_id] = lambda: "u2"
+            app.dependency_overrides[get_current_user_is_admin] = lambda: False
             denied = client.get(f"/agent-v3/conversations/{conversation['id']}/turns?limit=6")
             assert denied.status_code == 200
             assert denied.json()["turns"] == []
@@ -1269,7 +1277,7 @@ def test_agent_v3_conversation_context_connects_followup_turns(monkeypatch, tmp_
     monkeypatch.setattr(persistence, "SessionLocal", Session)
     captured_prompts: list[str] = []
 
-    def fake_complete(messages, *, preferred_model=None, role=None, quality_mode="standard", timeout_s=30, max_tokens=1200):
+    def fake_complete(messages, *, preferred_model=None, role=None, quality_mode="standard", timeout_s=30, max_tokens=1200, **_kwargs):
         return SimpleNamespace(
             text=json.dumps({"route": "direct", "confidence": 0.9, "reason": "direct test"}),
             model_used="fake-orchestrator",
@@ -1286,6 +1294,7 @@ def test_agent_v3_conversation_context_connects_followup_turns(monkeypatch, tmp_
     monkeypatch.setattr(model_client, "complete", fake_complete)
     monkeypatch.setattr(model_client, "simple_completion", fake_simple_completion)
     app.dependency_overrides[get_current_user_id] = lambda: "u1"
+    app.dependency_overrides[get_current_user_is_admin] = lambda: False
     try:
         with TestClient(app) as client:
             workspace = client.post("/agent-v3/workspaces", json={"name": "Context workspace"}).json()
@@ -1326,7 +1335,7 @@ def test_agent_v3_workspace_context_is_shared_across_conversations(monkeypatch, 
     monkeypatch.setattr(persistence, "SessionLocal", Session)
     captured_prompts: list[str] = []
 
-    def fake_complete(messages, *, preferred_model=None, role=None, quality_mode="standard", timeout_s=30, max_tokens=1200):
+    def fake_complete(messages, *, preferred_model=None, role=None, quality_mode="standard", timeout_s=30, max_tokens=1200, **_kwargs):
         return SimpleNamespace(
             text=json.dumps({"route": "direct", "confidence": 0.9, "reason": "direct test"}),
             model_used="fake-orchestrator",
@@ -1343,6 +1352,7 @@ def test_agent_v3_workspace_context_is_shared_across_conversations(monkeypatch, 
     monkeypatch.setattr(model_client, "complete", fake_complete)
     monkeypatch.setattr(model_client, "simple_completion", fake_simple_completion)
     app.dependency_overrides[get_current_user_id] = lambda: "u1"
+    app.dependency_overrides[get_current_user_is_admin] = lambda: False
     try:
         with TestClient(app) as client:
             workspace = client.post("/agent-v3/workspaces", json={"name": "Shared workspace"}).json()
@@ -1386,7 +1396,7 @@ def test_agent_v3_vague_followup_does_not_import_other_workspace_conversation(mo
     Session = _sqlite_session()
     monkeypatch.setattr(persistence, "SessionLocal", Session)
 
-    def fake_complete(messages, *, preferred_model=None, role=None, quality_mode="standard", timeout_s=30, max_tokens=1200):
+    def fake_complete(messages, *, preferred_model=None, role=None, quality_mode="standard", timeout_s=30, max_tokens=1200, **_kwargs):
         return SimpleNamespace(
             text=json.dumps({"route": "direct", "confidence": 0.9, "reason": "direct test"}),
             model_used="fake-orchestrator",
@@ -1405,6 +1415,7 @@ def test_agent_v3_vague_followup_does_not_import_other_workspace_conversation(mo
     monkeypatch.setattr(model_client, "complete", fake_complete)
     monkeypatch.setattr(model_client, "simple_completion", fake_simple_completion)
     app.dependency_overrides[get_current_user_id] = lambda: "u1"
+    app.dependency_overrides[get_current_user_is_admin] = lambda: False
     try:
         with TestClient(app) as client:
             workspace = client.post("/agent-v3/workspaces", json={"name": "Research workspace"}).json()
@@ -1536,33 +1547,57 @@ def test_agent_v3_vendor_comparison_targets_official_llm_provider_lanes():
 
 
 def test_agent_v3_model_role_routing(monkeypatch):
-    from app.config import get_settings
-    from app.services.agent_v3 import model_client
+    """Model assignment is DB-backed (app/services/agent_v3/model_policy.py),
+    not env-backed -- see test_agent_v3_model_policy.py for full coverage of
+    that module. This test just confirms model_client reads through it."""
+    import app.db.models as db_models
+    from app.db.models import Base
+    from app.services.agent_v3 import model_client, model_policy
 
-    settings = get_settings()
-    monkeypatch.setattr(settings, "agent_v3_fallback_models", "fallback-a,fallback-b")
-    monkeypatch.setattr(settings, "agent_v3_orchestrator_model", "direct-orchestrator-test")
-    monkeypatch.setattr(settings, "agent_v3_direct_model", "direct-answer-test")
-    monkeypatch.setattr(settings, "agent_v3_synthesis_model", "sonnet-test")
-    monkeypatch.setattr(settings, "agent_v3_synthesis_model_executive", "opus-test")
-    monkeypatch.setattr(settings, "agent_v3_research_planner_model", "planner-test")
-    monkeypatch.setattr(settings, "agent_v3_brief_model", "brief-test")
-    monkeypatch.setattr(settings, "agent_v3_fast_router_model", "fast-router-test")
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(bind=engine)
+    monkeypatch.setattr(db_models, "SessionLocal", Session)
+    model_policy.invalidate_cache()
 
-    assert model_client.model_for_role("fast_router") == "fast-router-test"
-    assert model_client.model_for_role("orchestrator") == "direct-orchestrator-test"
-    assert model_client.model_for_role("direct_answer") == "direct-answer-test"
-    assert model_client.model_for_role("synthesis", quality_mode="standard") == "sonnet-test"
-    assert model_client.model_for_role("synthesis", quality_mode="executive") == "opus-test"
-    assert model_client.model_for_role("research_planner") == "planner-test"
-    assert model_client.model_for_role("research_brief") == "brief-test"
-    assert model_client._candidate_models("preferred-test") == ["preferred-test", "fallback-a", "fallback-b"]
+    with Session() as session:
+        model_policy.set_model_policy(
+            session,
+            role_overrides={
+                "fast_router": "fast-router-test",
+                "orchestrator": "direct-orchestrator-test",
+                "direct_answer": "direct-answer-test",
+                "synthesis": "sonnet-test",
+                "synthesis_executive": "opus-test",
+                "research_planner": "planner-test",
+                "research_brief": "brief-test",
+            },
+            fallback_models=["fallback-a", "fallback-b"],
+        )
+        session.commit()
+    model_policy.invalidate_cache()
+
+    try:
+        assert model_client.model_for_role("fast_router") == "fast-router-test"
+        assert model_client.model_for_role("orchestrator") == "direct-orchestrator-test"
+        assert model_client.model_for_role("direct_answer") == "direct-answer-test"
+        assert model_client.model_for_role("synthesis", quality_mode="standard") == "sonnet-test"
+        assert model_client.model_for_role("synthesis", quality_mode="executive") == "opus-test"
+        assert model_client.model_for_role("research_planner") == "planner-test"
+        assert model_client.model_for_role("research_brief") == "brief-test"
+        assert model_client._candidate_models("preferred-test") == ["preferred-test", "fallback-a", "fallback-b"]
+    finally:
+        model_policy.invalidate_cache()
 
 
 def test_agent_v3_deep_research_requires_confirmation(monkeypatch):
     from app.services.agent_v3 import model_client
 
-    def fake_complete(messages, *, preferred_model=None, role=None, quality_mode="standard", timeout_s=30, max_tokens=1200):
+    def fake_complete(messages, *, preferred_model=None, role=None, quality_mode="standard", timeout_s=30, max_tokens=1200, **_kwargs):
         return SimpleNamespace(
             text=json.dumps(
                 {

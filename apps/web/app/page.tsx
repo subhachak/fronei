@@ -4197,7 +4197,7 @@ type AdminUserRow = {
   last_seen_at: string | null
 }
 
-type AdminTab = 'overview' | 'users' | 'usage' | 'providers' | 'routing' | 'research' | 'turns' | 'errors' | 'audit' | 'system'
+type AdminTab = 'overview' | 'users' | 'usage' | 'providers' | 'routing' | 'modelpolicy' | 'research' | 'turns' | 'errors' | 'audit' | 'system'
 
 function AdminView({
   apiFetch,
@@ -4213,6 +4213,11 @@ function AdminView({
   const [providers, setProviders] = useState<any>(null)
   const [providerTestResults, setProviderTestResults] = useState<any>({})
   const [policy, setPolicy] = useState<any>(null)
+  const [modelPolicy, setModelPolicy] = useState<any>(null)
+  const [modelPolicyDraft, setModelPolicyDraft] = useState<Record<string, string>>({})
+  const [modelFallbackDraft, setModelFallbackDraft] = useState('')
+  const [modelPolicySaving, setModelPolicySaving] = useState(false)
+  const [modelPolicyStatus, setModelPolicyStatus] = useState('')
   const [research, setResearch] = useState<any[]>([])
   const [turns, setTurns] = useState<AdminTurnRow[]>([])
   const [turnStatus, setTurnStatus] = useState('active')
@@ -4240,6 +4245,7 @@ function AdminView({
     { id: 'usage',     label: 'Usage',     icon: 'ti-chart-bar' },
     { id: 'providers', label: 'Providers', icon: 'ti-plug-connected' },
     { id: 'routing',   label: 'Routing',   icon: 'ti-route' },
+    { id: 'modelpolicy', label: 'Model policy', icon: 'ti-cpu' },
     { id: 'research',  label: 'Research',  icon: 'ti-microscope' },
     { id: 'turns',     label: 'Turn profiler', icon: 'ti-activity' },
     { id: 'errors',    label: 'Errors',    icon: 'ti-alert-triangle' },
@@ -4265,6 +4271,7 @@ function AdminView({
       ['usage', json('/admin/usage?range=7d')],
       ['providers', json('/admin/providers')],
       ['policy', json('/admin/routing/policy')],
+      ['modelPolicy', json('/admin/agent-v3/model-policy')],
       ['research', json('/admin/research-runs')],
       ['turns', json(`/admin/turns?status=${encodeURIComponent(turnStatus)}${turnUserFilter.trim() ? `&user_id=${encodeURIComponent(turnUserFilter.trim())}` : ''}${turnIdleFilter.trim() ? `&min_idle_seconds=${encodeURIComponent(turnIdleFilter.trim())}` : ''}`)],
       ['turnRuntime', json('/admin/turn-runtime')],
@@ -4287,6 +4294,11 @@ function AdminView({
       if (key === 'usage') setUsage(value)
       if (key === 'providers') setProviders(value)
       if (key === 'policy') setPolicy(value)
+      if (key === 'modelPolicy') {
+        setModelPolicy(value)
+        setModelPolicyDraft({ ...value.roles })
+        setModelFallbackDraft((value.fallback_models ?? []).join(', '))
+      }
       if (key === 'research') setResearch(value.items ?? [])
       if (key === 'turns') setTurns(value.items ?? [])
       if (key === 'turnRuntime') setTurnRuntime(value)
@@ -4411,6 +4423,40 @@ function AdminView({
       method: 'POST',
       body: JSON.stringify({ message: routeMessage, profile: 'balanced' }),
     }))
+  }
+
+  async function saveModelPolicy() {
+    setModelPolicySaving(true)
+    setModelPolicyStatus('')
+    try {
+      const fallbackModels = modelFallbackDraft.split(',').map(s => s.trim()).filter(Boolean)
+      const updated = await json('/admin/agent-v3/model-policy', {
+        method: 'PATCH',
+        body: JSON.stringify({ roles: modelPolicyDraft, fallback_models: fallbackModels }),
+      })
+      setModelPolicy((prev: any) => ({ ...prev, roles: updated.roles, fallback_models: updated.fallback_models }))
+      setModelPolicyStatus('Saved. Takes effect for new turns within ~20s, no restart needed.')
+    } catch (e) {
+      setModelPolicyStatus(e instanceof Error ? e.message : 'Save failed')
+    } finally {
+      setModelPolicySaving(false)
+    }
+  }
+
+  async function resetModelPolicy() {
+    setModelPolicySaving(true)
+    setModelPolicyStatus('')
+    try {
+      const updated = await json('/admin/agent-v3/model-policy/reset', { method: 'POST' })
+      setModelPolicy((prev: any) => ({ ...prev, roles: updated.roles, fallback_models: updated.fallback_models }))
+      setModelPolicyDraft({ ...updated.roles })
+      setModelFallbackDraft((updated.fallback_models ?? []).join(', '))
+      setModelPolicyStatus('Reset to defaults.')
+    } catch (e) {
+      setModelPolicyStatus(e instanceof Error ? e.message : 'Reset failed')
+    } finally {
+      setModelPolicySaving(false)
+    }
   }
 
   async function testProvider(name: string) {
@@ -4786,6 +4832,67 @@ function AdminView({
                 </details>
               )}
             </div>
+          </div>
+        )}
+
+        {tab === 'modelpolicy' && (
+          <div className="card admin-table-card">
+            <div className="admin-card-head">
+              <div>
+                <div className="chart-card-title" style={{ marginBottom: 0 }}>Agent v3 model policy</div>
+                <div className="muted-text" style={{ fontSize: 12, marginTop: 4 }}>
+                  Which model handles each Agent v3 stage. This is the only place it's configured — there is no .env fallback.
+                  Empty a field and save to clear that override back to the default.
+                </div>
+              </div>
+              <div className="theme-btn-group">
+                <button className="theme-btn-opt" onClick={resetModelPolicy} disabled={modelPolicySaving} type="button">Reset to defaults</button>
+                <button className="theme-btn-opt active" onClick={saveModelPolicy} disabled={modelPolicySaving} type="button">{modelPolicySaving ? 'Saving…' : 'Save changes'}</button>
+              </div>
+            </div>
+            {modelPolicyStatus && <div className="muted-text" style={{ marginTop: 8 }}>{modelPolicyStatus}</div>}
+            {modelPolicy ? (
+              <>
+                <div className="admin-table-wrap" style={{ marginTop: 14 }}>
+                  <table className="admin-table">
+                    <thead><tr><th>Role</th><th>Model</th><th>Default</th></tr></thead>
+                    <tbody>
+                      {(modelPolicy.available_roles ?? []).map((role: string) => (
+                        <tr key={role}>
+                          <td className="mono">{role}</td>
+                          <td>
+                            <input
+                              className="conv-search-input"
+                              style={{ minWidth: 220 }}
+                              value={modelPolicyDraft[role] ?? ''}
+                              placeholder={modelPolicy.defaults?.roles?.[role] ?? ''}
+                              onChange={e => setModelPolicyDraft(prev => ({ ...prev, [role]: e.target.value }))}
+                            />
+                          </td>
+                          <td className="muted-text mono">{modelPolicy.defaults?.roles?.[role] ?? '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <div style={{ marginTop: 16 }}>
+                  <div className="chart-card-title" style={{ fontSize: 13 }}>Fallback chain</div>
+                  <div className="muted-text" style={{ fontSize: 12, marginBottom: 6 }}>
+                    Tried in order, after the role's model, if a provider call fails. Comma-separated; include the litellm provider prefix (e.g. <code>gemini/gemini-2.5-flash</code>).
+                  </div>
+                  <input
+                    className="conv-search-input"
+                    style={{ width: '100%' }}
+                    value={modelFallbackDraft}
+                    onChange={e => setModelFallbackDraft(e.target.value)}
+                  />
+                </div>
+                <details className="admin-code-card" style={{ marginTop: 14 }}>
+                  <summary className="muted-text" style={{ cursor: 'pointer' }}>View raw policy (JSON)</summary>
+                  <pre>{JSON.stringify(modelPolicy, null, 2)}</pre>
+                </details>
+              </>
+            ) : <span className="muted-text">Loading…</span>}
           </div>
         )}
 

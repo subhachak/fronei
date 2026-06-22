@@ -9,8 +9,8 @@ from threading import Thread
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response, StreamingResponse
 
-from app.auth import CurrentActiveUser
-from app.services.agent_v3 import persistence
+from app.auth import CurrentActiveUser, CurrentUserIsAdmin
+from app.services.agent_v3 import model_policy, persistence
 from app.services.agent_v3.models import (
     AgentV3ConversationCreate,
     AgentV3Request,
@@ -28,6 +28,23 @@ router = APIRouter(prefix="/agent-v3", tags=["agent-v3"])
 logger = logging.getLogger(__name__)
 
 AGENT_V3_SSE_HEARTBEAT_SECONDS = 10.0
+
+
+def _sanitize_model_overrides(request: AgentV3Request, *, is_admin: bool) -> AgentV3Request:
+    """Per-turn model overrides are an admin-only capability. Non-admins get
+    the field dropped outright, regardless of what they sent; admins get it
+    filtered down to known role keys with non-empty values, so a stray typo
+    just doesn't apply rather than 422ing the whole turn."""
+    if not request.model_overrides:
+        return request
+    if not is_admin:
+        return request.model_copy(update={"model_overrides": None})
+    cleaned = {
+        model_policy.canonical_role(role): model.strip()
+        for role, model in request.model_overrides.items()
+        if model_policy.canonical_role(role) and isinstance(model, str) and model.strip()
+    }
+    return request.model_copy(update={"model_overrides": cleaned or None})
 _DONE = object()
 
 
@@ -62,13 +79,17 @@ def _run_agent_v3_background(request: AgentV3Request, *, user_id: str, turn_id: 
 
 
 @router.post("/turns")
-def start_agent_v3_turn(request: AgentV3Request, user_id: str = CurrentActiveUser) -> dict:
+def start_agent_v3_turn(
+    request: AgentV3Request,
+    user_id: str = CurrentActiveUser,
+    is_admin: bool = CurrentUserIsAdmin,
+) -> dict:
     """Start an Agent v3 turn as a durable background job.
 
     The browser can poll /agent-v3/turns/{turn_id}/status for telemetry and
     completion. The run continues server-side if the browser connection drops.
     """
-
+    request = _sanitize_model_overrides(request, is_admin=is_admin)
     conversation = persistence.ensure_conversation(user_id, request.conversation_id, request.message)
     request = request.model_copy(
         update={
@@ -112,14 +133,18 @@ def start_agent_v3_turn(request: AgentV3Request, user_id: str = CurrentActiveUse
 
 
 @router.post("/turns/stream")
-def stream_agent_v3_turn(request: AgentV3Request, user_id: str = CurrentActiveUser) -> StreamingResponse:
+def stream_agent_v3_turn(
+    request: AgentV3Request,
+    user_id: str = CurrentActiveUser,
+    is_admin: bool = CurrentUserIsAdmin,
+) -> StreamingResponse:
     """Run the fresh v3 runtime.
 
     This endpoint intentionally bypasses conversations, turn_graph, the old planner,
     legacy research, and legacy document generation. It is an isolated proving
     ground for the clean runtime.
     """
-
+    request = _sanitize_model_overrides(request, is_admin=is_admin)
     runtime = AgentV3Runtime()
     conversation = persistence.ensure_conversation(user_id, request.conversation_id, request.message)
     request = request.model_copy(

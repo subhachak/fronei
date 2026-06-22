@@ -118,6 +118,7 @@ def decide_fast_path(request: AgentV3Request) -> FastPathDecision:
             ],
             role="fast_router",
             quality_mode=request.quality_mode,
+            overrides=request.model_overrides,
             max_tokens=260,
             timeout_s=8,
         )
@@ -165,6 +166,7 @@ def answer_direct_fast(request: AgentV3Request) -> model_client.ModelResponse:
         max_tokens=1600,
         role="direct_answer",
         quality_mode=request.quality_mode,
+        overrides=request.model_overrides,
         timeout_s=14,
     )
 
@@ -193,6 +195,7 @@ def answer_web_fast(
         max_tokens=1000,
         role="direct_answer",
         quality_mode=request.quality_mode,
+        overrides=request.model_overrides,
         timeout_s=16,
     )
 

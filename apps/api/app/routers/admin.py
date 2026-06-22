@@ -49,6 +49,7 @@ from app.db.models import (
     set_global_budget_config,
     set_turn_runtime_config,
 )
+from app.services.agent_v3 import model_policy as agent_v3_model_policy
 from app.services.agent_v3 import persistence as agent_v3_persistence
 from app.services.agent_v3 import prompt_library as agent_v3_prompt_library
 from app.services.agent_v3 import routing_policy as agent_v3_routing_policy
@@ -143,6 +144,11 @@ class AgentV3PromptUpsertRequest(BaseModel):
     version: str = Field(default="1.0.0", max_length=32)
     status: Literal["draft", "active", "archived"] = "draft"
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class AgentV3ModelPolicyUpdate(BaseModel):
+    roles: dict[str, str] = Field(default_factory=dict)
+    fallback_models: list[str] | None = None
 
 
 def require_admin(request: Request, payload: dict = Depends(get_current_user_payload)) -> AdminPrincipal:
@@ -1240,6 +1246,70 @@ def admin_agent_v3_prompt_rollback(prompt_id: str, admin: AdminPrincipal = Depen
     finally:
         db.close()
     return {"rolled_back_to": rolled_back.id, "prompt": rolled_back.model_dump(mode="json")}
+
+
+@router.get("/agent-v3/model-policy")
+def admin_agent_v3_model_policy(admin: AdminPrincipal = Depends(require_admin)) -> dict:
+    """Effective Agent v3 model assignment: defaults merged with whatever an
+    admin has overridden. This is the single source of truth — there is no
+    .env fallback for model identity anymore."""
+    db = SessionLocal()
+    try:
+        policy = agent_v3_model_policy.get_model_policy(db)
+        return {
+            "roles": policy["roles"],
+            "fallback_models": policy["fallback_models"],
+            "defaults": {
+                "roles": agent_v3_model_policy.DEFAULT_MODEL_POLICY,
+                "fallback_models": agent_v3_model_policy.DEFAULT_FALLBACK_MODELS,
+            },
+            "available_roles": list(agent_v3_model_policy.MODEL_ROLES),
+        }
+    finally:
+        db.close()
+
+
+@router.patch("/agent-v3/model-policy")
+def admin_agent_v3_model_policy_update(
+    body: AgentV3ModelPolicyUpdate,
+    admin: AdminPrincipal = Depends(require_admin),
+) -> dict:
+    db = SessionLocal()
+    try:
+        try:
+            policy = agent_v3_model_policy.set_model_policy(
+                db,
+                role_overrides=body.roles or None,
+                fallback_models=body.fallback_models,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+        _audit(db, admin, "agent_v3.model_policy.update", details=body.model_dump())
+        db.commit()
+        return {"roles": policy["roles"], "fallback_models": policy["fallback_models"]}
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+@router.post("/agent-v3/model-policy/reset")
+def admin_agent_v3_model_policy_reset(admin: AdminPrincipal = Depends(require_admin)) -> dict:
+    db = SessionLocal()
+    try:
+        policy = agent_v3_model_policy.reset_model_policy(db)
+        _audit(db, admin, "agent_v3.model_policy.reset")
+        db.commit()
+        return {"roles": policy["roles"], "fallback_models": policy["fallback_models"]}
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
 
 
 @router.get("/agent-v3/routing-signals")

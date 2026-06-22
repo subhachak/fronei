@@ -114,6 +114,7 @@ def plan_document(
             ],
             role="document_planner",
             quality_mode=request.quality_mode,
+            overrides=request.model_overrides,
             max_tokens=600,
             timeout_s=20,
         )
@@ -193,6 +194,7 @@ def _write_document_single_call(
         max_tokens=_document_writer_token_budget(request, research_answer=research_answer),
         role="document_writer",
         quality_mode=request.quality_mode,
+        overrides=request.model_overrides,
         timeout_s=max(30, int(get_settings().agent_v3_longform_timeout_s or 180)),
     )
     return DocumentDraft(
@@ -264,7 +266,7 @@ def _write_document_by_section(
         latency_ms=latency_ms,
         cost_usd=cost_usd,
         model_role="document_writer",
-        preferred_model=model_client.model_for_role("document_writer", quality_mode=request.quality_mode) or "",
+        preferred_model=model_client.model_for_role("document_writer", quality_mode=request.quality_mode, overrides=request.model_overrides) or "",
         attempted_models=attempted_models,
         failed_model_attempts=failed_model_attempts,
     )
@@ -311,6 +313,7 @@ def _write_one_section(
         max_tokens=_section_token_budget(depth, request=request),
         role="document_writer",
         quality_mode=request.quality_mode,
+        overrides=request.model_overrides,
         timeout_s=timeout_s,
     )
     return SectionWriteResult(

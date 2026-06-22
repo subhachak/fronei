@@ -113,6 +113,7 @@ def decide_with_options(
             ],
             role="orchestrator",
             quality_mode=request.quality_mode,
+            overrides=request.model_overrides,
             max_tokens=400,
             timeout_s=18,
         )

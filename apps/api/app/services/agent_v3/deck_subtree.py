@@ -123,6 +123,7 @@ def plan_deck(
             ],
             role="document_planner",
             quality_mode=request.quality_mode,
+            overrides=request.model_overrides,
             max_tokens=_deck_planner_token_budget(request, has_research=bool(research_answer)),
             timeout_s=max(30, int(get_settings().agent_v3_longform_timeout_s or 180)),
         )
@@ -137,7 +138,7 @@ def plan_deck(
             model_used=response.model_used,
             latency_ms=response.latency_ms,
             cost_usd=response.cost_usd,
-            preferred_model=getattr(response, "preferred_model", "") or model_client.model_for_role("document_planner", quality_mode=request.quality_mode) or "",
+            preferred_model=getattr(response, "preferred_model", "") or model_client.model_for_role("document_planner", quality_mode=request.quality_mode, overrides=request.model_overrides) or "",
             attempted_models=list(getattr(response, "attempted_models", []) or []),
             failed_model_attempts=list(getattr(response, "failed_model_attempts", []) or []),
         )
@@ -411,7 +412,7 @@ def _fallback_deck(request: AgentV3Request, document_plan: DocumentPlan, *, desi
         template_grammar=template_grammar,
         design_ledger=_design_ledger(render_plan),
         repair_actions=[{"type": "deterministic_deck_fallback", "reason": reason[:300]}],
-        preferred_model=model_client.model_for_role("document_planner", quality_mode=request.quality_mode) or "",
+        preferred_model=model_client.model_for_role("document_planner", quality_mode=request.quality_mode, overrides=request.model_overrides) or "",
     )
 
 

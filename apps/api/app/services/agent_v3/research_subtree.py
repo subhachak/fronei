@@ -1029,6 +1029,7 @@ def generate_research_brief(request: AgentV3Request) -> ResearchBrief:
             ],
             role="research_brief",
             quality_mode=request.quality_mode,
+            overrides=request.model_overrides,
             max_tokens=900 if request.research_level == "deep" else 600,
             timeout_s=15,
         )
@@ -1446,6 +1447,7 @@ def generate_coverage_contract(request: AgentV3Request, brief: ResearchBrief) ->
             ],
             role="coverage_contract",
             quality_mode=request.quality_mode,
+            overrides=request.model_overrides,
             max_tokens=1000,
             timeout_s=20,
         )
@@ -1791,6 +1793,7 @@ def reflect(request: AgentV3Request, state: ResearchStateStore) -> ReflectionDec
             ],
             role="reflection",
             quality_mode=request.quality_mode,
+            overrides=request.model_overrides,
             max_tokens=900 if request.research_level == "deep" else 500,
             timeout_s=15,
         )
@@ -1819,7 +1822,12 @@ def reflect(request: AgentV3Request, state: ResearchStateStore) -> ReflectionDec
         )
 
 
-def verify_citations_semantically(answer: str, evidence: EvidencePack) -> CitationVerification:
+def verify_citations_semantically(
+    answer: str,
+    evidence: EvidencePack,
+    *,
+    overrides: dict[str, str] | None = None,
+) -> CitationVerification:
     if not answer or not evidence.items:
         return CitationVerification(source="skipped")
     evidence_index = {
@@ -1858,6 +1866,7 @@ def verify_citations_semantically(answer: str, evidence: EvidencePack) -> Citati
             ],
             role="citation_verifier",
             quality_mode="standard",
+            overrides=overrides,
             max_tokens=700,
             timeout_s=20,
         )
@@ -2010,6 +2019,7 @@ def plan_research(request: AgentV3Request) -> ResearchPlan:
             ],
             role="research_planner",
             quality_mode=request.quality_mode,
+            overrides=request.model_overrides,
             max_tokens=1000 if request.research_level == "deep" else 600,
             timeout_s=20,
         )
@@ -2766,6 +2776,7 @@ def synthesize_answer(request: AgentV3Request, plan: ResearchPlan, evidence: Evi
         max_tokens=_synthesis_token_budget(request, plan),
         role="synthesis",
         quality_mode=request.quality_mode,
+        overrides=request.model_overrides,
         timeout_s=_longform_timeout_s(),
     )
 
@@ -2842,6 +2853,7 @@ def repair_research_answer(
         max_tokens=_synthesis_token_budget(request, plan),
         role="repair",
         quality_mode=request.quality_mode,
+        overrides=request.model_overrides,
         timeout_s=_longform_timeout_s(),
     )
 
@@ -3277,7 +3289,7 @@ class LeadResearchAgent:
             "Scoping the research objective.",
             {
                 "agent_id": "research_lead",
-                **model_client.telemetry_for_role("research_brief", quality_mode=self.request.quality_mode),
+                **model_client.telemetry_for_role("research_brief", quality_mode=self.request.quality_mode, overrides=self.request.model_overrides),
             },
         )
         brief = generate_research_brief(self.request)
@@ -3291,6 +3303,7 @@ class LeadResearchAgent:
                     "research_brief",
                     quality_mode=self.request.quality_mode,
                     model_used=brief.model_used,
+                    overrides=self.request.model_overrides,
                 ),
                 "source": brief.source,
                 "research_profile": brief.research_profile,
@@ -3309,7 +3322,7 @@ class LeadResearchAgent:
             "Building the evidence coverage matrix.",
             {
                 "agent_id": "research_lead",
-                **model_client.telemetry_for_role("coverage_contract", quality_mode=self.request.quality_mode),
+                **model_client.telemetry_for_role("coverage_contract", quality_mode=self.request.quality_mode, overrides=self.request.model_overrides),
             },
         )
         contract = generate_coverage_contract(self.request, brief)
@@ -3323,6 +3336,7 @@ class LeadResearchAgent:
                     "coverage_contract",
                     quality_mode=self.request.quality_mode,
                     model_used=contract.model_used,
+                    overrides=self.request.model_overrides,
                 ),
                 "source": contract.source,
                 "latency_ms": contract.latency_ms,
@@ -3382,6 +3396,7 @@ class LeadResearchAgent:
                         "reflection",
                         quality_mode=self.request.quality_mode,
                         model_used=decision.model_used,
+                        overrides=self.request.model_overrides,
                     ),
                     "budget_ledger": self.ledger.model_dump(mode="json"),
                 },
@@ -3831,7 +3846,7 @@ class LeadResearchAgent:
             "Writing one coherent answer from the evidence.",
             {
                 "agent_id": "synthesis_agent",
-                **model_client.telemetry_for_role("synthesis", quality_mode=self.request.quality_mode),
+                **model_client.telemetry_for_role("synthesis", quality_mode=self.request.quality_mode, overrides=self.request.model_overrides),
             },
         )
         model_response = synthesize_answer(self.request, state.plan, state.evidence)
@@ -3841,7 +3856,7 @@ class LeadResearchAgent:
             f"Synthesis used {model_response.model_used or 'the configured synthesis model'}.",
             {
                 "agent_id": "synthesis_agent",
-                **model_client.telemetry_for_response(model_response),
+                **model_client.telemetry_for_response(model_response, overrides=self.request.model_overrides),
                 "latency_ms": model_response.latency_ms,
                 "cost_usd": model_response.cost_usd,
                 "budget_ledger": self.ledger.model_dump(mode="json"),
@@ -3849,7 +3864,7 @@ class LeadResearchAgent:
         )
         answer = model_response.text
 
-        citation_result = verify_citations_semantically(answer, state.evidence)
+        citation_result = verify_citations_semantically(answer, state.evidence, overrides=self.request.model_overrides)
         if citation_result.model_used:
             self.ledger.record_model_call(cost_usd=citation_result.cost_usd, latency_ms=citation_result.latency_ms)
         self._progress(
@@ -3862,6 +3877,7 @@ class LeadResearchAgent:
                     "citation_verifier",
                     quality_mode="standard",
                     model_used=citation_result.model_used,
+                    overrides=self.request.model_overrides,
                 ),
             },
         )
@@ -3936,7 +3952,7 @@ class LeadResearchAgent:
             "Repairing the answer before publishing.",
             {
                 "repair_instruction": instruction,
-                **model_client.telemetry_for_role("repair", quality_mode=self.request.quality_mode),
+                **model_client.telemetry_for_role("repair", quality_mode=self.request.quality_mode, overrides=self.request.model_overrides),
             },
         )
         fake_judge = ResearchJudgeResult(
@@ -3951,7 +3967,7 @@ class LeadResearchAgent:
             "research_repair_model",
             f"Repair used {repaired.model_used or 'the configured repair model'}.",
             {
-                **model_client.telemetry_for_response(repaired),
+                **model_client.telemetry_for_response(repaired, overrides=self.request.model_overrides),
                 "latency_ms": repaired.latency_ms,
                 "cost_usd": repaired.cost_usd,
                 "budget_ledger": self.ledger.model_dump(mode="json"),

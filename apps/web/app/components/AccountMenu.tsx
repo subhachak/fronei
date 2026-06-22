@@ -1,11 +1,11 @@
 'use client'
 
 import { useClerk, useUser } from '@clerk/nextjs'
-import { ChevronsUpDown, LogOut, Shield, UserRound } from 'lucide-react'
+import { ChevronsUpDown, LogOut, Shield, UserCog, UserRound } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { e2eAuthBypassEnabled } from '../lib/e2e'
 
-export function AccountMenu({ isAdmin }: { isAdmin: boolean }) {
+export function AccountMenu({ isAdmin, onOpenProfile }: { isAdmin: boolean; onOpenProfile: () => void }) {
   if (e2eAuthBypassEnabled()) {
     return (
       <AccountMenuContent
@@ -14,15 +14,16 @@ export function AccountMenu({ isAdmin }: { isAdmin: boolean }) {
         email="e2e@fronei.test"
         initials="EU"
         onManageAccount={() => undefined}
+        onOpenProfile={onOpenProfile}
         onSignOut={() => undefined}
       />
     )
   }
 
-  return <ClerkAccountMenu isAdmin={isAdmin} />
+  return <ClerkAccountMenu isAdmin={isAdmin} onOpenProfile={onOpenProfile} />
 }
 
-function ClerkAccountMenu({ isAdmin }: { isAdmin: boolean }) {
+function ClerkAccountMenu({ isAdmin, onOpenProfile }: { isAdmin: boolean; onOpenProfile: () => void }) {
   const { user, isLoaded } = useUser()
   const { signOut, openUserProfile } = useClerk()
   if (!isLoaded || !user) return null
@@ -39,6 +40,7 @@ function ClerkAccountMenu({ isAdmin }: { isAdmin: boolean }) {
       initials={initials}
       imageUrl={user.imageUrl}
       onManageAccount={openUserProfile}
+      onOpenProfile={onOpenProfile}
       onSignOut={() => {
         void signOut(() => {
           window.location.href = '/'
@@ -55,6 +57,7 @@ function AccountMenuContent({
   initials,
   imageUrl,
   onManageAccount,
+  onOpenProfile,
   onSignOut,
 }: {
   isAdmin: boolean
@@ -63,6 +66,7 @@ function AccountMenuContent({
   initials: string
   imageUrl?: string
   onManageAccount: () => void
+  onOpenProfile: () => void
   onSignOut: () => void
 }) {
   const [open, setOpen] = useState(false)
@@ -102,6 +106,14 @@ function AccountMenuContent({
             </div>
           </div>
           <div className="p-1.5">
+            <MenuItem
+              icon={UserCog}
+              label="My profile"
+              onClick={() => {
+                setOpen(false)
+                onOpenProfile()
+              }}
+            />
             <MenuItem
               icon={UserRound}
               label="Manage account"

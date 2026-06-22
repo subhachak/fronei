@@ -10,6 +10,7 @@ from app.routers.admin import router as admin_router
 from app.routers.agent import router as agent_router
 from app.routers.documents import router as documents_router
 from app.routers.internal import router as internal_router
+from app.routers.profile import router as profile_router
 from app.routers.users import router as users_router
 from app.services.llm_gateway import configure_provider_keys
 
@@ -45,4 +46,5 @@ app.include_router(admin_router)
 app.include_router(agent_router)
 app.include_router(documents_router)
 app.include_router(internal_router)
+app.include_router(profile_router)
 app.include_router(users_router)

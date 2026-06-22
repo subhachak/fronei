@@ -156,3 +156,55 @@ export type ApiWorkspace = {
   updated_at: string
   conversations: ApiConversation[]
 }
+
+export type ProfileSettings = {
+  quality_mode?: QualityMode
+  output_format?: OutputFormat
+  research_level?: ResearchLevel
+}
+
+export type ProfileMe = {
+  user_id: string
+  email?: string | null
+  name?: string | null
+  preferences: string[]
+  preferences_updated_at?: string | null
+  settings: ProfileSettings
+}
+
+export type ProfileWorkspace = {
+  id: string
+  name: string
+  priorities: string[]
+  priorities_updated_at?: string | null
+  conversation_count: number
+  turn_count: number
+  total_cost_usd: number
+  last_active_at?: string | null
+  created_at: string
+}
+
+export type ProfileUsageSummary = {
+  total_cost: number
+  requests: number
+  failed_requests: number
+  failure_rate: number
+  avg_latency_ms: number
+  p95_latency_ms: number
+  active_days: number
+}
+
+export type ProfileUsage = {
+  range: string
+  summary: ProfileUsageSummary
+  cost_by_day: { date: string; cost: number; requests: number }[]
+  route_distribution: { route: string; count: number }[]
+  model_performance: {
+    model: string
+    requests: number
+    cost: number
+    avg_latency_ms: number
+    p95_latency_ms: number
+    failure_count: number
+  }[]
+}

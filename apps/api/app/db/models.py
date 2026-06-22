@@ -43,14 +43,22 @@ class User(Base):
     name: Mapped[str | None] = mapped_column(String(120), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    # Periodically-consolidated "preferences" / "current_priorities" profile,
-    # distilled by app/services/agent/profile_consolidator.py from the user's
-    # recent turns. Distinct from the per-conversation/per-workspace rolling
-    # context in persistence.py: this is a deliberate, LLM-summarized profile
-    # that persists across all of a user's workspaces, refreshed periodically
-    # rather than appended to on every turn.
+    # Periodically-consolidated "preferences" (how this person likes
+    # responses -- tone, format, recurring asks), distilled by
+    # app/services/agent/profile_consolidator.py from the user's recent
+    # turns across all their workspaces. Workspace-specific "current
+    # priorities" live on Workspace.priorities_json instead -- see that
+    # model and profile_consolidator.py for why the split matters. Distinct
+    # from the per-conversation/per-workspace rolling context in
+    # persistence.py: this is a deliberate, LLM-summarized profile refreshed
+    # periodically rather than appended to on every turn.
     profile_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     profile_consolidated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Explicit, user-set persistent defaults (quality_mode, output_format,
+    # research_level) for new turns. Unlike profile_json, this is never
+    # written by the consolidator -- only by the user themselves via
+    # PATCH /profile/settings.
+    settings_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
 
 
 def get_or_create_user(db, clerk_id: str, email: str | None = None, name: str | None = None) -> tuple["User", bool]:
@@ -354,6 +362,8 @@ def _ensure_sqlite_schema(bind) -> None:
         statements.append("ALTER TABLE users ADD COLUMN profile_json TEXT NOT NULL DEFAULT '{}'")
     if has_table("users") and not has_column("users", "profile_consolidated_at"):
         statements.append("ALTER TABLE users ADD COLUMN profile_consolidated_at DATETIME")
+    if has_table("users") and not has_column("users", "settings_json"):
+        statements.append("ALTER TABLE users ADD COLUMN settings_json TEXT NOT NULL DEFAULT '{}'")
     if has_table("workspaces") and not has_column("workspaces", "priorities_json"):
         statements.append("ALTER TABLE workspaces ADD COLUMN priorities_json TEXT NOT NULL DEFAULT '[]'")
     if has_table("workspaces") and not has_column("workspaces", "priorities_consolidated_at"):

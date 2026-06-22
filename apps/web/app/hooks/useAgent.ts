@@ -17,6 +17,7 @@ import type {
   FollowUpOption,
   OutputFormat,
   PendingDelete,
+  ProfileSettings,
   ProgressEvent,
   QualityMode,
   ResearchLevel,
@@ -86,6 +87,7 @@ export function useAgent() {
 
   const eventsRef = useRef<ProgressEvent[]>([])
   const activeRunMessageRef = useRef<string | null>(null)
+  const composerSettingsDirtyRef = useRef(false)
 
   const canRun = useMemo(() => isLoaded && isSignedIn && message.trim().length > 0 && !running, [isLoaded, isSignedIn, message, running])
   const activeEvents = useMemo(() => events.filter(event => !['tool_selection', 'tool_result'].includes(event.stage)), [events])
@@ -104,13 +106,44 @@ export function useAgent() {
 
   useEffect(() => {
     if (!isLoaded || !isSignedIn) return
+    composerSettingsDirtyRef.current = false
     void loadWorkspaces().catch(err => {
       setError(err instanceof Error ? err.message : 'Could not load Agent v3 workspaces')
     })
     void loadTemplates()
     void checkIsAdmin()
     void loadSupportedAttachmentTypes()
+    void loadProfileSettings()
   }, [isLoaded, isSignedIn])
+
+  function updateQualityMode(mode: QualityMode) {
+    composerSettingsDirtyRef.current = true
+    setQualityMode(mode)
+  }
+
+  function updateOutputFormat(format: OutputFormat) {
+    composerSettingsDirtyRef.current = true
+    setOutputFormat(format)
+  }
+
+  function updateResearchLevel(level: ResearchLevel) {
+    composerSettingsDirtyRef.current = true
+    setResearchLevel(level)
+  }
+
+  async function loadProfileSettings() {
+    try {
+      const response = await authorizedFetch('/profile/settings')
+      if (!response.ok) return
+      const settings = await response.json() as ProfileSettings
+      if (composerSettingsDirtyRef.current) return
+      if (settings.quality_mode) setQualityMode(settings.quality_mode)
+      if (settings.output_format) setOutputFormat(settings.output_format)
+      if (settings.research_level) setResearchLevel(settings.research_level)
+    } catch {
+      // Non-critical: the composer still has local defaults.
+    }
+  }
 
   async function checkIsAdmin() {
     try {
@@ -607,11 +640,11 @@ export function useAgent() {
     message,
     setMessage,
     qualityMode,
-    setQualityMode,
+    setQualityMode: updateQualityMode,
     outputFormat,
-    setOutputFormat,
+    setOutputFormat: updateOutputFormat,
     researchLevel,
-    setResearchLevel,
+    setResearchLevel: updateResearchLevel,
     events,
     activeEvents,
     result,

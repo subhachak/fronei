@@ -1,7 +1,7 @@
 'use client'
 
-import { useAuth } from '@clerk/nextjs'
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useFroneiAuth } from '../lib/auth'
 import { createApiClient, readErrorBody } from '../lib/api'
 import { copyToClipboard, draftConversationId, sleep, streamErrorMessage, titleFromMessage, uniqueWorkspaceName } from '../lib/format'
 import { mapConversation, mapTurn, mapWorkspace } from '../lib/mappers'
@@ -51,7 +51,7 @@ const MODEL_OVERRIDE_ROLES = [
 ] as const
 
 export function useAgent() {
-  const { getToken, isLoaded, isSignedIn } = useAuth()
+  const { getToken, isLoaded, isSignedIn } = useFroneiAuth()
   const { authorizedFetch } = useMemo(() => createApiClient(getToken), [getToken])
 
   const [message, setMessage] = useState('')

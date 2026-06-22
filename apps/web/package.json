@@ -6,7 +6,10 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "test:e2e": "npm run test:e2e:guard && playwright test",
+    "test:e2e:guard": "tsx scripts/check-e2e-guard.ts",
+    "test:e2e:ui": "playwright test --ui"
   },
   "dependencies": {
     "@clerk/nextjs": "^7.4.3",
@@ -31,8 +34,10 @@
     "typescript": "latest"
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.0",
     "autoprefixer": "^10.5.0",
     "postcss": "^8.4.31",
-    "tailwindcss": "^3.4.17"
+    "tailwindcss": "^3.4.17",
+    "tsx": "^4.21.0"
   }
 }

@@ -1,8 +1,8 @@
 'use client'
 
-import { useAuth } from '@clerk/nextjs'
 import { useEffect, useMemo, useState } from 'react'
 import { createApiClient, readErrorBody } from '../../lib/api'
+import { useFroneiAuth } from '../../lib/auth'
 
 export type AdminAccessState = 'checking' | 'granted' | 'denied'
 
@@ -16,7 +16,7 @@ export type AdminAccessState = 'checking' | 'granted' | 'denied'
  * or an access-denied state.
  */
 export function useAdmin() {
-  const { getToken, isLoaded, isSignedIn } = useAuth()
+  const { getToken, isLoaded, isSignedIn } = useFroneiAuth()
   const { authorizedFetch } = useMemo(() => createApiClient(getToken), [getToken])
   const [access, setAccess] = useState<AdminAccessState>('checking')
 

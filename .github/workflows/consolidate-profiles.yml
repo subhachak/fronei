@@ -9,10 +9,27 @@ jobs:
   consolidate:
     runs-on: ubuntu-latest
     steps:
-      - name: Call profile consolidator
+      - name: Call profile consolidator in small batches until the backlog clears
         run: |
-          curl -fsS -X POST "$FRONEI_API_URL/internal/consolidate-profiles" \
-            -H "X-Internal-Secret: $INTERNAL_TASK_SECRET"
+          # Each call processes a small, bounded batch (see
+          # profile_consolidator.DEFAULT_BATCH_LIMIT) so no single HTTP
+          # request risks a platform/curl timeout, even in the worst case
+          # where every workspace in the batch takes the full per-call model
+          # timeout. Loop here instead, with a generous but finite iteration
+          # cap as a safety net -- any remainder rolls over to tomorrow's run
+          # since consolidation is oldest-consolidated-first.
+          max_iterations=30
+          for i in $(seq 1 "$max_iterations"); do
+            response=$(curl -fsS -X POST "$FRONEI_API_URL/internal/consolidate-profiles" \
+              -H "X-Internal-Secret: $INTERNAL_TASK_SECRET")
+            echo "$response"
+            remaining=$(echo "$response" | python3 -c "import json,sys; print(json.load(sys.stdin).get('workspaces_remaining', 0))")
+            if [ "$remaining" -le 0 ]; then
+              echo "Backlog cleared after $i call(s)."
+              exit 0
+            fi
+          done
+          echo "Reached max_iterations ($max_iterations) with workspaces still remaining; the rest will roll over to the next scheduled run."
         env:
           FRONEI_API_URL: ${{ secrets.FRONEI_API_URL }}
           INTERNAL_TASK_SECRET: ${{ secrets.INTERNAL_TASK_SECRET }}

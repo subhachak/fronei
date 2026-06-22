@@ -8,6 +8,13 @@ export type PendingDelete =
   | { type: 'conversation'; workspaceId: string; conversationId: string }
   | null
 
+export type AttachedFile = {
+  name: string
+  text: string
+  charCount: number
+  truncated: boolean
+}
+
 export type DocumentTemplateOption = {
   id: string
   name: string

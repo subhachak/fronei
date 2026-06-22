@@ -69,14 +69,38 @@ def _compact_text(value: str, limit: int) -> str:
 
 
 def _user_profile_context(db, user_id: str) -> dict:
+    """Always re-read live, not cached in context_json -- unlike the rolling
+    conversation/workspace context (which is intentionally a frozen,
+    incrementally-updated snapshot), the consolidated profile should reflect
+    the latest nightly consolidation immediately, not just for newly-created
+    workspaces/conversations.
+
+    Only durable, workspace-agnostic preferences live here. "Current
+    priorities" are workspace-scoped (see _workspace_priorities) so that an
+    active project in one of a user's workspaces doesn't bleed into an
+    unrelated workspace's context."""
     user = db.query(User).filter(User.clerk_id == user_id).first()
-    profile = {"user_id": user_id}
+    profile: dict = {"user_id": user_id}
     if user:
         if user.name:
             profile["name"] = user.name
         if user.email:
             profile["email"] = user.email
+        consolidated = _loads(user.profile_json, {})
+        if isinstance(consolidated, dict):
+            preferences = consolidated.get("preferences")
+            if isinstance(preferences, list) and preferences:
+                profile["preferences"] = preferences
     return profile
+
+
+def _workspace_priorities(workspace: Workspace | None) -> list[str]:
+    if workspace is None:
+        return []
+    priorities = _loads(workspace.priorities_json, [])
+    if not isinstance(priorities, list):
+        return []
+    return [str(item) for item in priorities if str(item).strip()][:4]
 
 
 def _initial_workspace_context(db, user_id: str, workspace: Workspace) -> dict:
@@ -150,9 +174,15 @@ def _render_context(
     if profile:
         display = profile.get("name") or profile.get("email") or profile.get("user_id")
         lines.append(f"- User: {display}")
+        if profile.get("preferences"):
+            lines.append("- User preferences:")
+            lines.extend(f"  - {item}" for item in profile["preferences"])
     workspace = ctx.get("workspace") or {}
     if workspace.get("name"):
         lines.append(f"- Workspace: {workspace['name']}")
+    if ctx.get("workspace_priorities"):
+        lines.append("- Active priorities in this workspace:")
+        lines.extend(f"  - {item}" for item in ctx["workspace_priorities"])
     conversation = ctx.get("conversation") or {}
     if conversation.get("title"):
         lines.append(f"- Conversation: {conversation['title']}")
@@ -366,6 +396,14 @@ def conversation_context_text(
                 conversation.context_json = _dumps(ctx)
                 conversation.context_updated_at = _now()
                 db.commit()
+        # The rolling running_summary/key_facts/recent_turns are an
+        # intentionally frozen, incrementally-updated snapshot, but the
+        # consolidated preferences/priorities should always reflect the
+        # latest nightly run -- re-fetch rather than use whatever was
+        # baked into context_json when this conversation/workspace was
+        # created.
+        live_profile = _user_profile_context(db, user_id)
+        ctx["user_profile"] = live_profile
         include_workspace_history = _explicit_workspace_context_request(current_message)
         workspace_text = ""
         if workspace and workspace.user_id == user_id:
@@ -375,6 +413,11 @@ def conversation_context_text(
                 workspace.context_json = _dumps(workspace_ctx)
                 workspace.context_updated_at = _now()
                 db.commit()
+            # Priorities are scoped to this workspace, not the user, and are
+            # rendered once here rather than duplicated onto the
+            # conversation-level ctx below (which carries the global
+            # preferences instead).
+            workspace_ctx["workspace_priorities"] = _workspace_priorities(workspace)
             workspace_text = _render_context(
                 workspace_ctx,
                 max_chars=max(800, max_chars // 3),

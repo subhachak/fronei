@@ -1,11 +1,16 @@
 import hmac
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Header, HTTPException, Query
 from sqlalchemy import inspect, text
 
 from app.config import get_settings
 from app.db.models import SessionLocal, engine
 from app.db.schema_check import check_schema_version
+from app.services.agent.profile_consolidator import (
+    DEFAULT_BATCH_LIMIT,
+    MAX_BATCH_LIMIT,
+    consolidate_all_active_workspaces,
+)
 
 
 router = APIRouter(prefix="/internal", tags=["internal"])
@@ -17,6 +22,23 @@ def _require_internal_secret(x_internal_secret: str) -> None:
         x_internal_secret, settings.internal_task_secret
     ):
         raise HTTPException(status_code=403, detail="Forbidden")
+
+
+@router.post("/consolidate-profiles")
+def consolidate_profiles(
+    x_internal_secret: str = Header(default=""),
+    limit: int = Query(default=DEFAULT_BATCH_LIMIT, ge=1, le=MAX_BATCH_LIMIT),
+) -> dict:
+    """Capped, oldest-consolidated-first batch so this stays well inside the
+    request timeout regardless of active workspace count. `limit` is kept
+    deliberately small (see profile_consolidator.MAX_BATCH_LIMIT) since each
+    workspace can block for up to 30s on its own model call with no
+    background job queue behind this -- clear a larger backlog by calling
+    this endpoint repeatedly (see the scheduled workflow, which loops) until
+    `workspaces_remaining` is 0, not by raising `limit`."""
+    _require_internal_secret(x_internal_secret)
+    result = consolidate_all_active_workspaces(limit=limit)
+    return {"status": "ok", **result}
 
 
 @router.post("/smoke")

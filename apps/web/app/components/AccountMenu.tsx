@@ -3,10 +3,68 @@
 import { useClerk, useUser } from '@clerk/nextjs'
 import { ChevronsUpDown, LogOut, Shield, UserRound } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
+import { e2eAuthBypassEnabled } from '../lib/e2e'
 
 export function AccountMenu({ isAdmin }: { isAdmin: boolean }) {
+  if (e2eAuthBypassEnabled()) {
+    return (
+      <AccountMenuContent
+        isAdmin={isAdmin}
+        name="E2E User"
+        email="e2e@fronei.test"
+        initials="EU"
+        onManageAccount={() => undefined}
+        onSignOut={() => undefined}
+      />
+    )
+  }
+
+  return <ClerkAccountMenu isAdmin={isAdmin} />
+}
+
+function ClerkAccountMenu({ isAdmin }: { isAdmin: boolean }) {
   const { user, isLoaded } = useUser()
   const { signOut, openUserProfile } = useClerk()
+  if (!isLoaded || !user) return null
+
+  const name = user.fullName || user.username || user.primaryEmailAddress?.emailAddress || 'Account'
+  const email = user.primaryEmailAddress?.emailAddress || ''
+  const initials = ((user.firstName?.[0] || name[0] || '?') + (user.lastName?.[0] || '')).toUpperCase()
+
+  return (
+    <AccountMenuContent
+      isAdmin={isAdmin}
+      name={name}
+      email={email}
+      initials={initials}
+      imageUrl={user.imageUrl}
+      onManageAccount={openUserProfile}
+      onSignOut={() => {
+        void signOut(() => {
+          window.location.href = '/'
+        })
+      }}
+    />
+  )
+}
+
+function AccountMenuContent({
+  isAdmin,
+  name,
+  email,
+  initials,
+  imageUrl,
+  onManageAccount,
+  onSignOut,
+}: {
+  isAdmin: boolean
+  name: string
+  email: string
+  initials: string
+  imageUrl?: string
+  onManageAccount: () => void
+  onSignOut: () => void
+}) {
   const [open, setOpen] = useState(false)
   const popoverRef = useRef<HTMLDivElement | null>(null)
   const triggerRef = useRef<HTMLButtonElement | null>(null)
@@ -29,12 +87,6 @@ export function AccountMenu({ isAdmin }: { isAdmin: boolean }) {
     }
   }, [open])
 
-  if (!isLoaded || !user) return null
-
-  const name = user.fullName || user.username || user.primaryEmailAddress?.emailAddress || 'Account'
-  const email = user.primaryEmailAddress?.emailAddress || ''
-  const initials = ((user.firstName?.[0] || name[0] || '?') + (user.lastName?.[0] || '')).toUpperCase()
-
   return (
     <div className="relative flex-shrink-0 border-t border-neutral-100 pt-2 dark:border-neutral-800">
       {open && (
@@ -43,7 +95,7 @@ export function AccountMenu({ isAdmin }: { isAdmin: boolean }) {
           className="absolute inset-x-0 bottom-full z-30 mb-2 overflow-hidden rounded-xl border border-neutral-200 bg-white shadow-xl dark:border-neutral-700 dark:bg-neutral-900"
         >
           <div className="flex items-center gap-3 border-b border-neutral-100 px-3.5 py-3 dark:border-neutral-800">
-            <Avatar imageUrl={user.imageUrl} initials={initials} size={36} />
+            <Avatar imageUrl={imageUrl} initials={initials} size={36} />
             <div className="min-w-0">
               <p className="truncate text-sm font-bold text-neutral-900 dark:text-neutral-50">{name}</p>
               {email && <p className="truncate text-xs text-neutral-400">{email}</p>}
@@ -55,7 +107,7 @@ export function AccountMenu({ isAdmin }: { isAdmin: boolean }) {
               label="Manage account"
               onClick={() => {
                 setOpen(false)
-                openUserProfile()
+                onManageAccount()
               }}
             />
             {isAdmin && (
@@ -76,9 +128,7 @@ export function AccountMenu({ isAdmin }: { isAdmin: boolean }) {
               tone="danger"
               onClick={() => {
                 setOpen(false)
-                void signOut(() => {
-                  window.location.href = '/'
-                })
+                onSignOut()
               }}
             />
           </div>
@@ -93,7 +143,7 @@ export function AccountMenu({ isAdmin }: { isAdmin: boolean }) {
         aria-label="Account menu"
         className="flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-left hover:bg-neutral-100 dark:hover:bg-neutral-800"
       >
-        <Avatar imageUrl={user.imageUrl} initials={initials} size={28} />
+        <Avatar imageUrl={imageUrl} initials={initials} size={28} />
         <div className="min-w-0 flex-1">
           <p className="truncate text-[13px] font-bold text-neutral-900 dark:text-neutral-50">{name}</p>
           {isAdmin && <p className="text-[10px] font-bold uppercase tracking-wide text-amber-600 dark:text-amber-400">Admin</p>}

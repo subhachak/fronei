@@ -36,6 +36,7 @@ MODEL_ROLES: tuple[str, ...] = (
     "document_writer",
     "synthesis",
     "synthesis_executive",
+    "profile_consolidation",
 )
 
 # Roles deliberately NOT included above: "judge" / "research_judge" /
@@ -59,6 +60,7 @@ DEFAULT_MODEL_POLICY: dict[str, str] = {
     "document_writer": "claude-sonnet-4-6",
     "synthesis": "claude-sonnet-4-6",
     "synthesis_executive": "claude-opus-4-8",
+    "profile_consolidation": "gpt-4.1-mini",
 }
 
 # litellm needs the provider prefix to route to Gemini; the old

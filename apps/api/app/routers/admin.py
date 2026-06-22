@@ -152,10 +152,13 @@ def _ensure_target_user_id(user_id: str) -> None:
 
 
 def _privacy_counts(db, user_id: str) -> dict[str, int]:
+    user = db.query(User).filter(User.clerk_id == user_id).first()
+    has_preferences = bool(user and user.profile_json not in ("", "{}", None))
     return {
         "document_templates": db.query(DocumentTemplate).filter(DocumentTemplate.user_id == user_id).count(),
         "workspaces": db.query(Workspace).filter(Workspace.user_id == user_id).count(),
         "turns": db.query(Turn).filter(Turn.user_id == user_id).count(),
+        "consolidated_preferences": 1 if has_preferences else 0,
     }
 
 
@@ -524,7 +527,18 @@ def privacy_delete(
                 db.query(ToolCall).filter(ToolCall.turn_id.in_(turn_ids)).delete(synchronize_session=False)
                 db.query(Artifact).filter(Artifact.turn_id.in_(turn_ids)).delete(synchronize_session=False)
             deleted["turns"] = db.query(Turn).filter(Turn.user_id == user_id).delete(synchronize_session=False)
+            # Per-workspace consolidated priorities (Workspace.priorities_json)
+            # are deleted along with the workspace rows themselves below.
             deleted["workspaces"] = db.query(Workspace).filter(Workspace.user_id == user_id).delete(synchronize_session=False)
+            # The user-level consolidated preferences are distilled from this
+            # same turn history but live on User, not Workspace, so they
+            # need an explicit clear -- otherwise a "delete my data" request
+            # leaves behind a summary derived from the deleted data.
+            target_user = db.query(User).filter(User.clerk_id == user_id).first()
+            if target_user is not None and target_user.profile_json not in ("", "{}", None):
+                target_user.profile_json = "{}"
+                target_user.profile_consolidated_at = None
+                deleted["consolidated_preferences"] = 1
         _audit(db, admin, "user.privacy_delete", user_id, {"deleted": deleted})
         db.commit()
         return {"user_id": user_id, "deleted": deleted}

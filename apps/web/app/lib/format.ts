@@ -34,6 +34,13 @@ export function draftConversationId(): string {
   return `draft-${random}`
 }
 
+export function draftWorkspaceId(): string {
+  const random = typeof crypto !== 'undefined' && 'randomUUID' in crypto
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(16).slice(2)}`
+  return `draft-workspace-${random}`
+}
+
 export function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value))
 }

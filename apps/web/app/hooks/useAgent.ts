@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useFroneiAuth } from '../lib/auth'
 import { createApiClient, readErrorBody } from '../lib/api'
-import { copyToClipboard, draftConversationId, sleep, streamErrorMessage, titleFromMessage, uniqueWorkspaceName } from '../lib/format'
+import { copyToClipboard, draftConversationId, draftWorkspaceId, sleep, streamErrorMessage, titleFromMessage, uniqueWorkspaceName } from '../lib/format'
 import { mapConversation, mapTurn, mapWorkspace } from '../lib/mappers'
 import type {
   AgentResult,
@@ -65,6 +65,8 @@ export function useAgent() {
   const [error, setError] = useState<string | null>(null)
   const [running, setRunning] = useState(false)
   const [workspaces, setWorkspaces] = useState<Workspace[]>([])
+  const [workspacesLoading, setWorkspacesLoading] = useState(false)
+  const [workspaceAction, setWorkspaceAction] = useState('')
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(null)
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null)
   const [visibleTurnCount, setVisibleTurnCount] = useState(INITIAL_VISIBLE_TURNS)
@@ -89,6 +91,7 @@ export function useAgent() {
   const eventsRef = useRef<ProgressEvent[]>([])
   const activeRunMessageRef = useRef<string | null>(null)
   const composerSettingsDirtyRef = useRef(false)
+  const pendingWorkspaceCreateRef = useRef<Record<string, Promise<Workspace>>>({})
 
   const canRun = useMemo(() => isLoaded && isSignedIn && message.trim().length > 0 && !running, [isLoaded, isSignedIn, message, running])
   const activeEvents = useMemo(() => events.filter(event => !['tool_selection', 'tool_result'].includes(event.stage)), [events])
@@ -262,22 +265,27 @@ export function useAgent() {
   }
 
   async function loadWorkspaces(selectConversationId?: string) {
-    const response = await authorizedFetch('/workspaces')
-    if (!response.ok) throw new Error(await readErrorBody(response, 'Could not load workspaces'))
-    const payload = await response.json() as { workspaces: ApiWorkspace[] }
-    const next = payload.workspaces.map(mapWorkspace)
-    setWorkspaces(next)
-    const selectedWorkspace = next.find(workspace => workspace.conversations.some(conversation => conversation.id === selectConversationId)) || next[0] || null
-    const selectedConversation = selectedWorkspace?.conversations.find(conversation => conversation.id === selectConversationId) || selectedWorkspace?.conversations[0] || null
-    setExpandedWorkspaceIds(prev => {
-      const nextExpanded = { ...prev }
-      if (selectedWorkspace && nextExpanded[selectedWorkspace.id] === undefined) nextExpanded[selectedWorkspace.id] = true
-      if (!selectedWorkspace && next[0] && nextExpanded[next[0].id] === undefined) nextExpanded[next[0].id] = true
-      return nextExpanded
-    })
-    setActiveWorkspaceId(selectedWorkspace?.id || null)
-    setActiveConversationId(selectedConversation?.id || null)
-    if (selectedConversation) await loadConversationTurns(selectedConversation.id, INITIAL_VISIBLE_TURNS)
+    setWorkspacesLoading(true)
+    try {
+      const response = await authorizedFetch('/workspaces')
+      if (!response.ok) throw new Error(await readErrorBody(response, 'Could not load workspaces'))
+      const payload = await response.json() as { workspaces: ApiWorkspace[] }
+      const next = payload.workspaces.map(mapWorkspace)
+      setWorkspaces(next)
+      const selectedWorkspace = next.find(workspace => workspace.conversations.some(conversation => conversation.id === selectConversationId)) || next[0] || null
+      const selectedConversation = selectedWorkspace?.conversations.find(conversation => conversation.id === selectConversationId) || selectedWorkspace?.conversations[0] || null
+      setExpandedWorkspaceIds(prev => {
+        const nextExpanded = { ...prev }
+        if (selectedWorkspace && nextExpanded[selectedWorkspace.id] === undefined) nextExpanded[selectedWorkspace.id] = true
+        if (!selectedWorkspace && next[0] && nextExpanded[next[0].id] === undefined) nextExpanded[next[0].id] = true
+        return nextExpanded
+      })
+      setActiveWorkspaceId(selectedWorkspace?.id || null)
+      setActiveConversationId(selectedConversation?.id || null)
+      if (selectedConversation) await loadConversationTurns(selectedConversation.id, INITIAL_VISIBLE_TURNS)
+    } finally {
+      setWorkspacesLoading(false)
+    }
   }
 
   async function loadConversationTurns(conversationId: string, limit = visibleTurnCount) {
@@ -299,6 +307,10 @@ export function useAgent() {
 
   async function ensureActiveConversation(seedMessage: string): Promise<string> {
     let workspace = activeWorkspace
+    if (workspace?.isDraft) {
+      const pendingWorkspace = pendingWorkspaceCreateRef.current[workspace.id]
+      workspace = pendingWorkspace ? await pendingWorkspace : workspace
+    }
     if (!workspace) {
       const response = await authorizedFetch('/workspaces', { method: 'POST', body: JSON.stringify({ name: 'Personal workspace' }) })
       if (!response.ok) throw new Error(await readErrorBody(response, 'Could not create workspace'))
@@ -474,29 +486,97 @@ export function useAgent() {
 
   async function createWorkspace() {
     const name = uniqueWorkspaceName('New workspace', workspaces.map(workspace => workspace.name))
-    const response = await authorizedFetch('/workspaces', { method: 'POST', body: JSON.stringify({ name }) })
-    if (!response.ok) {
-      setError(await readErrorBody(response, 'Could not create workspace'))
-      return
+    const now = new Date().toISOString()
+    const tempWorkspace: Workspace = {
+      id: draftWorkspaceId(),
+      name,
+      createdAt: now,
+      updatedAt: now,
+      conversations: [{
+        id: draftConversationId(),
+        title: 'New conversation',
+        createdAt: now,
+        updatedAt: now,
+        turns: [],
+        isDraft: true,
+        turnCount: 0,
+        artifactCount: 0,
+        sourceCount: 0,
+        totalLatencyMs: 0,
+        totalCostUsd: 0,
+      }],
+      isDraft: true,
     }
-    const workspace = mapWorkspace({ ...(await response.json()), conversations: [] })
-    setWorkspaces(prev => [workspace, ...prev])
-    setActiveWorkspaceId(workspace.id)
-    setExpandedWorkspaceIds(prev => ({ ...prev, [workspace.id]: true }))
-    setEditingWorkspaceId(workspace.id)
-    setEditingWorkspaceName(workspace.name)
-    createConversation(workspace.id, 'New conversation')
+    setError(null)
+    setWorkspaceAction('Saving workspace...')
+    setWorkspaces(prev => [tempWorkspace, ...prev])
+    setActiveWorkspaceId(tempWorkspace.id)
+    setActiveConversationId(tempWorkspace.conversations[0].id)
+    setExpandedWorkspaceIds(prev => ({ ...prev, [tempWorkspace.id]: true }))
+    setEditingWorkspaceId(tempWorkspace.id)
+    setEditingWorkspaceName(tempWorkspace.name)
+
+    const createPromise = (async () => {
+      const response = await authorizedFetch('/workspaces', { method: 'POST', body: JSON.stringify({ name }) })
+      if (!response.ok) throw new Error(await readErrorBody(response, 'Could not create workspace'))
+      return mapWorkspace({ ...(await response.json()), conversations: tempWorkspace.conversations })
+    })()
+    pendingWorkspaceCreateRef.current[tempWorkspace.id] = createPromise
+
+    try {
+      const workspace = await createPromise
+      setWorkspaces(prev => prev.map(item => (
+        item.id === tempWorkspace.id
+          ? { ...workspace, conversations: item.conversations }
+          : item
+      )))
+      setActiveWorkspaceId(current => current === tempWorkspace.id ? workspace.id : current)
+      setExpandedWorkspaceIds(prev => {
+        const { [tempWorkspace.id]: tempExpanded, ...rest } = prev
+        return { ...rest, [workspace.id]: tempExpanded ?? true }
+      })
+      setEditingWorkspaceId(current => current === tempWorkspace.id ? workspace.id : current)
+    } catch (err) {
+      setWorkspaces(prev => prev.filter(item => item.id !== tempWorkspace.id))
+      setActiveWorkspaceId(current => current === tempWorkspace.id ? (workspaces[0]?.id || null) : current)
+      setActiveConversationId(current => current === tempWorkspace.conversations[0].id ? (activeConversationId || null) : current)
+      setError(err instanceof Error ? err.message : 'Could not create workspace')
+    } finally {
+      delete pendingWorkspaceCreateRef.current[tempWorkspace.id]
+      setWorkspaceAction('')
+    }
   }
 
   async function deleteWorkspace(workspaceId: string) {
     if (workspaces.length <= 1) return
-    const response = await authorizedFetch(`/workspaces/${workspaceId}`, { method: 'DELETE' })
-    if (!response.ok) {
-      setError(await readErrorBody(response, 'Could not delete workspace'))
+    const previousWorkspaces = workspaces
+    const deletedWorkspace = workspaces.find(workspace => workspace.id === workspaceId)
+    const nextWorkspace = workspaces.find(workspace => workspace.id !== workspaceId) || null
+    setError(null)
+    setWorkspaceAction('Deleting workspace...')
+    setPendingDelete(null)
+    setWorkspaces(prev => prev.filter(workspace => workspace.id !== workspaceId))
+    if (activeWorkspaceId === workspaceId) {
+      setActiveWorkspaceId(nextWorkspace?.id || null)
+      setActiveConversationId(nextWorkspace?.conversations[0]?.id || null)
+      eventsRef.current = []
+      setEvents([])
+      setResult(null)
+    }
+    if (deletedWorkspace?.isDraft) {
+      delete pendingWorkspaceCreateRef.current[workspaceId]
+      setWorkspaceAction('')
       return
     }
-    setPendingDelete(null)
-    await loadWorkspaces()
+    try {
+      const response = await authorizedFetch(`/workspaces/${workspaceId}`, { method: 'DELETE' })
+      if (!response.ok) throw new Error(await readErrorBody(response, 'Could not delete workspace'))
+    } catch (err) {
+      setWorkspaces(previousWorkspaces)
+      setError(err instanceof Error ? err.message : 'Could not delete workspace')
+    } finally {
+      setWorkspaceAction('')
+    }
   }
 
   function createConversation(workspaceId: string, titleOverride?: string) {
@@ -547,11 +627,9 @@ export function useAgent() {
       }
       return
     }
-    const response = await authorizedFetch(`/conversations/${conversationId}`, { method: 'DELETE' })
-    if (!response.ok) {
-      setError(await readErrorBody(response, 'Could not delete conversation'))
-      return
-    }
+    const previousWorkspaces = workspaces
+    setError(null)
+    setWorkspaceAction('Deleting conversation...')
     setPendingDelete(null)
     setWorkspaces(prev => prev.map(workspace => (
       workspace.id === workspaceId
@@ -562,12 +640,24 @@ export function useAgent() {
       const workspace = workspaces.find(item => item.id === workspaceId)
       const nextConversation = workspace?.conversations.find(item => item.id !== conversationId)
       setActiveConversationId(nextConversation?.id || null)
-      if (nextConversation) await loadConversationTurns(nextConversation.id, INITIAL_VISIBLE_TURNS)
-      else {
+      if (nextConversation) {
+        void loadConversationTurns(nextConversation.id, INITIAL_VISIBLE_TURNS).catch(err => {
+          setError(err instanceof Error ? err.message : 'Could not load conversation turns')
+        })
+      } else {
         eventsRef.current = []
         setEvents([])
         setResult(null)
       }
+    }
+    try {
+      const response = await authorizedFetch(`/conversations/${conversationId}`, { method: 'DELETE' })
+      if (!response.ok) throw new Error(await readErrorBody(response, 'Could not delete conversation'))
+    } catch (err) {
+      setWorkspaces(previousWorkspaces)
+      setError(err instanceof Error ? err.message : 'Could not delete conversation')
+    } finally {
+      setWorkspaceAction('')
     }
   }
 
@@ -671,6 +761,8 @@ export function useAgent() {
     setError,
     running,
     workspaces,
+    workspacesLoading,
+    workspaceAction,
     activeWorkspace,
     activeConversation,
     activeConversationId,

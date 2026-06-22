@@ -88,6 +88,8 @@ export function AgentShell() {
   const libraryContent = (
     <LibraryPanel
       workspaces={agent.workspaces}
+      workspacesLoading={agent.workspacesLoading}
+      workspaceAction={agent.workspaceAction}
       activeWorkspaceId={agent.activeWorkspace?.id || null}
       activeConversationId={agent.activeConversation?.id || null}
       onCreateWorkspace={agent.createWorkspace}

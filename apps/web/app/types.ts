@@ -134,6 +134,7 @@ export type Workspace = {
   createdAt: string
   updatedAt: string
   conversations: Conversation[]
+  isDraft?: boolean
 }
 
 export type ApiConversation = {

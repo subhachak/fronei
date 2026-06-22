@@ -4,6 +4,7 @@ import { ChevronDown, Folder, MessageSquare, Plus, Search, Trash2 } from 'lucide
 import { useState } from 'react'
 import { formatRelativeTime } from '../lib/format'
 import type { PendingDelete, Workspace } from '../types'
+import { AccountMenu } from './AccountMenu'
 import { InlineDeleteConfirm } from './InlineDeleteConfirm'
 import { SearchInput } from './ui/Field'
 
@@ -27,6 +28,7 @@ export function LibraryPanel({
   onRequestDeleteWorkspace,
   onRequestDeleteConversation,
   onCancelDelete,
+  isAdmin,
 }: {
   workspaces: Workspace[]
   activeWorkspaceId: string | null
@@ -47,6 +49,7 @@ export function LibraryPanel({
   onRequestDeleteWorkspace: (workspaceId: string) => void
   onRequestDeleteConversation: (workspaceId: string, conversationId: string) => void
   onCancelDelete: () => void
+  isAdmin: boolean
 }) {
   const [workspaceSearchOpen, setWorkspaceSearchOpen] = useState(false)
   const [workspaceSearch, setWorkspaceSearch] = useState('')
@@ -92,7 +95,7 @@ export function LibraryPanel({
         <SearchInput value={workspaceSearch} onChange={setWorkspaceSearch} onClear={() => setWorkspaceSearch('')} placeholder="Search workspaces..." />
       )}
 
-      <div className="flex-1 space-y-2.5 overflow-y-auto">
+      <div className="min-h-0 flex-1 space-y-2.5 overflow-y-auto">
         {workspaces.length === 0 && (
           <div className="rounded-lg border border-dashed border-neutral-300 p-5 text-sm text-neutral-500 dark:border-neutral-700 dark:text-neutral-400">
             Create a workspace to begin.
@@ -249,6 +252,8 @@ export function LibraryPanel({
           )
         })}
       </div>
+
+      <AccountMenu isAdmin={isAdmin} />
     </div>
   )
 }

@@ -106,6 +106,7 @@ export function AgentShell() {
       onRequestDeleteWorkspace={workspaceId => agent.setPendingDelete({ type: 'workspace', workspaceId })}
       onRequestDeleteConversation={(workspaceId, conversationId) => agent.setPendingDelete({ type: 'conversation', workspaceId, conversationId })}
       onCancelDelete={() => agent.setPendingDelete(null)}
+      isAdmin={agent.isAdmin}
     />
   )
 

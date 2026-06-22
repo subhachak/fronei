@@ -278,7 +278,7 @@ export function AgentShell() {
             )}
           </div>
 
-          <div className="relative flex-shrink-0 border-t border-neutral-200 bg-white/95 p-2.5 backdrop-blur [padding-bottom:calc(0.625rem+env(safe-area-inset-bottom))] md:px-8 md:py-4 dark:border-neutral-800 dark:bg-neutral-950/95" style={{ height: composerHeight }}>
+          <div className="relative flex-shrink-0 border-t border-neutral-200 bg-white/95 p-2.5 backdrop-blur [padding-bottom:calc(0.625rem+env(safe-area-inset-bottom))] md:px-8 md:py-4 dark:border-neutral-800 dark:bg-neutral-950/95" style={{ minHeight: composerHeight }}>
             <div
               role="separator"
               aria-label="Resize composer"

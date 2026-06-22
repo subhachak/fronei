@@ -7,7 +7,7 @@ export const metadata: Metadata = {
 
 export default function AgentV3Layout({ children }: { children: React.ReactNode }) {
   return (
-    <div className="h-screen w-screen overflow-hidden bg-white text-neutral-900 antialiased dark:bg-neutral-950 dark:text-neutral-50">
+    <div className="h-dvh w-screen overflow-hidden bg-white text-neutral-900 antialiased dark:bg-neutral-950 dark:text-neutral-50">
       {/* Reads agent-v3's own theme key before first paint to avoid a flash of the wrong theme. */}
       <script
         dangerouslySetInnerHTML={{

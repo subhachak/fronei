@@ -3,17 +3,22 @@
 import {
   AlertTriangle,
   ArrowLeft,
+  Check,
   Download,
+  FileText,
   Loader2,
+  Pencil,
+  RefreshCw,
   Sliders,
   Sparkles,
   Trash2,
+  Upload,
   X,
 } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Area, AreaChart, Bar, BarChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { useProfile } from '../hooks/useProfile'
-import type { OutputFormat, ProfileWorkspace, QualityMode, ResearchLevel } from '../types'
+import type { DocumentTemplateOption, OutputFormat, ProfileSettings, ProfileWorkspace, QualityMode, ResearchLevel } from '../types'
 import { Badge, Card } from './ui/Card'
 import { SelectField } from './ui/Field'
 
@@ -43,9 +48,16 @@ const RESEARCH_OPTIONS = [
 
 export function ProfileView({ onClose }: { onClose: () => void }) {
   const profile = useProfile()
+  const uploadTemplateRef = useRef<HTMLInputElement | null>(null)
+  const replaceTemplateRef = useRef<HTMLInputElement | null>(null)
   const [range, setRange] = useState('30d')
+  const [activeTab, setActiveTab] = useState<'settings' | 'templates' | 'workspaces' | 'usage'>('settings')
   const [newPreference, setNewPreference] = useState('')
   const [workspacePriorityDrafts, setWorkspacePriorityDrafts] = useState<Record<string, string>>({})
+  const [renamingTemplateId, setRenamingTemplateId] = useState<string | null>(null)
+  const [templateNameDraft, setTemplateNameDraft] = useState('')
+  const [replaceTemplateId, setReplaceTemplateId] = useState<string | null>(null)
+  const [deleteTemplateId, setDeleteTemplateId] = useState<string | null>(null)
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
   const [deleteAcknowledged, setDeleteAcknowledged] = useState(false)
   const [deleting, setDeleting] = useState(false)
@@ -93,6 +105,24 @@ export function ProfileView({ onClose }: { onClose: () => void }) {
     }
   }
 
+  async function handleUploadTemplate(file: File | null) {
+    const uploaded = await profile.uploadTemplate(file)
+    if (uploaded && !profile.me?.settings.default_template_id) {
+      void profile.updateSettings({ default_template_id: uploaded.id })
+    }
+  }
+
+  async function handleReplaceTemplate(file: File | null) {
+    if (!replaceTemplateId) return
+    await profile.replaceTemplate(replaceTemplateId, file)
+    setReplaceTemplateId(null)
+  }
+
+  async function handleDeleteTemplate(templateId: string) {
+    const ok = await profile.deleteTemplate(templateId)
+    if (ok) setDeleteTemplateId(null)
+  }
+
   if (deleted) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 p-8 text-center">
@@ -114,6 +144,26 @@ export function ProfileView({ onClose }: { onClose: () => void }) {
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-white dark:bg-neutral-950">
+      <input
+        ref={uploadTemplateRef}
+        type="file"
+        accept=".pptx"
+        className="hidden"
+        onChange={event => {
+          void handleUploadTemplate(event.target.files?.[0] ?? null)
+          event.target.value = ''
+        }}
+      />
+      <input
+        ref={replaceTemplateRef}
+        type="file"
+        accept=".pptx"
+        className="hidden"
+        onChange={event => {
+          void handleReplaceTemplate(event.target.files?.[0] ?? null)
+          event.target.value = ''
+        }}
+      />
       <header className="flex flex-shrink-0 items-center justify-between gap-4 border-b border-neutral-200 px-4 py-4 sm:px-8 dark:border-neutral-800">
         <div className="flex items-center gap-3">
           <button
@@ -137,6 +187,24 @@ export function ProfileView({ onClose }: { onClose: () => void }) {
         )}
       </header>
 
+      <div className="flex flex-shrink-0 gap-1 overflow-x-auto border-b border-neutral-200 px-4 py-2 sm:px-8 dark:border-neutral-800">
+        {[
+          { id: 'settings', label: 'Settings' },
+          { id: 'templates', label: 'Templates' },
+          { id: 'workspaces', label: 'Workspaces' },
+          { id: 'usage', label: 'Usage & privacy' },
+        ].map(tab => (
+          <button
+            key={tab.id}
+            type="button"
+            onClick={() => setActiveTab(tab.id as typeof activeTab)}
+            className={`h-8 rounded-lg px-3 text-xs font-bold ${activeTab === tab.id ? 'bg-neutral-900 text-white dark:bg-white dark:text-neutral-900' : 'text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-900'}`}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
       <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto p-4 sm:px-8 sm:py-6">
         {profile.error && (
           <div className="rounded-lg border-l-4 border-red-400 bg-red-50 px-4 py-3 text-sm text-red-700 dark:bg-red-500/10 dark:text-red-400">
@@ -148,6 +216,8 @@ export function ProfileView({ onClose }: { onClose: () => void }) {
           <p className="text-sm text-neutral-400">Loading…</p>
         ) : (
           <>
+            {activeTab === 'settings' && (
+              <>
             {/* Preferences */}
             <Card className="p-4 sm:p-5">
               <CardTitle icon={Sparkles} title="Preferences" subtitle="What Fronei has learned about how you like responses, refreshed periodically from your recent activity. Remove anything that's wrong." />
@@ -203,7 +273,45 @@ export function ProfileView({ onClose }: { onClose: () => void }) {
                 />
               </div>
             </Card>
+              </>
+            )}
 
+            {activeTab === 'templates' && (
+              <TemplateManager
+                templates={profile.templates}
+                templatesLoaded={profile.templatesLoaded}
+                templateStatus={profile.templateStatus}
+                templateError={profile.templateError}
+                settings={profile.me?.settings || {}}
+                renamingTemplateId={renamingTemplateId}
+                templateNameDraft={templateNameDraft}
+                deleteTemplateId={deleteTemplateId}
+                onUpload={() => uploadTemplateRef.current?.click()}
+                onRefresh={() => void profile.loadTemplates()}
+                onSetDefault={templateId => void profile.updateSettings({ default_template_id: templateId })}
+                onStartRename={template => {
+                  setRenamingTemplateId(template.id)
+                  setTemplateNameDraft(template.name)
+                }}
+                onNameDraftChange={setTemplateNameDraft}
+                onSaveRename={() => {
+                  if (!renamingTemplateId) return
+                  void profile.renameTemplate(renamingTemplateId, templateNameDraft)
+                  setRenamingTemplateId(null)
+                }}
+                onCancelRename={() => setRenamingTemplateId(null)}
+                onReplace={templateId => {
+                  setReplaceTemplateId(templateId)
+                  replaceTemplateRef.current?.click()
+                }}
+                onRequestDelete={setDeleteTemplateId}
+                onCancelDelete={() => setDeleteTemplateId(null)}
+                onDelete={templateId => void handleDeleteTemplate(templateId)}
+              />
+            )}
+
+            {activeTab === 'workspaces' && (
+              <>
             {/* Workspaces */}
             <Card className="p-4 sm:p-5">
               <CardTitle icon={Sparkles} title="Workspaces" subtitle="What's actively being worked on in each workspace, distinct from your global preferences above." />
@@ -228,7 +336,11 @@ export function ProfileView({ onClose }: { onClose: () => void }) {
                 ))}
               </div>
             </Card>
+              </>
+            )}
 
+            {activeTab === 'usage' && (
+              <>
             {/* Usage / BI report */}
             <Card className="p-4 sm:p-5">
               <div className="flex flex-wrap items-center justify-between gap-3">
@@ -347,6 +459,8 @@ export function ProfileView({ onClose }: { onClose: () => void }) {
                 </button>
               </div>
             </Card>
+              </>
+            )}
           </>
         )}
       </div>
@@ -432,6 +546,169 @@ function RemovableChip({ label, onRemove }: { label: string; onRemove: () => voi
         <X size={12} />
       </button>
     </span>
+  )
+}
+
+function TemplateManager({
+  templates,
+  templatesLoaded,
+  templateStatus,
+  templateError,
+  settings,
+  renamingTemplateId,
+  templateNameDraft,
+  deleteTemplateId,
+  onUpload,
+  onRefresh,
+  onSetDefault,
+  onStartRename,
+  onNameDraftChange,
+  onSaveRename,
+  onCancelRename,
+  onReplace,
+  onRequestDelete,
+  onCancelDelete,
+  onDelete,
+}: {
+  templates: DocumentTemplateOption[]
+  templatesLoaded: boolean
+  templateStatus: string
+  templateError: string
+  settings: ProfileSettings
+  renamingTemplateId: string | null
+  templateNameDraft: string
+  deleteTemplateId: string | null
+  onUpload: () => void
+  onRefresh: () => void
+  onSetDefault: (templateId: string) => void
+  onStartRename: (template: DocumentTemplateOption) => void
+  onNameDraftChange: (value: string) => void
+  onSaveRename: () => void
+  onCancelRename: () => void
+  onReplace: (templateId: string) => void
+  onRequestDelete: (templateId: string) => void
+  onCancelDelete: () => void
+  onDelete: (templateId: string) => void
+}) {
+  const defaultTemplateId = settings.default_template_id || ''
+  const defaultTemplate = templates.find(template => template.id === defaultTemplateId)
+
+  return (
+    <Card className="p-4 sm:p-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <CardTitle
+          icon={FileText}
+          title="Document templates"
+          subtitle="Manage uploaded PowerPoint templates and choose the default for new presentation tasks."
+        />
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={onRefresh}
+            className="flex h-9 items-center gap-1.5 rounded-lg border border-neutral-200 px-3 text-xs font-bold text-neutral-600 dark:border-neutral-700 dark:text-neutral-300"
+          >
+            <RefreshCw size={14} /> Refresh
+          </button>
+          <button
+            type="button"
+            onClick={onUpload}
+            className="flex h-9 items-center gap-1.5 rounded-lg bg-neutral-900 px-3 text-xs font-bold text-white dark:bg-white dark:text-neutral-900"
+          >
+            <Upload size={14} /> Upload PPTX
+          </button>
+        </div>
+      </div>
+
+      <div className="mt-4 grid gap-2 rounded-xl border border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-800 dark:bg-neutral-900/60">
+        <SelectField
+          label="Default deck"
+          value={defaultTemplateId}
+          onChange={onSetDefault}
+          options={[{ value: '', label: 'Fronei default' }, ...templates.map(template => ({ value: template.id, label: template.name }))]}
+        />
+        <p className="text-xs text-neutral-500 dark:text-neutral-400">
+          {defaultTemplate ? `${defaultTemplate.name} is used unless a task selects another template.` : 'Fronei default is used unless a task selects another template.'}
+        </p>
+      </div>
+
+      {templateStatus && <p className="mt-3 text-xs font-medium text-emerald-600 dark:text-emerald-400">{templateStatus}</p>}
+      {templateError && (
+        <p className="mt-3 rounded-md border-l-3 border-red-400 bg-red-50 px-2.5 py-1.5 text-xs font-medium text-red-700 dark:bg-red-500/10 dark:text-red-400">{templateError}</p>
+      )}
+
+      <div className="mt-4 grid gap-3">
+        {!templatesLoaded && <p className="text-sm text-neutral-400">Loading templates...</p>}
+        {templatesLoaded && templates.length === 0 && (
+          <div className="rounded-lg border border-dashed border-neutral-300 p-5 text-sm text-neutral-500 dark:border-neutral-700 dark:text-neutral-400">
+            No templates uploaded yet.
+          </div>
+        )}
+        {templates.map(template => {
+          const isDefault = defaultTemplateId === template.id
+          const isRenaming = renamingTemplateId === template.id
+          const isDeleting = deleteTemplateId === template.id
+
+          return (
+            <div key={template.id} className={`rounded-xl border p-3.5 ${isDefault ? 'border-emerald-300 bg-emerald-50/70 dark:border-emerald-500/30 dark:bg-emerald-500/10' : 'border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-950'}`}>
+              <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
+                <div className="min-w-0">
+                  {isRenaming ? (
+                    <input
+                      value={templateNameDraft}
+                      onChange={event => onNameDraftChange(event.target.value)}
+                      onKeyDown={event => {
+                        if (event.key === 'Enter') onSaveRename()
+                        if (event.key === 'Escape') onCancelRename()
+                      }}
+                      autoFocus
+                      className="w-full rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-2 text-sm font-bold text-neutral-900 outline-none dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-100"
+                    />
+                  ) : (
+                    <div className="flex min-w-0 items-center gap-2">
+                      <p className="truncate text-sm font-bold text-neutral-900 dark:text-neutral-50">{template.name}</p>
+                      {isDefault && <Badge tone="success"><Check size={12} /> Default</Badge>}
+                    </div>
+                  )}
+                  <p className="mt-1 text-xs text-neutral-400">{template.user_template ? 'Uploaded PowerPoint template' : 'Built-in template'}</p>
+                  {template.description && <p className="mt-1 line-clamp-2 text-xs text-neutral-500 dark:text-neutral-400">{template.description}</p>}
+                </div>
+
+                <div className="flex flex-wrap gap-2 sm:justify-end">
+                  {isRenaming ? (
+                    <>
+                      <button type="button" onClick={onSaveRename} className="h-8 rounded-lg bg-neutral-900 px-3 text-xs font-bold text-white dark:bg-white dark:text-neutral-900">Save</button>
+                      <button type="button" onClick={onCancelRename} className="h-8 rounded-lg border border-neutral-200 px-3 text-xs font-bold text-neutral-600 dark:border-neutral-700 dark:text-neutral-300">Cancel</button>
+                    </>
+                  ) : (
+                    <>
+                      <button type="button" onClick={() => onSetDefault(template.id)} disabled={isDefault} className="h-8 rounded-lg border border-neutral-200 px-3 text-xs font-bold text-neutral-600 disabled:opacity-40 dark:border-neutral-700 dark:text-neutral-300">Make default</button>
+                      {template.user_template && (
+                        <>
+                          <button type="button" onClick={() => onStartRename(template)} aria-label={`Rename ${template.name}`} className="grid h-8 w-8 place-items-center rounded-lg border border-neutral-200 text-neutral-500 dark:border-neutral-700 dark:text-neutral-300">
+                            <Pencil size={13} />
+                          </button>
+                          <button type="button" onClick={() => onReplace(template.id)} className="h-8 rounded-lg border border-neutral-200 px-3 text-xs font-bold text-neutral-600 dark:border-neutral-700 dark:text-neutral-300">Replace</button>
+                          {isDeleting ? (
+                            <>
+                              <button type="button" onClick={() => onDelete(template.id)} className="h-8 rounded-lg border border-red-200 px-3 text-xs font-bold text-red-600 dark:border-red-500/30 dark:text-red-400">Delete</button>
+                              <button type="button" onClick={onCancelDelete} className="h-8 rounded-lg border border-neutral-200 px-3 text-xs font-bold text-neutral-600 dark:border-neutral-700 dark:text-neutral-300">Keep</button>
+                            </>
+                          ) : (
+                            <button type="button" onClick={() => onRequestDelete(template.id)} aria-label={`Delete ${template.name}`} className="grid h-8 w-8 place-items-center rounded-lg border border-neutral-200 text-neutral-500 dark:border-neutral-700 dark:text-neutral-300">
+                              <Trash2 size={13} />
+                            </button>
+                          )}
+                        </>
+                      )}
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </Card>
   )
 }
 

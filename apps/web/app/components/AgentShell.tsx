@@ -118,6 +118,7 @@ export function AgentShell() {
 
   const contextContent = (
     <ContextPanel
+      view={view}
       result={agent.result}
       events={agent.events}
       sources={agent.sources}
@@ -133,12 +134,9 @@ export function AgentShell() {
       templatesLoaded={agent.templatesLoaded}
       templateStatus={uploadSource === 'profile' ? agent.templateStatus : ''}
       templateError={agent.templateError}
-      templateDeleteId={agent.templateDeleteId}
-      onUploadTemplate={() => openTemplateUpload('profile')}
+      profileSettings={agent.profileSettings}
+      onUpdateProfileSettings={agent.updateProfileSettings}
       onRefreshTemplates={agent.refreshTemplates}
-      onRequestDeleteTemplate={agent.setTemplateDeleteId}
-      onCancelDeleteTemplate={() => agent.setTemplateDeleteId(null)}
-      onDeleteTemplate={agent.deleteTemplate}
     />
   )
 

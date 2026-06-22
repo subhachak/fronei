@@ -161,6 +161,7 @@ export type ProfileSettings = {
   quality_mode?: QualityMode
   output_format?: OutputFormat
   research_level?: ResearchLevel
+  default_template_id?: string
 }
 
 export type ProfileMe = {

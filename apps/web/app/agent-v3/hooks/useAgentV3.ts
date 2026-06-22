@@ -27,6 +27,28 @@ const INITIAL_VISIBLE_TURNS = 6
 const TURN_POLL_INTERVAL_MS = 1200
 const TURN_POLL_RECOVERY_WINDOW_MS = 20 * 60 * 1000
 
+// Mirrors app/services/agent_v3/model_policy.py:MODEL_ROLES on the backend.
+// The per-turn override is admin-only and intentionally blanket: it applies
+// the chosen model to every role for this one turn, so "what if this whole
+// task ran on Opus" is a single click rather than per-role micromanagement.
+// The org-wide default (what everyone else always gets) lives in the
+// DB-backed model policy, editable at /admin -> Model policy.
+const MODEL_OVERRIDE_ROLES = [
+  'fast_router',
+  'orchestrator',
+  'direct_answer',
+  'research_brief',
+  'coverage_contract',
+  'research_planner',
+  'reflection',
+  'citation_verifier',
+  'repair',
+  'document_planner',
+  'document_writer',
+  'synthesis',
+  'synthesis_executive',
+] as const
+
 export function useAgentV3() {
   const { getToken, isLoaded, isSignedIn } = useAuth()
   const { authorizedFetch } = useMemo(() => createApiClient(getToken), [getToken])
@@ -54,6 +76,8 @@ export function useAgentV3() {
   const [templateError, setTemplateError] = useState('')
   const [templateDeleteId, setTemplateDeleteId] = useState<string | null>(null)
   const [selectedTemplateId, setSelectedTemplateId] = useState('')
+  const [isAdmin, setIsAdmin] = useState(false)
+  const [modelOverride, setModelOverride] = useState('')
 
   const eventsRef = useRef<ProgressEvent[]>([])
   const activeRunMessageRef = useRef<string | null>(null)
@@ -79,7 +103,17 @@ export function useAgentV3() {
       setError(err instanceof Error ? err.message : 'Could not load Agent v3 workspaces')
     })
     void loadTemplates()
+    void checkIsAdmin()
   }, [isLoaded, isSignedIn])
+
+  async function checkIsAdmin() {
+    try {
+      const response = await authorizedFetch('/admin/me')
+      setIsAdmin(response.ok)
+    } catch {
+      setIsAdmin(false)
+    }
+  }
 
   async function loadTemplates() {
     setTemplateError('')
@@ -240,6 +274,9 @@ export function useAgentV3() {
     setMessage('')
     try {
       const conversationId = await ensureActiveConversation(runMessage)
+      const modelOverrides = isAdmin && modelOverride
+        ? Object.fromEntries(MODEL_OVERRIDE_ROLES.map(role => [role, modelOverride]))
+        : undefined
       const response = await authorizedFetch('/agent-v3/turns', {
         method: 'POST',
         body: JSON.stringify({
@@ -251,6 +288,7 @@ export function useAgentV3() {
           research_level: option?.research_level || researchLevel,
           confirm_deep_research: Boolean(option?.confirm_deep_research),
           force_route: option?.force_route || undefined,
+          model_overrides: modelOverrides,
         }),
       })
       if (!response.ok) throw new Error(await readErrorBody(response, 'Agent v3 job could not start'))
@@ -575,5 +613,8 @@ export function useAgentV3() {
     deleteTemplate,
     refreshTemplates: loadTemplates,
     activeRunMessage: activeRunMessageRef.current,
+    isAdmin,
+    modelOverride,
+    setModelOverride,
   }
 }

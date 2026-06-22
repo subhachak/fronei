@@ -7,6 +7,7 @@ import time
 from dataclasses import dataclass, field
 
 from app.config import get_settings
+from app.services.agent_v3 import model_policy
 
 logger = logging.getLogger(__name__)
 
@@ -36,54 +37,47 @@ def _configure_keys() -> None:
 
 
 def _candidate_models(preferred: str | None = None) -> list[str]:
-    settings = get_settings()
+    policy = model_policy.get_effective_model_policy()
     models: list[str] = []
-    for model in [preferred, *settings.agent_v3_fallback_model_list]:
+    for model in [preferred, *policy["fallback_models"]]:
         if model and model not in models:
             models.append(model)
     return models or ["gpt-4.1-mini"]
 
 
-def model_for_role(role: str | None, *, quality_mode: str = "standard") -> str | None:
+def model_for_role(
+    role: str | None,
+    *,
+    quality_mode: str = "standard",
+    overrides: dict[str, str] | None = None,
+) -> str | None:
     """Return the preferred Agent v3 model for a role.
 
-    This is intentionally small and config-backed: the runtime can route
-    quality-critical stages to stronger models while still falling back through
-    the global planner chain when a provider is unavailable.
-    """
+    Backed by the DB model policy (see app/services/agent_v3/model_policy.py)
+    rather than `.env` — admin-editable without a restart, with hardcoded
+    Python defaults as the fallback when nothing has been overridden.
 
-    if not role:
+    `overrides` is the admin-only per-turn override
+    (AgentV3Request.model_overrides) and takes precedence over the stored
+    policy when present for this role, without changing anyone else's
+    default. Non-admins never reach here with a populated `overrides` dict —
+    routers/agent_v3.py strips it server-side before the request is used.
+
+    Roles with no real LLM call behind them (judge / research_judge /
+    document_judge — these are pure rule-based scoring) intentionally return
+    None here; see model_policy.py for why.
+    """
+    canonical = model_policy.canonical_role(role)
+    if canonical is None:
         return None
-    settings = get_settings()
-    normalized = role.strip().lower().replace("-", "_")
-    if normalized == "synthesis":
-        if quality_mode == "executive":
-            return settings.agent_v3_synthesis_model_executive or settings.agent_v3_synthesis_model
-        return settings.agent_v3_synthesis_model
-    role_to_setting = {
-        "fast_router": "agent_v3_fast_router_model",
-        "orchestrator": "agent_v3_orchestrator_model",
-        "direct": "agent_v3_direct_model",
-        "direct_answer": "agent_v3_direct_model",
-        "research_brief": "agent_v3_brief_model",
-        "brief": "agent_v3_brief_model",
-        "coverage_contract": "agent_v3_contract_model",
-        "contract": "agent_v3_contract_model",
-        "research_planner": "agent_v3_research_planner_model",
-        "lead_research": "agent_v3_research_planner_model",
-        "reflection": "agent_v3_reflection_model",
-        "citation_verifier": "agent_v3_citation_verifier_model",
-        "claim_verifier": "agent_v3_citation_verifier_model",
-        "judge": "agent_v3_judge_model",
-        "research_judge": "agent_v3_judge_model",
-        "document_judge": "agent_v3_judge_model",
-        "repair": "agent_v3_repair_model",
-        "repair_agent": "agent_v3_repair_model",
-        "document_planner": "agent_v3_document_planner_model",
-        "document_writer": "agent_v3_document_writer_model",
-    }
-    setting_name = role_to_setting.get(normalized)
-    return str(getattr(settings, setting_name, "") or "") if setting_name else None
+    if canonical == "synthesis" and quality_mode == "executive":
+        canonical = "synthesis_executive"
+    if overrides:
+        override_value = overrides.get(canonical)
+        if override_value:
+            return override_value
+    policy = model_policy.get_effective_model_policy()
+    return policy["roles"].get(canonical) or None
 
 
 def telemetry_for_role(
@@ -91,10 +85,11 @@ def telemetry_for_role(
     *,
     quality_mode: str = "standard",
     model_used: str | None = None,
+    overrides: dict[str, str] | None = None,
 ) -> dict[str, str]:
     """Small payload used by progress events to expose model routing."""
 
-    preferred = model_for_role(role, quality_mode=quality_mode) or ""
+    preferred = model_for_role(role, quality_mode=quality_mode, overrides=overrides) or ""
     payload = {
         "model_role": role or "",
         "preferred_model": preferred,
@@ -104,7 +99,7 @@ def telemetry_for_role(
     return payload
 
 
-def telemetry_for_response(response: object) -> dict[str, object]:
+def telemetry_for_response(response: object, *, overrides: dict[str, str] | None = None) -> dict[str, object]:
     """Model route details safe to attach to progress events."""
 
     model_role = str(getattr(response, "model_role", "") or "")
@@ -115,6 +110,7 @@ def telemetry_for_response(response: object) -> dict[str, object]:
     payload: dict[str, object] = telemetry_for_role(
         model_role,
         model_used=model_used,
+        overrides=overrides,
     )
     if preferred_model:
         payload["preferred_model"] = preferred_model
@@ -144,6 +140,7 @@ def complete(
     preferred_model: str | None = None,
     role: str | None = None,
     quality_mode: str = "standard",
+    overrides: dict[str, str] | None = None,
     timeout_s: int = 30,
     max_tokens: int = 1200,
 ) -> ModelResponse:
@@ -153,7 +150,7 @@ def complete(
     from litellm import completion
 
     last_error: Exception | None = None
-    preferred = preferred_model or model_for_role(role, quality_mode=quality_mode)
+    preferred = preferred_model or model_for_role(role, quality_mode=quality_mode, overrides=overrides)
     attempted_models: list[str] = []
     failed_model_attempts: list[dict[str, str]] = []
     for model in _candidate_models(preferred):
@@ -203,6 +200,7 @@ def simple_completion(
     preferred_model: str | None = None,
     role: str | None = None,
     quality_mode: str = "standard",
+    overrides: dict[str, str] | None = None,
     timeout_s: int = 30,
 ) -> ModelResponse:
     return complete(
@@ -214,5 +212,6 @@ def simple_completion(
         preferred_model=preferred_model,
         role=role,
         quality_mode=quality_mode,
+        overrides=overrides,
         timeout_s=timeout_s,
     )

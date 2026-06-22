@@ -29,6 +29,13 @@ class AgentV3Request(BaseModel):
     force_route: RouteName | None = None
     output_format: Literal["chat", "markdown", "docx", "pptx"] = "chat"
     template_id: str | None = None
+    # Admin-only per-turn model override (role -> litellm model string). The
+    # org-wide default lives in the DB-backed model policy
+    # (app/services/agent_v3/model_policy.py, admin-editable at
+    # /admin/agent-v3/model-policy); this field lets an admin test a
+    # different model for one turn without changing that default. Silently
+    # stripped server-side for non-admins -- see routers/agent_v3.py.
+    model_overrides: dict[str, str] | None = None
 
 
 class Goal(BaseModel):

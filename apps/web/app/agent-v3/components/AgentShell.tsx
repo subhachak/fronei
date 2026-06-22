@@ -302,6 +302,9 @@ export function AgentShell() {
               selectedTemplateId={agent.selectedTemplateExists ? agent.selectedTemplateId : ''}
               setSelectedTemplateId={agent.setSelectedTemplateId}
               templateStatus={uploadSource === 'composer' ? agent.templateStatus : ''}
+              isAdmin={agent.isAdmin}
+              modelOverride={agent.modelOverride}
+              setModelOverride={agent.setModelOverride}
             />
           </div>
         </section>

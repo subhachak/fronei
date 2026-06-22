@@ -1,6 +1,6 @@
 'use client'
 
-import { ChevronDown, ChevronUp, Loader2, Send, Upload } from 'lucide-react'
+import { ChevronDown, ChevronUp, Loader2, Send, Shield, Upload } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import type { DocumentTemplateOption, OutputFormat, QualityMode, ResearchLevel } from '../types'
 import { SelectField, Textarea } from './ui/Field'
@@ -22,6 +22,17 @@ const RESEARCH_OPTIONS = [
   { value: 'regular', label: 'regular' },
   { value: 'deep', label: 'deep' },
 ]
+// Admin-only per-turn override. Kept short and curated; "Custom" covers
+// anything else litellm supports.
+const CURATED_MODEL_OPTIONS = [
+  { value: '', label: 'Default (org policy)' },
+  { value: 'gpt-4.1-mini', label: 'gpt-4.1-mini' },
+  { value: 'gpt-4.1', label: 'gpt-4.1' },
+  { value: 'claude-sonnet-4-6', label: 'claude-sonnet-4-6' },
+  { value: 'claude-opus-4-8', label: 'claude-opus-4-8' },
+  { value: 'gemini/gemini-2.5-flash', label: 'gemini/gemini-2.5-flash' },
+  { value: '__custom__', label: 'Custom…' },
+]
 
 export function Composer({
   message,
@@ -40,6 +51,9 @@ export function Composer({
   selectedTemplateId,
   setSelectedTemplateId,
   templateStatus,
+  isAdmin,
+  modelOverride,
+  setModelOverride,
 }: {
   message: string
   setMessage: (message: string) => void
@@ -57,11 +71,16 @@ export function Composer({
   selectedTemplateId: string
   setSelectedTemplateId: (templateId: string) => void
   templateStatus: string
+  isAdmin: boolean
+  modelOverride: string
+  setModelOverride: (model: string) => void
 }) {
   const [optionsOpen, setOptionsOpen] = useState(false)
   const selectedTemplateName = templates.find(template => template.id === selectedTemplateId)?.name || 'Default'
   const popoverRef = useRef<HTMLDivElement | null>(null)
   const toggleRef = useRef<HTMLButtonElement | null>(null)
+  const isCuratedModel = CURATED_MODEL_OPTIONS.some(option => option.value === modelOverride)
+  const [modelSelectValue, setModelSelectValue] = useState(() => (modelOverride && !isCuratedModel ? '__custom__' : modelOverride))
 
   useEffect(() => {
     if (!optionsOpen) return
@@ -108,6 +127,11 @@ export function Composer({
             >
               {optionsOpen ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
               <span className="truncate">{outputFormat}{researchLevel !== 'auto' ? ` · ${researchLevel}` : ''}</span>
+              {isAdmin && modelOverride && (
+                <span className="ml-auto inline-flex flex-shrink-0 items-center gap-1 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-800 dark:bg-amber-500/15 dark:text-amber-400">
+                  <Shield size={10} /> {modelOverride}
+                </span>
+              )}
             </button>
             <button
               type="button"
@@ -147,6 +171,37 @@ export function Composer({
             options={[{ value: '', label: 'Default' }, ...templates.map(template => ({ value: template.id, label: template.name }))]}
           />
           <p className="col-span-full truncate text-xs font-medium text-neutral-400">Template: {selectedTemplateName}</p>
+
+          {isAdmin && (
+            <div className="col-span-full grid gap-2 border-t border-dashed border-amber-300 pt-2.5 dark:border-amber-500/30">
+              <div className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide text-amber-700 dark:text-amber-400">
+                <Shield size={12} /> Admin: model for this turn only
+              </div>
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                <SelectField
+                  label="Model"
+                  value={modelSelectValue}
+                  onChange={value => {
+                    setModelSelectValue(value)
+                    setModelOverride(value === '__custom__' ? modelOverride : value)
+                  }}
+                  options={CURATED_MODEL_OPTIONS}
+                  className="col-span-2 sm:col-span-2"
+                />
+                {modelSelectValue === '__custom__' && (
+                  <input
+                    value={modelOverride}
+                    onChange={event => setModelOverride(event.target.value)}
+                    placeholder="e.g. openrouter/qwen/qwen3.7-max"
+                    className="col-span-2 min-h-9 rounded-lg border border-neutral-200 bg-neutral-50 px-2.5 text-xs font-semibold text-neutral-900 outline-none dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-100 sm:col-span-2"
+                  />
+                )}
+              </div>
+              <p className="text-[11px] leading-relaxed text-neutral-400">
+                Overrides every stage for this turn only. Everyone else keeps the org default. Set by an admin in /admin → Model policy.
+              </p>
+            </div>
+          )}
         </div>
       )}
     </div>

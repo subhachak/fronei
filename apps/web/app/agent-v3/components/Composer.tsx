@@ -1,6 +1,6 @@
 'use client'
 
-import { ChevronDown, ChevronUp, Loader2, Send, Shield, Upload } from 'lucide-react'
+import { Loader2, Send, Shield, SlidersHorizontal, Upload } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import type { DocumentTemplateOption, OutputFormat, QualityMode, ResearchLevel } from '../types'
 import { SelectField, Textarea } from './ui/Field'
@@ -76,7 +76,6 @@ export function Composer({
   setModelOverride: (model: string) => void
 }) {
   const [optionsOpen, setOptionsOpen] = useState(false)
-  const selectedTemplateName = templates.find(template => template.id === selectedTemplateId)?.name || 'Default'
   const popoverRef = useRef<HTMLDivElement | null>(null)
   const toggleRef = useRef<HTMLButtonElement | null>(null)
   const isCuratedModel = CURATED_MODEL_OPTIONS.some(option => option.value === modelOverride)
@@ -116,43 +115,47 @@ export function Composer({
           className="min-h-[44px] px-3 pt-3"
         />
 
-        <div className="flex flex-shrink-0 flex-col gap-2 border-t border-neutral-100 px-2.5 py-2.5 dark:border-neutral-800">
-          <div className="grid grid-cols-[minmax(0,1fr)_40px_40px] items-center gap-2">
-            <button
-              ref={toggleRef}
-              type="button"
-              onClick={() => setOptionsOpen(open => !open)}
-              aria-expanded={optionsOpen}
-              className="flex h-10 min-w-0 items-center justify-start gap-2 overflow-hidden rounded-lg border border-neutral-200 bg-neutral-50 px-3 text-xs font-bold text-neutral-700 dark:border-neutral-800 dark:bg-neutral-800/60 dark:text-neutral-200"
-            >
-              {optionsOpen ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
-              <span className="truncate">{outputFormat}{researchLevel !== 'auto' ? ` · ${researchLevel}` : ''}</span>
-              {isAdmin && modelOverride && (
-                <span className="ml-auto inline-flex flex-shrink-0 items-center gap-1 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-800 dark:bg-amber-500/15 dark:text-amber-400">
-                  <Shield size={10} /> {modelOverride}
-                </span>
-              )}
-            </button>
+        <div className="flex flex-shrink-0 items-center gap-1.5 px-2 py-1.5">
+          <button
+            ref={toggleRef}
+            type="button"
+            onClick={() => setOptionsOpen(open => !open)}
+            aria-expanded={optionsOpen}
+            aria-label="Task options"
+            title="Task options"
+            className="flex h-7 min-w-0 flex-shrink-0 items-center gap-1 rounded-md px-1.5 text-[11px] font-medium text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600 dark:text-neutral-500 dark:hover:bg-neutral-800 dark:hover:text-neutral-300"
+          >
+            <SlidersHorizontal size={13} />
+            {(outputFormat !== 'chat' || researchLevel !== 'auto') && (
+              <span className="truncate">{outputFormat !== 'chat' ? outputFormat : ''}{researchLevel !== 'auto' ? ` · ${researchLevel}` : ''}</span>
+            )}
+          </button>
+          {isAdmin && modelOverride && (
+            <span className="inline-flex flex-shrink-0 items-center gap-1 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-800 dark:bg-amber-500/15 dark:text-amber-400">
+              <Shield size={9} /> {modelOverride}
+            </span>
+          )}
+          {templateStatus && <p className="min-w-0 truncate text-[11px] font-medium text-emerald-600 dark:text-emerald-400">{templateStatus}</p>}
+          <div className="ml-auto flex flex-shrink-0 items-center gap-1.5">
             <button
               type="button"
               onClick={onUploadTemplate}
               title="Upload a PowerPoint template to your profile"
               aria-label="Upload a PowerPoint template to your profile"
-              className="grid h-10 w-10 place-items-center rounded-lg border border-neutral-200 text-neutral-500 dark:border-neutral-800 dark:text-neutral-400"
+              className="grid h-9 w-9 place-items-center rounded-lg text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600 dark:text-neutral-500 dark:hover:bg-neutral-800 dark:hover:text-neutral-300"
             >
-              <Upload size={16} />
+              <Upload size={15} />
             </button>
             <button
               type="button"
               onClick={run}
               disabled={!canRun}
               aria-label={running ? 'Working' : 'Start'}
-              className="grid h-10 w-10 place-items-center rounded-lg bg-neutral-900 text-white disabled:bg-neutral-300 dark:bg-white dark:text-neutral-900 dark:disabled:bg-neutral-700"
+              className="grid h-9 w-9 place-items-center rounded-lg bg-neutral-900 text-white disabled:bg-neutral-300 dark:bg-white dark:text-neutral-900 dark:disabled:bg-neutral-700"
             >
-              {running ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
+              {running ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />}
             </button>
           </div>
-          {templateStatus && <p className="text-xs font-semibold text-emerald-600 dark:text-emerald-400">{templateStatus}</p>}
         </div>
       </div>
 
@@ -170,37 +173,25 @@ export function Composer({
             onChange={setSelectedTemplateId}
             options={[{ value: '', label: 'Default' }, ...templates.map(template => ({ value: template.id, label: template.name }))]}
           />
-          <p className="col-span-full truncate text-xs font-medium text-neutral-400">Template: {selectedTemplateName}</p>
-
           {isAdmin && (
-            <div className="col-span-full grid gap-2 border-t border-dashed border-amber-300 pt-2.5 dark:border-amber-500/30">
-              <div className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide text-amber-700 dark:text-amber-400">
-                <Shield size={12} /> Admin: model for this turn only
-              </div>
-              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                <SelectField
-                  label="Model"
-                  value={modelSelectValue}
-                  onChange={value => {
-                    setModelSelectValue(value)
-                    setModelOverride(value === '__custom__' ? modelOverride : value)
-                  }}
-                  options={CURATED_MODEL_OPTIONS}
-                  className="col-span-2 sm:col-span-2"
-                />
-                {modelSelectValue === '__custom__' && (
-                  <input
-                    value={modelOverride}
-                    onChange={event => setModelOverride(event.target.value)}
-                    placeholder="e.g. openrouter/qwen/qwen3.7-max"
-                    className="col-span-2 min-h-9 rounded-lg border border-neutral-200 bg-neutral-50 px-2.5 text-xs font-semibold text-neutral-900 outline-none dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-100 sm:col-span-2"
-                  />
-                )}
-              </div>
-              <p className="text-[11px] leading-relaxed text-neutral-400">
-                Overrides every stage for this turn only. Everyone else keeps the org default. Set by an admin in /admin → Model policy.
-              </p>
-            </div>
+            <SelectField
+              label="Model"
+              value={modelSelectValue}
+              onChange={value => {
+                setModelSelectValue(value)
+                setModelOverride(value === '__custom__' ? modelOverride : value)
+              }}
+              options={CURATED_MODEL_OPTIONS}
+              className="ring-1 ring-inset ring-amber-300 dark:ring-amber-500/40"
+            />
+          )}
+          {isAdmin && modelSelectValue === '__custom__' && (
+            <input
+              value={modelOverride}
+              onChange={event => setModelOverride(event.target.value)}
+              placeholder="litellm model id, e.g. gpt-4.1"
+              className="col-span-2 min-h-9 rounded-lg border border-neutral-200 bg-neutral-50 px-2.5 text-xs font-semibold text-neutral-900 outline-none dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-100 sm:col-span-2"
+            />
           )}
         </div>
       )}

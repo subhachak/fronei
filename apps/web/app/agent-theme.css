@@ -1,0 +1,189 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Shared app-wide theme CSS. */
+
+@layer utilities {
+  .av3-pulse-dot {
+    animation: av3DotPulse 1.4s ease-in-out infinite;
+  }
+
+  .av3-pulse-ring {
+    animation: av3RingPulse 1.8s ease-in-out infinite;
+  }
+
+  .av3-pulse-bars span {
+    animation: av3BarPulse 1.25s ease-in-out infinite;
+    transform-origin: left center;
+  }
+
+  .av3-pulse-bars span:nth-child(2) {
+    animation-delay: 0.16s;
+  }
+
+  .av3-pulse-bars span:nth-child(3) {
+    animation-delay: 0.32s;
+  }
+
+  .av3-ellipsis span {
+    animation: av3EllipsisPulse 1.2s ease-in-out infinite;
+  }
+
+  .av3-ellipsis span:nth-child(2) {
+    animation-delay: 0.16s;
+  }
+
+  .av3-ellipsis span:nth-child(3) {
+    animation-delay: 0.32s;
+  }
+}
+
+@keyframes av3DotPulse {
+  0%, 100% { box-shadow: 0 0 0 6px rgba(16, 185, 129, 0.12); }
+  50% { box-shadow: 0 0 0 10px rgba(16, 185, 129, 0.02); }
+}
+
+@keyframes av3RingPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.22); }
+  50% { box-shadow: 0 0 0 7px rgba(16, 185, 129, 0); }
+}
+
+@keyframes av3BarPulse {
+  0%, 100% { opacity: 0.3; transform: scaleX(0.35); }
+  50% { opacity: 1; transform: scaleX(1); }
+}
+
+@keyframes av3EllipsisPulse {
+  0%, 100% { opacity: 0.3; transform: translateY(0); }
+  50% { opacity: 1; transform: translateY(-2px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .av3-pulse-dot,
+  .av3-pulse-ring,
+  .av3-pulse-bars span,
+  .av3-ellipsis span {
+    animation: none !important;
+  }
+}
+
+/* Markdown rendering inside assistant turns */
+.av3-markdown {
+  display: grid;
+  gap: 0.75rem;
+  min-width: 0;
+  font-size: 0.9rem;
+  line-height: 1.75;
+}
+
+.av3-markdown > * {
+  min-width: 0;
+  margin: 0;
+}
+
+.av3-markdown h1,
+.av3-markdown h2,
+.av3-markdown h3 {
+  font-weight: 700;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.av3-markdown h1 { font-size: 1.4rem; }
+.av3-markdown h2 { font-size: 1.15rem; }
+.av3-markdown h3 { font-size: 1rem; }
+
+.av3-markdown p,
+.av3-markdown li,
+.av3-markdown a {
+  overflow-wrap: anywhere;
+}
+
+.av3-markdown ul,
+.av3-markdown ol {
+  display: grid;
+  gap: 0.5rem;
+  padding-left: 1.35rem;
+}
+
+.av3-markdown a {
+  font-weight: 600;
+  text-decoration: underline;
+  text-decoration-color: rgba(16, 185, 129, 0.4);
+  text-underline-offset: 3px;
+}
+
+.av3-markdown strong {
+  font-weight: 700;
+}
+
+.av3-markdown code {
+  border-radius: 0.25rem;
+  font-family: 'SF Mono', 'Roboto Mono', ui-monospace, monospace;
+  font-size: 0.85em;
+  padding: 0.1rem 0.35rem;
+  background: #f5f5f5;
+  color: #b45309;
+}
+
+.av3-markdown pre {
+  max-width: 100%;
+  overflow-x: auto;
+  border-radius: 0.5rem;
+  padding: 0.9rem;
+  background: #171717;
+  color: #fafafa;
+}
+
+.av3-markdown pre code {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 0;
+}
+
+.av3-markdown table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+}
+
+.av3-markdown th,
+.av3-markdown td {
+  padding: 0.5rem 0.6rem;
+  text-align: left;
+  vertical-align: top;
+  border: 1px solid #e5e5e5;
+}
+
+.av3-markdown th {
+  background: #f5f5f5;
+}
+
+.av3-markdown blockquote {
+  padding-left: 0.75rem;
+  border-left: 3px solid #d4d4d4;
+  color: #525252;
+}
+
+[data-theme="dark"] .av3-markdown code {
+  background: #262626;
+  color: #fbbf24;
+}
+
+[data-theme="dark"] .av3-markdown th,
+[data-theme="dark"] .av3-markdown td {
+  border-color: #292929;
+}
+
+[data-theme="dark"] .av3-markdown th {
+  background: #1c1c1c;
+}
+
+[data-theme="dark"] .av3-markdown blockquote {
+  border-left-color: #404040;
+  color: #a3a3a3;
+}

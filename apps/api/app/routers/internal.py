@@ -6,7 +6,6 @@ from sqlalchemy import inspect, text
 from app.config import get_settings
 from app.db.models import SessionLocal, engine
 from app.db.schema_check import check_schema_version
-from app.services.memory_consolidator import consolidate_all_active_users
 
 
 router = APIRouter(prefix="/internal", tags=["internal"])
@@ -20,13 +19,6 @@ def _require_internal_secret(x_internal_secret: str) -> None:
         raise HTTPException(status_code=403, detail="Forbidden")
 
 
-@router.post("/consolidate-profiles")
-def consolidate_profiles(x_internal_secret: str = Header(default="")) -> dict:
-    _require_internal_secret(x_internal_secret)
-    result = consolidate_all_active_users()
-    return {"status": "ok", **result}
-
-
 @router.post("/smoke")
 def smoke_check(x_internal_secret: str = Header(default="")) -> dict:
     _require_internal_secret(x_internal_secret)
@@ -35,12 +27,10 @@ def smoke_check(x_internal_secret: str = Header(default="")) -> dict:
 
     required_tables = [
         "users",
+        "workspaces",
         "conversations",
-        "conversation_messages",
-        "user_memories",
-        "user_profiles",
+        "turns",
         "admin_settings",
-        "request_logs",
     ]
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())

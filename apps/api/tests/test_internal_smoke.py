@@ -38,4 +38,4 @@ def test_internal_smoke_checks_database(monkeypatch):
     assert body["status"] == "ok"
     assert body["database"] == "ok"
     assert body["schema"] == "ok"
-    assert "user_profiles" in body["tables_checked"]
+    assert "workspaces" in body["tables_checked"]

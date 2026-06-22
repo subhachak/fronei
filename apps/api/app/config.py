@@ -26,12 +26,12 @@ class Settings(BaseSettings):
     # Agent v3 model assignment (which model handles each role: fast_router,
     # orchestrator, direct_answer, research_planner, synthesis, document_writer,
     # etc.) is no longer configured here. It is DB-backed and admin-editable at
-    # runtime via GET/PATCH /admin/agent-v3/model-policy — see
-    # app/services/agent_v3/model_policy.py for the defaults and the full role
+    # runtime via GET/PATCH /admin/model-policy — see
+    # app/services/agent/model_policy.py for the defaults and the full role
     # list. Moving it out of .env removed a second, harder-to-discover place
     # that controlled the same thing.
-    agent_v3_document_writer_concurrency: int = 3
-    agent_v3_longform_timeout_s: int = 300
+    document_writer_concurrency: int = 3
+    longform_timeout_s: int = 300
     clerk_issuer: str = ""
     # Required in production. When unset, JWT audience verification (`verify_aud`)
     # is disabled in app/auth.py — acceptable for local dev only.
@@ -83,9 +83,9 @@ class Settings(BaseSettings):
     document_template_storage_dir: str = "./data/document_templates"
 
     # Agent v3 generated artifacts. In production this should point at a
-    # mounted volume, e.g. /data/fronei/agent_v3_artifacts. Files are stored
+    # mounted volume, e.g. /data/fronei/artifacts. Files are stored
     # below a per-user directory and referenced from DB rows.
-    agent_v3_artifact_storage_dir: str = "./data/agent_v3_artifacts"
+    artifact_storage_dir: str = "./data/artifacts"
 
     # Whether to run LibreOffice/poppler-based PPTX render QA synchronously on
     # the document-generation request path. This can take up to ~60s per deck

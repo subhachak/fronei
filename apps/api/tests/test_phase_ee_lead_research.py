@@ -3,16 +3,16 @@ from __future__ import annotations
 import time
 from types import SimpleNamespace
 
-from app.services.agent_v3.models import AgentV3Request, Source, ToolCall
+from app.services.agent.models import TurnRequest, Source, ToolCall
 
 
 def test_generate_research_brief_fallback(monkeypatch):
-    from app.services.agent_v3 import model_client
-    from app.services.agent_v3.research_subtree import generate_research_brief
+    from app.services.agent import model_client
+    from app.services.agent.research_subtree import generate_research_brief
 
     monkeypatch.setattr(model_client, "complete", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("timeout")))
 
-    brief = generate_research_brief(AgentV3Request(message="Compare Tavily vs You.com", research_level="deep"))
+    brief = generate_research_brief(TurnRequest(message="Compare Tavily vs You.com", research_level="deep"))
 
     assert brief.objective
     assert brief.source == "heuristic"
@@ -20,12 +20,12 @@ def test_generate_research_brief_fallback(monkeypatch):
 
 
 def test_technical_architecture_profile_gets_specific_contract(monkeypatch):
-    from app.services.agent_v3 import model_client
-    from app.services.agent_v3.research_subtree import generate_coverage_contract, generate_research_brief
+    from app.services.agent import model_client
+    from app.services.agent.research_subtree import generate_coverage_contract, generate_research_brief
 
     monkeypatch.setattr(model_client, "complete", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("offline")))
 
-    request = AgentV3Request(
+    request = TurnRequest(
         message="Conduct deep research and generate a detailed architectural report explaining system design, components, and workflows of agentic deep research AI.",
         research_level="deep",
     )
@@ -40,7 +40,7 @@ def test_technical_architecture_profile_gets_specific_contract(monkeypatch):
 
 
 def test_technical_architecture_queries_are_provider_friendly():
-    from app.services.agent_v3.research_subtree import (
+    from app.services.agent.research_subtree import (
         CoverageCell,
         CoverageContract,
         _targeted_query,
@@ -58,7 +58,7 @@ def test_technical_architecture_queries_are_provider_friendly():
     assert "citation verification" in query
 
     plan = plan_from_contract(
-        AgentV3Request(message=message, research_level="deep"),
+        TurnRequest(message=message, research_level="deep"),
         CoverageContract(cells=[CoverageCell(subject="Evidence binder and citation map", dimension="data model")]),
     )
     assert plan.workers[0].discovery_domain == "academic"
@@ -67,7 +67,7 @@ def test_technical_architecture_queries_are_provider_friendly():
 
 
 def test_deep_worker_plan_preserves_contract_workers_with_discovery_workers():
-    from app.services.agent_v3.research_subtree import CoverageCell, CoverageContract, plan_from_contract
+    from app.services.agent.research_subtree import CoverageCell, CoverageContract, plan_from_contract
 
     contract = CoverageContract(
         cells=[
@@ -77,7 +77,7 @@ def test_deep_worker_plan_preserves_contract_workers_with_discovery_workers():
     )
 
     plan = plan_from_contract(
-        AgentV3Request(
+        TurnRequest(
             message="Conduct deep research and generate a detailed architectural report explaining system design, components, and workflows of agentic deep research AI.",
             research_level="deep",
         ),
@@ -90,12 +90,12 @@ def test_deep_worker_plan_preserves_contract_workers_with_discovery_workers():
 
 
 def test_domain_discovery_queries_use_clean_subjects():
-    from app.services.agent_v3.research_subtree import (
+    from app.services.agent.research_subtree import (
         _domain_discovery_workers,
         research_budget_for,
     )
 
-    request = AgentV3Request(
+    request = TurnRequest(
         message=(
             "Conduct deep research and generate a detailed architectural report on "
             "the system architecture, AI agent workflows, and LLM integration "
@@ -115,7 +115,7 @@ def test_domain_discovery_queries_use_clean_subjects():
 
 
 def test_research_profile_classifier_handles_non_architecture_profiles():
-    from app.services.agent_v3.research_subtree import infer_research_profile
+    from app.services.agent.research_subtree import infer_research_profile
 
     cases = [
         (
@@ -145,8 +145,8 @@ def test_research_profile_classifier_handles_non_architecture_profiles():
 
 
 def test_model_brief_vendor_guardrail_overrides_strategy(monkeypatch):
-    from app.services.agent_v3 import model_client
-    from app.services.agent_v3.research_subtree import generate_research_brief
+    from app.services.agent import model_client
+    from app.services.agent.research_subtree import generate_research_brief
 
     response = SimpleNamespace(
         text=(
@@ -163,7 +163,7 @@ def test_model_brief_vendor_guardrail_overrides_strategy(monkeypatch):
     monkeypatch.setattr(model_client, "complete", lambda *a, **kw: response)
 
     brief = generate_research_brief(
-        AgentV3Request(
+        TurnRequest(
             message="Build vs buy: compare Tavily and You.com for our search provider decision.",
             research_level="deep",
         )
@@ -175,7 +175,7 @@ def test_model_brief_vendor_guardrail_overrides_strategy(monkeypatch):
 
 
 def test_plan_from_contract_uses_profile_source_for_execution_policy():
-    from app.services.agent_v3.research_subtree import CoverageCell, CoverageContract, plan_from_contract
+    from app.services.agent.research_subtree import CoverageCell, CoverageContract, plan_from_contract
 
     contract = CoverageContract(
         cells=[CoverageCell(subject="Tavily", dimension="pricing")],
@@ -185,7 +185,7 @@ def test_plan_from_contract_uses_profile_source_for_execution_policy():
     )
 
     plan = plan_from_contract(
-        AgentV3Request(
+        TurnRequest(
             message="Build vs buy: compare Tavily and You.com for our search provider decision.",
             research_level="deep",
         ),
@@ -198,13 +198,13 @@ def test_plan_from_contract_uses_profile_source_for_execution_policy():
 
 
 def test_profile_execution_policies_drive_domain_workers_and_anchor_queries():
-    from app.services.agent_v3.research_subtree import (
+    from app.services.agent.research_subtree import (
         _domain_discovery_workers,
         _vendor_comparison_anchor_queries,
         research_budget_for,
     )
 
-    request = AgentV3Request(
+    request = TurnRequest(
         message="Conduct deep research comparing Tavily, You.com, and Nimble search providers.",
         research_level="deep",
     )
@@ -219,13 +219,13 @@ def test_profile_execution_policies_drive_domain_workers_and_anchor_queries():
 
 
 def test_coverage_contract_fallback_has_cells(monkeypatch):
-    from app.services.agent_v3 import model_client
-    from app.services.agent_v3.research_subtree import ResearchBrief, generate_coverage_contract
+    from app.services.agent import model_client
+    from app.services.agent.research_subtree import ResearchBrief, generate_coverage_contract
 
     monkeypatch.setattr(model_client, "complete", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("fail")))
 
     contract = generate_coverage_contract(
-        AgentV3Request(message="Compare Tavily vs You.com", research_level="deep"),
+        TurnRequest(message="Compare Tavily vs You.com", research_level="deep"),
         ResearchBrief(
             objective="Compare Tavily and You.com",
             success_criteria=["pricing covered", "capabilities covered"],
@@ -238,7 +238,7 @@ def test_coverage_contract_fallback_has_cells(monkeypatch):
 
 
 def test_coverage_contract_ratio():
-    from app.services.agent_v3.research_subtree import CoverageCell, CoverageContract
+    from app.services.agent.research_subtree import CoverageCell, CoverageContract
 
     contract = CoverageContract(
         subjects=["A", "B"],
@@ -257,7 +257,7 @@ def test_coverage_contract_ratio():
 
 
 def test_plan_from_contract_generates_workers():
-    from app.services.agent_v3.research_subtree import CoverageCell, CoverageContract, plan_from_contract
+    from app.services.agent.research_subtree import CoverageCell, CoverageContract, plan_from_contract
 
     contract = CoverageContract(
         subjects=["Tavily", "Nimble"],
@@ -271,7 +271,7 @@ def test_plan_from_contract_generates_workers():
     )
 
     plan = plan_from_contract(
-        AgentV3Request(message="Compare Tavily and Nimble", research_level="deep"),
+        TurnRequest(message="Compare Tavily and Nimble", research_level="deep"),
         contract,
     )
 
@@ -281,7 +281,7 @@ def test_plan_from_contract_generates_workers():
 
 
 def test_technical_architecture_ranking_prefers_dense_sources():
-    from app.services.agent_v3.research_subtree import ResearchPlan, rank_sources
+    from app.services.agent.research_subtree import ResearchPlan, rank_sources
 
     plan = ResearchPlan(
         research_profile="technical_architecture",
@@ -308,7 +308,7 @@ def test_technical_architecture_ranking_prefers_dense_sources():
 
 
 def test_evidence_preserves_source_provenance():
-    from app.services.agent_v3.research_subtree import EvidencePack, ResearchPlan, bind_evidence
+    from app.services.agent.research_subtree import EvidencePack, ResearchPlan, bind_evidence
 
     evidence = bind_evidence(
         [
@@ -329,7 +329,7 @@ def test_evidence_preserves_source_provenance():
 
 
 def test_bind_evidence_selects_relevant_passage_not_intro():
-    from app.services.agent_v3.research_subtree import CoverageCell, CoverageContract, ResearchPlan, bind_evidence
+    from app.services.agent.research_subtree import CoverageCell, CoverageContract, ResearchPlan, bind_evidence
 
     intro = " ".join(["This introductory section defines general artificial intelligence concepts."] * 35)
     relevant = (
@@ -365,7 +365,7 @@ def test_bind_evidence_selects_relevant_passage_not_intro():
 
 
 def test_bind_evidence_creates_passage_level_items_for_technical_sources():
-    from app.services.agent_v3.research_subtree import CoverageCell, CoverageContract, ResearchPlan, bind_evidence
+    from app.services.agent.research_subtree import CoverageCell, CoverageContract, ResearchPlan, bind_evidence
 
     content = "\n\n".join(
         [
@@ -393,7 +393,7 @@ def test_bind_evidence_creates_passage_level_items_for_technical_sources():
 
 
 def test_bind_evidence_extracts_typed_technical_claims():
-    from app.services.agent_v3.research_subtree import ResearchPlan, bind_evidence
+    from app.services.agent.research_subtree import ResearchPlan, bind_evidence
 
     evidence = bind_evidence(
         [
@@ -423,8 +423,8 @@ def test_bind_evidence_extracts_typed_technical_claims():
 
 
 def test_reflect_sufficient_when_fully_covered(monkeypatch):
-    from app.services.agent_v3 import model_client
-    from app.services.agent_v3.research_subtree import (
+    from app.services.agent import model_client
+    from app.services.agent.research_subtree import (
         CoverageCell,
         CoverageContract,
         ResearchBrief,
@@ -443,7 +443,7 @@ def test_reflect_sufficient_when_fully_covered(monkeypatch):
         budget_ledger=ResearchBudgetLedger(budget=ResearchBudget()),
     )
 
-    decision = reflect(AgentV3Request(message="test", research_level="deep"), state)
+    decision = reflect(TurnRequest(message="test", research_level="deep"), state)
 
     assert decision.sufficient is True
     assert decision.coverage_ratio == 1.0
@@ -451,8 +451,8 @@ def test_reflect_sufficient_when_fully_covered(monkeypatch):
 
 
 def test_citation_verification_detects_hallucinated(monkeypatch):
-    from app.services.agent_v3 import model_client
-    from app.services.agent_v3.research_subtree import EvidenceItem, EvidencePack, verify_citations_semantically
+    from app.services.agent import model_client
+    from app.services.agent.research_subtree import EvidenceItem, EvidencePack, verify_citations_semantically
 
     monkeypatch.setattr(model_client, "complete", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("skip llm")))
     evidence = EvidencePack(
@@ -473,9 +473,9 @@ def test_citation_verification_detects_hallucinated(monkeypatch):
 
 
 def test_lead_research_loop_returns_expected_shape(monkeypatch):
-    from app.services.agent_v3 import model_client
-    from app.services.agent_v3.model_client import ModelResponse
-    from app.services.agent_v3.research_subtree import lead_research_loop
+    from app.services.agent import model_client
+    from app.services.agent.model_client import ModelResponse
+    from app.services.agent.research_subtree import lead_research_loop
 
     responses = iter(
         [
@@ -515,7 +515,7 @@ def test_lead_research_loop_returns_expected_shape(monkeypatch):
             ], ToolCall(name="read_url", input={"urls": urls}, output={"source_count": len(urls)}, ok=True)
 
     result = lead_research_loop(
-        AgentV3Request(message="Compare Tavily and Nimble pricing", research_level="deep"),
+        TurnRequest(message="Compare Tavily and Nimble pricing", research_level="deep"),
         FakeTools(),
         lambda stage, message, data: None,
     )
@@ -527,8 +527,8 @@ def test_lead_research_loop_returns_expected_shape(monkeypatch):
 
 
 def test_technical_architecture_synthesis_uses_report_budget(monkeypatch):
-    from app.services.agent_v3 import model_client
-    from app.services.agent_v3.research_subtree import EvidenceItem, EvidencePack, ResearchPlan, synthesize_answer
+    from app.services.agent import model_client
+    from app.services.agent.research_subtree import EvidenceItem, EvidencePack, ResearchPlan, synthesize_answer
 
     captured = {}
 
@@ -541,7 +541,7 @@ def test_technical_architecture_synthesis_uses_report_budget(monkeypatch):
         return model_client.ModelResponse(text="ok", model_used="fake", latency_ms=1, cost_usd=0.0)
 
     monkeypatch.setattr(model_client, "simple_completion", fake_simple_completion)
-    request = AgentV3Request(
+    request = TurnRequest(
         message="Conduct deep research and generate a detailed architectural report explaining system design, components, and workflows of agentic deep research AI.",
         research_level="deep",
     )
@@ -582,7 +582,7 @@ def test_technical_architecture_synthesis_uses_report_budget(monkeypatch):
 
 
 def test_lead_research_dispatches_search_workers_in_parallel(monkeypatch):
-    from app.services.agent_v3.research_subtree import (
+    from app.services.agent.research_subtree import (
         CoverageContract,
         LeadResearchAgent,
         ResearchBrief,
@@ -628,7 +628,7 @@ def test_lead_research_dispatches_search_workers_in_parallel(monkeypatch):
             budget=ResearchBudget(max_search_workers=3, max_sources=3, max_tool_calls=6, max_deep_links=0)
         ),
     )
-    agent = LeadResearchAgent(AgentV3Request(message="parallel test", research_level="deep"), SlowSearchTools())
+    agent = LeadResearchAgent(TurnRequest(message="parallel test", research_level="deep"), SlowSearchTools())
     agent.ledger = state.budget_ledger
 
     started = time.monotonic()
@@ -643,7 +643,7 @@ def test_lead_research_dispatches_search_workers_in_parallel(monkeypatch):
 
 
 def test_worker_reports_update_coverage_from_typed_claims():
-    from app.services.agent_v3.research_subtree import (
+    from app.services.agent.research_subtree import (
         CoverageCell,
         CoverageContract,
         EvidenceClaim,
@@ -691,7 +691,7 @@ def test_worker_reports_update_coverage_from_typed_claims():
 
 
 def test_state_add_sources_upgrades_candidate_with_read_content():
-    from app.services.agent_v3.research_subtree import (
+    from app.services.agent.research_subtree import (
         CoverageContract,
         ResearchBrief,
         ResearchPlan,
@@ -723,7 +723,7 @@ def test_state_add_sources_upgrades_candidate_with_read_content():
 
 
 def test_technical_architecture_binds_architecture_cards():
-    from app.services.agent_v3.research_subtree import ResearchPlan, bind_evidence
+    from app.services.agent.research_subtree import ResearchPlan, bind_evidence
 
     source = Source(
         title="PPTAgent architecture",
@@ -760,7 +760,7 @@ def test_technical_architecture_binds_architecture_cards():
 
 
 def test_deep_technical_reader_uses_large_source_cap():
-    from app.services.agent_v3.research_subtree import ResearchPlan, _max_parallel_read_batches_for, _read_cap_for_batch
+    from app.services.agent.research_subtree import ResearchPlan, _max_parallel_read_batches_for, _read_cap_for_batch
 
     plan = ResearchPlan(research_profile="technical_architecture")
 
@@ -772,14 +772,14 @@ def test_deep_technical_reader_uses_large_source_cap():
 
 
 def test_deep_technical_synthesis_uses_expansive_token_budget():
-    from app.services.agent_v3.research_subtree import ResearchPlan, _synthesis_token_budget
+    from app.services.agent.research_subtree import ResearchPlan, _synthesis_token_budget
 
     plan = ResearchPlan(research_profile="technical_architecture")
 
-    assert _synthesis_token_budget(AgentV3Request(message="architecture", research_level="deep"), plan) == 12000
+    assert _synthesis_token_budget(TurnRequest(message="architecture", research_level="deep"), plan) == 12000
     assert (
         _synthesis_token_budget(
-            AgentV3Request(message="architecture", research_level="deep", quality_mode="executive"),
+            TurnRequest(message="architecture", research_level="deep", quality_mode="executive"),
             plan,
         )
         == 14000
@@ -787,14 +787,14 @@ def test_deep_technical_synthesis_uses_expansive_token_budget():
 
 
 def test_deep_document_writer_uses_expansive_budget_and_floor():
-    from app.services.agent_v3.document_subtree import (
+    from app.services.agent.document_subtree import (
         DocumentDraft,
         DocumentPlan,
         _document_writer_token_budget,
         judge_document,
     )
 
-    request = AgentV3Request(
+    request = TurnRequest(
         message="Conduct deep research and generate a detailed architectural report on agentic deep research AI.",
         research_level="deep",
         output_format="docx",
@@ -807,10 +807,10 @@ def test_deep_document_writer_uses_expansive_budget_and_floor():
 
 
 def test_deep_document_writer_generates_sections_individually(monkeypatch):
-    from app.services.agent_v3 import model_client
-    from app.services.agent_v3.document_subtree import DocumentPlan, write_document
-    from app.services.agent_v3.model_client import ModelResponse
-    from app.services.agent_v3.research_subtree import EvidenceItem, EvidencePack
+    from app.services.agent import model_client
+    from app.services.agent.document_subtree import DocumentPlan, write_document
+    from app.services.agent.model_client import ModelResponse
+    from app.services.agent.research_subtree import EvidenceItem, EvidencePack
 
     calls = []
 
@@ -833,7 +833,7 @@ def test_deep_document_writer_generates_sections_individually(monkeypatch):
 
     monkeypatch.setattr(model_client, "simple_completion", fake_simple_completion)
 
-    request = AgentV3Request(
+    request = TurnRequest(
         message="Conduct deep research and generate a detailed architectural report on agentic deep research AI.",
         research_level="deep",
         output_format="docx",
@@ -884,14 +884,14 @@ def test_deep_document_writer_generates_sections_individually(monkeypatch):
 
 
 def test_deep_document_planner_preserves_long_context_and_sections():
-    from app.services.agent_v3.document_subtree import (
+    from app.services.agent.document_subtree import (
         DocumentPlan,
         _normalize_plan,
         _planner_research_summary,
         _section_limit,
     )
 
-    request = AgentV3Request(
+    request = TurnRequest(
         message="Conduct deep research and generate a detailed architectural report on agentic deep research AI.",
         research_level="deep",
         output_format="docx",
@@ -906,7 +906,7 @@ def test_deep_document_planner_preserves_long_context_and_sections():
 
 
 def test_technical_architecture_ranker_prioritizes_primary_technical_sources():
-    from app.services.agent_v3.research_subtree import ResearchPlan, rank_sources
+    from app.services.agent.research_subtree import ResearchPlan, rank_sources
 
     plan = ResearchPlan(
         research_profile="technical_architecture",
@@ -944,8 +944,8 @@ def test_technical_architecture_ranker_prioritizes_primary_technical_sources():
 
 
 def test_runtime_routes_deep_to_lead_loop(monkeypatch):
-    from app.services.agent_v3 import research_subtree
-    from app.services.agent_v3.runtime import AgentV3Runtime
+    from app.services.agent import research_subtree
+    from app.services.agent.runtime import Runtime
 
     called = {"loop": False}
 
@@ -964,8 +964,8 @@ def test_runtime_routes_deep_to_lead_loop(monkeypatch):
     monkeypatch.setattr(research_subtree, "lead_research_loop", fake_lead_loop)
 
     result = list(
-        AgentV3Runtime()._run_research_subtree(
-            AgentV3Request(message="deep question", research_level="deep"),
+        Runtime()._run_research_subtree(
+            TurnRequest(message="deep question", research_level="deep"),
             lambda stage, message, **data: SimpleNamespace(model_dump=lambda mode=None: {"stage": stage, "message": message, "data": data}),
         )
     )

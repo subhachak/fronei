@@ -4,12 +4,12 @@
   "tsx": true,
   "tailwind": {
     "config": "tailwind.config.js",
-    "css": "app/v2/v2-tokens.css",
+    "css": "app/globals.css",
     "baseColor": "neutral",
     "cssVariables": true
   },
   "aliases": {
-    "components": "@/v2/components",
-    "utils": "@/v2/lib/utils"
+    "components": "@/components",
+    "utils": "@/lib/cn"
   }
 }

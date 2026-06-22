@@ -104,195 +104,8 @@ class AdminSetting(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
-class Conversation(Base):
-    __tablename__ = "conversations"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    # Externally-facing identifier (hex token) used in API routes, SSE
-    # payloads, and shareable URLs. The integer `id` above remains the
-    # internal primary key used for foreign keys.
-    public_id: Mapped[str] = mapped_column(
-        String(24), unique=True, index=True, nullable=False, default=lambda: secrets.token_hex(12)
-    )
-    user_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True, default="")
-    title: Mapped[str] = mapped_column(String(120), default="New conversation")
-    profile: Mapped[str] = mapped_column(String(32), default="balanced")
-    message_count: Mapped[int] = mapped_column(Integer, default=0)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
-    # Conversation memory (step 2)
-    running_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
-    active_task_json: Mapped[str | None] = mapped_column(Text, nullable=True)
-
-    messages: Mapped[list["ConversationMessage"]] = relationship(
-        "ConversationMessage",
-        back_populates="conversation",
-        cascade="all, delete-orphan",
-        order_by="ConversationMessage.id",
-    )
-
-
-class ConversationMessage(Base):
-    __tablename__ = "conversation_messages"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    conversation_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False
-    )
-    role: Mapped[str] = mapped_column(String(16))
-    content: Mapped[str] = mapped_column(Text)
-    task_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    complexity: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    model_used: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    prompt_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    completion_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    estimated_cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
-    execution_log_json: Mapped[str | None] = mapped_column(Text, nullable=True)
-    research_run_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
-    plan_json: Mapped[str | None] = mapped_column(Text, nullable=True)
-    document_preview_json: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
-
-    conversation: Mapped["Conversation"] = relationship("Conversation", back_populates="messages")
-
-
-class ConversationTurn(Base):
-    __tablename__ = "conversation_turns"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    public_id: Mapped[str] = mapped_column(
-        String(24), unique=True, index=True, nullable=False, default=lambda: secrets.token_hex(12)
-    )
-    user_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True, default="")
-    conversation_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    user_message_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
-    assistant_message_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
-    client_request_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    turn_kind: Mapped[str] = mapped_column(String(24), default="quick", index=True)
-    status: Mapped[str] = mapped_column(String(24), default="running", index=True)
-    progress_json: Mapped[str | None] = mapped_column(Text, nullable=True)
-    result_json: Mapped[str | None] = mapped_column(Text, nullable=True)
-    lifecycle_json: Mapped[str | None] = mapped_column(Text, nullable=True)
-    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-
-    __table_args__ = (
-        UniqueConstraint("user_id", "client_request_id", name="uq_conversation_turns_user_client_request"),
-    )
-
-
-class GuardrailEvent(Base):
-    __tablename__ = "guardrail_events"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    policy_id: Mapped[str] = mapped_column(Text, nullable=False)
-    boundary: Mapped[str] = mapped_column(Text, nullable=False)
-    action: Mapped[str] = mapped_column(Text, nullable=False)
-    triggered_checks_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
-    reason: Mapped[str] = mapped_column(Text, nullable=False)
-    user_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
-    tenant_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    tool_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    turn_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
-    conversation_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
-
-
-class AgentGoal(Base):
-    __tablename__ = "goals"
-
-    id: Mapped[str] = mapped_column(String(128), primary_key=True)
-    user_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
-    tenant_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    conversation_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
-    turn_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
-    parent_goal_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    supersedes_goal_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    superseded_by_goal_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    objective: Mapped[str] = mapped_column(Text, nullable=False)
-    quality_mode: Mapped[str] = mapped_column(String(32), nullable=False, default="standard")
-    budget_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
-    status: Mapped[str] = mapped_column(String(32), nullable=False, default="created")
-    active_policy: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-    lock_owner: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    lock_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
-
-
-class AgentRunLog(Base):
-    __tablename__ = "agent_runs"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    goal_id: Mapped[str] = mapped_column(String(128), ForeignKey("goals.id"), nullable=False, index=True)
-    agent_id: Mapped[str] = mapped_column(Text, nullable=False)
-    parent_run_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
-    status: Mapped[str] = mapped_column(Text, nullable=False, default="created")
-    failure_code: Mapped[str | None] = mapped_column(Text, nullable=True)
-    failure_message: Mapped[str | None] = mapped_column(Text, nullable=True)
-    retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    total_cost_usd: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
-    latency_ms: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    started_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-
-
-class AgentStep(Base):
-    __tablename__ = "agent_steps"
-
-    id: Mapped[str] = mapped_column(Text, primary_key=True)
-    run_id: Mapped[str] = mapped_column(Text, nullable=False, index=True)
-    step_type: Mapped[str] = mapped_column(Text, nullable=False)
-    input_summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    output_summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    model_used: Mapped[str | None] = mapped_column(Text, nullable=True)
-    tool_name: Mapped[str | None] = mapped_column(Text, nullable=True)
-    latency_ms: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    cost_usd: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
-    metadata_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
-
-
-class JobCheckpointRow(Base):
-    __tablename__ = "job_checkpoint"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    turn_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
-    stage: Mapped[str] = mapped_column(String(64), nullable=False)
-    payload: Mapped[str] = mapped_column(Text, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        default=lambda: datetime.now(timezone.utc),
-        onupdate=lambda: datetime.now(timezone.utc),
-    )
-
-    __table_args__ = (
-        UniqueConstraint("turn_id", "stage", name="uq_job_checkpoint_turn_stage"),
-    )
-
-
-class AgentTraceRow(Base):
-    __tablename__ = "agent_traces"
-
-    id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    data_json: Mapped[str] = mapped_column(Text, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        default=lambda: datetime.now(timezone.utc),
-        onupdate=lambda: datetime.now(timezone.utc),
-    )
-
-
-class AgentV3Workspace(Base):
-    __tablename__ = "agent_v3_workspaces"
+class Workspace(Base):
+    __tablename__ = "workspaces"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     user_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
@@ -307,12 +120,12 @@ class AgentV3Workspace(Base):
     )
 
 
-class AgentV3Conversation(Base):
-    __tablename__ = "agent_v3_conversations"
+class Conversation(Base):
+    __tablename__ = "conversations"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     user_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
-    workspace_id: Mapped[str] = mapped_column(String(64), ForeignKey("agent_v3_workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
+    workspace_id: Mapped[str] = mapped_column(String(64), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
     title: Mapped[str] = mapped_column(String(180), nullable=False, default="New conversation")
     context_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     context_updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -324,8 +137,8 @@ class AgentV3Conversation(Base):
     )
 
 
-class AgentV3Turn(Base):
-    __tablename__ = "agent_v3_turns"
+class Turn(Base):
+    __tablename__ = "turns"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     user_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
@@ -349,22 +162,22 @@ class AgentV3Turn(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
-class AgentV3Event(Base):
-    __tablename__ = "agent_v3_events"
+class Event(Base):
+    __tablename__ = "events"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    turn_id: Mapped[str] = mapped_column(String(64), ForeignKey("agent_v3_turns.id", ondelete="CASCADE"), nullable=False, index=True)
+    turn_id: Mapped[str] = mapped_column(String(64), ForeignKey("turns.id", ondelete="CASCADE"), nullable=False, index=True)
     stage: Mapped[str] = mapped_column(String(64), nullable=False)
     message: Mapped[str] = mapped_column(Text, nullable=False)
     data_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
-class AgentV3ToolCall(Base):
-    __tablename__ = "agent_v3_tool_calls"
+class ToolCall(Base):
+    __tablename__ = "tool_calls"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    turn_id: Mapped[str] = mapped_column(String(64), ForeignKey("agent_v3_turns.id", ondelete="CASCADE"), nullable=False, index=True)
+    turn_id: Mapped[str] = mapped_column(String(64), ForeignKey("turns.id", ondelete="CASCADE"), nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     input_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     output_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
@@ -374,11 +187,11 @@ class AgentV3ToolCall(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
-class AgentV3Artifact(Base):
-    __tablename__ = "agent_v3_artifacts"
+class Artifact(Base):
+    __tablename__ = "artifacts"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    turn_id: Mapped[str] = mapped_column(String(64), ForeignKey("agent_v3_turns.id", ondelete="CASCADE"), nullable=False, index=True)
+    turn_id: Mapped[str] = mapped_column(String(64), ForeignKey("turns.id", ondelete="CASCADE"), nullable=False, index=True)
     kind: Mapped[str] = mapped_column(String(32), nullable=False)
     filename: Mapped[str] = mapped_column(Text, nullable=False)
     mime_type: Mapped[str] = mapped_column(Text, nullable=False)
@@ -389,8 +202,8 @@ class AgentV3Artifact(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
-class AgentV3PromptTemplate(Base):
-    __tablename__ = "agent_v3_prompt_templates"
+class PromptTemplate(Base):
+    __tablename__ = "prompt_templates"
 
     id: Mapped[str] = mapped_column(String(128), primary_key=True)
     agent_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
@@ -409,8 +222,8 @@ class AgentV3PromptTemplate(Base):
     )
 
 
-class AgentV3RoutingSignalCandidate(Base):
-    __tablename__ = "agent_v3_routing_signal_candidates"
+class RoutingSignalCandidate(Base):
+    __tablename__ = "routing_signal_candidates"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     phrase: Mapped[str] = mapped_column(Text, nullable=False)
@@ -431,10 +244,10 @@ class AgentV3RoutingSignalCandidate(Base):
     )
 
 
-class AgentV3RoutingDecisionFeedback(Base):
-    __tablename__ = "agent_v3_routing_decision_feedback"
+class RoutingDecisionFeedback(Base):
+    __tablename__ = "routing_decision_feedback"
 
-    turn_id: Mapped[str] = mapped_column(String(64), ForeignKey("agent_v3_turns.id", ondelete="CASCADE"), primary_key=True)
+    turn_id: Mapped[str] = mapped_column(String(64), ForeignKey("turns.id", ondelete="CASCADE"), primary_key=True)
     user_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     conversation_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     message: Mapped[str] = mapped_column(Text, nullable=False)
@@ -443,74 +256,6 @@ class AgentV3RoutingDecisionFeedback(Base):
     matched_signals_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     outcome: Mapped[str] = mapped_column(String(32), nullable=False, default="completed", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
-
-
-class RequestLog(Base):
-    __tablename__ = "request_logs"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    user_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True, default="")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
-    message: Mapped[str] = mapped_column(Text)
-    task_type: Mapped[str] = mapped_column(String(64))
-    complexity: Mapped[str] = mapped_column(String(32))
-    profile: Mapped[str] = mapped_column(String(32))
-    selected_model: Mapped[str] = mapped_column(String(128))
-    model_used: Mapped[str] = mapped_column(String(128))
-    latency_ms: Mapped[int] = mapped_column(Integer)
-    prompt_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    completion_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    estimated_cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
-    status: Mapped[str] = mapped_column(String(32), default="success")
-    error: Mapped[str | None] = mapped_column(Text, nullable=True)
-
-
-DEFAULT_DECAY_RATES: dict[str, float] = {
-    "bio": 0.005,
-    "work": 0.005,
-    "project": 0.08,
-    "preference": 0.03,
-    "communication_style": 0.01,
-    "relationship": 0.03,
-    "constraint": 0.03,
-    "temporary_plan": 0.15,
-    "tool": 0.03,
-    "personal": 0.03,
-    "general": 0.05,
-}
-
-
-class UserMemory(Base):
-    __tablename__ = "user_memories"
-
-    id:                     Mapped[int]      = mapped_column(Integer, primary_key=True, autoincrement=True)
-    user_id:                Mapped[str]      = mapped_column(String(128), nullable=False, index=True)
-    content:                Mapped[str]      = mapped_column(Text)
-    category:               Mapped[str]      = mapped_column(String(64), default="general")
-    scope:                  Mapped[str]      = mapped_column(String(32), default="global")
-    confidence:             Mapped[float]    = mapped_column(Float, default=0.6)
-    source:                 Mapped[str]      = mapped_column(String(16), default="stated")
-    seen_count:             Mapped[int]      = mapped_column(Integer, default=1)
-    last_seen_at:           Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
-    importance:             Mapped[float]    = mapped_column(Float, default=0.5)
-    decay_rate:             Mapped[float]    = mapped_column(Float, default=0.05)
-    pinned:                 Mapped[bool]     = mapped_column(Boolean, default=False)
-    status:                 Mapped[str]      = mapped_column(String(16), default="active")
-    superseded_by_id:       Mapped[int|None] = mapped_column(Integer, nullable=True)
-    source_conversation_id: Mapped[int|None] = mapped_column(Integer, nullable=True)
-    created_at:             Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
-    updated_at:             Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
-
-
-class UserProfile(Base):
-    __tablename__ = "user_profiles"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    user_id: Mapped[str] = mapped_column(String(128), unique=True, nullable=False, index=True)
-    profile_json: Mapped[str] = mapped_column(Text, default="{}")
-    last_consolidated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
 class DocumentTemplate(Base):
@@ -535,185 +280,6 @@ class DocumentTemplate(Base):
     design_system_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
-
-
-class WritingSample(Base):
-    __tablename__ = "writing_samples"
-
-    id:         Mapped[int]        = mapped_column(Integer, primary_key=True, autoincrement=True)
-    user_id:    Mapped[str]        = mapped_column(String(128), nullable=False, index=True)
-    content:    Mapped[str]        = mapped_column(Text, nullable=False)
-    label:      Mapped[str | None] = mapped_column(String(120), nullable=True)
-    char_count: Mapped[int]        = mapped_column(Integer, default=0)
-    created_at: Mapped[datetime]   = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
-
-
-class TwinProfile(Base):
-    __tablename__ = "twin_profiles"
-
-    id:               Mapped[int]             = mapped_column(Integer, primary_key=True, autoincrement=True)
-    user_id:          Mapped[str]             = mapped_column(String(128), unique=True, nullable=False, index=True)
-    fingerprint_json: Mapped[str | None]      = mapped_column(Text, nullable=True)
-    rewrite_prompt:   Mapped[str | None]      = mapped_column(Text, nullable=True)
-    extracted_at:     Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    prefs_json:       Mapped[str | None]      = mapped_column(Text, nullable=True)
-    created_at:       Mapped[datetime]        = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
-    updated_at:       Mapped[datetime]        = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
-
-
-class ResearchRun(Base):
-    __tablename__ = "research_runs"
-
-    id:                      Mapped[int]             = mapped_column(Integer, primary_key=True, autoincrement=True)
-    user_id:                 Mapped[str]             = mapped_column(String(128), nullable=False, index=True)
-    conversation_id:         Mapped[int | None]      = mapped_column(Integer, nullable=True, index=True)
-    query:                   Mapped[str]             = mapped_column(Text, nullable=False)
-    mode:                    Mapped[str]             = mapped_column(String(32), default="deep")
-    status:                  Mapped[str]             = mapped_column(String(32), default="running")
-    iterations:              Mapped[int]             = mapped_column(Integer, default=0)
-    max_sources:             Mapped[int]             = mapped_column(Integer, default=12)
-    source_count:            Mapped[int]             = mapped_column(Integer, default=0)
-    claim_count:             Mapped[int]             = mapped_column(Integer, default=0)
-    confidence:              Mapped[str | None]      = mapped_column(String(32), nullable=True)
-    gaps_json:               Mapped[str | None]      = mapped_column(Text, nullable=True)
-    contradictions_json:     Mapped[str | None]      = mapped_column(Text, nullable=True)
-    verifier_notes:          Mapped[str | None]      = mapped_column(Text, nullable=True)
-    final_answer:            Mapped[str | None]      = mapped_column(Text, nullable=True)
-    created_at:              Mapped[datetime]        = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
-    updated_at:              Mapped[datetime]        = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
-
-
-class ResearchQuestion(Base):
-    __tablename__ = "research_questions"
-
-    id:              Mapped[int]        = mapped_column(Integer, primary_key=True, autoincrement=True)
-    run_id:          Mapped[int]        = mapped_column(Integer, ForeignKey("research_runs.id", ondelete="CASCADE"), nullable=False, index=True)
-    question:        Mapped[str]        = mapped_column(Text, nullable=False)
-    search_query:    Mapped[str | None] = mapped_column(Text, nullable=True)
-    status:          Mapped[str]        = mapped_column(String(32), default="pending")
-    claim_type:      Mapped[str]        = mapped_column(String(32), default="unknown")
-    evidence_role:   Mapped[str]        = mapped_column(String(48), default="background_context")
-    freshness_requirement: Mapped[str]  = mapped_column(String(16), default="default")
-    required_source_tiers_json: Mapped[str | None] = mapped_column(Text, nullable=True)
-    budget_json:     Mapped[str | None] = mapped_column(Text, nullable=True)
-    stop_reason:     Mapped[str | None] = mapped_column(Text, nullable=True)
-    confidence:      Mapped[str | None] = mapped_column(String(32), nullable=True)
-    created_at:      Mapped[datetime]   = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
-
-
-class ResearchSource(Base):
-    __tablename__ = "research_sources"
-
-    id:                  Mapped[int]        = mapped_column(Integer, primary_key=True, autoincrement=True)
-    run_id:              Mapped[int]        = mapped_column(Integer, ForeignKey("research_runs.id", ondelete="CASCADE"), nullable=False, index=True)
-    question_id:         Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
-    title:               Mapped[str]        = mapped_column(Text, nullable=False)
-    url:                 Mapped[str]        = mapped_column(Text, nullable=False)
-    provider:            Mapped[str]        = mapped_column(String(64), default="")
-    excerpt:             Mapped[str | None] = mapped_column(Text, nullable=True)
-    credibility_score:   Mapped[float]      = mapped_column(Float, default=0.0)
-    relevance_score:     Mapped[float]      = mapped_column(Float, default=0.0)
-    freshness_score:     Mapped[float]      = mapped_column(Float, default=0.0)
-    source_type:         Mapped[str | None] = mapped_column(String(64), nullable=True)
-    source_tier:         Mapped[str]        = mapped_column(String(32), default="tier_2_expert")
-    source_family:       Mapped[str | None] = mapped_column(String(255), nullable=True)
-    source_role_prior:   Mapped[str]        = mapped_column(String(48), default="background_context")
-    published_at:        Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    updated_at:          Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    source_date_confidence: Mapped[str]     = mapped_column(String(16), default="unknown")
-    admission_status:    Mapped[str]        = mapped_column(String(24), default="admitted")
-    admission_reason:    Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at:          Mapped[datetime]   = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
-
-
-class ResearchClaim(Base):
-    __tablename__ = "research_claims"
-
-    id:                Mapped[int]        = mapped_column(Integer, primary_key=True, autoincrement=True)
-    run_id:            Mapped[int]        = mapped_column(Integer, ForeignKey("research_runs.id", ondelete="CASCADE"), nullable=False, index=True)
-    source_id:         Mapped[int]        = mapped_column(Integer, ForeignKey("research_sources.id", ondelete="CASCADE"), nullable=False, index=True)
-    claim:             Mapped[str]        = mapped_column(Text, nullable=False)
-    quote:             Mapped[str | None] = mapped_column(Text, nullable=True)
-    confidence:        Mapped[str]        = mapped_column(String(32), default="medium")
-    relevance_score:   Mapped[float]      = mapped_column(Float, default=0.0)
-    claim_type:        Mapped[str]        = mapped_column(String(32), default="unknown")
-    claim_role:        Mapped[str]        = mapped_column(String(48), default="background_context")
-    freshness_risk:    Mapped[str]        = mapped_column(String(16), default="unknown")
-    created_at:        Mapped[datetime]   = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
-
-
-class ResearchSourceCache(Base):
-    """Cross-run cache of source evidence metadata + extracted claims, keyed
-    by URL (Deep Research v2 Phase 5 — caching/reuse layer).
-
-    Stable policy/framework sources (tier_1_official + official_policy) get a
-    long TTL; operational-reality/anecdotal sources (timelines, prices,
-    status) get a short TTL; sensitive domains (medical/financial/legal) get
-    a conservative TTL regardless of tier.
-    """
-    __tablename__ = "research_source_cache"
-
-    id:                     Mapped[int]             = mapped_column(Integer, primary_key=True, autoincrement=True)
-    url:                    Mapped[str]             = mapped_column(String(2048), nullable=False, index=True)
-    # Short hash of the normalized research question this cache row's
-    # claims_json was extracted for. Claim extraction is query-specific
-    # (top-N ranked claims relevant to the asking question), so a single
-    # URL can have multiple cache rows — one per distinct question. Source
-    # metadata fields are duplicated across rows for simplicity; only
-    # claims_json reuse is gated on a query_signature match.
-    query_signature:        Mapped[str]             = mapped_column(String(32), nullable=False, default="", server_default="")
-    title:                  Mapped[str]             = mapped_column(Text, default="")
-    source_type:            Mapped[str | None]      = mapped_column(String(64), nullable=True)
-    source_tier:            Mapped[str]             = mapped_column(String(32), default="tier_2_expert")
-    source_family:          Mapped[str | None]      = mapped_column(String(255), nullable=True)
-    source_role_prior:       Mapped[str]            = mapped_column(String(48), default="background_context")
-    published_at:           Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    updated_at:             Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    source_date_confidence: Mapped[str]             = mapped_column(String(16), default="unknown")
-    admission_status:       Mapped[str]             = mapped_column(String(24), default="admitted")
-    admission_reason:       Mapped[str | None]      = mapped_column(Text, nullable=True)
-    credibility_score:       Mapped[float]          = mapped_column(Float, default=0.0)
-    freshness_score:         Mapped[float]          = mapped_column(Float, default=0.0)
-    cache_category:          Mapped[str]            = mapped_column(String(16), default="current")
-    claims_json:             Mapped[str | None]     = mapped_column(Text, nullable=True)
-    cached_at:               Mapped[datetime]       = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
-    expires_at:              Mapped[datetime]       = mapped_column(DateTime, nullable=False)
-
-    __table_args__ = (
-        UniqueConstraint("url", "query_signature", name="uq_research_source_cache_url_query"),
-    )
-
-
-class ResearchFinding(Base):
-    __tablename__ = "research_findings"
-
-    id:            Mapped[int]        = mapped_column(Integer, primary_key=True, autoincrement=True)
-    run_id:        Mapped[int]        = mapped_column(Integer, ForeignKey("research_runs.id", ondelete="CASCADE"), nullable=False, index=True)
-    finding:       Mapped[str]        = mapped_column(Text, nullable=False)
-    evidence_json: Mapped[str | None] = mapped_column(Text, nullable=True)
-    confidence:    Mapped[str]        = mapped_column(String(32), default="medium")
-    created_at:    Mapped[datetime]   = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
-
-
-class ComponentUsageStat(Base):
-    """Aggregated render/QA outcomes for a (component, slide_layout, design_system,
-    theme) combination (Phase 3, #127). Populated by the generation pipeline
-    (#128) and render-QA feedback (#129), and consumed at registry-load time
-    to weight `selection.rank_components` (#130).
-    """
-
-    __tablename__ = "component_usage_stats"
-
-    id:             Mapped[int]      = mapped_column(Integer, primary_key=True, autoincrement=True)
-    component_id:   Mapped[str]      = mapped_column(String(64), nullable=False, index=True)
-    slide_layout:   Mapped[str]      = mapped_column(String(64), nullable=False, index=True)
-    design_system:  Mapped[str]      = mapped_column(String(64), nullable=False, default="agentdeck_v1")
-    theme:          Mapped[str]      = mapped_column(String(16), nullable=False, default="dark")
-    success_count:  Mapped[int]      = mapped_column(Integer, default=0)
-    failure_count:  Mapped[int]      = mapped_column(Integer, default=0)
-    last_used_at:   Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    created_at:     Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
-    updated_at:     Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
 def build_engine():
@@ -768,49 +334,6 @@ def _ensure_sqlite_schema(bind) -> None:
     statements: list[str] = []
     if has_table("users") and not has_column("users", "last_login_at"):
         statements.append("ALTER TABLE users ADD COLUMN last_login_at DATETIME")
-
-    if has_table("conversations"):
-        if not has_column("conversations", "user_id"):
-            statements.append("ALTER TABLE conversations ADD COLUMN user_id VARCHAR(128) NOT NULL DEFAULT ''")
-        if not has_column("conversations", "running_summary"):
-            statements.append("ALTER TABLE conversations ADD COLUMN running_summary TEXT")
-        if not has_column("conversations", "active_task_json"):
-            statements.append("ALTER TABLE conversations ADD COLUMN active_task_json TEXT")
-
-    if has_table("request_logs") and not has_column("request_logs", "user_id"):
-        statements.append("ALTER TABLE request_logs ADD COLUMN user_id VARCHAR(128) NOT NULL DEFAULT ''")
-
-    if has_table("user_memories"):
-        memory_columns = [
-            ("scope", "VARCHAR(32) DEFAULT 'global'"),
-            ("confidence", "FLOAT DEFAULT 0.6"),
-            ("source", "VARCHAR(16) DEFAULT 'stated'"),
-            ("seen_count", "INTEGER DEFAULT 1"),
-            ("last_seen_at", "DATETIME"),
-            ("importance", "FLOAT DEFAULT 0.5"),
-            ("decay_rate", "FLOAT DEFAULT 0.05"),
-            ("pinned", "BOOLEAN DEFAULT 0"),
-            ("status", "VARCHAR(16) DEFAULT 'active'"),
-            ("superseded_by_id", "INTEGER"),
-        ]
-        for column, ddl in memory_columns:
-            if not has_column("user_memories", column):
-                statements.append(f"ALTER TABLE user_memories ADD COLUMN {column} {ddl}")
-        statements.append("CREATE INDEX IF NOT EXISTS ix_user_memories_user_id_status ON user_memories (user_id, status)")
-
-    if not has_table("user_profiles"):
-        statements.append("""
-            CREATE TABLE user_profiles (
-                id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-                user_id VARCHAR(128) NOT NULL,
-                profile_json TEXT DEFAULT '{}',
-                last_consolidated_at DATETIME,
-                created_at DATETIME NOT NULL,
-                updated_at DATETIME NOT NULL
-            )
-        """)
-    if has_table("user_profiles"):
-        statements.append("CREATE UNIQUE INDEX IF NOT EXISTS ix_user_profiles_user_id ON user_profiles (user_id)")
 
     if not has_table("document_templates"):
         statements.append("""
@@ -886,220 +409,12 @@ def _ensure_sqlite_schema(bind) -> None:
     if has_table("admin_settings"):
         statements.append("CREATE UNIQUE INDEX IF NOT EXISTS ix_admin_settings_key ON admin_settings (key)")
 
-    if has_table("conversation_messages") and not has_column("conversation_messages", "execution_log_json"):
-        statements.append("ALTER TABLE conversation_messages ADD COLUMN execution_log_json TEXT")
-    if has_table("conversation_messages") and not has_column("conversation_messages", "research_run_id"):
-        statements.append("ALTER TABLE conversation_messages ADD COLUMN research_run_id INTEGER")
-    if has_table("conversation_messages") and not has_column("conversation_messages", "document_preview_json"):
-        statements.append("ALTER TABLE conversation_messages ADD COLUMN document_preview_json TEXT")
-
-    research_table_sql = {
-        "research_runs": """
-            CREATE TABLE research_runs (
-                id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-                user_id VARCHAR(128) NOT NULL,
-                conversation_id INTEGER,
-                query TEXT NOT NULL,
-                mode VARCHAR(32) DEFAULT 'deep',
-                status VARCHAR(32) DEFAULT 'running',
-                iterations INTEGER DEFAULT 0,
-                max_sources INTEGER DEFAULT 12,
-                source_count INTEGER DEFAULT 0,
-                claim_count INTEGER DEFAULT 0,
-                confidence VARCHAR(32),
-                gaps_json TEXT,
-                contradictions_json TEXT,
-                verifier_notes TEXT,
-                final_answer TEXT,
-                created_at DATETIME NOT NULL,
-                updated_at DATETIME NOT NULL
-            )
-        """,
-        "research_questions": """
-            CREATE TABLE research_questions (
-                id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-                run_id INTEGER NOT NULL,
-                question TEXT NOT NULL,
-                search_query TEXT,
-                status VARCHAR(32) DEFAULT 'pending',
-                claim_type VARCHAR(32) DEFAULT 'unknown',
-                evidence_role VARCHAR(48) DEFAULT 'background_context',
-                freshness_requirement VARCHAR(16) DEFAULT 'default',
-                required_source_tiers_json TEXT,
-                budget_json TEXT,
-                stop_reason TEXT,
-                confidence VARCHAR(32),
-                created_at DATETIME NOT NULL,
-                FOREIGN KEY(run_id) REFERENCES research_runs (id) ON DELETE CASCADE
-            )
-        """,
-        "research_sources": """
-            CREATE TABLE research_sources (
-                id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-                run_id INTEGER NOT NULL,
-                question_id INTEGER,
-                title TEXT NOT NULL,
-                url TEXT NOT NULL,
-                provider VARCHAR(64) DEFAULT '',
-                excerpt TEXT,
-                credibility_score FLOAT DEFAULT 0.0,
-                relevance_score FLOAT DEFAULT 0.0,
-                freshness_score FLOAT DEFAULT 0.0,
-                source_type VARCHAR(64),
-                source_tier VARCHAR(32) DEFAULT 'tier_2_expert',
-                source_family VARCHAR(255),
-                source_role_prior VARCHAR(48) DEFAULT 'background_context',
-                published_at DATETIME,
-                updated_at DATETIME,
-                source_date_confidence VARCHAR(16) DEFAULT 'unknown',
-                admission_status VARCHAR(24) DEFAULT 'admitted',
-                admission_reason TEXT,
-                created_at DATETIME NOT NULL,
-                FOREIGN KEY(run_id) REFERENCES research_runs (id) ON DELETE CASCADE
-            )
-        """,
-        "research_claims": """
-            CREATE TABLE research_claims (
-                id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-                run_id INTEGER NOT NULL,
-                source_id INTEGER NOT NULL,
-                claim TEXT NOT NULL,
-                quote TEXT,
-                confidence VARCHAR(32) DEFAULT 'medium',
-                relevance_score FLOAT DEFAULT 0.0,
-                claim_type VARCHAR(32) DEFAULT 'unknown',
-                claim_role VARCHAR(48) DEFAULT 'background_context',
-                freshness_risk VARCHAR(16) DEFAULT 'unknown',
-                created_at DATETIME NOT NULL,
-                FOREIGN KEY(run_id) REFERENCES research_runs (id) ON DELETE CASCADE,
-                FOREIGN KEY(source_id) REFERENCES research_sources (id) ON DELETE CASCADE
-            )
-        """,
-        "research_findings": """
-            CREATE TABLE research_findings (
-                id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-                run_id INTEGER NOT NULL,
-                finding TEXT NOT NULL,
-                evidence_json TEXT,
-                confidence VARCHAR(32) DEFAULT 'medium',
-                created_at DATETIME NOT NULL,
-                FOREIGN KEY(run_id) REFERENCES research_runs (id) ON DELETE CASCADE
-            )
-        """,
-    }
-    for table, statement in research_table_sql.items():
-        if not has_table(table):
-            statements.append(statement)
-
-    for table, column in [
-        ("research_runs", "user_id"),
-        ("research_runs", "conversation_id"),
-        ("research_questions", "run_id"),
-        ("research_sources", "run_id"),
-        ("research_sources", "question_id"),
-        ("research_claims", "run_id"),
-        ("research_claims", "source_id"),
-        ("research_findings", "run_id"),
-        ("conversation_messages", "research_run_id"),
-    ]:
-        if has_table(table):
-            statements.append(f"CREATE INDEX IF NOT EXISTS ix_{table}_{column} ON {table} ({column})")
-
-    if has_table("research_sources"):
-        for column, ddl in [
-            ("source_tier", "VARCHAR(32) DEFAULT 'tier_2_expert'"),
-            ("source_family", "VARCHAR(255)"),
-            ("source_role_prior", "VARCHAR(48) DEFAULT 'background_context'"),
-            ("published_at", "DATETIME"),
-            ("updated_at", "DATETIME"),
-            ("source_date_confidence", "VARCHAR(16) DEFAULT 'unknown'"),
-            ("admission_status", "VARCHAR(24) DEFAULT 'admitted'"),
-            ("admission_reason", "TEXT"),
-        ]:
-            if not has_column("research_sources", column):
-                statements.append(f"ALTER TABLE research_sources ADD COLUMN {column} {ddl}")
-        statements.append("CREATE INDEX IF NOT EXISTS ix_research_sources_source_tier ON research_sources (source_tier)")
-        statements.append("CREATE INDEX IF NOT EXISTS ix_research_sources_source_family ON research_sources (source_family)")
-
-    if has_table("research_claims"):
-        for column, ddl in [
-            ("claim_type", "VARCHAR(32) DEFAULT 'unknown'"),
-            ("claim_role", "VARCHAR(48) DEFAULT 'background_context'"),
-            ("freshness_risk", "VARCHAR(16) DEFAULT 'unknown'"),
-        ]:
-            if not has_column("research_claims", column):
-                statements.append(f"ALTER TABLE research_claims ADD COLUMN {column} {ddl}")
-
-    if has_table("research_questions"):
-        for column, ddl in [
-            ("claim_type", "VARCHAR(32) DEFAULT 'unknown'"),
-            ("evidence_role", "VARCHAR(48) DEFAULT 'background_context'"),
-            ("freshness_requirement", "VARCHAR(16) DEFAULT 'default'"),
-            ("required_source_tiers_json", "TEXT"),
-            ("budget_json", "TEXT"),
-            ("stop_reason", "TEXT"),
-            ("confidence", "VARCHAR(32)"),
-        ]:
-            if not has_column("research_questions", column):
-                statements.append(f"ALTER TABLE research_questions ADD COLUMN {column} {ddl}")
-
-    if not has_table("component_usage_stats"):
-        statements.append("""
-            CREATE TABLE component_usage_stats (
-                id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-                component_id VARCHAR(64) NOT NULL,
-                slide_layout VARCHAR(64) NOT NULL,
-                design_system VARCHAR(64) NOT NULL DEFAULT 'agentdeck_v1',
-                theme VARCHAR(16) NOT NULL DEFAULT 'dark',
-                success_count INTEGER DEFAULT 0,
-                failure_count INTEGER DEFAULT 0,
-                last_used_at DATETIME,
-                created_at DATETIME NOT NULL,
-                updated_at DATETIME NOT NULL
-            )
-        """)
-    if has_table("component_usage_stats"):
-        statements.append("CREATE INDEX IF NOT EXISTS ix_component_usage_stats_component_id ON component_usage_stats (component_id)")
-        statements.append("CREATE INDEX IF NOT EXISTS ix_component_usage_stats_slide_layout ON component_usage_stats (slide_layout)")
-        statements.append(
-            "CREATE UNIQUE INDEX IF NOT EXISTS ix_component_usage_stats_key "
-            "ON component_usage_stats (component_id, slide_layout, design_system, theme)"
-        )
-
-    if has_table("conversation_turns"):
-        for column in ["result_json", "lifecycle_json"]:
-            if not has_column("conversation_turns", column):
-                statements.append(f"ALTER TABLE conversation_turns ADD COLUMN {column} TEXT")
-        if not has_column("conversation_turns", "turn_kind"):
-            statements.append("ALTER TABLE conversation_turns ADD COLUMN turn_kind VARCHAR(24) DEFAULT 'quick'")
-
     if not statements:
         return
 
     with bind.begin() as conn:
         for statement in statements:
             conn.execute(text(statement))
-
-
-def get_all_memories(db, user_id: str) -> str:
-    """Deprecated: return active memories for a user as a formatted block.
-
-    New prompt paths should use app.services.personal_context.build_context().
-    """
-    mems = (
-        db.query(UserMemory)
-        .filter(UserMemory.user_id == user_id, UserMemory.status == "active")
-        .order_by(UserMemory.updated_at.desc())
-        .all()
-    )
-    if not mems:
-        return ""
-    return "\n".join(f"- [{m.category}] {m.content}" for m in mems)
-
-
-def get_twin_profile(db, user_id: str) -> "TwinProfile | None":
-    """Return the TwinProfile for a user, or None if not yet created."""
-    return db.query(TwinProfile).filter(TwinProfile.user_id == user_id).first()
 
 
 def get_user_control(db, user_id: str) -> "UserAdminControl | None":
@@ -1172,10 +487,6 @@ def get_effective_monthly_budget(db, user_id: str) -> float:
     return settings.monthly_budget_usd
 
 
-GLOBAL_BUDGET_SETTING_KEY = "global_budget"
-TURN_RUNTIME_SETTING_KEY = "turn_runtime"
-
-
 def get_admin_setting(db, key: str) -> dict:
     row = db.query(AdminSetting).filter(AdminSetting.key == key).first()
     if not row or not row.value_json:
@@ -1198,87 +509,22 @@ def set_admin_setting(db, key: str, value: dict) -> AdminSetting:
     return row
 
 
-def get_global_budget_config(db) -> dict:
-    raw = get_admin_setting(db, GLOBAL_BUDGET_SETTING_KEY)
-    cap = raw.get("monthly_budget_usd")
-    try:
-        cap = float(cap) if cap is not None else None
-    except (TypeError, ValueError):
-        cap = None
-    return {
-        "monthly_budget_usd": cap if cap is not None and cap >= 0 else None,
-        "admin_override_enabled": bool(raw.get("admin_override_enabled", True)),
-    }
-
-
-def set_global_budget_config(db, monthly_budget_usd: float | None, admin_override_enabled: bool) -> AdminSetting:
-    return set_admin_setting(db, GLOBAL_BUDGET_SETTING_KEY, {
-        "monthly_budget_usd": monthly_budget_usd,
-        "admin_override_enabled": admin_override_enabled,
-    })
-
-
-def get_turn_runtime_config(db) -> dict:
-    raw = get_admin_setting(db, TURN_RUNTIME_SETTING_KEY)
-    def _minutes(key: str, default: int, min_value: int, max_value: int) -> int:
-        try:
-            value = int(raw.get(key, default))
-        except (TypeError, ValueError):
-            value = default
-        return max(min_value, min(max_value, value))
-    return {
-        "quick_timeout_minutes": _minutes("quick_timeout_minutes", 30, 5, 240),
-        "research_timeout_minutes": _minutes("research_timeout_minutes", 180, 30, 720),
-        "document_timeout_minutes": _minutes("document_timeout_minutes", 120, 15, 720),
-    }
-
-
-def set_turn_runtime_config(
-    db,
-    quick_timeout_minutes: int,
-    research_timeout_minutes: int,
-    document_timeout_minutes: int,
-) -> AdminSetting:
-    return set_admin_setting(db, TURN_RUNTIME_SETTING_KEY, {
-        "quick_timeout_minutes": quick_timeout_minutes,
-        "research_timeout_minutes": research_timeout_minutes,
-        "document_timeout_minutes": document_timeout_minutes,
-    })
-
-
 def get_global_monthly_spend(db) -> float:
     month_start = datetime.combine(date.today().replace(day=1), datetime.min.time()).replace(tzinfo=timezone.utc)
-    msg_spend = (
-        db.query(func.sum(ConversationMessage.estimated_cost_usd))
-        .join(Conversation, ConversationMessage.conversation_id == Conversation.id)
-        .filter(ConversationMessage.role == "assistant")
-        .filter(ConversationMessage.created_at >= month_start)
+    spend = (
+        db.query(func.sum(Turn.cost_usd))
+        .filter(Turn.created_at >= month_start)
         .scalar() or 0.0
     )
-    log_spend = (
-        db.query(func.sum(RequestLog.estimated_cost_usd))
-        .filter(RequestLog.status == "success")
-        .filter(RequestLog.created_at >= month_start)
-        .scalar() or 0.0
-    )
-    return float(msg_spend) + float(log_spend)
+    return float(spend)
 
 
 def get_monthly_spend(db, user_id: str) -> float:
     month_start = datetime.combine(date.today().replace(day=1), datetime.min.time()).replace(tzinfo=timezone.utc)
-    msg_spend = (
-        db.query(func.sum(ConversationMessage.estimated_cost_usd))
-        .join(Conversation, ConversationMessage.conversation_id == Conversation.id)
-        .filter(ConversationMessage.role == "assistant")
-        .filter(Conversation.user_id == user_id)
-        .filter(ConversationMessage.created_at >= month_start)
+    spend = (
+        db.query(func.sum(Turn.cost_usd))
+        .filter(Turn.user_id == user_id)
+        .filter(Turn.created_at >= month_start)
         .scalar() or 0.0
     )
-    log_spend = (
-        db.query(func.sum(RequestLog.estimated_cost_usd))
-        .filter(RequestLog.status == "success")
-        .filter(RequestLog.user_id == user_id)
-        .filter(RequestLog.created_at >= month_start)
-        .scalar() or 0.0
-    )
-    return float(msg_spend) + float(log_spend)
+    return float(spend)

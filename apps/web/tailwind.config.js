@@ -2,9 +2,7 @@
 module.exports = {
   darkMode: ['selector', '[data-theme="dark"]'],
   content: [
-    './app/v2/**/*.{ts,tsx}',
-    './app/admin/**/*.{ts,tsx}',
-    './app/agent-v3/**/*.{ts,tsx}',
+    './app/**/*.{ts,tsx}',
   ],
   theme: {
     extend: {

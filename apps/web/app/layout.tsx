@@ -1,4 +1,5 @@
 import './globals.css'
+import './agent-theme.css'
 import 'highlight.js/styles/github-dark.css'
 import { ClerkProvider } from '@clerk/nextjs'
 
@@ -21,12 +22,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <meta name="apple-mobile-web-app-title" content="Fronei" />
         <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
       </head>
-      <body>
+      <body className="h-dvh w-screen overflow-hidden bg-white text-neutral-900 antialiased dark:bg-neutral-950 dark:text-neutral-50">
         <ClerkProvider>
           {/* Reads localStorage before first paint to prevent theme flash */}
           <script
             dangerouslySetInnerHTML={{
-              __html: `try{var t=localStorage.getItem('md-theme');if(t)document.documentElement.setAttribute('data-theme',t);var a=localStorage.getItem('md-accent');if(a&&a!=='default')document.documentElement.setAttribute('data-accent',a);}catch(e){}`,
+              __html: `try{var t=localStorage.getItem('theme');if(t==='light'||t==='dark'){document.documentElement.setAttribute('data-theme',t);}else if(window.matchMedia&&window.matchMedia('(prefers-color-scheme: light)').matches){document.documentElement.setAttribute('data-theme','light');}}catch(e){}`,
             }}
           />
           {children}

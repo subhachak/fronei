@@ -4,6 +4,7 @@ import { CheckCircle2, ChevronsLeft, ChevronsRight, Library, Loader2, Moon, Pane
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { useAgent } from '../hooks/useAgent'
 import { useTheme } from '../hooks/useTheme'
+import { AdminShell } from '../admin/components/AdminShell'
 import { clamp } from '../lib/format'
 import { Composer } from './Composer'
 import { ContextPanel } from './ContextPanel'
@@ -34,7 +35,7 @@ export function AgentShell() {
   const [leftRailCollapsed, setLeftRailCollapsed] = useState(false)
   const [rightRailCollapsed, setRightRailCollapsed] = useState(false)
   const [uploadSource, setUploadSource] = useState<'composer' | 'profile'>('profile')
-  const [view, setView] = useState<'chat' | 'profile'>('chat')
+  const [view, setView] = useState<'chat' | 'profile' | 'admin'>('chat')
   const templateUploadRef = useRef<HTMLInputElement | null>(null)
   const attachFileRef = useRef<HTMLInputElement | null>(null)
   const chatScrollRef = useRef<HTMLDivElement | null>(null)
@@ -114,6 +115,10 @@ export function AgentShell() {
         setView('profile')
         setLibrarySheetOpen(false)
       }}
+      onOpenAdmin={() => {
+        setView('admin')
+        setLibrarySheetOpen(false)
+      }}
     />
   )
 
@@ -133,12 +138,10 @@ export function AgentShell() {
       copiedKey={agent.copiedKey}
       onCopyText={agent.copyText}
       templates={agent.templates}
-      templatesLoaded={agent.templatesLoaded}
       templateStatus={uploadSource === 'profile' ? agent.templateStatus : ''}
       templateError={agent.templateError}
       profileSettings={agent.profileSettings}
       onUpdateProfileSettings={agent.updateProfileSettings}
-      onRefreshTemplates={agent.refreshTemplates}
     />
   )
 
@@ -247,6 +250,8 @@ export function AgentShell() {
         <section className="flex min-h-0 flex-col overflow-hidden bg-white dark:bg-neutral-950">
           {view === 'profile' ? (
             <ProfileView onClose={() => setView('chat')} />
+          ) : view === 'admin' ? (
+            <AdminShell embedded onClose={() => setView('chat')} />
           ) : (
             <>
               <header className="hidden flex-shrink-0 border-b border-neutral-200 bg-white/95 px-8 py-5 backdrop-blur md:block dark:border-neutral-800 dark:bg-neutral-950/95">

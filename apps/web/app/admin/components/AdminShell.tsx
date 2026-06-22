@@ -31,7 +31,7 @@ const TABS: { id: AdminTab; label: string; icon: typeof LayoutDashboard }[] = [
   { id: 'system', label: 'System', icon: ServerCog },
 ]
 
-export function AdminShell() {
+export function AdminShell({ embedded = false, onClose }: { embedded?: boolean; onClose?: () => void }) {
   const { authorizedFetch, access } = useAdmin()
   const { theme, toggleTheme } = useTheme()
   const [tab, setTab] = useState<AdminTab>('overview')
@@ -41,14 +41,26 @@ export function AdminShell() {
       <header className="flex-shrink-0 border-b border-neutral-200 bg-white/95 px-4 py-3 backdrop-blur dark:border-neutral-800 dark:bg-neutral-950/95 sm:px-6">
         <div className="flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
-            <a
-              href="/"
-              className="grid h-8 w-8 flex-shrink-0 place-items-center rounded-full border border-neutral-200 text-neutral-500 hover:bg-neutral-100 dark:border-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-800"
-              aria-label="Back to studio"
-              title="Back to studio"
-            >
-              <ArrowLeft size={15} />
-            </a>
+            {embedded ? (
+              <button
+                type="button"
+                onClick={onClose}
+                className="grid h-8 w-8 flex-shrink-0 place-items-center rounded-full border border-neutral-200 text-neutral-500 hover:bg-neutral-100 dark:border-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-800"
+                aria-label="Back to studio"
+                title="Back to studio"
+              >
+                <ArrowLeft size={15} />
+              </button>
+            ) : (
+              <a
+                href="/"
+                className="grid h-8 w-8 flex-shrink-0 place-items-center rounded-full border border-neutral-200 text-neutral-500 hover:bg-neutral-100 dark:border-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-800"
+                aria-label="Back to studio"
+                title="Back to studio"
+              >
+                <ArrowLeft size={15} />
+              </a>
+            )}
             <div>
               <p className="text-[10px] font-bold uppercase tracking-wider text-neutral-400">Fronei</p>
               <h1 className="text-lg font-bold text-neutral-900 dark:text-neutral-50">Admin</h1>
@@ -100,12 +112,22 @@ export function AdminShell() {
             <p className="mt-1.5 text-sm leading-relaxed text-neutral-500 dark:text-neutral-400">
               This account isn&apos;t on the admin allowlist. If you think that&apos;s wrong, ask an existing admin to grant your account the admin role.
             </p>
-            <a
-              href="/"
-              className="mt-4 inline-flex items-center gap-1.5 rounded-lg bg-neutral-900 px-4 py-2 text-sm font-semibold text-white dark:bg-white dark:text-neutral-900"
-            >
-              <ArrowLeft size={14} /> Back to studio
-            </a>
+            {embedded ? (
+              <button
+                type="button"
+                onClick={onClose}
+                className="mt-4 inline-flex items-center gap-1.5 rounded-lg bg-neutral-900 px-4 py-2 text-sm font-semibold text-white dark:bg-white dark:text-neutral-900"
+              >
+                <ArrowLeft size={14} /> Back to studio
+              </button>
+            ) : (
+              <a
+                href="/"
+                className="mt-4 inline-flex items-center gap-1.5 rounded-lg bg-neutral-900 px-4 py-2 text-sm font-semibold text-white dark:bg-white dark:text-neutral-900"
+              >
+                <ArrowLeft size={14} /> Back to studio
+              </a>
+            )}
           </div>
         )}
 

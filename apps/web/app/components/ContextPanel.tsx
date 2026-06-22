@@ -1,6 +1,6 @@
 'use client'
 
-import { ArrowUpRight, BookOpen, Check, ChevronDown, Clock3, Download, FileText, List, Settings2, Sliders, Sparkles } from 'lucide-react'
+import { ArrowUpRight, BookOpen, ChevronDown, Clock3, Download, FileText, Settings2, Sliders, Sparkles } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { eventChips, engineEventsCopyText, buildWorkSummary } from '../lib/commentary'
 import type { AgentResult, Artifact, Conversation, DocumentTemplateOption, OutputFormat, ProfileSettings, ProgressEvent, QualityMode, ResearchLevel, Source, Workspace } from '../types'
@@ -39,14 +39,12 @@ export function ContextPanel({
   copiedKey,
   onCopyText,
   templates,
-  templatesLoaded,
   templateStatus,
   templateError,
   profileSettings,
   onUpdateProfileSettings,
-  onRefreshTemplates,
 }: {
-  view: 'chat' | 'profile'
+  view: 'chat' | 'profile' | 'admin'
   result: AgentResult | null
   events: ProgressEvent[]
   sources: Source[]
@@ -60,12 +58,10 @@ export function ContextPanel({
   copiedKey: string | null
   onCopyText: (value: string, key: string) => void | Promise<void>
   templates: DocumentTemplateOption[]
-  templatesLoaded: boolean
   templateStatus: string
   templateError: string
   profileSettings: ProfileSettings
   onUpdateProfileSettings: (settings: Partial<ProfileSettings>) => void | Promise<ProfileSettings>
-  onRefreshTemplates: () => void | Promise<void>
 }) {
   const workSummary = buildWorkSummary({ result, events, sources, activeConversation, currentMessage })
   const defaultTemplateId = profileSettings.default_template_id || ''
@@ -195,28 +191,6 @@ export function ContextPanel({
             {templateError && (
               <p className="rounded-md border-l-3 border-red-400 bg-red-50 px-2.5 py-1.5 text-xs font-medium text-red-700 dark:bg-red-500/10 dark:text-red-400">{templateError}</p>
             )}
-            <details className="min-w-0 rounded-lg border border-neutral-200 bg-neutral-50 dark:border-neutral-800 dark:bg-neutral-950">
-              <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-3 py-2 text-xs font-bold text-neutral-700 dark:text-neutral-200">
-                <span className="truncate">Uploaded templates</span>
-                <List size={13} className="flex-shrink-0 text-neutral-400" />
-              </summary>
-              <div className="border-t border-neutral-200 p-2 dark:border-neutral-800">
-                {!templatesLoaded && <p className="text-sm text-neutral-400">Loading templates...</p>}
-                {templatesLoaded && templates.length === 0 && <p className="text-sm text-neutral-400">No saved templates yet.</p>}
-                {templates.map(template => (
-                  <div key={template.id} className="flex items-center justify-between gap-2 border-t border-neutral-100 py-2 first:border-0 first:pt-0 dark:border-neutral-800">
-                    <div className="min-w-0">
-                      <strong className="block truncate text-[13px] font-bold text-neutral-900 dark:text-neutral-50">{template.name}</strong>
-                      <span className="block truncate text-[11px] text-neutral-400">{template.user_template ? 'Uploaded template' : 'Built-in template'}</span>
-                    </div>
-                    {defaultTemplateId === template.id && <Check size={14} className="flex-shrink-0 text-emerald-600" />}
-                  </div>
-                ))}
-              </div>
-            </details>
-            <button type="button" onClick={() => onRefreshTemplates()} className="h-8 min-w-0 truncate rounded-lg border border-neutral-200 px-3 text-xs font-bold text-neutral-600 dark:border-neutral-700 dark:text-neutral-300">
-              Refresh templates
-            </button>
           </div>
         </CollapsibleTile>
       </div>

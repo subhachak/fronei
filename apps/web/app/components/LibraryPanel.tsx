@@ -1,6 +1,6 @@
 'use client'
 
-import { ChevronDown, Folder, MessageSquare, Plus, Search, Shield, Trash2, UserCog } from 'lucide-react'
+import { ChevronDown, Folder, MessageSquare, Plus, Search, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 import { formatRelativeTime } from '../lib/format'
 import type { PendingDelete, Workspace } from '../types'
@@ -31,6 +31,7 @@ export function LibraryPanel({
   isAdmin,
   view,
   onOpenProfile,
+  onOpenAdmin,
 }: {
   workspaces: Workspace[]
   activeWorkspaceId: string | null
@@ -52,8 +53,9 @@ export function LibraryPanel({
   onRequestDeleteConversation: (workspaceId: string, conversationId: string) => void
   onCancelDelete: () => void
   isAdmin: boolean
-  view: 'chat' | 'profile'
+  view: 'chat' | 'profile' | 'admin'
   onOpenProfile: () => void
+  onOpenAdmin: () => void
 }) {
   const [workspaceSearchOpen, setWorkspaceSearchOpen] = useState(false)
   const [workspaceSearch, setWorkspaceSearch] = useState('')
@@ -71,7 +73,7 @@ export function LibraryPanel({
       <div className="mb-4 flex items-center justify-between gap-3">
         <div>
           <p className="text-[11px] font-bold uppercase tracking-wider text-neutral-400">Studio</p>
-          <h1 className="mt-0.5 text-lg font-bold text-neutral-900 dark:text-neutral-50">{view === 'profile' ? 'Profile' : 'Workspaces'}</h1>
+          <h1 className="mt-0.5 text-lg font-bold text-neutral-900 dark:text-neutral-50">Workspaces</h1>
         </div>
         <div className="flex items-center gap-1.5">
           <button
@@ -100,36 +102,6 @@ export function LibraryPanel({
       )}
 
       <div className="min-h-0 flex-1 space-y-2.5 overflow-y-auto">
-        <details key={`profile-${view}`} open={view === 'profile'} className="overflow-hidden rounded-xl border border-neutral-200 bg-white/80 dark:border-neutral-800 dark:bg-neutral-900/60">
-          <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-3 py-3">
-            <span className="flex min-w-0 items-center gap-2">
-              <UserCog size={15} className="flex-shrink-0 text-neutral-400" />
-              <span className="truncate text-sm font-bold text-neutral-900 dark:text-neutral-50">Profile & admin</span>
-            </span>
-            <ChevronDown size={15} className="flex-shrink-0 text-neutral-400" />
-          </summary>
-          <div className="grid gap-1.5 border-t border-neutral-100 p-2.5 dark:border-neutral-800">
-            <button
-              type="button"
-              onClick={onOpenProfile}
-              className={`flex min-w-0 items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm font-bold ${view === 'profile' ? 'bg-neutral-900 text-white dark:bg-white dark:text-neutral-900' : 'text-neutral-700 hover:bg-neutral-100 dark:text-neutral-200 dark:hover:bg-neutral-800'}`}
-            >
-              <UserCog size={14} className="flex-shrink-0" />
-              <span className="truncate">My profile</span>
-            </button>
-            {isAdmin && (
-              <button
-                type="button"
-                onClick={() => { window.location.href = '/admin' }}
-                className="flex min-w-0 items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm font-bold text-neutral-700 hover:bg-neutral-100 dark:text-neutral-200 dark:hover:bg-neutral-800"
-              >
-                <Shield size={14} className="flex-shrink-0" />
-                <span className="truncate">Admin panel</span>
-              </button>
-            )}
-          </div>
-        </details>
-
         <details key={`workspaces-${view}-${activeWorkspaceId || 'none'}`} open={view === 'chat'} className="overflow-hidden rounded-xl border border-neutral-200 bg-white/80 dark:border-neutral-800 dark:bg-neutral-900/60">
           <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-3 py-3">
             <span className="flex min-w-0 items-center gap-2">
@@ -301,7 +273,7 @@ export function LibraryPanel({
         </details>
       </div>
 
-      <AccountMenu isAdmin={isAdmin} onOpenProfile={onOpenProfile} />
+      <AccountMenu isAdmin={isAdmin} onOpenProfile={onOpenProfile} onOpenAdmin={onOpenAdmin} />
     </div>
   )
 }

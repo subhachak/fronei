@@ -5,7 +5,7 @@ import { ChevronsUpDown, LogOut, Shield, UserCog, UserRound } from 'lucide-react
 import { useEffect, useRef, useState } from 'react'
 import { e2eAuthBypassEnabled } from '../lib/e2e'
 
-export function AccountMenu({ isAdmin, onOpenProfile }: { isAdmin: boolean; onOpenProfile: () => void }) {
+export function AccountMenu({ isAdmin, onOpenProfile, onOpenAdmin }: { isAdmin: boolean; onOpenProfile: () => void; onOpenAdmin: () => void }) {
   if (e2eAuthBypassEnabled()) {
     return (
       <AccountMenuContent
@@ -15,15 +15,16 @@ export function AccountMenu({ isAdmin, onOpenProfile }: { isAdmin: boolean; onOp
         initials="EU"
         onManageAccount={() => undefined}
         onOpenProfile={onOpenProfile}
+        onOpenAdmin={onOpenAdmin}
         onSignOut={() => undefined}
       />
     )
   }
 
-  return <ClerkAccountMenu isAdmin={isAdmin} onOpenProfile={onOpenProfile} />
+  return <ClerkAccountMenu isAdmin={isAdmin} onOpenProfile={onOpenProfile} onOpenAdmin={onOpenAdmin} />
 }
 
-function ClerkAccountMenu({ isAdmin, onOpenProfile }: { isAdmin: boolean; onOpenProfile: () => void }) {
+function ClerkAccountMenu({ isAdmin, onOpenProfile, onOpenAdmin }: { isAdmin: boolean; onOpenProfile: () => void; onOpenAdmin: () => void }) {
   const { user, isLoaded } = useUser()
   const { signOut, openUserProfile } = useClerk()
   if (!isLoaded || !user) return null
@@ -41,6 +42,7 @@ function ClerkAccountMenu({ isAdmin, onOpenProfile }: { isAdmin: boolean; onOpen
       imageUrl={user.imageUrl}
       onManageAccount={openUserProfile}
       onOpenProfile={onOpenProfile}
+      onOpenAdmin={onOpenAdmin}
       onSignOut={() => {
         void signOut(() => {
           window.location.href = '/'
@@ -58,6 +60,7 @@ function AccountMenuContent({
   imageUrl,
   onManageAccount,
   onOpenProfile,
+  onOpenAdmin,
   onSignOut,
 }: {
   isAdmin: boolean
@@ -67,6 +70,7 @@ function AccountMenuContent({
   imageUrl?: string
   onManageAccount: () => void
   onOpenProfile: () => void
+  onOpenAdmin: () => void
   onSignOut: () => void
 }) {
   const [open, setOpen] = useState(false)
@@ -128,7 +132,7 @@ function AccountMenuContent({
                 label="Admin panel"
                 onClick={() => {
                   setOpen(false)
-                  window.location.href = '/admin'
+                  onOpenAdmin()
                 }}
               />
             )}

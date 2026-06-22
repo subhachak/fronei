@@ -1,6 +1,6 @@
 'use client'
 
-import { ChevronDown, Folder, Loader2, MessageSquare, Plus, Search, Trash2 } from 'lucide-react'
+import { ChevronDown, Folder, Loader2, MessageSquare, Moon, Plus, Search, Sun, Trash2 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { formatRelativeTime } from '../lib/format'
 import type { PendingDelete, Workspace } from '../types'
@@ -34,6 +34,8 @@ export function LibraryPanel({
   view,
   onOpenProfile,
   onOpenAdmin,
+  theme,
+  onToggleTheme,
 }: {
   workspaces: Workspace[]
   workspacesLoading: boolean
@@ -60,6 +62,8 @@ export function LibraryPanel({
   view: 'chat' | 'profile' | 'admin'
   onOpenProfile: () => void
   onOpenAdmin: () => void
+  theme: 'light' | 'dark'
+  onToggleTheme: () => void
 }) {
   const [workspaceSearchOpen, setWorkspaceSearchOpen] = useState(false)
   const [workspacesTileOpen, setWorkspacesTileOpen] = useState(view === 'chat')
@@ -79,15 +83,26 @@ export function LibraryPanel({
 
   return (
     <div className="flex h-full flex-col">
-      <a
-        href="/"
-        aria-label="Go to Fronei home"
-        title="Go to Fronei home"
-        className="mb-4 flex h-11 w-fit max-w-full items-center rounded-lg pr-2 transition-opacity hover:opacity-80"
-      >
-        <img src="/fronei-logo.svg" alt="Fronei" className="h-9 w-auto dark:hidden" />
-        <img src="/fronei-logo-dark.svg" alt="Fronei" className="hidden h-9 w-auto dark:block" />
-      </a>
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <a
+          href="/"
+          aria-label="Go to Fronei home"
+          title="Go to Fronei home"
+          className="flex h-11 min-w-0 max-w-full items-center rounded-lg pr-2 transition-opacity hover:opacity-80"
+        >
+          <img src="/fronei-logo.svg" alt="Fronei" className="h-9 w-auto min-w-0 dark:hidden" />
+          <img src="/fronei-logo-dark.svg" alt="Fronei" className="hidden h-9 w-auto min-w-0 dark:block" />
+        </a>
+        <button
+          type="button"
+          onClick={onToggleTheme}
+          aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+          title={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+          className="grid h-8 w-8 flex-shrink-0 place-items-center rounded-full border border-neutral-200 text-neutral-600 hover:bg-neutral-100 dark:border-neutral-800 dark:text-neutral-300 dark:hover:bg-neutral-800"
+        >
+          {theme === 'dark' ? <Sun size={15} /> : <Moon size={15} />}
+        </button>
+      </div>
       <div className="mb-4 flex items-center justify-between gap-3">
         <div>
           <p className="text-[11px] font-bold uppercase tracking-wider text-neutral-400">Studio</p>

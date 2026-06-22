@@ -64,7 +64,7 @@ export function AccountMenu({ isAdmin }: { isAdmin: boolean }) {
                 label="Admin panel"
                 onClick={() => {
                   setOpen(false)
-                  window.location.href = '/?view=admin'
+                  window.location.href = '/agent-v3/admin'
                 }}
               />
             )}

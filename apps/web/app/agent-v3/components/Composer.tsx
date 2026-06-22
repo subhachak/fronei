@@ -1,6 +1,6 @@
 'use client'
 
-import { Loader2, Send, Shield, SlidersHorizontal, Upload } from 'lucide-react'
+import { FileText, Loader2, Send, Shield, SlidersHorizontal, Upload } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import type { DocumentTemplateOption, OutputFormat, QualityMode, ResearchLevel } from '../types'
 import { SelectField, Textarea } from './ui/Field'
@@ -76,10 +76,14 @@ export function Composer({
   setModelOverride: (model: string) => void
 }) {
   const [optionsOpen, setOptionsOpen] = useState(false)
+  const [docPopupOpen, setDocPopupOpen] = useState(false)
   const popoverRef = useRef<HTMLDivElement | null>(null)
   const toggleRef = useRef<HTMLButtonElement | null>(null)
+  const docPopoverRef = useRef<HTMLDivElement | null>(null)
+  const docToggleRef = useRef<HTMLButtonElement | null>(null)
   const isCuratedModel = CURATED_MODEL_OPTIONS.some(option => option.value === modelOverride)
   const [modelSelectValue, setModelSelectValue] = useState(() => (modelOverride && !isCuratedModel ? '__custom__' : modelOverride))
+  const selectedTemplateName = templates.find(template => template.id === selectedTemplateId)?.name || 'Default'
 
   useEffect(() => {
     if (!optionsOpen) return
@@ -98,6 +102,32 @@ export function Composer({
       document.removeEventListener('keydown', onKey)
     }
   }, [optionsOpen])
+
+  useEffect(() => {
+    if (!docPopupOpen) return
+    function onPointerDown(event: PointerEvent) {
+      const target = event.target as Node
+      if (docPopoverRef.current?.contains(target) || docToggleRef.current?.contains(target)) return
+      setDocPopupOpen(false)
+    }
+    function onKey(event: KeyboardEvent) {
+      if (event.key === 'Escape') setDocPopupOpen(false)
+    }
+    document.addEventListener('pointerdown', onPointerDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [docPopupOpen])
+
+  function handleOutputFormatChange(value: string) {
+    setOutputFormat(value as OutputFormat)
+    if (value === 'pptx') {
+      setOptionsOpen(false)
+      setDocPopupOpen(true)
+    }
+  }
 
   return (
     <div className="relative flex h-full min-h-0 flex-col rounded-xl border border-neutral-200 bg-white shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
@@ -130,6 +160,20 @@ export function Composer({
               <span className="truncate">{outputFormat !== 'chat' ? outputFormat : ''}{researchLevel !== 'auto' ? ` · ${researchLevel}` : ''}</span>
             )}
           </button>
+          {outputFormat === 'pptx' && (
+            <button
+              ref={docToggleRef}
+              type="button"
+              onClick={() => setDocPopupOpen(open => !open)}
+              aria-expanded={docPopupOpen}
+              aria-label="Presentation template"
+              title="Presentation template"
+              className="flex h-7 min-w-0 flex-shrink-0 items-center gap-1 truncate rounded-md px-1.5 text-[11px] font-medium text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600 dark:text-neutral-500 dark:hover:bg-neutral-800 dark:hover:text-neutral-300"
+            >
+              <FileText size={13} />
+              <span className="truncate">{selectedTemplateName}</span>
+            </button>
+          )}
           {isAdmin && modelOverride && (
             <span className="inline-flex flex-shrink-0 items-center gap-1 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-800 dark:bg-amber-500/15 dark:text-amber-400">
               <Shield size={9} /> {modelOverride}
@@ -165,14 +209,8 @@ export function Composer({
           className="absolute inset-x-0 bottom-full z-30 mb-2 grid grid-cols-2 gap-2 rounded-xl border border-neutral-200 bg-white p-3 shadow-xl dark:border-neutral-700 dark:bg-neutral-900 sm:grid-cols-4 sm:p-3.5"
         >
           <SelectField label="Quality" value={qualityMode} onChange={value => setQualityMode(value as QualityMode)} options={QUALITY_OPTIONS} />
-          <SelectField label="Output" value={outputFormat} onChange={value => setOutputFormat(value as OutputFormat)} options={OUTPUT_OPTIONS} />
+          <SelectField label="Output" value={outputFormat} onChange={handleOutputFormatChange} options={OUTPUT_OPTIONS} />
           <SelectField label="Research" value={researchLevel} onChange={value => setResearchLevel(value as ResearchLevel)} options={RESEARCH_OPTIONS} />
-          <SelectField
-            label="Template"
-            value={selectedTemplateId}
-            onChange={setSelectedTemplateId}
-            options={[{ value: '', label: 'Default' }, ...templates.map(template => ({ value: template.id, label: template.name }))]}
-          />
           {isAdmin && (
             <SelectField
               label="Model"
@@ -193,6 +231,34 @@ export function Composer({
               className="col-span-2 min-h-9 rounded-lg border border-neutral-200 bg-neutral-50 px-2.5 text-xs font-semibold text-neutral-900 outline-none dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-100 sm:col-span-2"
             />
           )}
+        </div>
+      )}
+
+      {docPopupOpen && (
+        <div
+          ref={docPopoverRef}
+          className="absolute inset-x-0 bottom-full z-30 mb-2 grid gap-2.5 rounded-xl border border-neutral-200 bg-white p-3 shadow-xl dark:border-neutral-700 dark:bg-neutral-900 sm:p-3.5"
+        >
+          <div className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide text-neutral-400">
+            <FileText size={12} /> Presentation template
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <SelectField
+              label="Template"
+              value={selectedTemplateId}
+              onChange={setSelectedTemplateId}
+              options={[{ value: '', label: 'Default' }, ...templates.map(template => ({ value: template.id, label: template.name }))]}
+              className="col-span-2 sm:col-span-1"
+            />
+            <button
+              type="button"
+              onClick={onUploadTemplate}
+              className="col-span-2 flex h-9 items-center justify-center gap-1.5 rounded-lg border border-neutral-200 text-xs font-semibold text-neutral-600 dark:border-neutral-700 dark:text-neutral-300 sm:col-span-1"
+            >
+              <Upload size={14} /> Upload .pptx
+            </button>
+          </div>
+          {templateStatus && <p className="text-[11px] font-medium text-emerald-600 dark:text-emerald-400">{templateStatus}</p>}
         </div>
       )}
     </div>

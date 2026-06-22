@@ -34,6 +34,7 @@ export function AgentShell() {
   const [rightRailCollapsed, setRightRailCollapsed] = useState(false)
   const [uploadSource, setUploadSource] = useState<'composer' | 'profile'>('profile')
   const templateUploadRef = useRef<HTMLInputElement | null>(null)
+  const attachFileRef = useRef<HTMLInputElement | null>(null)
   const chatScrollRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
@@ -43,6 +44,10 @@ export function AgentShell() {
   function openTemplateUpload(source: 'composer' | 'profile') {
     setUploadSource(source)
     templateUploadRef.current?.click()
+  }
+
+  function openAttachFile() {
+    attachFileRef.current?.click()
   }
 
   function beginHorizontalResize(kind: 'left' | 'right', event: ReactPointerEvent) {
@@ -139,6 +144,16 @@ export function AgentShell() {
         className="hidden"
         onChange={event => {
           void agent.uploadTemplate(event.target.files?.[0] ?? null, uploadSource)
+          event.target.value = ''
+        }}
+      />
+      <input
+        ref={attachFileRef}
+        type="file"
+        accept={[...agent.supportedAttachmentTypes, 'image/*'].join(',') || undefined}
+        className="hidden"
+        onChange={event => {
+          void agent.attachFile(event.target.files?.[0] ?? null)
           event.target.value = ''
         }}
       />
@@ -305,6 +320,11 @@ export function AgentShell() {
               isAdmin={agent.isAdmin}
               modelOverride={agent.modelOverride}
               setModelOverride={agent.setModelOverride}
+              onAttachFile={openAttachFile}
+              attachedFile={agent.attachedFile}
+              attachingFile={agent.attachingFile}
+              attachmentError={agent.attachmentError}
+              onClearAttachment={agent.clearAttachment}
             />
           </div>
         </section>

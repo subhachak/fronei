@@ -1,8 +1,8 @@
 'use client'
 
-import { FileText, Loader2, Send, Shield, SlidersHorizontal, Upload } from 'lucide-react'
+import { FileText, Loader2, Paperclip, Send, Shield, SlidersHorizontal, Upload, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import type { DocumentTemplateOption, OutputFormat, QualityMode, ResearchLevel } from '../types'
+import type { AttachedFile, DocumentTemplateOption, OutputFormat, QualityMode, ResearchLevel } from '../types'
 import { SelectField, Textarea } from './ui/Field'
 
 const QUALITY_OPTIONS = [
@@ -54,6 +54,11 @@ export function Composer({
   isAdmin,
   modelOverride,
   setModelOverride,
+  onAttachFile,
+  attachedFile,
+  attachingFile,
+  attachmentError,
+  onClearAttachment,
 }: {
   message: string
   setMessage: (message: string) => void
@@ -74,6 +79,11 @@ export function Composer({
   isAdmin: boolean
   modelOverride: string
   setModelOverride: (model: string) => void
+  onAttachFile: () => void
+  attachedFile: AttachedFile | null
+  attachingFile: boolean
+  attachmentError: string
+  onClearAttachment: () => void
 }) {
   const [optionsOpen, setOptionsOpen] = useState(false)
   const [docPopupOpen, setDocPopupOpen] = useState(false)
@@ -145,6 +155,27 @@ export function Composer({
           className="min-h-[44px] px-3 pt-3"
         />
 
+        {(attachedFile || attachingFile || attachmentError) && (
+          <div className="flex flex-shrink-0 items-center gap-2 px-3 pb-1.5">
+            {attachingFile && (
+              <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-neutral-400">
+                <Loader2 size={12} className="animate-spin" /> Reading file…
+              </span>
+            )}
+            {attachedFile && !attachingFile && (
+              <span className="inline-flex max-w-full items-center gap-1.5 truncate rounded-full bg-neutral-100 px-2 py-1 text-[11px] font-semibold text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
+                <Paperclip size={11} className="flex-shrink-0" />
+                <span className="truncate">{attachedFile.name}</span>
+                {attachedFile.truncated && <span className="flex-shrink-0 text-amber-600 dark:text-amber-400">(truncated)</span>}
+                <button type="button" onClick={onClearAttachment} aria-label="Remove attachment" className="flex-shrink-0 text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-100">
+                  <X size={12} />
+                </button>
+              </span>
+            )}
+            {attachmentError && <span className="truncate text-[11px] font-medium text-red-600 dark:text-red-400">{attachmentError}</span>}
+          </div>
+        )}
+
         <div className="flex flex-shrink-0 items-center gap-1.5 px-2 py-1.5">
           <button
             ref={toggleRef}
@@ -183,12 +214,13 @@ export function Composer({
           <div className="ml-auto flex flex-shrink-0 items-center gap-1.5">
             <button
               type="button"
-              onClick={onUploadTemplate}
-              title="Upload a PowerPoint template to your profile"
-              aria-label="Upload a PowerPoint template to your profile"
-              className="grid h-9 w-9 place-items-center rounded-lg text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600 dark:text-neutral-500 dark:hover:bg-neutral-800 dark:hover:text-neutral-300"
+              onClick={onAttachFile}
+              disabled={attachingFile}
+              title="Attach a file or photo for context"
+              aria-label="Attach a file or photo for context"
+              className="grid h-9 w-9 place-items-center rounded-lg text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600 disabled:opacity-50 dark:text-neutral-500 dark:hover:bg-neutral-800 dark:hover:text-neutral-300"
             >
-              <Upload size={15} />
+              {attachingFile ? <Loader2 size={15} className="animate-spin" /> : <Paperclip size={15} />}
             </button>
             <button
               type="button"

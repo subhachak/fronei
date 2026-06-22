@@ -11,6 +11,7 @@ import type {
   ApiConversation,
   ApiWorkspace,
   Artifact,
+  AttachedFile,
   Conversation,
   DocumentTemplateOption,
   FollowUpOption,
@@ -78,6 +79,10 @@ export function useAgentV3() {
   const [selectedTemplateId, setSelectedTemplateId] = useState('')
   const [isAdmin, setIsAdmin] = useState(false)
   const [modelOverride, setModelOverride] = useState('')
+  const [attachedFile, setAttachedFile] = useState<AttachedFile | null>(null)
+  const [attachingFile, setAttachingFile] = useState(false)
+  const [attachmentError, setAttachmentError] = useState('')
+  const [supportedAttachmentTypes, setSupportedAttachmentTypes] = useState<string[]>([])
 
   const eventsRef = useRef<ProgressEvent[]>([])
   const activeRunMessageRef = useRef<string | null>(null)
@@ -104,6 +109,7 @@ export function useAgentV3() {
     })
     void loadTemplates()
     void checkIsAdmin()
+    void loadSupportedAttachmentTypes()
   }, [isLoaded, isSignedIn])
 
   async function checkIsAdmin() {
@@ -113,6 +119,40 @@ export function useAgentV3() {
     } catch {
       setIsAdmin(false)
     }
+  }
+
+  async function loadSupportedAttachmentTypes() {
+    try {
+      const response = await authorizedFetch('/documents/supported')
+      if (!response.ok) return
+      const payload = await response.json() as { types: string[] }
+      setSupportedAttachmentTypes(payload.types || [])
+    } catch {
+      // Non-critical: the file input just falls back to accepting anything.
+    }
+  }
+
+  async function attachFile(file: File | null) {
+    if (!file) return
+    setAttachmentError('')
+    setAttachingFile(true)
+    try {
+      const form = new FormData()
+      form.append('file', file)
+      const response = await authorizedFetch('/documents/extract', { method: 'POST', body: form })
+      if (!response.ok) throw new Error(await readErrorBody(response, 'Could not read that file'))
+      const payload = await response.json() as { name: string; text: string; char_count: number; truncated: boolean }
+      setAttachedFile({ name: payload.name || file.name, text: payload.text || '', charCount: payload.char_count || 0, truncated: Boolean(payload.truncated) })
+    } catch (err) {
+      setAttachmentError(err instanceof Error ? err.message : 'Could not read that file')
+    } finally {
+      setAttachingFile(false)
+    }
+  }
+
+  function clearAttachment() {
+    setAttachedFile(null)
+    setAttachmentError('')
   }
 
   async function loadTemplates() {
@@ -265,6 +305,7 @@ export function useAgentV3() {
     if (!isLoaded || !isSignedIn || running) return
     const runMessage = (option?.message || message).trim()
     if (!runMessage) return
+    const fileForThisTurn = attachedFile
     activeRunMessageRef.current = runMessage
     setEvents([])
     eventsRef.current = []
@@ -272,10 +313,14 @@ export function useAgentV3() {
     setError(null)
     setRunning(true)
     setMessage('')
+    clearAttachment()
     try {
       const conversationId = await ensureActiveConversation(runMessage)
       const modelOverrides = isAdmin && modelOverride
         ? Object.fromEntries(MODEL_OVERRIDE_ROLES.map(role => [role, modelOverride]))
+        : undefined
+      const attachmentContext = fileForThisTurn
+        ? `Attached file: ${fileForThisTurn.name}\n\n${fileForThisTurn.text}`
         : undefined
       const response = await authorizedFetch('/agent-v3/turns', {
         method: 'POST',
@@ -289,6 +334,7 @@ export function useAgentV3() {
           confirm_deep_research: Boolean(option?.confirm_deep_research),
           force_route: option?.force_route || undefined,
           model_overrides: modelOverrides,
+          attachment_context: attachmentContext,
         }),
       })
       if (!response.ok) throw new Error(await readErrorBody(response, 'Agent v3 job could not start'))
@@ -616,5 +662,11 @@ export function useAgentV3() {
     isAdmin,
     modelOverride,
     setModelOverride,
+    attachedFile,
+    attachingFile,
+    attachmentError,
+    supportedAttachmentTypes,
+    attachFile,
+    clearAttachment,
   }
 }

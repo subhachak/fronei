@@ -45,6 +45,26 @@ def _sanitize_model_overrides(request: AgentV3Request, *, is_admin: bool) -> Age
         if model_policy.canonical_role(role) and isinstance(model, str) and model.strip()
     }
     return request.model_copy(update={"model_overrides": cleaned or None})
+
+
+# Matches the extracted-text cap already enforced by document_extractor.py /
+# /documents/extract. Re-capped here too since attachment_context arrives
+# straight from the request body -- a client could send arbitrary text
+# directly without ever calling /documents/extract, and this text gets
+# prepended into every model call this turn (multiplied across roles on
+# research/document turns), so it's worth bounding defensively.
+ATTACHMENT_CONTEXT_MAX_CHARS = 60_000
+
+
+def _build_conversation_context(user_id: str, conversation_id: str, request: AgentV3Request) -> str:
+    base_context = persistence.conversation_context_text(user_id, conversation_id, current_message=request.message)
+    attachment = (request.attachment_context or "").strip()[:ATTACHMENT_CONTEXT_MAX_CHARS]
+    if not attachment:
+        return base_context
+    attachment_block = f"Attached file context:\n{attachment}"
+    return f"{base_context}\n\n{attachment_block}" if base_context else attachment_block
+
+
 _DONE = object()
 
 
@@ -94,11 +114,7 @@ def start_agent_v3_turn(
     request = request.model_copy(
         update={
             "conversation_id": conversation.id,
-            "conversation_context": persistence.conversation_context_text(
-                user_id,
-                conversation.id,
-                current_message=request.message,
-            ),
+            "conversation_context": _build_conversation_context(user_id, conversation.id, request),
         }
     )
     turn_id = new_id("turn")
@@ -150,11 +166,7 @@ def stream_agent_v3_turn(
     request = request.model_copy(
         update={
             "conversation_id": conversation.id,
-            "conversation_context": persistence.conversation_context_text(
-                user_id,
-                conversation.id,
-                current_message=request.message,
-            ),
+            "conversation_context": _build_conversation_context(user_id, conversation.id, request),
         }
     )
 

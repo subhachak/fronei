@@ -36,6 +36,14 @@ class AgentV3Request(BaseModel):
     # different model for one turn without changing that default. Silently
     # stripped server-side for non-admins -- see routers/agent_v3.py.
     model_overrides: dict[str, str] | None = None
+    # Text extracted client-side (via /documents/extract) from a file or
+    # photo the user attached to this message for context -- not a document
+    # the user is asking us to generate, just grounding material. Folded
+    # into conversation_context server-side (see routers/agent_v3.py) so
+    # every existing prompt site that already reads conversation_context
+    # picks it up for free. Length-capped server-side; see
+    # ATTACHMENT_CONTEXT_MAX_CHARS in routers/agent_v3.py.
+    attachment_context: str = ""
 
 
 class Goal(BaseModel):

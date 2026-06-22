@@ -29,6 +29,7 @@ export function LibraryPanel({
   onRequestDeleteConversation,
   onCancelDelete,
   isAdmin,
+  onOpenProfile,
 }: {
   workspaces: Workspace[]
   activeWorkspaceId: string | null
@@ -50,6 +51,7 @@ export function LibraryPanel({
   onRequestDeleteConversation: (workspaceId: string, conversationId: string) => void
   onCancelDelete: () => void
   isAdmin: boolean
+  onOpenProfile: () => void
 }) {
   const [workspaceSearchOpen, setWorkspaceSearchOpen] = useState(false)
   const [workspaceSearch, setWorkspaceSearch] = useState('')
@@ -253,7 +255,7 @@ export function LibraryPanel({
         })}
       </div>
 
-      <AccountMenu isAdmin={isAdmin} />
+      <AccountMenu isAdmin={isAdmin} onOpenProfile={onOpenProfile} />
     </div>
   )
 }

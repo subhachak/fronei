@@ -8,6 +8,7 @@ import { clamp } from '../lib/format'
 import { Composer } from './Composer'
 import { ContextPanel } from './ContextPanel'
 import { LibraryPanel } from './LibraryPanel'
+import { ProfileView } from './ProfileView'
 import { Timeline } from './Timeline'
 import { Badge } from './ui/Card'
 import { Button } from './ui/Button'
@@ -33,6 +34,7 @@ export function AgentShell() {
   const [leftRailCollapsed, setLeftRailCollapsed] = useState(false)
   const [rightRailCollapsed, setRightRailCollapsed] = useState(false)
   const [uploadSource, setUploadSource] = useState<'composer' | 'profile'>('profile')
+  const [view, setView] = useState<'chat' | 'profile'>('chat')
   const templateUploadRef = useRef<HTMLInputElement | null>(null)
   const attachFileRef = useRef<HTMLInputElement | null>(null)
   const chatScrollRef = useRef<HTMLDivElement | null>(null)
@@ -107,6 +109,10 @@ export function AgentShell() {
       onRequestDeleteConversation={(workspaceId, conversationId) => agent.setPendingDelete({ type: 'conversation', workspaceId, conversationId })}
       onCancelDelete={() => agent.setPendingDelete(null)}
       isAdmin={agent.isAdmin}
+      onOpenProfile={() => {
+        setView('profile')
+        setLibrarySheetOpen(false)
+      }}
     />
   )
 
@@ -239,95 +245,101 @@ export function AgentShell() {
 
         {/* Work pane */}
         <section className="flex min-h-0 flex-col overflow-hidden bg-white dark:bg-neutral-950">
-          <header className="hidden flex-shrink-0 border-b border-neutral-200 bg-white/95 px-8 py-5 backdrop-blur md:block dark:border-neutral-800 dark:bg-neutral-950/95">
-            <div className="flex items-center justify-between gap-4">
-              <div>
-                <p className="text-[11px] font-bold uppercase tracking-wider text-neutral-400">Research and work-product studio</p>
-                <h2 className="mt-0.5 text-2xl font-bold text-neutral-900 dark:text-neutral-50">Workbench</h2>
-              </div>
-              <div className="flex items-center gap-3">
-                {agent.result && (
-                  <Badge tone="neutral">{agent.result.route} · {agent.result.latency_ms ?? 0}ms</Badge>
+          {view === 'profile' ? (
+            <ProfileView onClose={() => setView('chat')} />
+          ) : (
+            <>
+              <header className="hidden flex-shrink-0 border-b border-neutral-200 bg-white/95 px-8 py-5 backdrop-blur md:block dark:border-neutral-800 dark:bg-neutral-950/95">
+                <div className="flex items-center justify-between gap-4">
+                  <div>
+                    <p className="text-[11px] font-bold uppercase tracking-wider text-neutral-400">Research and work-product studio</p>
+                    <h2 className="mt-0.5 text-2xl font-bold text-neutral-900 dark:text-neutral-50">Workbench</h2>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    {agent.result && (
+                      <Badge tone="neutral">{agent.result.route} · {agent.result.latency_ms ?? 0}ms</Badge>
+                    )}
+                    <Badge tone={agent.running ? 'success' : 'neutral'}>
+                      {agent.running ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
+                      {agent.running ? 'Working' : 'Ready'}
+                    </Badge>
+                    <Button
+                      variant="outline"
+                      size="icon-sm"
+                      onClick={toggleTheme}
+                      aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+                      title={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+                      className="rounded-full"
+                    >
+                      {theme === 'dark' ? <Sun size={15} /> : <Moon size={15} />}
+                    </Button>
+                  </div>
+                </div>
+              </header>
+
+              <div ref={chatScrollRef} className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4 sm:px-6 md:px-8 md:py-6">
+                {agent.canLoadOlder && (
+                  <button
+                    type="button"
+                    onClick={agent.loadOlderTurns}
+                    className="mx-auto rounded-full border border-neutral-200 bg-white px-3.5 py-2 text-xs font-bold text-neutral-600 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300"
+                  >
+                    Load older turns
+                  </button>
                 )}
-                <Badge tone={agent.running ? 'success' : 'neutral'}>
-                  {agent.running ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
-                  {agent.running ? 'Working' : 'Ready'}
-                </Badge>
-                <Button
-                  variant="outline"
-                  size="icon-sm"
-                  onClick={toggleTheme}
-                  aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
-                  title={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
-                  className="rounded-full"
-                >
-                  {theme === 'dark' ? <Sun size={15} /> : <Moon size={15} />}
-                </Button>
+                <Timeline
+                  draftMessage={agent.running ? agent.activeRunMessage || agent.message : agent.message}
+                  turns={agent.visibleTurns}
+                  events={agent.activeEvents}
+                  running={agent.running}
+                  copiedKey={agent.copiedKey}
+                  onCopyText={agent.copyText}
+                  downloadArtifact={agent.downloadArtifact}
+                  onFollowUp={option => void agent.run(option)}
+                />
+                {agent.error && (
+                  <div className="rounded-lg border-l-4 border-red-400 bg-red-50 px-4 py-3 text-sm text-red-700 dark:bg-red-500/10 dark:text-red-400">
+                    {agent.error}
+                  </div>
+                )}
               </div>
-            </div>
-          </header>
 
-          <div ref={chatScrollRef} className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4 sm:px-6 md:px-8 md:py-6">
-            {agent.canLoadOlder && (
-              <button
-                type="button"
-                onClick={agent.loadOlderTurns}
-                className="mx-auto rounded-full border border-neutral-200 bg-white px-3.5 py-2 text-xs font-bold text-neutral-600 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300"
-              >
-                Load older turns
-              </button>
-            )}
-            <Timeline
-              draftMessage={agent.running ? agent.activeRunMessage || agent.message : agent.message}
-              turns={agent.visibleTurns}
-              events={agent.activeEvents}
-              running={agent.running}
-              copiedKey={agent.copiedKey}
-              onCopyText={agent.copyText}
-              downloadArtifact={agent.downloadArtifact}
-              onFollowUp={option => void agent.run(option)}
-            />
-            {agent.error && (
-              <div className="rounded-lg border-l-4 border-red-400 bg-red-50 px-4 py-3 text-sm text-red-700 dark:bg-red-500/10 dark:text-red-400">
-                {agent.error}
+              <div className="relative flex-shrink-0 border-t border-neutral-200 bg-white/95 p-2.5 backdrop-blur [padding-bottom:calc(0.625rem+env(safe-area-inset-bottom))] md:px-8 md:py-4 dark:border-neutral-800 dark:bg-neutral-950/95" style={{ minHeight: composerHeight }}>
+                <div
+                  role="separator"
+                  aria-label="Resize composer"
+                  onPointerDown={beginComposerResize}
+                  className="absolute inset-x-0 top-[-5px] z-10 hidden h-[10px] cursor-row-resize md:block hover:bg-neutral-900/5 dark:hover:bg-white/5"
+                />
+                <Composer
+                  message={agent.message}
+                  setMessage={agent.setMessage}
+                  qualityMode={agent.qualityMode}
+                  setQualityMode={agent.setQualityMode}
+                  outputFormat={agent.outputFormat}
+                  setOutputFormat={agent.setOutputFormat}
+                  researchLevel={agent.researchLevel}
+                  setResearchLevel={agent.setResearchLevel}
+                  running={agent.running}
+                  canRun={agent.canRun}
+                  run={() => void agent.run()}
+                  onUploadTemplate={() => openTemplateUpload('composer')}
+                  templates={agent.templates}
+                  selectedTemplateId={agent.selectedTemplateExists ? agent.selectedTemplateId : ''}
+                  setSelectedTemplateId={agent.setSelectedTemplateId}
+                  templateStatus={uploadSource === 'composer' ? agent.templateStatus : ''}
+                  isAdmin={agent.isAdmin}
+                  modelOverride={agent.modelOverride}
+                  setModelOverride={agent.setModelOverride}
+                  onAttachFile={openAttachFile}
+                  attachedFile={agent.attachedFile}
+                  attachingFile={agent.attachingFile}
+                  attachmentError={agent.attachmentError}
+                  onClearAttachment={agent.clearAttachment}
+                />
               </div>
-            )}
-          </div>
-
-          <div className="relative flex-shrink-0 border-t border-neutral-200 bg-white/95 p-2.5 backdrop-blur [padding-bottom:calc(0.625rem+env(safe-area-inset-bottom))] md:px-8 md:py-4 dark:border-neutral-800 dark:bg-neutral-950/95" style={{ minHeight: composerHeight }}>
-            <div
-              role="separator"
-              aria-label="Resize composer"
-              onPointerDown={beginComposerResize}
-              className="absolute inset-x-0 top-[-5px] z-10 hidden h-[10px] cursor-row-resize md:block hover:bg-neutral-900/5 dark:hover:bg-white/5"
-            />
-            <Composer
-              message={agent.message}
-              setMessage={agent.setMessage}
-              qualityMode={agent.qualityMode}
-              setQualityMode={agent.setQualityMode}
-              outputFormat={agent.outputFormat}
-              setOutputFormat={agent.setOutputFormat}
-              researchLevel={agent.researchLevel}
-              setResearchLevel={agent.setResearchLevel}
-              running={agent.running}
-              canRun={agent.canRun}
-              run={() => void agent.run()}
-              onUploadTemplate={() => openTemplateUpload('composer')}
-              templates={agent.templates}
-              selectedTemplateId={agent.selectedTemplateExists ? agent.selectedTemplateId : ''}
-              setSelectedTemplateId={agent.setSelectedTemplateId}
-              templateStatus={uploadSource === 'composer' ? agent.templateStatus : ''}
-              isAdmin={agent.isAdmin}
-              modelOverride={agent.modelOverride}
-              setModelOverride={agent.setModelOverride}
-              onAttachFile={openAttachFile}
-              attachedFile={agent.attachedFile}
-              attachingFile={agent.attachingFile}
-              attachmentError={agent.attachmentError}
-              onClearAttachment={agent.clearAttachment}
-            />
-          </div>
+            </>
+          )}
         </section>
 
         {/* Desktop context rail */}

@@ -21,6 +21,25 @@ const MIN_RIGHT_RAIL_WIDTH = 280
 const MAX_RIGHT_RAIL_WIDTH = 480
 const MIN_COMPOSER_HEIGHT = 152
 const MAX_COMPOSER_HEIGHT = 340
+const LEFT_RAIL_COLLAPSED_KEY = 'agent-shell:left-rail-collapsed'
+const RIGHT_RAIL_COLLAPSED_KEY = 'agent-shell:right-rail-collapsed'
+
+function readStoredCollapsedState(key: string) {
+  if (typeof window === 'undefined') return false
+  try {
+    return localStorage.getItem(key) === 'true'
+  } catch {
+    return false
+  }
+}
+
+function writeStoredCollapsedState(key: string, value: boolean) {
+  try {
+    localStorage.setItem(key, value ? 'true' : 'false')
+  } catch {
+    /* ignore */
+  }
+}
 
 export function AgentShell() {
   const agent = useAgent()
@@ -32,8 +51,8 @@ export function AgentShell() {
   const [leftRailWidth, setLeftRailWidth] = useState(280)
   const [rightRailWidth, setRightRailWidth] = useState(340)
   const [composerHeight, setComposerHeight] = useState(168)
-  const [leftRailCollapsed, setLeftRailCollapsed] = useState(false)
-  const [rightRailCollapsed, setRightRailCollapsed] = useState(false)
+  const [leftRailCollapsed, setLeftRailCollapsed] = useState(() => readStoredCollapsedState(LEFT_RAIL_COLLAPSED_KEY))
+  const [rightRailCollapsed, setRightRailCollapsed] = useState(() => readStoredCollapsedState(RIGHT_RAIL_COLLAPSED_KEY))
   const [uploadSource, setUploadSource] = useState<'composer' | 'profile'>('profile')
   const [view, setView] = useState<'chat' | 'profile' | 'admin'>('chat')
   const templateUploadRef = useRef<HTMLInputElement | null>(null)
@@ -43,6 +62,14 @@ export function AgentShell() {
   useEffect(() => {
     chatScrollRef.current?.scrollTo({ top: chatScrollRef.current.scrollHeight, behavior: 'smooth' })
   }, [agent.visibleTurns.length, agent.running, agent.result?.turn_id, agent.events.length])
+
+  useEffect(() => {
+    writeStoredCollapsedState(LEFT_RAIL_COLLAPSED_KEY, leftRailCollapsed)
+  }, [leftRailCollapsed])
+
+  useEffect(() => {
+    writeStoredCollapsedState(RIGHT_RAIL_COLLAPSED_KEY, rightRailCollapsed)
+  }, [rightRailCollapsed])
 
   function openTemplateUpload(source: 'composer' | 'profile') {
     setUploadSource(source)
@@ -122,6 +149,8 @@ export function AgentShell() {
         setView('admin')
         setLibrarySheetOpen(false)
       }}
+      theme={theme}
+      onToggleTheme={toggleTheme}
     />
   )
 
@@ -241,6 +270,8 @@ export function AgentShell() {
                 setView('admin')
                 setLeftRailCollapsed(false)
               }}
+              theme={theme}
+              onToggleTheme={toggleTheme}
             />
           ) : (
             <>
@@ -290,16 +321,6 @@ export function AgentShell() {
                       {agent.running ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
                       {agent.running ? 'Working' : 'Ready'}
                     </Badge>
-                    <Button
-                      variant="outline"
-                      size="icon-sm"
-                      onClick={toggleTheme}
-                      aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
-                      title={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
-                      className="rounded-full"
-                    >
-                      {theme === 'dark' ? <Sun size={15} /> : <Moon size={15} />}
-                    </Button>
                   </div>
                 </div>
               </header>
@@ -418,6 +439,8 @@ function CollapsedLibraryRail({
   onOpenWorkspaces,
   onOpenProfile,
   onOpenAdmin,
+  theme,
+  onToggleTheme,
 }: {
   isAdmin: boolean
   activeView: 'chat' | 'profile' | 'admin'
@@ -425,6 +448,8 @@ function CollapsedLibraryRail({
   onOpenWorkspaces: () => void
   onOpenProfile: () => void
   onOpenAdmin: () => void
+  theme: 'light' | 'dark'
+  onToggleTheme: () => void
 }) {
   return (
     <div className="flex h-full flex-col items-center gap-2 px-2 py-3">
@@ -437,6 +462,11 @@ function CollapsedLibraryRail({
         <img src="/fronei-icon.svg" alt="" className="h-7 w-7" />
       </a>
       <div className="h-px w-8 bg-neutral-200 dark:bg-neutral-800" />
+      <CollapsedIconButton
+        label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+        icon={theme === 'dark' ? Sun : Moon}
+        onClick={onToggleTheme}
+      />
       <CollapsedIconButton label="Workspaces" icon={Folder} active={activeView === 'chat'} onClick={onOpenWorkspaces} />
       <CollapsedIconButton label="Profile" icon={UserCog} active={activeView === 'profile'} onClick={onOpenProfile} />
       {isAdmin && <CollapsedIconButton label="Admin" icon={Shield} active={activeView === 'admin'} onClick={onOpenAdmin} />}

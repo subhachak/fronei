@@ -1,6 +1,6 @@
 'use client'
 
-import { CheckCircle2, ChevronsLeft, ChevronsRight, Library, Loader2, Moon, PanelRight, Sparkles, Sun } from 'lucide-react'
+import { BookOpen, CheckCircle2, ChevronsLeft, ChevronsRight, Clock3, FileText, Folder, Library, Loader2, Moon, PanelRight, Settings2, Shield, Sliders, Sparkles, Sun, UserCog, type LucideIcon } from 'lucide-react'
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { useAgent } from '../hooks/useAgent'
 import { useTheme } from '../hooks/useTheme'
@@ -225,7 +225,23 @@ export function AgentShell() {
         {/* Desktop library rail */}
         <aside className="relative hidden flex-col overflow-hidden border-r border-neutral-200 bg-neutral-50/60 dark:border-neutral-800 dark:bg-neutral-900/40 md:flex">
           {leftRailCollapsed ? (
-            <CollapsedRailButton label="Library" icon={Library} onClick={() => setLeftRailCollapsed(false)} />
+            <CollapsedLibraryRail
+              isAdmin={agent.isAdmin}
+              activeView={view}
+              onExpand={() => setLeftRailCollapsed(false)}
+              onOpenWorkspaces={() => {
+                setView('chat')
+                setLeftRailCollapsed(false)
+              }}
+              onOpenProfile={() => {
+                setView('profile')
+                setLeftRailCollapsed(false)
+              }}
+              onOpenAdmin={() => {
+                setView('admin')
+                setLeftRailCollapsed(false)
+              }}
+            />
           ) : (
             <>
               <div className="flex-1 overflow-hidden px-4 py-5">{libraryContent}</div>
@@ -356,7 +372,10 @@ export function AgentShell() {
         {/* Desktop context rail */}
         <aside className="relative hidden flex-col overflow-hidden border-l border-neutral-200 bg-neutral-50/60 dark:border-neutral-800 dark:bg-neutral-900/40 md:flex">
           {rightRailCollapsed ? (
-            <CollapsedRailButton label="Context" icon={PanelRight} onClick={() => setRightRailCollapsed(false)} />
+            <CollapsedContextRail
+              hasArtifact={Boolean(agent.latestArtifact)}
+              onExpand={() => setRightRailCollapsed(false)}
+            />
           ) : (
             <>
               <div
@@ -392,18 +411,72 @@ export function AgentShell() {
   )
 }
 
-function CollapsedRailButton({ label, icon: Icon, onClick }: { label: string; icon: typeof Library; onClick: () => void }) {
+function CollapsedLibraryRail({
+  isAdmin,
+  activeView,
+  onExpand,
+  onOpenWorkspaces,
+  onOpenProfile,
+  onOpenAdmin,
+}: {
+  isAdmin: boolean
+  activeView: 'chat' | 'profile' | 'admin'
+  onExpand: () => void
+  onOpenWorkspaces: () => void
+  onOpenProfile: () => void
+  onOpenAdmin: () => void
+}) {
+  return (
+    <div className="flex h-full flex-col items-center gap-2 px-2 py-3">
+      <a
+        href="/"
+        aria-label="Go to Fronei home"
+        title="Go to Fronei home"
+        className="grid h-10 w-10 place-items-center rounded-lg border border-neutral-200 bg-white hover:bg-neutral-100 dark:border-neutral-800 dark:bg-neutral-900 dark:hover:bg-neutral-800"
+      >
+        <img src="/fronei-icon.svg" alt="" className="h-7 w-7" />
+      </a>
+      <div className="h-px w-8 bg-neutral-200 dark:bg-neutral-800" />
+      <CollapsedIconButton label="Workspaces" icon={Folder} active={activeView === 'chat'} onClick={onOpenWorkspaces} />
+      <CollapsedIconButton label="Profile" icon={UserCog} active={activeView === 'profile'} onClick={onOpenProfile} />
+      {isAdmin && <CollapsedIconButton label="Admin" icon={Shield} active={activeView === 'admin'} onClick={onOpenAdmin} />}
+      <div className="mt-auto">
+        <CollapsedIconButton label="Expand library" icon={ChevronsRight} onClick={onExpand} />
+      </div>
+    </div>
+  )
+}
+
+function CollapsedContextRail({ hasArtifact, onExpand }: { hasArtifact: boolean; onExpand: () => void }) {
+  return (
+    <div className="flex h-full flex-col items-center gap-2 px-2 py-3">
+      <CollapsedIconButton label="Current work" icon={Sparkles} onClick={onExpand} />
+      <CollapsedIconButton label="Quick profile settings" icon={Settings2} onClick={onExpand} />
+      <CollapsedIconButton label="Status" icon={Clock3} onClick={onExpand} />
+      <CollapsedIconButton label="Engine events" icon={Sliders} onClick={onExpand} />
+      <CollapsedIconButton label="Sources" icon={BookOpen} onClick={onExpand} />
+      {hasArtifact && <CollapsedIconButton label="Generated document" icon={FileText} onClick={onExpand} />}
+      <div className="mt-auto">
+        <CollapsedIconButton label="Expand context" icon={ChevronsLeft} onClick={onExpand} />
+      </div>
+    </div>
+  )
+}
+
+function CollapsedIconButton({ label, icon: Icon, active = false, onClick }: { label: string; icon: LucideIcon; active?: boolean; onClick: () => void }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      aria-label={`Expand ${label}`}
-      title={`Expand ${label}`}
-      className="m-2 grid min-h-[120px] w-9 place-items-center gap-2 rounded-lg border border-neutral-200 bg-white text-[11px] font-bold text-neutral-600 dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-300"
-      style={{ writingMode: 'vertical-rl' }}
+      aria-label={label}
+      title={label}
+      className={`grid h-10 w-10 place-items-center rounded-lg border transition-colors ${
+        active
+          ? 'border-neutral-900 bg-neutral-900 text-white dark:border-white dark:bg-white dark:text-neutral-900'
+          : 'border-neutral-200 bg-white text-neutral-500 hover:bg-neutral-100 dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-400 dark:hover:bg-neutral-800'
+      }`}
     >
-      <Icon size={16} className="rotate-90" />
-      <span>{label}</span>
+      <Icon size={17} />
     </button>
   )
 }

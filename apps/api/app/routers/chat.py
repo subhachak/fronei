@@ -1,15 +1,13 @@
 """Single-turn (stateless) chat endpoint."""
 from fastapi import APIRouter, HTTPException
 
-from app.auth import CurrentUser, CurrentUserIsAdmin
+from app.auth import CurrentActiveUser, CurrentUserIsAdmin
 from app.config import get_settings
 from app.db.models import (
     RequestLog,
     SessionLocal,
     get_effective_monthly_budget,
     get_monthly_spend,
-    is_user_pending,
-    is_user_suspended,
 )
 from app.schemas import ChatRequest, ChatResponse
 from app.services.budget_guard import enforce_global_monthly_budget
@@ -24,16 +22,14 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 
 
 @router.post("", response_model=ChatResponse, dependencies=[rate_limiter("chat", "rate_limit_chat_per_minute", 60)])
-def chat(req: ChatRequest, user_id: str = CurrentUser, is_admin: bool = CurrentUserIsAdmin) -> ChatResponse:
+def chat(req: ChatRequest, user_id: str = CurrentActiveUser, is_admin: bool = CurrentUserIsAdmin) -> ChatResponse:
     settings = get_settings()
     route = None
     db = SessionLocal()
     try:
         # ── Budget gate (before any LLM calls) ───────────────────────────────
-        if is_user_suspended(db, user_id):
-            raise HTTPException(status_code=403, detail="This account is suspended.")
-        if is_user_pending(db, user_id):
-            raise HTTPException(status_code=403, detail="Your account is pending admin approval.")
+        # Suspended/pending accounts are already rejected by CurrentActiveUser
+        # above, before this handler body ever runs.
         enforce_global_monthly_budget(db, is_admin)
         if req.deep_research and not is_admin:
             check_rate_limit(f"research:{user_id}", settings.rate_limit_research_per_hour, 3600)

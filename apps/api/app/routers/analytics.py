@@ -2,7 +2,7 @@ from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 
 from fastapi import APIRouter, Query
-from app.auth import CurrentUser
+from app.auth import CurrentActiveUser
 from app.db.models import Conversation, ConversationMessage, RequestLog, SessionLocal
 from app.schemas import (
     AnalyticsResponse, AnalyticsSummary, DailyStat,
@@ -24,7 +24,7 @@ _RANGES: dict[str, timedelta] = {
 @router.get("", response_model=AnalyticsResponse)
 def get_analytics(
     range: str = Query(default="7d", pattern="^(1d|7d|30d|all)$"),
-    user_id: str = CurrentUser,
+    user_id: str = CurrentActiveUser,
 ) -> AnalyticsResponse:
     db = SessionLocal()
     try:

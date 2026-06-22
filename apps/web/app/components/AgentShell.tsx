@@ -109,6 +109,7 @@ export function AgentShell() {
       onRequestDeleteConversation={(workspaceId, conversationId) => agent.setPendingDelete({ type: 'conversation', workspaceId, conversationId })}
       onCancelDelete={() => agent.setPendingDelete(null)}
       isAdmin={agent.isAdmin}
+      view={view}
       onOpenProfile={() => {
         setView('profile')
         setLibrarySheetOpen(false)
@@ -123,6 +124,7 @@ export function AgentShell() {
       events={agent.events}
       sources={agent.sources}
       latestArtifact={agent.latestArtifact}
+      activeWorkspace={agent.activeWorkspace}
       activeConversation={agent.activeConversation}
       currentMessage={agent.running ? agent.activeRunMessage || agent.message : agent.message}
       downloadArtifact={agent.downloadArtifact}
@@ -252,6 +254,9 @@ export function AgentShell() {
                   <div>
                     <p className="text-[11px] font-bold uppercase tracking-wider text-neutral-400">Research and work-product studio</p>
                     <h2 className="mt-0.5 text-2xl font-bold text-neutral-900 dark:text-neutral-50">Workbench</h2>
+                    <p className="mt-1 max-w-[52rem] truncate text-xs font-semibold text-neutral-400">
+                      {agent.activeWorkspace?.name || 'No workspace selected'} / {agent.activeConversation?.title || 'No conversation selected'}
+                    </p>
                   </div>
                   <div className="flex items-center gap-3">
                     {agent.result && (

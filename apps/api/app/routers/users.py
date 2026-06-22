@@ -1,14 +1,11 @@
 """Current-user session bootstrap endpoint."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
 from fastapi import APIRouter
 
 from app.auth import CurrentUserPayload, get_claim_email, get_claim_name, is_admin_user
 from app.config import get_settings
-from app.db.models import SessionLocal, UserAdminControl, get_or_create_user, get_user_control
-from app.services.notifications import notify_new_signup
+from app.db.models import SessionLocal, bootstrap_user_and_control
 
 router = APIRouter(tags=["users"])
 
@@ -21,7 +18,12 @@ def me(payload: dict = CurrentUserPayload) -> dict:
     On the very first sign-in for a non-admin user, this also creates a
     UserAdminControl row with status="pending" (when REQUIRE_USER_APPROVAL is
     enabled) and notifies admins, so new accounts stay locked out of chat
-    until an admin activates them.
+    until an admin activates them. This endpoint itself must stay reachable
+    by pending/suspended accounts — the frontend relies on `account_status`
+    here to show the right screen — actual access control for every other
+    endpoint is enforced by the `CurrentActiveUser` dependency (app/auth.py),
+    which runs this same bootstrap if a client reaches it without ever
+    calling /me first.
     """
     settings = get_settings()
     user_id = str(payload.get("sub") or "")
@@ -29,20 +31,11 @@ def me(payload: dict = CurrentUserPayload) -> dict:
     name = get_claim_name(payload)
     db = SessionLocal()
     try:
-        user, created = get_or_create_user(db, user_id, email=email, name=name)
-        if created and settings.require_user_approval and not is_admin_user(user_id, email):
-            now = datetime.now(timezone.utc)
-            db.add(UserAdminControl(
-                user_id=user_id,
-                status="pending",
-                role="user",
-                created_at=now,
-                updated_at=now,
-            ))
-            db.commit()
-            notify_new_signup(user_id, email, name)
-
-        control = get_user_control(db, user_id)
+        user, control, _ = bootstrap_user_and_control(
+            db, user_id, email, name,
+            is_admin=is_admin_user(user_id, email),
+            require_approval=settings.require_user_approval,
+        )
         account_status = control.status if control else "active"
         return {
             "user_id": user.clerk_id,

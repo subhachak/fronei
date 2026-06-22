@@ -9,7 +9,7 @@ from threading import Thread
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response, StreamingResponse
 
-from app.auth import CurrentUser
+from app.auth import CurrentActiveUser
 from app.services.agent_v3 import persistence
 from app.services.agent_v3.models import (
     AgentV3ConversationCreate,
@@ -62,7 +62,7 @@ def _run_agent_v3_background(request: AgentV3Request, *, user_id: str, turn_id: 
 
 
 @router.post("/turns")
-def start_agent_v3_turn(request: AgentV3Request, user_id: str = CurrentUser) -> dict:
+def start_agent_v3_turn(request: AgentV3Request, user_id: str = CurrentActiveUser) -> dict:
     """Start an Agent v3 turn as a durable background job.
 
     The browser can poll /agent-v3/turns/{turn_id}/status for telemetry and
@@ -112,7 +112,7 @@ def start_agent_v3_turn(request: AgentV3Request, user_id: str = CurrentUser) -> 
 
 
 @router.post("/turns/stream")
-def stream_agent_v3_turn(request: AgentV3Request, user_id: str = CurrentUser) -> StreamingResponse:
+def stream_agent_v3_turn(request: AgentV3Request, user_id: str = CurrentActiveUser) -> StreamingResponse:
     """Run the fresh v3 runtime.
 
     This endpoint intentionally bypasses conversations, turn_graph, the old planner,
@@ -210,7 +210,7 @@ def stream_agent_v3_turn(request: AgentV3Request, user_id: str = CurrentUser) ->
 
 
 @router.get("/turns/{turn_id}")
-def get_agent_v3_turn(turn_id: str, user_id: str = CurrentUser) -> dict:
+def get_agent_v3_turn(turn_id: str, user_id: str = CurrentActiveUser) -> dict:
     result = persistence.load_turn(turn_id, user_id)
     if result is None:
         raise HTTPException(status_code=404, detail="Agent v3 turn not found")
@@ -218,7 +218,7 @@ def get_agent_v3_turn(turn_id: str, user_id: str = CurrentUser) -> dict:
 
 
 @router.get("/turns/{turn_id}/status")
-def get_agent_v3_turn_status(turn_id: str, user_id: str = CurrentUser) -> dict:
+def get_agent_v3_turn_status(turn_id: str, user_id: str = CurrentActiveUser) -> dict:
     status = persistence.load_turn_status(turn_id, user_id)
     if status is None:
         raise HTTPException(status_code=404, detail="Agent v3 turn not found")
@@ -226,13 +226,13 @@ def get_agent_v3_turn_status(turn_id: str, user_id: str = CurrentUser) -> dict:
 
 
 @router.get("/workspaces")
-def list_agent_v3_workspaces(user_id: str = CurrentUser) -> dict:
+def list_agent_v3_workspaces(user_id: str = CurrentActiveUser) -> dict:
     workspaces = persistence.list_workspaces(user_id)
     return {"workspaces": [workspace.model_dump(mode="json") for workspace in workspaces]}
 
 
 @router.post("/workspaces")
-def create_agent_v3_workspace(payload: AgentV3WorkspaceCreate, user_id: str = CurrentUser) -> dict:
+def create_agent_v3_workspace(payload: AgentV3WorkspaceCreate, user_id: str = CurrentActiveUser) -> dict:
     workspace = persistence.create_workspace(user_id, payload.name)
     return workspace.model_dump(mode="json")
 
@@ -241,7 +241,7 @@ def create_agent_v3_workspace(payload: AgentV3WorkspaceCreate, user_id: str = Cu
 def update_agent_v3_workspace(
     workspace_id: str,
     payload: AgentV3WorkspaceUpdate,
-    user_id: str = CurrentUser,
+    user_id: str = CurrentActiveUser,
 ) -> dict:
     workspace = persistence.update_workspace(user_id, workspace_id, payload.name)
     if workspace is None:
@@ -250,7 +250,7 @@ def update_agent_v3_workspace(
 
 
 @router.delete("/workspaces/{workspace_id}")
-def delete_agent_v3_workspace(workspace_id: str, user_id: str = CurrentUser) -> dict:
+def delete_agent_v3_workspace(workspace_id: str, user_id: str = CurrentActiveUser) -> dict:
     if not persistence.delete_workspace(user_id, workspace_id):
         raise HTTPException(status_code=404, detail="Workspace not found")
     return {"deleted": workspace_id}
@@ -260,7 +260,7 @@ def delete_agent_v3_workspace(workspace_id: str, user_id: str = CurrentUser) -> 
 def create_agent_v3_conversation(
     workspace_id: str,
     payload: AgentV3ConversationCreate,
-    user_id: str = CurrentUser,
+    user_id: str = CurrentActiveUser,
 ) -> dict:
     conversation = persistence.create_conversation(user_id, workspace_id, payload.title)
     if conversation is None:
@@ -269,7 +269,7 @@ def create_agent_v3_conversation(
 
 
 @router.delete("/conversations/{conversation_id}")
-def delete_agent_v3_conversation(conversation_id: str, user_id: str = CurrentUser) -> dict:
+def delete_agent_v3_conversation(conversation_id: str, user_id: str = CurrentActiveUser) -> dict:
     if not persistence.delete_conversation(user_id, conversation_id):
         raise HTTPException(status_code=404, detail="Conversation not found")
     return {"deleted": conversation_id}
@@ -280,14 +280,14 @@ def list_agent_v3_conversation_turns(
     conversation_id: str,
     limit: int = 20,
     before: str | None = None,
-    user_id: str = CurrentUser,
+    user_id: str = CurrentActiveUser,
 ) -> dict:
     turns = persistence.list_conversation_turns(user_id, conversation_id, limit=limit, before=before)
     return {"turns": [turn.model_dump(mode="json") for turn in turns]}
 
 
 @router.get("/artifacts/{artifact_id}/download")
-def download_agent_v3_artifact(artifact_id: str, user_id: str = CurrentUser) -> Response:
+def download_agent_v3_artifact(artifact_id: str, user_id: str = CurrentActiveUser) -> Response:
     artifact_payload = persistence.get_artifact_for_user(artifact_id, user_id)
     if artifact_payload is None:
         raise HTTPException(status_code=404, detail="Artifact not found")

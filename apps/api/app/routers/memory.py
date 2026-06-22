@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, Query
-from app.auth import CurrentUser
+from app.auth import CurrentActiveUser
 from app.db.models import DEFAULT_DECAY_RATES, UserMemory, SessionLocal
 from app.schemas import MemoryCreate, MemoryItem, MemoryUpdate
 
@@ -29,7 +29,7 @@ def _out(m: UserMemory) -> MemoryItem:
 @router.get("", response_model=list[MemoryItem])
 def list_memories(
     include_superseded: bool = Query(default=False),
-    user_id: str = CurrentUser,
+    user_id: str = CurrentActiveUser,
 ) -> list[MemoryItem]:
     db = SessionLocal()
     try:
@@ -43,7 +43,7 @@ def list_memories(
 
 
 @router.post("", response_model=MemoryItem, status_code=201)
-def create_memory(body: MemoryCreate, user_id: str = CurrentUser) -> MemoryItem:
+def create_memory(body: MemoryCreate, user_id: str = CurrentActiveUser) -> MemoryItem:
     db = SessionLocal()
     try:
         now = datetime.now(timezone.utc)
@@ -70,7 +70,7 @@ def create_memory(body: MemoryCreate, user_id: str = CurrentUser) -> MemoryItem:
 
 
 @router.patch("/{memory_id}", response_model=MemoryItem)
-def update_memory(memory_id: int, body: MemoryUpdate, user_id: str = CurrentUser) -> MemoryItem:
+def update_memory(memory_id: int, body: MemoryUpdate, user_id: str = CurrentActiveUser) -> MemoryItem:
     db = SessionLocal()
     try:
         m = db.get(UserMemory, memory_id)
@@ -109,7 +109,7 @@ def update_memory(memory_id: int, body: MemoryUpdate, user_id: str = CurrentUser
 
 
 @router.delete("/{memory_id}", status_code=204)
-def delete_memory(memory_id: int, user_id: str = CurrentUser) -> None:
+def delete_memory(memory_id: int, user_id: str = CurrentActiveUser) -> None:
     db = SessionLocal()
     try:
         m = db.get(UserMemory, memory_id)
@@ -125,7 +125,7 @@ def delete_memory(memory_id: int, user_id: str = CurrentUser) -> None:
 @router.delete("", status_code=204)
 def clear_memories(
     confirm: bool = Query(default=False),
-    user_id: str = CurrentUser,
+    user_id: str = CurrentActiveUser,
 ) -> None:
     if not confirm:
         raise HTTPException(status_code=400, detail="Pass ?confirm=true to clear all memories.")

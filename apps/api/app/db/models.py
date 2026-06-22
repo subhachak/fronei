@@ -1117,6 +1117,53 @@ def is_user_pending(db, user_id: str) -> bool:
     return bool(control and control.status == "pending")
 
 
+def bootstrap_user_and_control(
+    db,
+    user_id: str,
+    email: str | None,
+    name: str | None,
+    *,
+    is_admin: bool,
+    require_approval: bool,
+) -> tuple["User", "UserAdminControl | None", bool]:
+    """Single source of truth for "does this account need a control row yet".
+
+    Ensures a local User row exists, and — for non-admins, when approval is
+    required — ensures a UserAdminControl row exists too, defaulting brand
+    new accounts to status="pending" and notifying admins exactly once.
+
+    This is called both from GET /me (normal first-login bootstrap) and from
+    the get_current_active_user_id auth dependency in app/auth.py, so the
+    same thing happens even if a client reaches some other endpoint first
+    without ever calling /me — closing the gap where a scripted client could
+    skip the bootstrap call and stay "fail open" (no control row -> treated
+    as not-pending -> full access) forever.
+
+    Returns (user, control, control_just_created). `control` is None only
+    when approval is not required or the caller is an admin.
+    """
+    user, _ = get_or_create_user(db, user_id, email=email, name=name)
+    control = get_user_control(db, user_id)
+    control_created = False
+    if control is None and require_approval and not is_admin:
+        now = datetime.now(timezone.utc)
+        control = UserAdminControl(user_id=user_id, status="pending", role="user", created_at=now, updated_at=now)
+        db.add(control)
+        try:
+            db.commit()
+            control_created = True
+        except Exception:
+            # Lost a create race with a concurrent request for the same
+            # brand-new user (unique constraint on user_id) — fall back to
+            # whatever the other request already committed.
+            db.rollback()
+            control = get_user_control(db, user_id)
+        if control_created:
+            from app.services.notifications import notify_new_signup  # local import: avoid import cycle
+            notify_new_signup(user_id, email, name)
+    return user, control, control_created
+
+
 def get_effective_monthly_budget(db, user_id: str) -> float:
     settings = get_settings()
     control = get_user_control(db, user_id)

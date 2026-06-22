@@ -14,13 +14,13 @@ from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import func
 from fastapi.responses import StreamingResponse
 
-from app.auth import CurrentUser, CurrentUserIsAdmin
+from app.auth import CurrentActiveUser, CurrentUserIsAdmin
 from app.config import get_settings
 from app.db.models import (
     Conversation, ConversationMessage, ConversationTurn, DocumentTemplate, RequestLog,
     ResearchClaim, ResearchRun, ResearchSource, SessionLocal,
     get_effective_monthly_budget, get_monthly_spend, get_turn_runtime_config,
-    get_twin_profile, is_user_pending, is_user_suspended, UserProfile,
+    get_twin_profile, UserProfile,
 )
 from app.schemas import (
     ConvChatRequest, ConvChatResponse, ExecutePlanRequest,
@@ -597,7 +597,7 @@ def _build_history(conv: Conversation, db, before_id: int | None = None) -> list
 def list_conversations(
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
-    user_id: str = CurrentUser,
+    user_id: str = CurrentActiveUser,
 ) -> list[ConversationSummary]:
     db = SessionLocal()
     try:
@@ -638,7 +638,7 @@ def list_conversations(
 
 
 @router.get("/{conv_id}", response_model=ConversationDetail)
-def get_conversation(conv_id: str, user_id: str = CurrentUser) -> ConversationDetail:
+def get_conversation(conv_id: str, user_id: str = CurrentActiveUser) -> ConversationDetail:
     db = SessionLocal()
     try:
         conv = _get_conversation(db, conv_id, user_id)
@@ -652,7 +652,7 @@ def get_conversation(conv_id: str, user_id: str = CurrentUser) -> ConversationDe
 
 
 @router.get("/{conv_id}/turns/{turn_id}", response_model=ConversationTurnOut)
-def get_conversation_turn(conv_id: str, turn_id: str, user_id: str = CurrentUser) -> ConversationTurnOut:
+def get_conversation_turn(conv_id: str, turn_id: str, user_id: str = CurrentActiveUser) -> ConversationTurnOut:
     db = SessionLocal()
     try:
         conv = _get_conversation(db, conv_id, user_id)
@@ -673,7 +673,7 @@ def get_conversation_turn(conv_id: str, turn_id: str, user_id: str = CurrentUser
 
 
 @router.post("/{conv_id}/turns/{turn_id}/cancel", response_model=ConversationTurnOut)
-def cancel_conversation_turn(conv_id: str, turn_id: str, user_id: str = CurrentUser) -> ConversationTurnOut:
+def cancel_conversation_turn(conv_id: str, turn_id: str, user_id: str = CurrentActiveUser) -> ConversationTurnOut:
     db = SessionLocal()
     try:
         conv = _get_conversation(db, conv_id, user_id)
@@ -706,7 +706,7 @@ def cancel_conversation_turn(conv_id: str, turn_id: str, user_id: str = CurrentU
 def update_conversation(
     conv_id: str,
     body: ConversationUpdate,
-    user_id: str = CurrentUser,
+    user_id: str = CurrentActiveUser,
 ) -> ConversationSummary:
     db = SessionLocal()
     try:
@@ -721,7 +721,7 @@ def update_conversation(
 
 
 @router.delete("/{conv_id}", status_code=204)
-def delete_conversation(conv_id: str, user_id: str = CurrentUser) -> None:
+def delete_conversation(conv_id: str, user_id: str = CurrentActiveUser) -> None:
     db = SessionLocal()
     try:
         conv = _get_conversation(db, conv_id, user_id)
@@ -735,7 +735,7 @@ def delete_conversation(conv_id: str, user_id: str = CurrentUser) -> None:
 def truncate_conversation(
     conv_id: str,
     message_id: int,
-    user_id: str = CurrentUser,
+    user_id: str = CurrentActiveUser,
 ) -> None:
     """Delete message_id and all subsequent messages in the conversation."""
     db = SessionLocal()
@@ -758,16 +758,14 @@ def truncate_conversation(
 
 
 @router.post("/chat", response_model=ConvChatResponse, dependencies=[rate_limiter("chat", "rate_limit_chat_per_minute", 60)])
-def chat(req: ConvChatRequest, user_id: str = CurrentUser, is_admin: bool = CurrentUserIsAdmin) -> ConvChatResponse:
+def chat(req: ConvChatRequest, user_id: str = CurrentActiveUser, is_admin: bool = CurrentUserIsAdmin) -> ConvChatResponse:
     settings = get_settings()
     db = SessionLocal()
     try:
         conv, profile = _resolve_conversation(db, req, user_id)
 
-        if is_user_suspended(db, user_id):
-            raise HTTPException(status_code=403, detail="This account is suspended.")
-        if is_user_pending(db, user_id):
-            raise HTTPException(status_code=403, detail="Your account is pending admin approval.")
+        # Suspended/pending accounts are already rejected by CurrentActiveUser
+        # above, before this handler body ever runs.
         enforce_global_monthly_budget(db, is_admin)
         if req.deep_research and not is_admin:
             check_rate_limit(f"research:{user_id}", settings.rate_limit_research_per_hour, 3600)
@@ -1709,7 +1707,7 @@ def _document_failure_answer(document_preview: dict | None) -> str | None:
 # ── Streaming endpoint ────────────────────────────────────────────────────────
 
 @router.post("/chat/stream", dependencies=[rate_limiter("chat", "rate_limit_chat_per_minute", 60)])
-def chat_stream(req: ConvChatRequest, user_id: str = CurrentUser, is_admin: bool = CurrentUserIsAdmin) -> StreamingResponse:
+def chat_stream(req: ConvChatRequest, user_id: str = CurrentActiveUser, is_admin: bool = CurrentUserIsAdmin) -> StreamingResponse:
     """
     Same pipeline as /chat but streams tokens via Server-Sent Events.
     Events: start → pipeline_log × N → token × N → done  (or error on failure)
@@ -1795,10 +1793,8 @@ def chat_stream(req: ConvChatRequest, user_id: str = CurrentUser, is_admin: bool
                     })
                     return
 
-            if is_user_suspended(db, user_id):
-                raise HTTPException(status_code=403, detail="This account is suspended.")
-            if is_user_pending(db, user_id):
-                raise HTTPException(status_code=403, detail="Your account is pending admin approval.")
+            # Suspended/pending accounts are already rejected by
+            # CurrentActiveUser above, before this handler body ever runs.
             enforce_global_monthly_budget(db, is_admin)
             if req.deep_research and not is_admin:
                 check_rate_limit(f"research:{user_id}", settings.rate_limit_research_per_hour, 3600)
@@ -3368,7 +3364,7 @@ def execute_plan(
     conv_id: str,
     message_id: int,
     body: ExecutePlanRequest,
-    user_id: str = CurrentUser,
+    user_id: str = CurrentActiveUser,
     is_admin: bool = CurrentUserIsAdmin,
 ) -> StreamingResponse:
     """
@@ -3385,10 +3381,8 @@ def execute_plan(
         turn: ConversationTurn | None = None
         try:
             conv = _get_conversation(db, conv_id, user_id)
-            if is_user_suspended(db, user_id):
-                raise HTTPException(status_code=403, detail="This account is suspended.")
-            if is_user_pending(db, user_id):
-                raise HTTPException(status_code=403, detail="Your account is pending admin approval.")
+            # Suspended/pending accounts are already rejected by
+            # CurrentActiveUser above, before this handler body ever runs.
             enforce_global_monthly_budget(db, is_admin)
             if not is_admin:
                 monthly_spend = get_monthly_spend(db, user_id)

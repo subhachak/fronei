@@ -6,7 +6,7 @@ from typing import Any
 
 from fastapi import APIRouter
 
-from app.auth import CurrentUser
+from app.auth import CurrentActiveUser
 from app.db.models import SessionLocal, UserProfile
 from app.schemas import PersonalProfileOut, PersonalProfileUpdate
 
@@ -38,7 +38,7 @@ def _ensure_profile(db, user_id: str, now: datetime) -> UserProfile:
 
 
 @router.get("/profile", response_model=PersonalProfileOut)
-def get_profile(user_id: str = CurrentUser) -> PersonalProfileOut:
+def get_profile(user_id: str = CurrentActiveUser) -> PersonalProfileOut:
     db = SessionLocal()
     try:
         profile = db.query(UserProfile).filter(UserProfile.user_id == user_id).first()
@@ -51,7 +51,7 @@ def get_profile(user_id: str = CurrentUser) -> PersonalProfileOut:
 
 
 @router.patch("/profile", response_model=PersonalProfileOut)
-def update_profile(body: PersonalProfileUpdate, user_id: str = CurrentUser) -> PersonalProfileOut:
+def update_profile(body: PersonalProfileUpdate, user_id: str = CurrentActiveUser) -> PersonalProfileOut:
     db = SessionLocal()
     try:
         now = datetime.now(timezone.utc)

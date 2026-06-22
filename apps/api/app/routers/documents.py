@@ -7,15 +7,13 @@ from urllib.parse import quote
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 
-from app.auth import CurrentUser, CurrentUserIsAdmin
+from app.auth import CurrentActiveUser, CurrentUserIsAdmin
 from app.config import get_settings
 from app.db.models import (
     RequestLog,
     SessionLocal,
     get_effective_monthly_budget,
     get_monthly_spend,
-    is_user_pending,
-    is_user_suspended,
 )
 from app.schemas import (
     DocumentExtractResponse,
@@ -378,7 +376,7 @@ employers, dates, titles, or credentials not supplied by the user.""",
 )
 async def extract_document(
     file: UploadFile = File(...),
-    user_id: str = CurrentUser,
+    user_id: str = CurrentActiveUser,
 ) -> DocumentExtractResponse:
     content = await file.read()
     if len(content) > MAX_UPLOAD_BYTES:
@@ -424,7 +422,7 @@ def supported_types() -> dict:
 @router.get("/templates")
 def list_templates(
     doc_type: str = "presentation",
-    user_id: str = CurrentUser,
+    user_id: str = CurrentActiveUser,
 ) -> dict:
     db = SessionLocal()
     try:
@@ -438,7 +436,7 @@ async def upload_template(
     file: UploadFile = File(...),
     name: str | None = Form(default=None),
     description: str | None = Form(default=None),
-    user_id: str = CurrentUser,
+    user_id: str = CurrentActiveUser,
 ) -> dict:
     content = await file.read()
     db = SessionLocal()
@@ -470,7 +468,7 @@ async def upload_template(
 async def rename_template(
     template_id: str,
     name: str = Form(...),
-    user_id: str = CurrentUser,
+    user_id: str = CurrentActiveUser,
 ) -> dict:
     db = SessionLocal()
     try:
@@ -497,7 +495,7 @@ async def rename_template(
 async def replace_template(
     template_id: str,
     file: UploadFile = File(...),
-    user_id: str = CurrentUser,
+    user_id: str = CurrentActiveUser,
 ) -> dict:
     content = await file.read()
     db = SessionLocal()
@@ -531,7 +529,7 @@ async def replace_template(
 @router.delete("/templates/{template_id}")
 def delete_template(
     template_id: str,
-    user_id: str = CurrentUser,
+    user_id: str = CurrentActiveUser,
 ) -> dict:
     db = SessionLocal()
     try:
@@ -548,7 +546,7 @@ def delete_template(
 )
 def generate_docx(
     req: DocumentGenerateRequest,
-    user_id: str = CurrentUser,
+    user_id: str = CurrentActiveUser,
 ) -> StreamingResponse:
     content = generate_docx_bytes(req.title, req.content, req.subtitle)
     filename = f"{_safe_filename(req.title)}.docx"
@@ -570,17 +568,15 @@ def generate_docx(
 )
 def generate_docx_from_prompt(
     req: DocumentGenerateFromPromptRequest,
-    user_id: str = CurrentUser,
+    user_id: str = CurrentActiveUser,
     is_admin: bool = CurrentUserIsAdmin,
 ) -> DocumentGenerateFromPromptResponse:
     settings = get_settings()
     db = SessionLocal()
     route = None
     try:
-        if is_user_suspended(db, user_id):
-            raise HTTPException(status_code=403, detail="This account is suspended.")
-        if is_user_pending(db, user_id):
-            raise HTTPException(status_code=403, detail="Your account is pending admin approval.")
+        # Suspended/pending accounts are already rejected by CurrentActiveUser
+        # above, before this handler body ever runs.
         enforce_global_monthly_budget(db, is_admin)
         if not is_admin:
             monthly_spend = get_monthly_spend(db, user_id)

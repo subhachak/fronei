@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 
-from app.auth import CurrentUser
+from app.auth import CurrentActiveUser
 from app.db.models import SessionLocal, TwinProfile, UserProfile, WritingSample
 from app.schemas import (
     FingerprintOut,
@@ -79,7 +79,7 @@ def _profile_out(profile: TwinProfile | None, sample_count: int, user_profile: U
 # ── Profile endpoints ─────────────────────────────────────────────────
 
 @router.get("", response_model=TwinProfileOut)
-def get_profile(user_id: str = CurrentUser) -> TwinProfileOut:
+def get_profile(user_id: str = CurrentActiveUser) -> TwinProfileOut:
     db = SessionLocal()
     try:
         profile = db.query(TwinProfile).filter(TwinProfile.user_id == user_id).first()
@@ -94,7 +94,7 @@ def get_profile(user_id: str = CurrentUser) -> TwinProfileOut:
 def update_prefs(
     body: TwinProfilePrefsUpdate,
     background_tasks: BackgroundTasks,
-    user_id: str = CurrentUser,
+    user_id: str = CurrentActiveUser,
 ) -> TwinProfileOut:
     db = SessionLocal()
     try:
@@ -124,7 +124,7 @@ def update_prefs(
 # ── Writing sample endpoints ──────────────────────────────────────────
 
 @router.get("/samples", response_model=list[WritingSampleOut])
-def list_samples(user_id: str = CurrentUser) -> list[WritingSampleOut]:
+def list_samples(user_id: str = CurrentActiveUser) -> list[WritingSampleOut]:
     db = SessionLocal()
     try:
         samples = (
@@ -142,7 +142,7 @@ def list_samples(user_id: str = CurrentUser) -> list[WritingSampleOut]:
 def add_sample(
     body: WritingSampleIn,
     background_tasks: BackgroundTasks,
-    user_id: str = CurrentUser,
+    user_id: str = CurrentActiveUser,
 ) -> WritingSampleOut:
     db = SessionLocal()
     try:
@@ -166,7 +166,7 @@ def add_sample(
 def delete_sample(
     sample_id: int,
     background_tasks: BackgroundTasks,
-    user_id: str = CurrentUser,
+    user_id: str = CurrentActiveUser,
 ) -> None:
     db = SessionLocal()
     try:
@@ -189,7 +189,7 @@ def delete_sample(
 )
 def trigger_extraction(
     background_tasks: BackgroundTasks,
-    user_id: str = CurrentUser,
+    user_id: str = CurrentActiveUser,
 ) -> dict:
     """Manually trigger fingerprint re-extraction from all samples."""
     background_tasks.add_task(_trigger_extraction, user_id)

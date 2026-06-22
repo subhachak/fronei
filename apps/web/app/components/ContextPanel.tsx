@@ -1,12 +1,32 @@
 'use client'
 
-import { ArrowUpRight, BookOpen, ChevronDown, Clock3, Download, FileText, Trash2, Upload } from 'lucide-react'
+import { ArrowUpRight, BookOpen, Check, ChevronDown, Clock3, Download, FileText, List, Settings2, Sliders, Sparkles } from 'lucide-react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { eventChips, engineEventsCopyText, buildWorkSummary } from '../lib/commentary'
-import type { AgentResult, Artifact, Conversation, DocumentTemplateOption, ProgressEvent, Source } from '../types'
-import { Card, CardHeader } from './ui/Card'
+import type { AgentResult, Artifact, Conversation, DocumentTemplateOption, OutputFormat, ProfileSettings, ProgressEvent, QualityMode, ResearchLevel, Source } from '../types'
 import { CopyButton } from './ui/CopyButton'
+import { SelectField } from './ui/Field'
+
+const QUALITY_OPTIONS = [
+  { value: 'draft', label: 'draft' },
+  { value: 'standard', label: 'standard' },
+  { value: 'executive', label: 'executive' },
+]
+const OUTPUT_OPTIONS = [
+  { value: 'chat', label: 'chat' },
+  { value: 'markdown', label: 'markdown' },
+  { value: 'docx', label: 'docx' },
+  { value: 'pptx', label: 'pptx' },
+]
+const RESEARCH_OPTIONS = [
+  { value: 'auto', label: 'auto' },
+  { value: 'easy', label: 'easy' },
+  { value: 'regular', label: 'regular' },
+  { value: 'deep', label: 'deep' },
+]
 
 export function ContextPanel({
+  view,
   result,
   events,
   sources,
@@ -22,13 +42,11 @@ export function ContextPanel({
   templatesLoaded,
   templateStatus,
   templateError,
-  templateDeleteId,
-  onUploadTemplate,
+  profileSettings,
+  onUpdateProfileSettings,
   onRefreshTemplates,
-  onRequestDeleteTemplate,
-  onCancelDeleteTemplate,
-  onDeleteTemplate,
 }: {
+  view: 'chat' | 'profile'
   result: AgentResult | null
   events: ProgressEvent[]
   sources: Source[]
@@ -44,14 +62,14 @@ export function ContextPanel({
   templatesLoaded: boolean
   templateStatus: string
   templateError: string
-  templateDeleteId: string | null
-  onUploadTemplate: () => void
+  profileSettings: ProfileSettings
+  onUpdateProfileSettings: (settings: Partial<ProfileSettings>) => void | Promise<ProfileSettings>
   onRefreshTemplates: () => void | Promise<void>
-  onRequestDeleteTemplate: (templateId: string) => void
-  onCancelDeleteTemplate: () => void
-  onDeleteTemplate: (templateId: string) => void | Promise<void>
 }) {
   const workSummary = buildWorkSummary({ result, events, sources, activeConversation, currentMessage })
+  const defaultTemplateId = profileSettings.default_template_id || ''
+  const defaultTemplate = templates.find(template => template.id === defaultTemplateId)
+  const hasWorkContext = Boolean(result || events.length || activeConversation || currentMessage.trim())
 
   return (
     <div className="flex h-full flex-col">
@@ -61,8 +79,7 @@ export function ContextPanel({
       </div>
 
       <div className="flex-1 space-y-3 overflow-y-auto">
-        <details open className="overflow-hidden rounded-xl border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
-          <summary className="cursor-pointer list-none px-4 py-3 text-sm font-bold text-neutral-900 dark:text-neutral-50">Work summary</summary>
+        <CollapsibleTile icon={Sparkles} title="Work summary" subtitle={workSummary.route} defaultOpen={view === 'chat' && hasWorkContext}>
           <div className="border-t border-neutral-100 px-4 py-3.5 dark:border-neutral-800">
             <p className="mb-3 line-clamp-3 text-sm font-bold text-neutral-900 dark:text-neutral-50">{workSummary.title}</p>
             <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-y-2 gap-x-3 text-xs">
@@ -74,73 +91,73 @@ export function ContextPanel({
               <SummaryRow label="Events" value={workSummary.events} />
             </div>
           </div>
-        </details>
+        </CollapsibleTile>
 
-        <section className="rounded-xl border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900">
-          <div className="mb-2.5 flex items-center gap-2 text-amber-600 dark:text-amber-400">
-            <Upload size={15} />
-            <h3 className="text-sm font-bold text-neutral-900 dark:text-neutral-50">Profile templates</h3>
-          </div>
-          <p className="text-sm leading-relaxed text-neutral-500 dark:text-neutral-400">
-            Upload PowerPoint templates once, then use them from any conversation.
-          </p>
-          <div className="mt-3 grid grid-cols-[minmax(0,1fr)_auto] gap-2">
-            <button type="button" onClick={onUploadTemplate} className="flex h-9 items-center justify-center gap-2 rounded-lg bg-neutral-900 text-sm font-semibold text-white dark:bg-white dark:text-neutral-900">
-              <Upload size={15} /> Upload PPTX
-            </button>
-            <button type="button" onClick={() => onRefreshTemplates()} className="h-9 rounded-lg border border-neutral-200 px-3 text-sm font-semibold text-neutral-600 dark:border-neutral-700 dark:text-neutral-300">
-              Refresh
-            </button>
-          </div>
-          {templateStatus && <p className="mt-2 text-xs font-medium text-neutral-400">{templateStatus}</p>}
-          {templateError && (
-            <p className="mt-2 rounded-md border-l-3 border-red-400 bg-red-50 px-2.5 py-1.5 text-xs font-medium text-red-700 dark:bg-red-500/10 dark:text-red-400">{templateError}</p>
-          )}
-          {!templatesLoaded && <p className="mt-2 text-sm text-neutral-400">Loading templates...</p>}
-          {templatesLoaded && templates.length === 0 && <p className="mt-2 text-sm text-neutral-400">No saved templates yet.</p>}
-          {templates.length > 0 && (
-            <div className="mt-3 grid gap-2">
-              {templates.map(template => (
-                <div key={template.id} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 border-t border-neutral-100 pt-2 dark:border-neutral-800">
-                  <div className="min-w-0">
-                    <strong className="block truncate text-[13px] font-bold text-neutral-900 dark:text-neutral-50">{template.name}</strong>
-                    <span className="block truncate text-[11px] text-neutral-400">{template.user_template ? 'Uploaded template' : 'Built-in template'}</span>
+        <CollapsibleTile icon={Settings2} title="Quick Profile Settings" subtitle={defaultTemplate?.name || 'Default template'} defaultOpen={view === 'profile'}>
+          <div className="grid gap-2 border-t border-neutral-100 px-4 py-3.5 dark:border-neutral-800">
+            <SelectField
+              label="Quality"
+              value={profileSettings.quality_mode || 'standard'}
+              onChange={value => onUpdateProfileSettings({ quality_mode: value as QualityMode })}
+              options={QUALITY_OPTIONS}
+            />
+            <SelectField
+              label="Output"
+              value={profileSettings.output_format || 'chat'}
+              onChange={value => onUpdateProfileSettings({ output_format: value as OutputFormat })}
+              options={OUTPUT_OPTIONS}
+            />
+            <SelectField
+              label="Research"
+              value={profileSettings.research_level || 'auto'}
+              onChange={value => onUpdateProfileSettings({ research_level: value as ResearchLevel })}
+              options={RESEARCH_OPTIONS}
+            />
+            <SelectField
+              label="Default deck"
+              value={defaultTemplateId}
+              onChange={value => onUpdateProfileSettings({ default_template_id: value })}
+              options={[{ value: '', label: 'Fronei default' }, ...templates.map(template => ({ value: template.id, label: template.name }))]}
+            />
+            {templateStatus && <p className="text-xs font-medium text-neutral-400">{templateStatus}</p>}
+            {templateError && (
+              <p className="rounded-md border-l-3 border-red-400 bg-red-50 px-2.5 py-1.5 text-xs font-medium text-red-700 dark:bg-red-500/10 dark:text-red-400">{templateError}</p>
+            )}
+            <details className="rounded-lg border border-neutral-200 bg-neutral-50 dark:border-neutral-800 dark:bg-neutral-950">
+              <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-3 py-2 text-xs font-bold text-neutral-700 dark:text-neutral-200">
+                Uploaded templates
+                <List size={13} className="text-neutral-400" />
+              </summary>
+              <div className="border-t border-neutral-200 p-2 dark:border-neutral-800">
+                {!templatesLoaded && <p className="text-sm text-neutral-400">Loading templates...</p>}
+                {templatesLoaded && templates.length === 0 && <p className="text-sm text-neutral-400">No saved templates yet.</p>}
+                {templates.map(template => (
+                  <div key={template.id} className="flex items-center justify-between gap-2 border-t border-neutral-100 py-2 first:border-0 first:pt-0 dark:border-neutral-800">
+                    <div className="min-w-0">
+                      <strong className="block truncate text-[13px] font-bold text-neutral-900 dark:text-neutral-50">{template.name}</strong>
+                      <span className="block truncate text-[11px] text-neutral-400">{template.user_template ? 'Uploaded template' : 'Built-in template'}</span>
+                    </div>
+                    {defaultTemplateId === template.id && <Check size={14} className="flex-shrink-0 text-emerald-600" />}
                   </div>
-                  {template.user_template && (
-                    templateDeleteId === template.id ? (
-                      <div className="flex gap-1.5">
-                        <button type="button" onClick={() => onDeleteTemplate(template.id)} className="rounded-md border border-red-200 px-2 py-1 text-[11px] font-bold text-red-600 dark:border-red-500/30 dark:text-red-400">Delete</button>
-                        <button type="button" onClick={onCancelDeleteTemplate} className="rounded-md border border-neutral-200 px-2 py-1 text-[11px] font-bold text-neutral-600 dark:border-neutral-700 dark:text-neutral-300">Keep</button>
-                      </div>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={() => onRequestDeleteTemplate(template.id)}
-                        aria-label={`Delete ${template.name}`}
-                        className="grid h-7 w-7 place-items-center rounded-full text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800"
-                      >
-                        <Trash2 size={13} />
-                      </button>
-                    )
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-        </section>
+                ))}
+              </div>
+            </details>
+            <button type="button" onClick={() => onRefreshTemplates()} className="h-8 rounded-lg border border-neutral-200 text-xs font-bold text-neutral-600 dark:border-neutral-700 dark:text-neutral-300">
+              Refresh templates
+            </button>
+          </div>
+        </CollapsibleTile>
 
-        <Card className="p-4">
-          <CardHeader className="mb-2 text-amber-600 dark:text-amber-400">
-            <Clock3 size={15} />
-            <h3 className="text-sm font-bold text-neutral-900 dark:text-neutral-50">Status</h3>
-          </CardHeader>
+        <CollapsibleTile icon={Clock3} title="Status" subtitle={result ? `Completed as ${result.route}` : events.length ? 'In progress' : 'Waiting'} defaultOpen={view === 'chat' && Boolean(result || events.length)}>
+          <div className="border-t border-neutral-100 px-4 py-3.5 dark:border-neutral-800">
           <p className="text-sm leading-relaxed text-neutral-500 dark:text-neutral-400">
             {result ? `Completed as ${result.route}` : events.length ? 'In progress' : 'Waiting'}
           </p>
           {result?.model_used && <p className="mt-1 text-xs text-neutral-400">{result.model_used}</p>}
-        </Card>
+          </div>
+        </CollapsibleTile>
 
-        <section className="rounded-xl border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900">
+        <CollapsibleTile icon={Sliders} title="Engine events" subtitle={`${events.length || 0} recorded`} defaultOpen={view === 'chat' && events.length > 0}>
           <div className="flex items-center justify-between gap-2">
             <button type="button" onClick={() => setTraceOpen(!traceOpen)} className="min-w-0 flex-1 text-left">
               <span className="flex items-center justify-between gap-2">
@@ -172,10 +189,10 @@ export function ContextPanel({
               ))}
             </div>
           )}
-        </section>
+        </CollapsibleTile>
 
         {latestArtifact && (
-          <section className="rounded-xl border border-amber-200 bg-amber-50/60 p-4 dark:border-amber-500/20 dark:bg-amber-500/5">
+          <CollapsibleTile icon={FileText} title="Generated document" subtitle={latestArtifact.filename} defaultOpen={view === 'chat'} tone="amber">
             <div className="mb-2 flex items-center gap-2 text-amber-700 dark:text-amber-400">
               <FileText size={15} />
               <h3 className="text-sm font-bold text-neutral-900 dark:text-neutral-50">Generated document</h3>
@@ -185,10 +202,10 @@ export function ContextPanel({
             <button type="button" onClick={() => downloadArtifact(latestArtifact)} className="mt-3 flex h-9 w-full items-center justify-center gap-2 rounded-lg bg-neutral-900 text-sm font-semibold text-white dark:bg-white dark:text-neutral-900">
               <Download size={15} /> Download
             </button>
-          </section>
+          </CollapsibleTile>
         )}
 
-        <section className="rounded-xl border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900">
+        <CollapsibleTile icon={BookOpen} title="Sources" subtitle={`${sources.length} attached`} defaultOpen={view === 'chat' && sources.length > 0}>
           <div className="mb-2.5 flex items-center gap-2 text-amber-600 dark:text-amber-400">
             <BookOpen size={15} />
             <h3 className="text-sm font-bold text-neutral-900 dark:text-neutral-50">Sources</h3>
@@ -211,9 +228,47 @@ export function ContextPanel({
               </a>
             ))}
           </div>
-        </section>
+        </CollapsibleTile>
       </div>
     </div>
+  )
+}
+
+function CollapsibleTile({
+  icon: Icon,
+  title,
+  subtitle,
+  defaultOpen,
+  tone = 'neutral',
+  children,
+}: {
+  icon: typeof Sparkles
+  title: string
+  subtitle?: string
+  defaultOpen: boolean
+  tone?: 'neutral' | 'amber'
+  children: ReactNode
+}) {
+  const [open, setOpen] = useState(defaultOpen)
+
+  useEffect(() => {
+    setOpen(defaultOpen)
+  }, [defaultOpen, title])
+
+  return (
+    <section className={`overflow-hidden rounded-xl border ${tone === 'amber' ? 'border-amber-200 bg-amber-50/60 dark:border-amber-500/20 dark:bg-amber-500/5' : 'border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900'}`}>
+      <button type="button" onClick={() => setOpen(value => !value)} className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left">
+        <span className="flex min-w-0 items-center gap-2.5">
+          <Icon size={15} className={tone === 'amber' ? 'text-amber-600 dark:text-amber-400' : 'text-neutral-400'} />
+          <span className="min-w-0">
+            <span className="block truncate text-sm font-bold text-neutral-900 dark:text-neutral-50">{title}</span>
+            {subtitle && <span className="mt-0.5 block truncate text-xs font-medium text-neutral-400">{subtitle}</span>}
+          </span>
+        </span>
+        <ChevronDown size={16} className={`flex-shrink-0 text-neutral-400 transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+      {open && children}
+    </section>
   )
 }
 

@@ -86,6 +86,7 @@ class SettingsUpdate(BaseModel):
     quality_mode: Literal["draft", "standard", "executive"] | None = None
     output_format: Literal["chat", "markdown", "docx", "pptx"] | None = None
     research_level: Literal["auto", "easy", "regular", "deep"] | None = None
+    default_template_id: str | None = Field(default=None, max_length=128)
 
 
 class PrivacyDeleteConfirm(BaseModel):

@@ -59,6 +59,7 @@ export function useAgent() {
   const [qualityMode, setQualityMode] = useState<QualityMode>('standard')
   const [outputFormat, setOutputFormat] = useState<OutputFormat>('chat')
   const [researchLevel, setResearchLevel] = useState<ResearchLevel>('auto')
+  const [profileSettings, setProfileSettings] = useState<ProfileSettings>({})
   const [events, setEvents] = useState<ProgressEvent[]>([])
   const [result, setResult] = useState<AgentResult | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -136,13 +137,30 @@ export function useAgent() {
       const response = await authorizedFetch('/profile/settings')
       if (!response.ok) return
       const settings = await response.json() as ProfileSettings
+      setProfileSettings(settings)
       if (composerSettingsDirtyRef.current) return
       if (settings.quality_mode) setQualityMode(settings.quality_mode)
       if (settings.output_format) setOutputFormat(settings.output_format)
       if (settings.research_level) setResearchLevel(settings.research_level)
+      if (settings.default_template_id !== undefined) setSelectedTemplateId(settings.default_template_id || '')
     } catch {
       // Non-critical: the composer still has local defaults.
     }
+  }
+
+  async function updateProfileSettings(settings: Partial<ProfileSettings>) {
+    const response = await authorizedFetch('/profile/settings', {
+      method: 'PATCH',
+      body: JSON.stringify(settings),
+    })
+    if (!response.ok) throw new Error(await readErrorBody(response, 'Could not update profile settings'))
+    const next = await response.json() as ProfileSettings
+    setProfileSettings(next)
+    if (next.quality_mode) setQualityMode(next.quality_mode)
+    if (next.output_format) setOutputFormat(next.output_format)
+    if (next.research_level) setResearchLevel(next.research_level)
+    if (next.default_template_id !== undefined) setSelectedTemplateId(next.default_template_id || '')
+    return next
   }
 
   async function checkIsAdmin() {
@@ -645,6 +663,7 @@ export function useAgent() {
     setOutputFormat: updateOutputFormat,
     researchLevel,
     setResearchLevel: updateResearchLevel,
+    profileSettings,
     events,
     activeEvents,
     result,
@@ -688,6 +707,7 @@ export function useAgent() {
     selectedTemplateId,
     setSelectedTemplateId,
     selectedTemplateExists,
+    updateProfileSettings,
     uploadTemplate,
     deleteTemplate,
     refreshTemplates: loadTemplates,

@@ -113,8 +113,11 @@ def test_settings_round_trip_and_partial_update(monkeypatch):
             second = client.patch("/profile/settings", json={"output_format": "pptx"})
             assert second.json() == {"quality_mode": "executive", "output_format": "pptx"}
 
+            third = client.patch("/profile/settings", json={"default_template_id": "tpl_123"})
+            assert third.json() == {"quality_mode": "executive", "output_format": "pptx", "default_template_id": "tpl_123"}
+
             fetched = client.get("/profile/settings")
-            assert fetched.json() == {"quality_mode": "executive", "output_format": "pptx"}
+            assert fetched.json() == {"quality_mode": "executive", "output_format": "pptx", "default_template_id": "tpl_123"}
     finally:
         app.dependency_overrides.clear()
 

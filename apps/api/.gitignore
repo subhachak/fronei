@@ -17,3 +17,7 @@ __pycache__/
 # misc
 .DS_Store
 .fuse*
+
+# generated per-user/per-template brand design systems (runtime artifacts,
+# not source — see app/services/document_templates.py / brand_generator.py)
+app/services/design_systems/brand_*/

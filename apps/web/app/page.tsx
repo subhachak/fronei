@@ -5339,9 +5339,10 @@ export default function Home() {
         window.history.replaceState({}, '', window.location.pathname)
       }
       if (initialView === 'admin') {
-        setSettingsViewOpen(true)
-        setSettingsInitialTab('admin')
-        window.history.replaceState({}, '', window.location.pathname)
+        // The in-chat admin settings tab has been replaced by a dedicated
+        // panel at /agent-v3/admin. Redirect instead of opening it here.
+        window.location.href = '/agent-v3/admin'
+        return
       }
       if (initialSettings === '1') {
         openSettingsView()

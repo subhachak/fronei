@@ -1,7 +1,7 @@
 'use client'
 
-import { ChevronDown, Folder, MessageSquare, Plus, Search, Trash2 } from 'lucide-react'
-import { useState } from 'react'
+import { ChevronDown, Folder, Loader2, MessageSquare, Plus, Search, Trash2 } from 'lucide-react'
+import { useEffect, useState } from 'react'
 import { formatRelativeTime } from '../lib/format'
 import type { PendingDelete, Workspace } from '../types'
 import { AccountMenu } from './AccountMenu'
@@ -10,6 +10,8 @@ import { SearchInput } from './ui/Field'
 
 export function LibraryPanel({
   workspaces,
+  workspacesLoading,
+  workspaceAction,
   activeWorkspaceId,
   activeConversationId,
   onCreateWorkspace,
@@ -34,6 +36,8 @@ export function LibraryPanel({
   onOpenAdmin,
 }: {
   workspaces: Workspace[]
+  workspacesLoading: boolean
+  workspaceAction: string
   activeWorkspaceId: string | null
   activeConversationId: string | null
   onCreateWorkspace: () => void
@@ -58,6 +62,7 @@ export function LibraryPanel({
   onOpenAdmin: () => void
 }) {
   const [workspaceSearchOpen, setWorkspaceSearchOpen] = useState(false)
+  const [workspacesTileOpen, setWorkspacesTileOpen] = useState(view === 'chat')
   const [workspaceSearch, setWorkspaceSearch] = useState('')
   const [conversationSearchOpen, setConversationSearchOpen] = useState<Record<string, boolean>>({})
   const [conversationSearch, setConversationSearch] = useState<Record<string, string>>({})
@@ -68,8 +73,21 @@ export function LibraryPanel({
     || workspace.conversations.some(conversation => conversation.title.toLowerCase().includes(workspaceQuery))
   ))
 
+  useEffect(() => {
+    setWorkspacesTileOpen(view === 'chat')
+  }, [view])
+
   return (
     <div className="flex h-full flex-col">
+      <a
+        href="/"
+        aria-label="Go to Fronei home"
+        title="Go to Fronei home"
+        className="mb-4 flex h-11 w-fit max-w-full items-center rounded-lg pr-2 transition-opacity hover:opacity-80"
+      >
+        <img src="/fronei-logo.svg" alt="Fronei" className="h-9 w-auto dark:hidden" />
+        <img src="/fronei-logo-dark.svg" alt="Fronei" className="hidden h-9 w-auto dark:block" />
+      </a>
       <div className="mb-4 flex items-center justify-between gap-3">
         <div>
           <p className="text-[11px] font-bold uppercase tracking-wider text-neutral-400">Studio</p>
@@ -102,19 +120,30 @@ export function LibraryPanel({
       )}
 
       <div className="min-h-0 flex-1 space-y-2.5 overflow-y-auto">
-        <details key={`workspaces-${view}-${activeWorkspaceId || 'none'}`} open={view === 'chat'} className="overflow-hidden rounded-xl border border-neutral-200 bg-white/80 dark:border-neutral-800 dark:bg-neutral-900/60">
+        <details
+          open={workspacesTileOpen}
+          onToggle={event => setWorkspacesTileOpen(event.currentTarget.open)}
+          className="overflow-hidden rounded-xl border border-neutral-200 bg-white/80 dark:border-neutral-800 dark:bg-neutral-900/60"
+        >
           <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-3 py-3">
             <span className="flex min-w-0 items-center gap-2">
               <Folder size={15} className="flex-shrink-0 text-neutral-400" />
               <span className="truncate text-sm font-bold text-neutral-900 dark:text-neutral-50">Workspaces</span>
             </span>
             <span className="flex flex-shrink-0 items-center gap-2">
-              <span className="text-xs font-semibold text-neutral-400">{workspaces.length}</span>
+              {workspacesLoading ? <Loader2 size={13} className="animate-spin text-neutral-400" /> : <span className="text-xs font-semibold text-neutral-400">{workspaces.length}</span>}
               <ChevronDown size={15} className="text-neutral-400" />
             </span>
           </summary>
           <div className="grid gap-2.5 border-t border-neutral-100 p-2.5 dark:border-neutral-800">
-            {workspaces.length === 0 && (
+            {workspaceAction && (
+              <div className="flex items-center gap-2 rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-2 text-xs font-bold text-neutral-500 dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-400">
+                <Loader2 size={13} className="animate-spin" />
+                <span className="truncate">{workspaceAction}</span>
+              </div>
+            )}
+            {workspacesLoading && workspaces.length === 0 && <WorkspaceSkeleton />}
+            {!workspacesLoading && workspaces.length === 0 && (
               <div className="rounded-lg border border-dashed border-neutral-300 p-5 text-sm text-neutral-500 dark:border-neutral-700 dark:text-neutral-400">
                 Create a workspace to begin.
               </div>
@@ -126,7 +155,7 @@ export function LibraryPanel({
             )}
             {visibleWorkspaces.map((workspace, index) => {
               const isActive = workspace.id === activeWorkspaceId
-              const expanded = view === 'chat' && (expandedWorkspaceIds[workspace.id] ?? (isActive || index === 0))
+              const expanded = expandedWorkspaceIds[workspace.id] ?? (isActive || index === 0)
               const conversationQuery = (conversationSearch[workspace.id] || '').trim().toLowerCase()
               const visibleConversations = workspace.conversations.filter(conversation => (
                 !conversationQuery
@@ -199,7 +228,9 @@ export function LibraryPanel({
                         <Trash2 size={13} />
                       </button>
                     </div>
-                    <span className="col-span-2 col-start-2 -mt-1 text-xs text-neutral-400">{workspace.conversations.length} conv · {turnCount} turns</span>
+                    <span className="col-span-2 col-start-2 -mt-1 text-xs text-neutral-400">
+                      {workspace.isDraft ? 'Saving...' : `${workspace.conversations.length} conv · ${turnCount} turns`}
+                    </span>
                   </div>
 
                   {pendingDelete?.type === 'workspace' && pendingDelete.workspaceId === workspace.id && (
@@ -274,6 +305,23 @@ export function LibraryPanel({
       </div>
 
       <AccountMenu isAdmin={isAdmin} onOpenProfile={onOpenProfile} onOpenAdmin={onOpenAdmin} />
+    </div>
+  )
+}
+
+function WorkspaceSkeleton() {
+  return (
+    <div className="grid gap-2.5">
+      {[0, 1, 2].map(index => (
+        <div key={index} className="rounded-xl border border-neutral-200 bg-white/70 p-3 dark:border-neutral-800 dark:bg-neutral-900/50">
+          <div className="flex items-center gap-2">
+            <div className="h-7 w-7 animate-pulse rounded-full bg-neutral-200 dark:bg-neutral-800" />
+            <div className="h-3.5 min-w-0 flex-1 animate-pulse rounded bg-neutral-200 dark:bg-neutral-800" />
+            <div className="h-7 w-16 animate-pulse rounded-full bg-neutral-200 dark:bg-neutral-800" />
+          </div>
+          <div className="ml-9 mt-2 h-3 w-28 animate-pulse rounded bg-neutral-200 dark:bg-neutral-800" />
+        </div>
+      ))}
     </div>
   )
 }

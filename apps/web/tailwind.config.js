@@ -4,6 +4,7 @@ module.exports = {
   content: [
     './app/v2/**/*.{ts,tsx}',
     './app/admin/**/*.{ts,tsx}',
+    './app/agent-v3/**/*.{ts,tsx}',
   ],
   theme: {
     extend: {

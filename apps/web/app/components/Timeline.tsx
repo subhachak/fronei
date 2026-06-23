@@ -71,7 +71,7 @@ function TurnPair({
   const confidenceCues = buildConfidenceCues(turn.events || [], turn.result || null)
   return (
     <div className="flex flex-col gap-2.5">
-      <div className="ml-auto w-fit max-w-[min(88%,860px)] rounded-2xl rounded-br-md bg-neutral-900 px-4 py-3 text-white dark:bg-white dark:text-neutral-900">
+      <div className="self-end max-w-[min(88%,860px)] rounded-2xl rounded-br-md bg-neutral-900 px-4 py-3 text-white dark:bg-white dark:text-neutral-900">
         <div className="mb-1.5 flex items-center justify-between gap-3">
           <p className="text-[11px] font-bold uppercase tracking-wide text-white/55 dark:text-neutral-500">You</p>
           <CopyButton tone="on-inverted-bubble" copied={copiedKey === `${turn.id}:user`} label="Copy your message" onClick={() => onCopyText(userCopy, `${turn.id}:user`)} />
@@ -163,7 +163,7 @@ function LiveTurn({
 
   return (
     <div className="flex flex-col gap-2.5">
-      <div className="ml-auto w-fit max-w-[min(88%,860px)] rounded-2xl rounded-br-md bg-neutral-900 px-4 py-3 text-white dark:bg-white dark:text-neutral-900">
+      <div className="self-end max-w-[min(88%,860px)] rounded-2xl rounded-br-md bg-neutral-900 px-4 py-3 text-white dark:bg-white dark:text-neutral-900">
         <div className="mb-1.5 flex items-center justify-between gap-3">
           <p className="text-[11px] font-bold uppercase tracking-wide text-white/55 dark:text-neutral-500">You</p>
           <CopyButton tone="on-inverted-bubble" copied={copiedKey === 'live:user'} label="Copy your message" onClick={() => onCopyText(message, 'live:user')} />

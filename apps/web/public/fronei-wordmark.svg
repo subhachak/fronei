@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="260" viewBox="0 0 900 260" role="img" aria-label="Fronei wordmark">
+
+  <defs>
+    <style>
+      .wordmark {
+        font-family: Inter, Geist, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        font-weight: 600;
+        letter-spacing: -0.045em;
+      }
+    </style>
+  </defs>
+
+  <rect width="900" height="260" fill="none"/>
+  <text x="52" y="180" class="wordmark" font-size="172" fill="#1E293B">fronei</text>
+  
+    <path d="M792 38 C797.28 56.72 797.28 56.72 816 62
+             C797.28 67.28 797.28 67.28 792 86
+             C786.72 67.28 786.72 67.28 768 62
+             C786.72 56.72 786.72 56.72 792 38 Z" fill="#FBBF24"/>
+
+</svg>

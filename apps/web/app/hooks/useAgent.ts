@@ -282,6 +282,7 @@ export function useAgent() {
         if (!selectedWorkspace && next[0] && nextExpanded[next[0].id] === undefined) nextExpanded[next[0].id] = true
         return nextExpanded
       })
+      if (selectedConversation) setLoadingConversationId(selectedConversation.id)
       setActiveWorkspaceId(selectedWorkspace?.id || null)
       setActiveConversationId(selectedConversation?.id || null)
       if (selectedConversation) await loadConversationTurns(selectedConversation.id, INITIAL_VISIBLE_TURNS)
@@ -483,6 +484,7 @@ export function useAgent() {
     if (running) return
     const workspace = workspaces.find(item => item.id === workspaceId)
     const conversation = workspace?.conversations.find(item => item.id === conversationId)
+    if (conversation) setLoadingConversationId(conversationId)
     setActiveWorkspaceId(workspaceId)
     setActiveConversationId(conversationId)
     setVisibleTurnCount(INITIAL_VISIBLE_TURNS)

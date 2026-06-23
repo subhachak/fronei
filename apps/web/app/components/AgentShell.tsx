@@ -176,6 +176,7 @@ export function AgentShell() {
       onUpdateProfileSettings={agent.updateProfileSettings}
     />
   )
+  const showConversationPlaceholder = view === 'chat' && !agent.running && (agent.workspacesLoading || agent.conversationLoading) && agent.visibleTurns.length === 0
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
@@ -326,25 +327,31 @@ export function AgentShell() {
               </header>
 
               <div ref={chatScrollRef} className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4 sm:px-6 md:px-8 md:py-6">
-                {agent.canLoadOlder && (
-                  <button
-                    type="button"
-                    onClick={agent.loadOlderTurns}
-                    className="mx-auto rounded-full border border-neutral-200 bg-white px-3.5 py-2 text-xs font-bold text-neutral-600 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300"
-                  >
-                    Load older turns
-                  </button>
+                {showConversationPlaceholder ? (
+                  <ConversationSkeleton />
+                ) : (
+                  <>
+                    {agent.canLoadOlder && (
+                      <button
+                        type="button"
+                        onClick={agent.loadOlderTurns}
+                        className="mx-auto rounded-full border border-neutral-200 bg-white px-3.5 py-2 text-xs font-bold text-neutral-600 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300"
+                      >
+                        Load older turns
+                      </button>
+                    )}
+                    <Timeline
+                      draftMessage={agent.running ? agent.activeRunMessage || agent.message : agent.message}
+                      turns={agent.visibleTurns}
+                      events={agent.activeEvents}
+                      running={agent.running}
+                      copiedKey={agent.copiedKey}
+                      onCopyText={agent.copyText}
+                      downloadArtifact={agent.downloadArtifact}
+                      onFollowUp={option => void agent.run(option)}
+                    />
+                  </>
                 )}
-                <Timeline
-                  draftMessage={agent.running ? agent.activeRunMessage || agent.message : agent.message}
-                  turns={agent.visibleTurns}
-                  events={agent.activeEvents}
-                  running={agent.running}
-                  copiedKey={agent.copiedKey}
-                  onCopyText={agent.copyText}
-                  downloadArtifact={agent.downloadArtifact}
-                  onFollowUp={option => void agent.run(option)}
-                />
                 {agent.error && (
                   <div className="rounded-lg border-l-4 border-red-400 bg-red-50 px-4 py-3 text-sm text-red-700 dark:bg-red-500/10 dark:text-red-400">
                     {agent.error}
@@ -432,6 +439,36 @@ export function AgentShell() {
   )
 }
 
+function ConversationSkeleton() {
+  return (
+    <div className="flex flex-1 flex-col gap-6" aria-label="Loading conversation">
+      <div className="ml-auto w-full max-w-[min(72%,620px)] rounded-2xl rounded-br-md bg-neutral-900/10 px-4 py-3 dark:bg-white/10">
+        <div className="mb-3 h-3 w-12 animate-pulse rounded bg-neutral-300 dark:bg-neutral-700" />
+        <div className="space-y-2">
+          <div className="h-3.5 w-full animate-pulse rounded bg-neutral-300 dark:bg-neutral-700" />
+          <div className="h-3.5 w-2/3 animate-pulse rounded bg-neutral-300 dark:bg-neutral-700" />
+        </div>
+      </div>
+      <div className="w-full max-w-[min(82%,860px)] rounded-2xl rounded-bl-md border border-neutral-200 bg-white p-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+        <div className="mb-4 flex items-start gap-3">
+          <span className="grid h-9 w-9 flex-shrink-0 place-items-center rounded-full bg-neutral-200 dark:bg-neutral-800">
+            <Loader2 size={16} className="animate-spin text-neutral-500 dark:text-neutral-400" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="h-3.5 w-16 animate-pulse rounded bg-neutral-200 dark:bg-neutral-800" />
+            <div className="mt-2 h-3 w-36 animate-pulse rounded bg-neutral-200 dark:bg-neutral-800" />
+          </div>
+        </div>
+        <div className="space-y-2">
+          <div className="h-3.5 w-full animate-pulse rounded bg-neutral-200 dark:bg-neutral-800" />
+          <div className="h-3.5 w-11/12 animate-pulse rounded bg-neutral-200 dark:bg-neutral-800" />
+          <div className="h-3.5 w-3/5 animate-pulse rounded bg-neutral-200 dark:bg-neutral-800" />
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function CollapsedLibraryRail({
   isAdmin,
   activeView,
@@ -462,15 +499,15 @@ function CollapsedLibraryRail({
         <img src="/fronei-icon.svg" alt="" className="h-7 w-7" />
       </a>
       <div className="h-px w-8 bg-neutral-200 dark:bg-neutral-800" />
-      <CollapsedIconButton
-        label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
-        icon={theme === 'dark' ? Sun : Moon}
-        onClick={onToggleTheme}
-      />
       <CollapsedIconButton label="Workspaces" icon={Folder} active={activeView === 'chat'} onClick={onOpenWorkspaces} />
       <CollapsedIconButton label="Profile" icon={UserCog} active={activeView === 'profile'} onClick={onOpenProfile} />
       {isAdmin && <CollapsedIconButton label="Admin" icon={Shield} active={activeView === 'admin'} onClick={onOpenAdmin} />}
-      <div className="mt-auto">
+      <div className="mt-auto flex flex-col gap-2">
+        <CollapsedIconButton
+          label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+          icon={theme === 'dark' ? Sun : Moon}
+          onClick={onToggleTheme}
+        />
         <CollapsedIconButton label="Expand library" icon={ChevronsRight} onClick={onExpand} />
       </div>
     </div>

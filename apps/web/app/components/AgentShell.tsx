@@ -51,8 +51,9 @@ export function AgentShell() {
   const [leftRailWidth, setLeftRailWidth] = useState(280)
   const [rightRailWidth, setRightRailWidth] = useState(340)
   const [composerHeight, setComposerHeight] = useState(168)
-  const [leftRailCollapsed, setLeftRailCollapsed] = useState(() => readStoredCollapsedState(LEFT_RAIL_COLLAPSED_KEY))
-  const [rightRailCollapsed, setRightRailCollapsed] = useState(() => readStoredCollapsedState(RIGHT_RAIL_COLLAPSED_KEY))
+  const [layoutHydrated, setLayoutHydrated] = useState(false)
+  const [leftRailCollapsed, setLeftRailCollapsed] = useState(false)
+  const [rightRailCollapsed, setRightRailCollapsed] = useState(false)
   const [uploadSource, setUploadSource] = useState<'composer' | 'profile'>('profile')
   const [view, setView] = useState<'chat' | 'profile' | 'admin'>('chat')
   const templateUploadRef = useRef<HTMLInputElement | null>(null)
@@ -64,12 +65,20 @@ export function AgentShell() {
   }, [agent.visibleTurns.length, agent.running, agent.result?.turn_id, agent.events.length])
 
   useEffect(() => {
-    writeStoredCollapsedState(LEFT_RAIL_COLLAPSED_KEY, leftRailCollapsed)
-  }, [leftRailCollapsed])
+    setLeftRailCollapsed(readStoredCollapsedState(LEFT_RAIL_COLLAPSED_KEY))
+    setRightRailCollapsed(readStoredCollapsedState(RIGHT_RAIL_COLLAPSED_KEY))
+    setLayoutHydrated(true)
+  }, [])
 
   useEffect(() => {
+    if (!layoutHydrated) return
+    writeStoredCollapsedState(LEFT_RAIL_COLLAPSED_KEY, leftRailCollapsed)
+  }, [layoutHydrated, leftRailCollapsed])
+
+  useEffect(() => {
+    if (!layoutHydrated) return
     writeStoredCollapsedState(RIGHT_RAIL_COLLAPSED_KEY, rightRailCollapsed)
-  }, [rightRailCollapsed])
+  }, [layoutHydrated, rightRailCollapsed])
 
   function openTemplateUpload(source: 'composer' | 'profile') {
     setUploadSource(source)
@@ -177,6 +186,8 @@ export function AgentShell() {
     />
   )
   const showConversationPlaceholder = view === 'chat' && !agent.running && (agent.workspacesLoading || agent.conversationLoading) && agent.visibleTurns.length === 0
+
+  if (!layoutHydrated) return <ShellHydrationPlaceholder />
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
@@ -435,6 +446,20 @@ export function AgentShell() {
       <Sheet open={contextSheetOpen} onClose={() => setContextSheetOpen(false)} side="right" title="Context">
         {contextContent}
       </Sheet>
+    </div>
+  )
+}
+
+function ShellHydrationPlaceholder() {
+  return (
+    <div className="flex h-full w-full items-center justify-center bg-white dark:bg-neutral-950" aria-label="Loading workspace layout">
+      <div className="flex flex-col items-center gap-4">
+        <img src="/fronei-icon.png" alt="" className="h-12 w-12" />
+        <div className="flex items-center gap-2 text-sm font-bold text-neutral-400">
+          <Loader2 size={15} className="animate-spin" />
+          <span>Loading workspace</span>
+        </div>
+      </div>
     </div>
   )
 }

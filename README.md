@@ -1,28 +1,30 @@
 # Fronei
 
-Fronei is a personal AI workbench that plans, routes, researches, reads documents, remembers user context, and adapts responses to the user's writing style. The user asks in plain language; Fronei chooses the right execution path and model stack behind the scenes.
+Fronei is a personal AI workbench. You describe a task in plain language; Fronei plans the work, picks the execution route, searches the web, reads documents, drafts artifacts, and keeps the output visible in a structured workspace.
 
 ## What's built
 
-- Next.js web UI with dark/light theme, collapsible sidebar, streaming chat, workbench mode, settings, and usage dashboard
-- FastAPI backend with planner → web/document context → policy router → worker/synthesis/refinement pipeline
-- Clerk authentication (email, Google OAuth)
-- Multi-provider support: OpenAI, Anthropic, Gemini, DeepSeek, Qwen, Perplexity via LiteLLM
-- YAML-driven routing policy (task type × complexity × profile)
-- Quick / Smart / Thorough routing profiles
+**Frontend (Next.js + React)**
+- Three-panel shell: collapsible library rail (workspaces / conversations), center work pane (chat timeline + composer), collapsible context rail (work summary, settings, sources, events, artifacts)
+- Mobile: single work pane with sheet drawers for library and context; view-aware top bar with back navigation
+- Composer controls: quality mode (draft / standard / executive), output format (chat / markdown / docx / pptx), research level (auto / easy / regular / deep), file attachment, template selection
+- Dark / light theme via `data-theme` attribute; navy + gold brand palette
+- PWA-ready: manifest, icon sizes, apple-touch-icon, theme-color
+- Clerk authentication (email + Google OAuth), with brand-matched sign-in / sign-up pages
+- Admin view (embedded) for users, routing signals, model policy, audit logs, system settings
+
+**Backend (FastAPI + Python)**
+- Multi-agent runtime: orchestrator → route selection → subtree workers (fast path, web, research, document, deck)
+- PPTX and DOCX artifact generation with design system support
 - Web search via Tavily (Brave and DuckDuckGo fallback)
-- Deep research mode with source search, source scoring, claim extraction, findings, gaps, contradictions, and citation metadata
-- Document and image attachment extraction for PDF, DOCX, PPTX, XLSX, CSV/TSV, text-like files, HTML/SVG/XML/JSON/YAML, and common image types
-- Within-conversation memory (rolling summary + active task state)
-- Persistent user memories extracted from useful conversation facts
-- Twin profile voice adaptation from user writing samples
-- Artifact formatting for ADRs, solution comparisons, trade-off matrices, executive briefs, risk registers, NFR analysis, and steering updates
-- Admin section for users, usage, provider status, routing tests, research runs, privacy actions, audit logs, and system configuration
-- Analytics dashboard with cost, latency, and model usage charts
-- Daily budget guard
+- Deep research: sub-question planning, source crawl, credibility scoring, claim extraction, citation synthesis
+- Document and image extraction: PDF (vision + first 30 pages), DOCX, PPTX, XLSX, CSV/TSV, HTML/SVG/XML/JSON/YAML, images (30 MB limit, 60 k char output)
+- Profile consolidation and per-user preference system
+- DB-backed model policy with per-turn admin override
+- Signal-based routing escalation (web_fast / agentic) with feedback loop
+- Admin endpoints: user management, audit logs, system settings, routing signals, model policy
 - SQLite by default, Postgres-ready via `DATABASE_URL`
 - Alembic migrations
-- Docker Compose for local development
 
 ## Local setup
 
@@ -34,9 +36,10 @@ cd fronei
 cp apps/api/.env.example apps/api/.env
 ```
 
-Fill in `apps/api/.env` with your provider keys and Clerk issuer URL.
+Fill in `apps/api/.env` with your provider keys and Clerk config.
 
 Create `apps/web/.env.local`:
+
 ```bash
 NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_test_...
 CLERK_SECRET_KEY=sk_test_...
@@ -57,10 +60,9 @@ docker compose -f infra/docker-compose.yml up --build
 - API health: http://localhost:8000/health
 - API docs: http://localhost:8000/docs
 
-## Run without Docker
+### 3. Run without Docker
 
-### API
-
+**API**
 ```bash
 cd apps/api
 uv sync          # or: python -m venv .venv && pip install -e .
@@ -68,33 +70,31 @@ alembic upgrade head
 uvicorn app.main:app --reload --port 8000
 ```
 
-### Web
-
+**Web**
 ```bash
 cd apps/web
 npm install
 npm run dev
 ```
 
-## Routing policy
+## Composer controls
 
-Model assignments live in `apps/api/app/policies/routing_rules.yaml`. Edit this file to change which model handles each task type, complexity level, and profile. The policy is cached by the API process, so restart the API after changes.
+| Control | Options | Default |
+|---------|---------|---------|
+| Quality mode | draft · standard · executive | standard |
+| Output format | chat · markdown · docx · pptx | chat |
+| Research level | auto · easy · regular · deep | auto |
 
-The UI labels map to backend profiles:
-
-| UI label | API profile | Intent |
-|----------|-------------|--------|
-| Quick | `cost_saver` | Lower cost and latency |
-| Smart | `balanced` | Default daily work |
-| Thorough | `best_quality` | Stronger models and deeper reasoning |
+Quality mode shapes the model tier and prompt style. Output format determines the artifact type when the agent produces a deliverable. Research level overrides the orchestrator's automatic research depth decision.
 
 ## Deployment
 
-- Backend: Render, Railway, Fly.io, or a VPS (see `infra/render.yaml`)
+- Backend: Render, Railway, Fly.io, or a VPS (`infra/render.yaml`)
 - Frontend: Vercel or Cloudflare Pages
 - Database: Supabase Postgres, Neon, or Render managed Postgres
 
 Key backend environment variables:
+
 ```bash
 DATABASE_URL=postgresql+psycopg://...
 ALLOWED_ORIGINS=https://your-frontend.com
@@ -113,4 +113,4 @@ ADMIN_EMAILS=admin@example.com
 
 ## Roadmap
 
-See `docs/fronei-roadmap.md` for the full phased roadmap with implementation prompts.
+See `docs/fronei-roadmap.md` for the full phased roadmap.

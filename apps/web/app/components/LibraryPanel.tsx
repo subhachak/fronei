@@ -2,6 +2,7 @@
 
 import { ChevronDown, Folder, Loader2, MessageSquare, Moon, Plus, Search, Sun, Trash2 } from 'lucide-react'
 import { useEffect, useState } from 'react'
+import { brandAsset } from '../lib/brand'
 import { formatRelativeTime } from '../lib/format'
 import type { PendingDelete, Workspace } from '../types'
 import { AccountMenu } from './AccountMenu'
@@ -89,8 +90,8 @@ export function LibraryPanel({
         title="Go to Fronei home"
         className="mb-4 flex h-11 w-fit max-w-full items-center rounded-lg pr-2 transition-opacity hover:opacity-80"
       >
-        <img src="/fronei-logo-wide.svg" alt="Fronei" className="h-9 w-auto min-w-0 dark:hidden" />
-        <img src="/fronei-logo-wide-dark.svg" alt="Fronei" className="hidden h-9 w-auto min-w-0 dark:block" />
+        <img src={brandAsset('/fronei-logo-wide.svg')} alt="Fronei" className="h-9 w-auto min-w-0 dark:hidden" />
+        <img src={brandAsset('/fronei-logo-wide-dark.svg')} alt="Fronei" className="hidden h-9 w-auto min-w-0 dark:block" />
       </a>
       <div className="mb-4 flex items-center justify-between gap-3">
         <div>

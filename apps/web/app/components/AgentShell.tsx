@@ -454,7 +454,7 @@ function ShellHydrationPlaceholder() {
   return (
     <div className="flex h-full w-full items-center justify-center bg-white dark:bg-neutral-950" aria-label="Loading workspace layout">
       <div className="flex flex-col items-center gap-4">
-        <img src="/fronei-icon.png" alt="" className="h-12 w-12" />
+        <img src="/fronei-icon.svg" alt="" className="h-12 w-12" />
         <div className="flex items-center gap-2 text-sm font-bold text-neutral-400">
           <Loader2 size={15} className="animate-spin" />
           <span>Loading workspace</span>
@@ -521,7 +521,7 @@ function CollapsedLibraryRail({
         title="Go to Fronei home"
         className="grid h-10 w-10 place-items-center rounded-lg border border-neutral-200 bg-white hover:bg-neutral-100 dark:border-neutral-800 dark:bg-neutral-900 dark:hover:bg-neutral-800"
       >
-        <img src="/fronei-icon.png" alt="" className="h-7 w-7" />
+        <img src="/fronei-icon.svg" alt="" className="h-7 w-7" />
       </a>
       <div className="h-px w-8 bg-neutral-200 dark:bg-neutral-800" />
       <CollapsedIconButton label="Workspaces" icon={Folder} active={activeView === 'chat'} onClick={onOpenWorkspaces} />

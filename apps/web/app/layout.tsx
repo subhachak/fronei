@@ -28,6 +28,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <head>
         <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.31.0/dist/tabler-icons.min.css" />
         <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
+        <link rel="icon" href="/fronei-icon.svg" type="image/svg+xml" />
         <link rel="icon" href="/favicon.ico" sizes="any" />
         <link rel="icon" href="/favicon-32.png" type="image/png" sizes="32x32" />
         <link rel="apple-touch-icon" href="/apple-touch-icon.png" />

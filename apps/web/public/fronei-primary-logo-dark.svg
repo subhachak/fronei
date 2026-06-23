@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="420" viewBox="0 0 1200 420" role="img" aria-label="Fronei primary logo dark">
+
+  <defs>
+    <style>
+      .wordmark {
+        font-family: Inter, Geist, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        font-weight: 600;
+        letter-spacing: -0.045em;
+      }
+    </style>
+  </defs>
+
+  <rect width="1200" height="420" fill="#0F172A"/>
+  
+  <g transform="translate(80,82) scale(1.0)">
+    <rect x="0" y="0" width="256" height="256" rx="58" fill="#1E293B"/>
+    
+    <path d="M86 119 H176 V151 H122 V236 H86 Z" fill="#FFFFFF"/>
+    <path d="M86 76 C126 75 159 66 198 44 V80 C158 102 121 111 86 111 Z" fill="#FFFFFF"/>
+
+    
+    <path d="M200 46 C203.96 60.04 203.96 60.04 218 64
+             C203.96 67.96 203.96 67.96 200 82
+             C196.04 67.96 196.04 67.96 182 64
+             C196.04 60.04 196.04 60.04 200 46 Z" fill="#FBBF24"/>
+
+  </g>
+
+  <text x="390" y="260" class="wordmark" font-size="172" fill="#FFFFFF">fronei</text>
+  
+    <path d="M1092 118 C1097.28 136.72 1097.28 136.72 1116 142
+             C1097.28 147.28 1097.28 147.28 1092 166
+             C1086.72 147.28 1086.72 147.28 1068 142
+             C1086.72 136.72 1086.72 136.72 1092 118 Z" fill="#FBBF24"/>
+
+</svg>

@@ -4,8 +4,12 @@
     <style>
       .wordmark {
         font-family: Inter, Geist, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        font-weight: 600;
+        font-weight: 700;
         letter-spacing: -0.045em;
+      }
+      .label {
+        font-family: Inter, Geist, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        font-weight: 600;
       }
     </style>
   </defs>
@@ -19,10 +23,11 @@
     <path d="M86 76 C126 75 159 66 198 44 V80 C158 102 121 111 86 111 Z" fill="#FFFFFF"/>
 
     
-    <path d="M200 46 C203.96 60.04 203.96 60.04 218 64
-             C203.96 67.96 203.96 67.96 200 82
-             C196.04 67.96 196.04 67.96 182 64
-             C196.04 60.04 196.04 60.04 200 46 Z" fill="#FBBF24"/>
+    <path d="M210 42
+             C214.32 55.68 214.32 55.68 228 60
+             C214.32 64.32 214.32 64.32 210 78
+             C205.68 64.32 205.68 64.32 192 60
+             C205.68 55.68 205.68 55.68 210 42 Z" fill="#FBBF24"/>
 
   </g>
 
@@ -34,10 +39,11 @@
     <path d="M86 76 C126 75 159 66 198 44 V80 C158 102 121 111 86 111 Z" fill="#FFFFFF"/>
 
     
-    <path d="M200 46 C203.96 60.04 203.96 60.04 218 64
-             C203.96 67.96 203.96 67.96 200 82
-             C196.04 67.96 196.04 67.96 182 64
-             C196.04 60.04 196.04 60.04 200 46 Z" fill="#FBBF24"/>
+    <path d="M210 42
+             C214.32 55.68 214.32 55.68 228 60
+             C214.32 64.32 214.32 64.32 210 78
+             C205.68 64.32 205.68 64.32 192 60
+             C205.68 55.68 205.68 55.68 210 42 Z" fill="#FBBF24"/>
 
   </g>
 
@@ -49,14 +55,15 @@
     <path d="M86 76 C126 75 159 66 198 44 V80 C158 102 121 111 86 111 Z" fill="#FFFFFF"/>
 
     
-    <path d="M200 46 C203.96 60.04 203.96 60.04 218 64
-             C203.96 67.96 203.96 67.96 200 82
-             C196.04 67.96 196.04 67.96 182 64
-             C196.04 60.04 196.04 60.04 200 46 Z" fill="#FBBF24"/>
+    <path d="M210 42
+             C214.32 55.68 214.32 55.68 228 60
+             C214.32 64.32 214.32 64.32 210 78
+             C205.68 64.32 205.68 64.32 192 60
+             C205.68 55.68 205.68 55.68 210 42 Z" fill="#FBBF24"/>
 
   </g>
 
-  <text x="175" y="410" text-anchor="middle" font-family="Inter, ui-sans-serif, system-ui" font-size="36" fill="#0F172A">180px</text>
-  <text x="525" y="410" text-anchor="middle" font-family="Inter, ui-sans-serif, system-ui" font-size="36" fill="#0F172A">192px</text>
-  <text x="940" y="410" text-anchor="middle" font-family="Inter, ui-sans-serif, system-ui" font-size="36" fill="#0F172A">512px</text>
+  <text x="175" y="410" text-anchor="middle" class="label" font-size="36" fill="#0F172A">180px</text>
+  <text x="525" y="410" text-anchor="middle" class="label" font-size="36" fill="#0F172A">192px</text>
+  <text x="940" y="410" text-anchor="middle" class="label" font-size="36" fill="#0F172A">512px</text>
 </svg>

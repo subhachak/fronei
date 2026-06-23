@@ -335,7 +335,7 @@ export function AgentShell() {
         </aside>
 
         {/* Work pane */}
-        <section className="flex min-h-0 flex-col overflow-hidden bg-white dark:bg-neutral-950">
+        <section className="flex min-h-0 flex-1 flex-col overflow-hidden bg-white dark:bg-neutral-950">
           {view === 'profile' ? (
             <ProfileView onClose={() => setView('chat')} />
           ) : view === 'admin' ? (

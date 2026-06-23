@@ -1,55 +1,106 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="820" viewBox="0 0 1400 820" role="img" aria-label="Fronei notification status icons">
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="820" viewBox="0 0 1400 820" role="img" aria-label="Fronei notification and status icons">
 
   <defs>
     <style>
       .wordmark {
         font-family: Inter, Geist, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        font-weight: 600;
+        font-weight: 700;
         letter-spacing: -0.045em;
+      }
+      .label {
+        font-family: Inter, Geist, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        font-weight: 600;
       }
     </style>
   </defs>
 
   <rect width="1400" height="820" fill="#FFFFFF"/>
-  <text x="70" y="90" font-family="Inter, ui-sans-serif, system-ui" font-size="44" font-weight="700" fill="#0F172A">LIGHT VARIANT</text>
-  <circle cx="160" cy="220" r="70" fill="#1E293B"/><g transform="translate(90,150) scale(0.546875)">
-    <path d="M86 119 H176 V151 H122 V236 H86 Z" fill="#FFFFFF"/>
-    <path d="M86 76 C126 75 159 66 198 44 V80 C158 102 121 111 86 111 Z" fill="#FFFFFF"/>
-</g>
-  <g transform="translate(290,150) scale(0.546875)"><rect width="256" height="256" rx="58" fill="#1E293B"/>
-    <path d="M86 119 H176 V151 H122 V236 H86 Z" fill="#FFFFFF"/>
-    <path d="M86 76 C126 75 159 66 198 44 V80 C158 102 121 111 86 111 Z" fill="#FFFFFF"/>
-</g>
-  <circle cx="520" cy="220" r="70" fill="#1E293B"/><g transform="translate(450,150) scale(0.546875)">
+  <text x="70" y="90" class="label" font-size="44" fill="#0F172A">LIGHT VARIANT</text>
+  
+    <g>
+      <circle cx="160" cy="220" r="70" fill="#1E293B"/>
+      <g transform="translate(90,150) scale(0.546875)">
+        
     <path d="M86 119 H176 V151 H122 V236 H86 Z" fill="#FFFFFF"/>
     <path d="M86 76 C126 75 159 66 198 44 V80 C158 102 121 111 86 111 Z" fill="#FFFFFF"/>
 
-    <path d="M200 49 C203.3 60.7 203.3 60.7 215 64
-             C203.3 67.3 203.3 67.3 200 79
-             C196.7 67.3 196.7 67.3 185 64
-             C196.7 60.7 196.7 60.7 200 49 Z" fill="#FBBF24"/>
-</g>
+        
+      </g>
+    </g>
+    
+  
+  <g transform="translate(290,150) scale(0.546875)">
+    <rect x="0" y="0" width="256" height="256" rx="58" fill="#1E293B"/>
+    
+    <path d="M86 119 H176 V151 H122 V236 H86 Z" fill="#FFFFFF"/>
+    <path d="M86 76 C126 75 159 66 198 44 V80 C158 102 121 111 86 111 Z" fill="#FFFFFF"/>
+
+    
+  </g>
+
+  
+    <g>
+      <circle cx="520" cy="220" r="70" fill="#1E293B"/>
+      <g transform="translate(450,150) scale(0.546875)">
+        
+    <path d="M86 119 H176 V151 H122 V236 H86 Z" fill="#FFFFFF"/>
+    <path d="M86 76 C126 75 159 66 198 44 V80 C158 102 121 111 86 111 Z" fill="#FFFFFF"/>
+
+        
+    <path d="M210 45
+             C213.6 56.4 213.6 56.4 225 60
+             C213.6 63.6 213.6 63.6 210 75
+             C206.4 63.6 206.4 63.6 195 60
+             C206.4 56.4 206.4 56.4 210 45 Z" fill="#FBBF24"/>
+
+      </g>
+    </g>
+    
   <circle cx="760" cy="220" r="70" fill="#1E293B"/><rect x="736.2" y="215.45" width="47.6" height="9.1" rx="3.5" fill="#FFFFFF"/>
   <circle cx="1010" cy="220" r="70" fill="#1E293B"/><path d="M 984.8 221.4 L 1004.4 241.0 L 1039.4 199.0" fill="none" stroke="#FFFFFF" stroke-width="11.200000000000001" stroke-linecap="round" stroke-linejoin="round"/>
-  <text x="70" y="430" font-family="Inter, ui-sans-serif, system-ui" font-size="44" font-weight="700" fill="#0F172A">DARK VARIANT</text>
+
+  <text x="70" y="430" class="label" font-size="44" fill="#0F172A">DARK VARIANT</text>
   <rect x="50" y="470" width="1300" height="260" fill="#0F172A"/>
-  <circle cx="160" cy="600" r="70" fill="#FFFFFF"/><g transform="translate(90,530) scale(0.546875)">
-    <path d="M86 119 H176 V151 H122 V236 H86 Z" fill="#1E293B"/>
-    <path d="M86 76 C126 75 159 66 198 44 V80 C158 102 121 111 86 111 Z" fill="#1E293B"/>
-</g>
-  <g transform="translate(290,530) scale(0.546875)"><rect width="256" height="256" rx="58" fill="#FFFFFF"/>
-    <path d="M86 119 H176 V151 H122 V236 H86 Z" fill="#1E293B"/>
-    <path d="M86 76 C126 75 159 66 198 44 V80 C158 102 121 111 86 111 Z" fill="#1E293B"/>
-</g>
-  <circle cx="520" cy="600" r="70" fill="#FFFFFF"/><g transform="translate(450,530) scale(0.546875)">
+  
+    <g>
+      <circle cx="160" cy="600" r="70" fill="#FFFFFF"/>
+      <g transform="translate(90,530) scale(0.546875)">
+        
     <path d="M86 119 H176 V151 H122 V236 H86 Z" fill="#1E293B"/>
     <path d="M86 76 C126 75 159 66 198 44 V80 C158 102 121 111 86 111 Z" fill="#1E293B"/>
 
-    <path d="M200 49 C203.3 60.7 203.3 60.7 215 64
-             C203.3 67.3 203.3 67.3 200 79
-             C196.7 67.3 196.7 67.3 185 64
-             C196.7 60.7 196.7 60.7 200 49 Z" fill="#FBBF24"/>
-</g>
+        
+      </g>
+    </g>
+    
+  
+  <g transform="translate(290,530) scale(0.546875)">
+    <rect x="0" y="0" width="256" height="256" rx="58" fill="#FFFFFF"/>
+    
+    <path d="M86 119 H176 V151 H122 V236 H86 Z" fill="#1E293B"/>
+    <path d="M86 76 C126 75 159 66 198 44 V80 C158 102 121 111 86 111 Z" fill="#1E293B"/>
+
+    
+  </g>
+
+  
+    <g>
+      <circle cx="520" cy="600" r="70" fill="#FFFFFF"/>
+      <g transform="translate(450,530) scale(0.546875)">
+        
+    <path d="M86 119 H176 V151 H122 V236 H86 Z" fill="#1E293B"/>
+    <path d="M86 76 C126 75 159 66 198 44 V80 C158 102 121 111 86 111 Z" fill="#1E293B"/>
+
+        
+    <path d="M210 45
+             C213.6 56.4 213.6 56.4 225 60
+             C213.6 63.6 213.6 63.6 210 75
+             C206.4 63.6 206.4 63.6 195 60
+             C206.4 56.4 206.4 56.4 210 45 Z" fill="#FBBF24"/>
+
+      </g>
+    </g>
+    
   <circle cx="760" cy="600" r="70" fill="#FFFFFF"/><rect x="736.2" y="595.45" width="47.6" height="9.1" rx="3.5" fill="#1E293B"/>
   <circle cx="1010" cy="600" r="70" fill="#FFFFFF"/><path d="M 984.8 601.4 L 1004.4 621.0 L 1039.4 579.0" fill="none" stroke="#1E293B" stroke-width="11.200000000000001" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>

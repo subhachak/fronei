@@ -67,6 +67,7 @@ export function useAgent() {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([])
   const [workspacesLoading, setWorkspacesLoading] = useState(false)
   const [workspaceAction, setWorkspaceAction] = useState('')
+  const [loadingConversationId, setLoadingConversationId] = useState<string | null>(null)
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(null)
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null)
   const [visibleTurnCount, setVisibleTurnCount] = useState(INITIAL_VISIBLE_TURNS)
@@ -101,6 +102,7 @@ export function useAgent() {
     [activeConversationId, activeWorkspace],
   )
   const activeTurns = activeConversation?.turns || []
+  const conversationLoading = Boolean(loadingConversationId && activeConversationId === loadingConversationId && activeTurns.length === 0)
   const visibleTurns = activeTurns.slice(Math.max(0, activeTurns.length - visibleTurnCount))
   const canLoadOlder = Boolean(activeConversation && (activeConversation.turnCount || activeTurns.length) > activeTurns.length)
   const latestTurn = activeTurns.at(-1) || null
@@ -289,20 +291,28 @@ export function useAgent() {
   }
 
   async function loadConversationTurns(conversationId: string, limit = visibleTurnCount) {
-    const response = await authorizedFetch(`/conversations/${conversationId}/turns?limit=${limit}`)
-    if (!response.ok) throw new Error(await readErrorBody(response, 'Could not load conversation turns'))
-    const payload = await response.json() as { turns: AgentResult[] }
-    const turns = payload.turns.map(mapTurn)
-    setWorkspaces(prev => prev.map(workspace => ({
-      ...workspace,
-      conversations: workspace.conversations.map(conversation => (
-        conversation.id === conversationId ? { ...conversation, turns } : conversation
-      )),
-    })))
-    const latest = turns.at(-1)
-    eventsRef.current = latest?.events || []
-    setEvents(eventsRef.current)
-    setResult(latest?.result || null)
+    const showInitialPlaceholder = limit <= INITIAL_VISIBLE_TURNS
+    if (showInitialPlaceholder) setLoadingConversationId(conversationId)
+    try {
+      const response = await authorizedFetch(`/conversations/${conversationId}/turns?limit=${limit}`)
+      if (!response.ok) throw new Error(await readErrorBody(response, 'Could not load conversation turns'))
+      const payload = await response.json() as { turns: AgentResult[] }
+      const turns = payload.turns.map(mapTurn)
+      setWorkspaces(prev => prev.map(workspace => ({
+        ...workspace,
+        conversations: workspace.conversations.map(conversation => (
+          conversation.id === conversationId ? { ...conversation, turns } : conversation
+        )),
+      })))
+      const latest = turns.at(-1)
+      eventsRef.current = latest?.events || []
+      setEvents(eventsRef.current)
+      setResult(latest?.result || null)
+    } finally {
+      if (showInitialPlaceholder) {
+        setLoadingConversationId(current => current === conversationId ? null : current)
+      }
+    }
   }
 
   async function ensureActiveConversation(seedMessage: string): Promise<string> {
@@ -763,6 +773,7 @@ export function useAgent() {
     workspaces,
     workspacesLoading,
     workspaceAction,
+    conversationLoading,
     activeWorkspace,
     activeConversation,
     activeConversationId,

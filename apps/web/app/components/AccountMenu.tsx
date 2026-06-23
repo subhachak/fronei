@@ -96,7 +96,7 @@ function AccountMenuContent({
   }, [open])
 
   return (
-    <div className="relative flex-shrink-0 border-t border-neutral-100 pt-2 dark:border-neutral-800">
+    <div className="relative flex-shrink-0">
       {open && (
         <div
           ref={popoverRef}

@@ -493,7 +493,7 @@ function ShellHydrationPlaceholder() {
 function ConversationSkeleton() {
   return (
     <div className="flex flex-1 flex-col gap-6" aria-label="Loading conversation">
-      <div className="ml-auto w-fit max-w-[min(88%,620px)] rounded-2xl rounded-br-md bg-neutral-900/10 px-4 py-3 dark:bg-white/10">
+      <div className="self-end max-w-[min(88%,620px)] rounded-2xl rounded-br-md bg-neutral-900/10 px-4 py-3 dark:bg-white/10">
         <div className="mb-3 h-3 w-12 animate-pulse rounded bg-neutral-300 dark:bg-neutral-700" />
         <div className="space-y-2">
           <div className="h-3.5 w-48 animate-pulse rounded bg-neutral-300 dark:bg-neutral-700" />

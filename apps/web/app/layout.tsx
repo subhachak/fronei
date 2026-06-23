@@ -2,6 +2,7 @@ import './globals.css'
 import './agent-theme.css'
 import 'highlight.js/styles/github-dark.css'
 import { ClerkProvider } from '@clerk/nextjs'
+import { brandAsset } from './lib/brand'
 import { assertNoProductionE2EBypass, e2eAuthBypassEnabled } from './lib/e2e'
 
 export const metadata = {
@@ -28,12 +29,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <head>
         <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.31.0/dist/tabler-icons.min.css" />
         <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
-        <link rel="icon" href="/fronei-icon.svg" type="image/svg+xml" />
-        <link rel="icon" href="/favicon.ico" sizes="any" />
-        <link rel="icon" href="/favicon-32.png" type="image/png" sizes="32x32" />
-        <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-        <link rel="mask-icon" href="/safari-pinned-tab.svg" color="#1E293B" />
-        <link rel="manifest" href="/manifest.json" />
+        <link rel="icon" href={brandAsset('/fronei-icon.svg')} type="image/svg+xml" />
+        <link rel="icon" href={brandAsset('/favicon.ico')} sizes="any" />
+        <link rel="icon" href={brandAsset('/favicon-32.png')} type="image/png" sizes="32x32" />
+        <link rel="apple-touch-icon" href={brandAsset('/apple-touch-icon.png')} />
+        <link rel="mask-icon" href={brandAsset('/safari-pinned-tab.svg')} color="#1E293B" />
+        <link rel="manifest" href={brandAsset('/manifest.json')} />
         <meta name="theme-color" content="#1E293B" />
         <meta name="apple-mobile-web-app-capable" content="yes" />
         <meta name="apple-mobile-web-app-title" content="Fronei" />

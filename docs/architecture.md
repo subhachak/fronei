@@ -2,162 +2,237 @@
 
 Fronei is a two-app monorepo:
 
-```text
-apps/web  Next.js + React + Clerk
-apps/api  FastAPI + SQLAlchemy + Alembic + LiteLLM
+```
+apps/web   Next.js 14 + React + Tailwind + Clerk
+apps/api   FastAPI + SQLAlchemy + Alembic + LiteLLM
 ```
 
-The frontend never calls model providers directly. It talks to the FastAPI backend, which owns authentication checks, provider keys, routing policy, budget enforcement, persistence, research orchestration, document extraction, and model fallback behavior.
+The frontend never calls model providers directly. All model access, auth verification, budget enforcement, routing decisions, and persistence live in the FastAPI backend.
 
-## Main Runtime Flow
+---
 
-```text
-Next.js chat UI
-  -> POST /conversations/chat/stream
+## Runtime Flow
+
+```
+Browser (AgentShell)
+  -> POST /turns/stream   (SSE)
   -> Clerk JWT verification
-  -> daily budget gate
-  -> persist user message
-  -> planner.py
-       - intent and turn-type detection
-       - complexity/task override
-       - web-search decision
-       - prompt enrichment
-       - optional sub-query decomposition
-       - deep-research recommendation
-  -> chat_pipeline.py
-       - document context assembly
-       - artifact prompt injection
-       - web context gathering when needed
-       - route selection from routing_rules.yaml
-  -> llm_gateway.py through LiteLLM
-       - primary model
+  -> rate limit check
+  -> persist Turn record
+  -> orchestrator.py
+       - LLM-backed route decision (OrchestratorDecision)
+       - signal-based escalation from routing_policy.py
+       - output format and research level resolution
+  -> runtime.py dispatches to subtree worker:
+       fast_path.py        direct answer, low-latency
+       research_subtree.py web search + source scoring + citation synthesis
+       document_subtree.py document/markdown artifact generation
+       deck_subtree.py     PPTX artifact generation
+  -> llm_gateway.py via LiteLLM
+       - model selected by model_policy.py (DB-backed, per role)
+       - per-turn model override for admin users
        - configured fallbacks
-       - safety-net fallbacks
-       - optional native search for supported models
-  -> optional synthesis for decomposed work
-  -> optional voice refinement from TwinProfile
-  -> persist assistant message, execution log, cost, tokens, latency
-  -> background memory summary and fact extraction
-  -> stream SSE events back to the UI
+  -> stream SSE events back to client
+  -> persist Turn result, Events, ToolCalls, Artifacts
+  -> background: profile consolidation
 ```
 
-The older stateless `/chat` endpoint still exists for single-turn use, but the main product path is the conversation streaming endpoint.
+---
 
 ## Frontend
 
-The primary UI lives in `apps/web/app/page.tsx`. It includes:
+### Entry point
 
-- Chat thread with streaming responses.
-- Classic and workbench home modes.
-- Sidebar conversation history with rename, delete, export, search, budget display, and sign out.
-- Settings view for theme, developer mode, web search visibility, voice samples, saved memory, workspace persona, artifacts, model defaults, and local user profile fields.
-- Dashboard view for spend, request volume, token usage, latency, model usage, and task distribution.
-- File attachment flow that extracts documents before sending the chat request.
-- Research evidence UI with citation chips, sources, claims, findings, gaps, contradictions, and verifier notes.
-- Developer execution log panel showing planner, web context, routing, worker, model fallbacks, cost, tokens, and latency.
+`apps/web/app/page.tsx` renders `<AgentShell />`. Everything else is mounted inside it.
 
-## Backend API
+### Component tree
 
-FastAPI routers are split by product surface:
+```
+AgentShell
+├── LibraryPanel (left rail, collapsible)
+│   ├── Logo + workspace/conversation list
+│   ├── Search, create, rename, delete workspace/conversation
+│   └── AccountMenu (profile, admin, theme toggle, sign out)
+├── Work pane (center)
+│   ├── Desktop header (workspace/conversation breadcrumb, status badge)
+│   ├── Timeline
+│   │   ├── TurnPair (user bubble + assistant bubble per turn)
+│   │   ├── LiveTurn (streaming: user bubble + rolling commentary)
+│   │   └── Empty state placeholder
+│   └── Composer
+│       ├── Textarea + send button
+│       ├── Quality mode selector (draft / standard / executive)
+│       ├── Output format selector (chat / markdown / docx / pptx)
+│       ├── Research level selector (auto / easy / regular / deep)
+│       ├── File attach
+│       └── Template selector (admin: model override)
+├── ContextPanel (right rail, collapsible)
+│   ├── Work summary
+│   ├── Quick settings (quality, format, research level)
+│   ├── Engine events log
+│   ├── Sources
+│   └── Artifact download
+├── ProfileView (full-pane, swapped in via view state)
+└── AdminShell (full-pane embedded, admin users only)
+```
 
-| Router | Purpose |
-|--------|---------|
-| `/chat` | Stateless single-turn chat |
-| `/conversations` | Stored multi-turn chat and SSE streaming |
-| `/documents` | Upload and extract supported documents/images |
-| `/memory` | List/create/delete persistent user memories |
-| `/models` | Read the routing policy |
-| `/analytics` | Usage, cost, token, latency, model, and task stats |
-| `/research-runs` | Inspect persisted deep-research evidence |
-| `/twin-profile` | Writing samples, style fingerprint, and voice preferences |
-| `/admin` | Admin-only operations for users, usage, providers, routing, research, privacy, audit, and system status |
+**Mobile layout**: rails are hidden; Library and Context open as side sheets. Top bar is view-aware — shows the fronei icon + active workspace/conversation in chat view, and a back button in profile/admin view.
 
-## Data Model
+### Theme system
 
-SQLAlchemy models live in `apps/api/app/db/models.py`. The core tables are:
+Theme is stored in `localStorage` and applied as `data-theme="dark"` or `data-theme="light"` on `<html>`. A blocking inline script in `layout.tsx` reads this before first paint to prevent flash.
 
-- `users`
-- `conversations`
-- `conversation_messages`
-- `request_logs`
-- `user_memories`
-- `writing_samples`
-- `twin_profiles`
-- `research_runs`
-- `research_questions`
-- `research_sources`
-- `research_claims`
-- `research_findings`
-- `user_admin_controls`
-- `admin_audit_logs`
+Tailwind's `neutral` color scale is remapped to the brand slate/navy palette so all `neutral-*` utility classes in components render as brand colors:
 
-SQLite is the default local database. Postgres is supported through `DATABASE_URL`. Alembic migrations live in `apps/api/alembic`.
+| Token | Value |
+|-------|-------|
+| neutral-950 | `#0a0f1e` (darkest background) |
+| neutral-900 | `#0f172a` (nav/sidebar background) |
+| neutral-800 | `#1e293b` (raised surfaces) |
+| gold | `#fbbf24` (accent, active states) |
+| gold-dark | `#d97706` (light mode accent) |
 
-## Planning And Routing
+CSS custom properties in `globals.css` (`--bg-base`, `--bg-nav`, `--ac`, `--t1`, etc.) drive any components not using Tailwind utilities directly. Both dark and light blocks are updated to the navy/gold palette; purple has been removed.
 
-The planner is LLM-backed and returns structured intent metadata. The router is policy-first: it uses the planner's overrides when present, then selects from `apps/api/app/policies/routing_rules.yaml`, then appends safety-net fallbacks.
+### State management
 
-The UI presents profiles as:
+`useAgent` (custom hook) owns all agent state: workspaces, conversations, turns, running flag, events stream, result, attachments, templates, and all CRUD actions. It is the single source of truth passed down as props.
 
-- Quick -> `cost_saver`
-- Smart -> `balanced`
-- Thorough -> `best_quality`
+`useTheme` manages the `data-theme` attribute and localStorage persistence.
 
-Web-search requests prefer search-native models. Deep research uses a separate research orchestrator instead of the normal lightweight web-context path.
+---
 
-## Research Architecture
+## Backend
 
-Deep research in `research_orchestrator.py` is separate from normal chat. It:
+### API routers
 
-1. Plans subquestions.
-2. Searches with Tavily, Brave, or DuckDuckGo.
-3. Crawls direct URLs and search results.
-4. Scores source credibility, relevance, freshness, and type.
-5. Extracts citation-grade claims.
-6. Evaluates gaps and contradictions.
-7. Synthesizes a cited answer.
-8. Stores the run, questions, sources, claims, and findings.
-9. Answers follow-up turns from the existing evidence store when possible.
+| Router | Prefix | Purpose |
+|--------|--------|---------|
+| `agent.py` | (no prefix) | Workspaces, conversations, turns (sync + streaming), artifacts |
+| `documents.py` | `/documents` | Upload/extract documents, manage document templates |
+| `profile.py` | `/profile` | User preferences, settings, workspace priorities, usage, export, privacy delete |
+| `users.py` | (no prefix) | `/me` — current user record |
+| `admin.py` | `/admin` | Users, usage overview, audit logs, system settings, model policy, routing signals |
+| `internal.py` | (internal) | Internal service calls |
 
-## Document Architecture
+Key agent endpoints:
 
-`document_extractor.py` supports:
+```
+POST /turns             sync turn
+POST /turns/stream      streaming SSE turn
+GET  /turns/{id}        turn result
+GET  /turns/{id}/status polling status
 
-- Vision extraction for PDFs and images.
-- Parser extraction for DOCX, PPTX, XLSX, CSV/TSV, text/Markdown, HTML/SVG, JSON/YAML/XML.
-- Upload limit: 30 MB.
-- PDF extraction limit: first 30 pages.
-- Extracted text limit: 60,000 characters.
+GET    /workspaces
+POST   /workspaces
+PATCH  /workspaces/{id}
+DELETE /workspaces/{id}
 
-The frontend sends extracted document text as attached document context to the conversation endpoint.
+POST   /workspaces/{id}/conversations
+DELETE /conversations/{id}
+GET    /conversations/{id}/turns
 
-## Memory And Voice
+GET    /artifacts/{id}/download
+```
 
-Fronei has three personalization layers:
+### Agent services (`apps/api/app/services/agent/`)
 
-- Conversation-local rolling summary and active task state on `conversations`.
-- Persistent memories in `user_memories`, extracted in the background from useful user facts.
-- Twin profile voice adaptation from writing samples, stored as a structured fingerprint plus a rewrite prompt.
+| File | Role |
+|------|------|
+| `orchestrator.py` | LLM-backed route decision; returns `OrchestratorDecision` |
+| `routing_policy.py` | Signal-based escalation (web_fast / agentic); feedback loop |
+| `model_policy.py` | DB-backed model role assignments; per-turn admin override |
+| `runtime.py` | Dispatches to subtree workers; streams events |
+| `fast_path.py` | Direct-answer low-latency worker |
+| `research_subtree.py` | Web search, source scoring, claim extraction, citation synthesis |
+| `document_subtree.py` | DOCX and Markdown artifact generation |
+| `deck_subtree.py` | PPTX artifact generation |
+| `pptx_design.py` | Design system application for PPTX |
+| `document_ast.py` | Document AST for structured artifact rendering |
+| `prompt_library.py` | Centralized prompt management |
+| `model_client.py` | Thin wrapper over `llm_gateway.py` |
+| `tools.py` / `tool_registry.py` | Tool definitions and registry |
+| `persistence.py` | Turn and event persistence helpers |
+| `profile_consolidator.py` | Background user profile consolidation |
 
-When a TwinProfile exists and the output mode is not `raw`, long enough answers can be streamed through the refinement pass.
+Other services:
 
-## Design Choices
+| File | Role |
+|------|------|
+| `llm_gateway.py` | LiteLLM dispatch with fallbacks |
+| `web_context.py` | Tavily / Brave / DuckDuckGo web search |
+| `document_extractor.py` | Multi-format document extraction (PDF vision, DOCX, PPTX, XLSX, CSV, HTML, JSON/YAML/XML, images) |
+| `document_templates.py` | User-uploaded PPTX template management |
+| `clerk.py` | Clerk JWT verification |
+| `rate_limit.py` | Per-user rate limiting |
+| `notifications.py` | Notification helpers |
 
-- Keep provider keys server-side.
-- Enforce admin authorization server-side; frontend visibility is only a convenience.
-- Use LiteLLM as the single provider SDK surface.
-- Keep routing policy explainable and editable in YAML.
-- Stream pipeline events so the UI can show progress without exposing provider internals by default.
-- Persist execution logs for inspection, analytics, debugging, and future evaluation.
-- Treat deep research as an evidence-backed workflow, not just "chat with web search."
+### Data model
 
-## Production Hardening Backlog
+SQLAlchemy models in `apps/api/app/db/models.py`:
 
-- Rate limits and abuse protection.
-- Provider availability checks before dispatch.
-- More complete model cost tables and budget projections before each request.
-- Structured evals and golden-prompt regression tests.
-- OpenTelemetry, Langfuse, or equivalent tracing.
-- Background job queue for memory, fingerprint extraction, and long research runs.
-- Stronger concurrency handling for SQLite-heavy local workloads.
-- Secret rotation and production Clerk audience enforcement.
+| Model | Purpose |
+|-------|---------|
+| `User` | Clerk-sourced user record |
+| `UserAdminControl` | Admin-managed per-user controls |
+| `AdminAuditLog` | Immutable audit trail |
+| `AdminSetting` | Key/value system configuration |
+| `Workspace` | Named workspace per user |
+| `Conversation` | Conversation within a workspace |
+| `Turn` | One request/response pair; holds route, cost, latency, result JSON |
+| `Event` | Streaming progress events per turn |
+| `ToolCall` | Tool invocations per turn |
+| `Artifact` | Generated file artifacts (PPTX, DOCX, etc.) |
+| `PromptTemplate` | Versioned prompt templates |
+| `DocumentTemplate` | User-uploaded PPTX base templates |
+| `RoutingSignalCandidate` | Candidate signal phrases for routing escalation |
+| `RoutingDecisionFeedback` | Feedback on routing signal matches |
+
+SQLite is the default for local development. Postgres is supported via `DATABASE_URL`. Migrations live in `apps/api/alembic/`.
+
+### Routing and orchestration
+
+The orchestrator (`orchestrator.py`) makes an LLM-backed decision and returns a structured `OrchestratorDecision`:
+
+```python
+class OrchestratorDecision(BaseModel):
+    route: RouteName            # fast_path | web_fast | agentic | ...
+    confidence: float
+    output_format: str | None
+    research_level: Literal["easy", "regular", "deep"]
+    requires_confirmation: bool
+    rewritten_request: str | None
+```
+
+The routing policy (`routing_policy.py`) runs a signal-match pass over the request before the LLM call. Matched signals can escalate the route to `web_fast` or `agentic` before the orchestrator sees the request. Signal candidates are stored in the DB and updated via admin feedback.
+
+Model assignments are managed in `model_policy.py` from the DB (`AdminSetting`), keyed by role (e.g. `orchestrator`, `direct_answer`, `research_planner`, `document_writer`, `synthesis`). Admin users can override the model for a single turn from the Composer.
+
+### Document extraction limits
+
+- Max upload size: 30 MB
+- PDF: first 30 pages via vision extraction
+- Output text cap: 60,000 characters
+
+---
+
+## Design decisions
+
+- Provider keys are server-side only; the frontend never sees them.
+- Admin authorization is enforced server-side; frontend visibility is a convenience layer only.
+- LiteLLM is the single SDK surface for all model providers.
+- The orchestrator decides route and format; the composer controls are user hints that the orchestrator may override or confirm.
+- Streaming is SSE; the client polls for turn status as a recovery fallback.
+- All turn data (events, tool calls, cost, latency, route, result) is persisted for inspection, analytics, and future evals.
+- Signal-based routing provides a fast, explainable pre-filter before LLM orchestration.
+
+---
+
+## Production hardening backlog
+
+- Structured evals and golden-prompt regression tests
+- OpenTelemetry / Langfuse tracing
+- Background job queue for long research runs and profile consolidation
+- Provider availability pre-checks before dispatch
+- Rate limit abuse protection at the edge
+- Secret rotation and full Clerk audience enforcement in production

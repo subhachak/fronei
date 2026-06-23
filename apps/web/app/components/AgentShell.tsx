@@ -216,16 +216,37 @@ export function AgentShell() {
       {/* Mobile top bar */}
       <header className="flex-shrink-0 border-b border-neutral-200 bg-white/95 px-3 py-2.5 backdrop-blur md:hidden dark:border-neutral-800 dark:bg-neutral-950/95">
         <div className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2.5">
-            <span className="grid h-8 w-8 place-items-center rounded-full bg-neutral-900 text-white dark:bg-white dark:text-neutral-900">
-              <Sparkles size={15} />
-            </span>
-            <div>
-              <p className="text-[10px] font-bold uppercase tracking-wider text-neutral-400">Fronei Studio</p>
-              <p className="text-[13px] font-bold text-neutral-900 dark:text-neutral-50">Agent v3</p>
+          <div className="flex min-w-0 items-center gap-2.5">
+            {view !== 'chat' ? (
+              <button
+                type="button"
+                onClick={() => setView('chat')}
+                aria-label="Back to chat"
+                className="grid h-8 w-8 flex-shrink-0 place-items-center rounded-full border border-neutral-200 text-neutral-600 dark:border-neutral-800 dark:text-neutral-300"
+              >
+                <ChevronsLeft size={15} />
+              </button>
+            ) : (
+              <img src={brandAsset('/fronei-icon.svg')} alt="Fronei" className="h-8 w-8 flex-shrink-0 rounded-lg" />
+            )}
+            <div className="min-w-0">
+              {view === 'profile' ? (
+                <p className="text-[13px] font-bold text-neutral-900 dark:text-neutral-50">Profile</p>
+              ) : view === 'admin' ? (
+                <p className="text-[13px] font-bold text-neutral-900 dark:text-neutral-50">Admin</p>
+              ) : (
+                <>
+                  <p className="truncate text-[13px] font-bold text-neutral-900 dark:text-neutral-50">
+                    {agent.activeWorkspace?.name || 'fronei'}
+                  </p>
+                  {agent.activeConversation && (
+                    <p className="truncate text-[10px] text-neutral-400">{agent.activeConversation.title}</p>
+                  )}
+                </>
+              )}
             </div>
           </div>
-          <div className="flex items-center gap-1.5">
+          <div className="flex flex-shrink-0 items-center gap-1.5">
             {agent.running && (
               <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-bold text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400">
                 <Loader2 size={12} className="animate-spin" /> Working
@@ -240,22 +261,26 @@ export function AgentShell() {
             >
               {theme === 'dark' ? <Sun size={15} /> : <Moon size={15} />}
             </button>
-            <button
-              type="button"
-              onClick={() => setLibrarySheetOpen(true)}
-              aria-label="Open library"
-              className="grid h-8 w-8 place-items-center rounded-full border border-neutral-200 text-neutral-600 dark:border-neutral-800 dark:text-neutral-300"
-            >
-              <Library size={15} />
-            </button>
-            <button
-              type="button"
-              onClick={() => setContextSheetOpen(true)}
-              aria-label="Open context"
-              className="grid h-8 w-8 place-items-center rounded-full border border-neutral-200 text-neutral-600 dark:border-neutral-800 dark:text-neutral-300"
-            >
-              <PanelRight size={15} />
-            </button>
+            {view === 'chat' && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setLibrarySheetOpen(true)}
+                  aria-label="Open library"
+                  className="grid h-8 w-8 place-items-center rounded-full border border-neutral-200 text-neutral-600 dark:border-neutral-800 dark:text-neutral-300"
+                >
+                  <Library size={15} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setContextSheetOpen(true)}
+                  aria-label="Open context"
+                  className="grid h-8 w-8 place-items-center rounded-full border border-neutral-200 text-neutral-600 dark:border-neutral-800 dark:text-neutral-300"
+                >
+                  <PanelRight size={15} />
+                </button>
+              </>
+            )}
           </div>
         </div>
       </header>

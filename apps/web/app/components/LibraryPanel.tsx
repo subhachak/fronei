@@ -89,8 +89,8 @@ export function LibraryPanel({
         title="Go to Fronei home"
         className="mb-4 flex h-11 w-fit max-w-full items-center rounded-lg pr-2 transition-opacity hover:opacity-80"
       >
-        <img src="/fronei-logo.svg" alt="Fronei" className="h-9 w-auto min-w-0 dark:hidden" />
-        <img src="/fronei-logo-dark.svg" alt="Fronei" className="hidden h-9 w-auto min-w-0 dark:block" />
+        <img src="/fronei-logo-wide.png" alt="Fronei" className="h-9 w-auto min-w-0 dark:hidden" />
+        <img src="/fronei-logo-wide-dark.png" alt="Fronei" className="hidden h-9 w-auto min-w-0 dark:block" />
       </a>
       <div className="mb-4 flex items-center justify-between gap-3">
         <div>

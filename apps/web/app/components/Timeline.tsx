@@ -28,7 +28,7 @@ export function Timeline({
 }) {
   if (turns.length === 0 && !running) {
     return (
-      <div className="w-fit max-w-[min(82%,860px)] rounded-2xl rounded-bl-md border border-neutral-200 bg-white p-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+      <div className="w-full max-w-[min(92%,860px)] rounded-2xl rounded-bl-md border border-neutral-200 bg-white p-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
         <div className="mb-2 flex items-start gap-3">
           <span className="grid h-9 w-9 flex-shrink-0 place-items-center rounded-full bg-neutral-900 text-white dark:bg-white dark:text-neutral-900">
             <Sparkles size={16} />
@@ -71,7 +71,7 @@ function TurnPair({
   const confidenceCues = buildConfidenceCues(turn.events || [], turn.result || null)
   return (
     <div className="flex flex-col gap-2.5">
-      <div className="ml-auto w-fit max-w-[min(82%,860px)] rounded-2xl rounded-br-md bg-neutral-900 px-4 py-3 text-white dark:bg-white dark:text-neutral-900">
+      <div className="ml-auto w-fit max-w-[min(88%,860px)] rounded-2xl rounded-br-md bg-neutral-900 px-4 py-3 text-white dark:bg-white dark:text-neutral-900">
         <div className="mb-1.5 flex items-center justify-between gap-3">
           <p className="text-[11px] font-bold uppercase tracking-wide text-white/55 dark:text-neutral-500">You</p>
           <CopyButton tone="on-inverted-bubble" copied={copiedKey === `${turn.id}:user`} label="Copy your message" onClick={() => onCopyText(userCopy, `${turn.id}:user`)} />
@@ -79,7 +79,7 @@ function TurnPair({
         <p className="whitespace-pre-wrap text-[15px] leading-relaxed [overflow-wrap:anywhere]">{turn.message || turn.title}</p>
       </div>
 
-      <div className="w-fit max-w-[min(82%,860px)] rounded-2xl rounded-bl-md border border-neutral-200 bg-white p-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+      <div className="w-full max-w-[min(92%,860px)] rounded-2xl rounded-bl-md border border-neutral-200 bg-white p-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
         <div className="mb-3.5 flex items-start gap-3">
           <span className="grid h-9 w-9 flex-shrink-0 place-items-center rounded-full bg-neutral-900 text-white dark:bg-white dark:text-neutral-900">
             <Sparkles size={16} />
@@ -163,7 +163,7 @@ function LiveTurn({
 
   return (
     <div className="flex flex-col gap-2.5">
-      <div className="ml-auto w-fit max-w-[min(82%,860px)] rounded-2xl rounded-br-md bg-neutral-900 px-4 py-3 text-white dark:bg-white dark:text-neutral-900">
+      <div className="ml-auto w-fit max-w-[min(88%,860px)] rounded-2xl rounded-br-md bg-neutral-900 px-4 py-3 text-white dark:bg-white dark:text-neutral-900">
         <div className="mb-1.5 flex items-center justify-between gap-3">
           <p className="text-[11px] font-bold uppercase tracking-wide text-white/55 dark:text-neutral-500">You</p>
           <CopyButton tone="on-inverted-bubble" copied={copiedKey === 'live:user'} label="Copy your message" onClick={() => onCopyText(message, 'live:user')} />
@@ -171,7 +171,7 @@ function LiveTurn({
         <p className="whitespace-pre-wrap text-[15px] leading-relaxed [overflow-wrap:anywhere]">{message}</p>
       </div>
 
-      <div className="w-fit max-w-[min(82%,860px)] rounded-2xl rounded-bl-md border border-neutral-200 bg-white p-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+      <div className="w-full max-w-[min(92%,860px)] rounded-2xl rounded-bl-md border border-neutral-200 bg-white p-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
         <div className="mb-3.5 flex items-start gap-3">
           <span className="av3-pulse-ring grid h-9 w-9 flex-shrink-0 place-items-center rounded-full bg-neutral-900 text-white dark:bg-white dark:text-neutral-900">
             <Sparkles size={16} />
@@ -183,7 +183,7 @@ function LiveTurn({
           <CopyButton copied={copiedKey === 'live:assistant'} label="Copy current commentary" onClick={() => onCopyText(liveCopy, 'live:assistant')} />
         </div>
 
-        <div aria-label="Fronei is actively working" className="av3-pulse-bars relative mb-4 ml-[50px] grid max-w-[220px] grid-cols-3 gap-1.5">
+        <div aria-label="Fronei is actively working" className="av3-pulse-bars relative mb-4 ml-12 grid max-w-[180px] grid-cols-3 gap-1.5">
           <span className="h-1 rounded-full bg-emerald-500/70" />
           <span className="h-1 rounded-full bg-emerald-500/70" />
           <span className="h-1 rounded-full bg-emerald-500/70" />

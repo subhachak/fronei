@@ -17,7 +17,7 @@
   <rect width="1200" height="420" fill="#0F172A"/>
   
   <g transform="translate(80,82) scale(1.0)">
-    <rect x="0" y="0" width="256" height="256" rx="58" fill="#1E293B"/>
+    <rect x="0" y="0" width="256" height="256" rx="58" fill="#0f172a"/>
     
     <path d="M86 119 H176 V151 H122 V236 H86 Z" fill="#FFFFFF"/>
     <path d="M86 76 C126 75 159 66 198 44 V80 C158 102 121 111 86 111 Z" fill="#FFFFFF"/>

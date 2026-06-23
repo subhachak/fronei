@@ -12,7 +12,7 @@ export default function SignUpPage() {
     }}>
       <SignUp
         appearance={{
-          variables: { colorPrimary: '#7c3aed', borderRadius: '12px' },
+          variables: { colorPrimary: '#fbbf24', colorText: 'var(--t1)', borderRadius: '12px' },
           elements: {
             card: { background: 'var(--bg-s1)', border: '1px solid var(--bd2)', boxShadow: 'none' },
             headerTitle: { color: 'var(--t1)' },

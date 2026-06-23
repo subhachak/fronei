@@ -65,7 +65,7 @@ export function useAgent() {
   const [error, setError] = useState<string | null>(null)
   const [running, setRunning] = useState(false)
   const [workspaces, setWorkspaces] = useState<Workspace[]>([])
-  const [workspacesLoading, setWorkspacesLoading] = useState(false)
+  const [workspacesLoading, setWorkspacesLoading] = useState(true)
   const [workspaceAction, setWorkspaceAction] = useState('')
   const [loadingConversationId, setLoadingConversationId] = useState<string | null>(null)
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(null)
@@ -111,7 +111,11 @@ export function useAgent() {
   const selectedTemplateExists = !selectedTemplateId || templates.some(template => template.id === selectedTemplateId)
 
   useEffect(() => {
-    if (!isLoaded || !isSignedIn) return
+    if (!isLoaded) return
+    if (!isSignedIn) {
+      setWorkspacesLoading(false)
+      return
+    }
     composerSettingsDirtyRef.current = false
     void loadWorkspaces().catch(err => {
       setError(err instanceof Error ? err.message : 'Could not load Agent v3 workspaces')

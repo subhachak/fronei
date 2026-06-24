@@ -173,7 +173,12 @@ def _control_out(control: UserAdminControl | None) -> dict:
 
 
 def _effective_role(user_id: str, db_role: str | None, email: str | None = None) -> str:
-    """An env-allowlisted admin is always 'admin' regardless of the DB role."""
+    """An env-allowlisted admin is always 'admin' regardless of the DB role.
+
+    Intentionally uses is_admin_user() (env-only) here, not is_admin_user_db(),
+    because we specifically want to know if the user is protected by the static
+    env allowlist — the DB role is passed in separately as `db_role`.
+    """
     if is_admin_user(user_id, email):
         return "admin"
     return db_role or "user"
@@ -465,6 +470,9 @@ def update_user_role(
         _ensure_target_user_id(user_id)
         if user_id == admin.user_id and body.role != "admin":
             raise HTTPException(status_code=400, detail="Admins cannot remove their own admin role.")
+        # Intentionally env-only: we're checking if this specific user is protected
+        # by the static ADMIN_USER_IDS/ADMIN_EMAILS allowlist, not whether they're
+        # an admin generally (which is_admin_user_db would answer).
         if is_admin_user(user_id, None) and body.role != "admin":
             raise HTTPException(
                 status_code=400,

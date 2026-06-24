@@ -334,14 +334,38 @@ def set_sqlite_pragma(dbapi_connection, connection_record):
 
 
 def init_db() -> None:
-    # Dev fallback: create tables that don't exist yet (no-op on first run after
-    # `alembic upgrade head`).  In production run: alembic upgrade head
-    Base.metadata.create_all(bind=engine)
+    """Bootstrap the database schema.
+
+    AUTHORITATIVE tool: Alembic (`alembic upgrade head`).  Run it as the
+    pre-deploy command on Railway / Render so migrations run once to completion
+    before traffic switches to the new instance.
+
+    In production (APP_ENV=production) this function is intentionally a no-op
+    beyond the SQLite shim guard — schema is fully managed by Alembic there.
+
+    In local/dev/CI, `create_all` acts as a safety net: it creates any tables
+    that Alembic hasn't touched yet (e.g. on a fresh SQLite checkout where
+    `alembic upgrade head` wasn't run).  It is harmless because SQLAlchemy's
+    `create_all` is purely additive — it never drops or alters existing columns.
+    """
+    settings = get_settings()
+    if not settings.is_production:
+        # Dev/CI only: materialise tables that Alembic hasn't created yet.
+        # Running `alembic upgrade head` first is still preferred; this is a
+        # convenience fallback so `uvicorn app.main:app` works on a blank DB.
+        Base.metadata.create_all(bind=engine)
     _ensure_sqlite_schema(engine)
 
 
 def _ensure_sqlite_schema(bind) -> None:
-    """Additive SQLite schema repair for DBs bootstrapped before Alembic ran."""
+    """Additive SQLite schema repair for DBs bootstrapped before Alembic ran.
+
+    DEPRECATION NOTICE: this shim exists only to handle local SQLite databases
+    that were created before Alembic managed every column.  Once every developer
+    has run `alembic upgrade head` against their local DB (or deleted and
+    recreated it), this function and every statement inside it can be deleted.
+    Do NOT add new columns here — add an Alembic migration instead.
+    """
     if "sqlite" not in str(bind.url):
         return
 

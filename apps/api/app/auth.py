@@ -175,7 +175,31 @@ def get_current_user_is_admin(payload: dict = Depends(get_current_user_payload))
     return is_admin_user_db(str(payload.get("sub") or ""), get_claim_email(payload))
 
 
+def _require_admin(payload: dict = Depends(get_current_user_payload)) -> str:
+    """FastAPI dependency that enforces admin access and returns the user_id.
+
+    Use as the *single* admin gate in route handlers:
+
+        @router.get("/admin/something")
+        def my_admin_endpoint(admin_id: str = RequireAdmin) -> dict:
+            ...
+
+    This always uses the combined env-allowlist + DB-role check (`is_admin_user_db`),
+    so runtime-granted admin roles are always respected.  Never use the bare
+    `is_admin_user()` (env-only) call in new route handlers.
+    """
+    user_id = str(payload.get("sub") or "")
+    email = get_claim_email(payload)
+    if not is_admin_user_db(user_id, email):
+        raise HTTPException(status_code=403, detail="Admin access required.")
+    return user_id
+
+
 CurrentUser = Depends(get_current_user_id)
 CurrentActiveUser = Depends(get_current_active_user_id)
 CurrentUserPayload = Depends(get_current_user_payload)
 CurrentUserIsAdmin = Depends(get_current_user_is_admin)
+# Preferred admin gate for new endpoints: enforces the combined env + DB role
+# check and raises 403 directly, removing the need for every handler to call
+# is_admin_user_db() manually.
+RequireAdmin = Depends(_require_admin)

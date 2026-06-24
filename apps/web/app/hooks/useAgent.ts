@@ -5,19 +5,19 @@ import { useFroneiAuth } from '../lib/auth'
 import { createApiClient, readErrorBody } from '../lib/api'
 import { copyToClipboard, draftConversationId, draftWorkspaceId, sleep, streamErrorMessage, titleFromMessage, uniqueWorkspaceName } from '../lib/format'
 import { mapConversation, mapTurn, mapWorkspace } from '../lib/mappers'
+import { useAttachment } from './useAttachment'
+import { useProfileSettings } from './useProfileSettings'
+import { useTemplates } from './useTemplates'
 import type {
   AgentResult,
   AgentTurnStatus,
   ApiConversation,
   ApiWorkspace,
   Artifact,
-  AttachedFile,
   Conversation,
-  DocumentTemplateOption,
   FollowUpOption,
   OutputFormat,
   PendingDelete,
-  ProfileSettings,
   ProgressEvent,
   QualityMode,
   ResearchLevel,
@@ -59,7 +59,6 @@ export function useAgent() {
   const [qualityMode, setQualityMode] = useState<QualityMode>('standard')
   const [outputFormat, setOutputFormat] = useState<OutputFormat>('chat')
   const [researchLevel, setResearchLevel] = useState<ResearchLevel>('auto')
-  const [profileSettings, setProfileSettings] = useState<ProfileSettings>({})
   const [events, setEvents] = useState<ProgressEvent[]>([])
   const [result, setResult] = useState<AgentResult | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -76,23 +75,29 @@ export function useAgent() {
   const [editingWorkspaceName, setEditingWorkspaceName] = useState('')
   const [pendingDelete, setPendingDelete] = useState<PendingDelete>(null)
   const [copiedKey, setCopiedKey] = useState<string | null>(null)
-  const [templates, setTemplates] = useState<DocumentTemplateOption[]>([])
-  const [templatesLoaded, setTemplatesLoaded] = useState(false)
-  const [templateStatus, setTemplateStatus] = useState('')
-  const [templateError, setTemplateError] = useState('')
-  const [templateDeleteId, setTemplateDeleteId] = useState<string | null>(null)
-  const [selectedTemplateId, setSelectedTemplateId] = useState('')
   const [isAdmin, setIsAdmin] = useState(false)
   const [modelOverride, setModelOverride] = useState('')
-  const [attachedFile, setAttachedFile] = useState<AttachedFile | null>(null)
-  const [attachingFile, setAttachingFile] = useState(false)
-  const [attachmentError, setAttachmentError] = useState('')
-  const [supportedAttachmentTypes, setSupportedAttachmentTypes] = useState<string[]>([])
 
   const eventsRef = useRef<ProgressEvent[]>([])
   const activeRunMessageRef = useRef<string | null>(null)
   const composerSettingsDirtyRef = useRef(false)
   const pendingWorkspaceCreateRef = useRef<Record<string, Promise<Workspace>>>({})
+
+  // ── Sub-hooks (extracted from this file — see TD-06 in BACKLOG.md) ────────
+
+  const templateHook = useTemplates({ authorizedFetch })
+  const { selectedTemplateId, setSelectedTemplateId } = templateHook
+
+  const attachmentHook = useAttachment({ authorizedFetch })
+
+  const profileHook = useProfileSettings({
+    authorizedFetch,
+    onQualityModeChange: setQualityMode,
+    onOutputFormatChange: setOutputFormat,
+    onResearchLevelChange: setResearchLevel,
+    onDefaultTemplateChange: setSelectedTemplateId,
+    composerSettingsDirtyRef,
+  })
 
   const canRun = useMemo(() => isLoaded && isSignedIn && message.trim().length > 0 && !running, [isLoaded, isSignedIn, message, running])
   const activeEvents = useMemo(() => events.filter(event => !['tool_selection', 'tool_result'].includes(event.stage)), [events])
@@ -108,7 +113,6 @@ export function useAgent() {
   const latestTurn = activeTurns.at(-1) || null
   const latestArtifact = result?.artifacts?.[0] || latestTurn?.artifacts?.[0]
   const sources = result?.sources || []
-  const selectedTemplateExists = !selectedTemplateId || templates.some(template => template.id === selectedTemplateId)
 
   useEffect(() => {
     if (!isLoaded) return
@@ -120,10 +124,10 @@ export function useAgent() {
     void loadWorkspaces().catch(err => {
       setError(err instanceof Error ? err.message : 'Could not load Agent v3 workspaces')
     })
-    void loadTemplates()
+    void templateHook.loadTemplates()
     void checkIsAdmin()
-    void loadSupportedAttachmentTypes()
-    void loadProfileSettings()
+    void attachmentHook.loadSupportedAttachmentTypes()
+    void profileHook.loadProfileSettings()
   }, [isLoaded, isSignedIn])
 
   function updateQualityMode(mode: QualityMode) {
@@ -141,132 +145,12 @@ export function useAgent() {
     setResearchLevel(level)
   }
 
-  async function loadProfileSettings() {
-    try {
-      const response = await authorizedFetch('/profile/settings')
-      if (!response.ok) return
-      const settings = await response.json() as ProfileSettings
-      setProfileSettings(settings)
-      if (composerSettingsDirtyRef.current) return
-      if (settings.quality_mode) setQualityMode(settings.quality_mode)
-      if (settings.output_format) setOutputFormat(settings.output_format)
-      if (settings.research_level) setResearchLevel(settings.research_level)
-      if (settings.default_template_id !== undefined) setSelectedTemplateId(settings.default_template_id || '')
-    } catch {
-      // Non-critical: the composer still has local defaults.
-    }
-  }
-
-  async function updateProfileSettings(settings: Partial<ProfileSettings>) {
-    const response = await authorizedFetch('/profile/settings', {
-      method: 'PATCH',
-      body: JSON.stringify(settings),
-    })
-    if (!response.ok) throw new Error(await readErrorBody(response, 'Could not update profile settings'))
-    const next = await response.json() as ProfileSettings
-    setProfileSettings(next)
-    if (next.quality_mode) setQualityMode(next.quality_mode)
-    if (next.output_format) setOutputFormat(next.output_format)
-    if (next.research_level) setResearchLevel(next.research_level)
-    if (next.default_template_id !== undefined) setSelectedTemplateId(next.default_template_id || '')
-    return next
-  }
-
   async function checkIsAdmin() {
     try {
       const response = await authorizedFetch('/admin/me')
       setIsAdmin(response.ok)
     } catch {
       setIsAdmin(false)
-    }
-  }
-
-  async function loadSupportedAttachmentTypes() {
-    try {
-      const response = await authorizedFetch('/documents/supported')
-      if (!response.ok) return
-      const payload = await response.json() as { types: string[] }
-      setSupportedAttachmentTypes(payload.types || [])
-    } catch {
-      // Non-critical: the file input just falls back to accepting anything.
-    }
-  }
-
-  async function attachFile(file: File | null) {
-    if (!file) return
-    setAttachmentError('')
-    setAttachingFile(true)
-    try {
-      const form = new FormData()
-      form.append('file', file)
-      const response = await authorizedFetch('/documents/extract', { method: 'POST', body: form })
-      if (!response.ok) throw new Error(await readErrorBody(response, 'Could not read that file'))
-      const payload = await response.json() as { name: string; text: string; char_count: number; truncated: boolean }
-      setAttachedFile({ name: payload.name || file.name, text: payload.text || '', charCount: payload.char_count || 0, truncated: Boolean(payload.truncated) })
-    } catch (err) {
-      setAttachmentError(err instanceof Error ? err.message : 'Could not read that file')
-    } finally {
-      setAttachingFile(false)
-    }
-  }
-
-  function clearAttachment() {
-    setAttachedFile(null)
-    setAttachmentError('')
-  }
-
-  async function loadTemplates() {
-    setTemplateError('')
-    try {
-      const response = await authorizedFetch('/documents/templates?doc_type=presentation')
-      if (!response.ok) throw new Error(await readErrorBody(response, 'Could not load templates'))
-      const payload = await response.json() as { templates: DocumentTemplateOption[] }
-      setTemplates(payload.templates || [])
-      setTemplatesLoaded(true)
-    } catch (err) {
-      setTemplateError(err instanceof Error ? err.message : 'Could not load templates')
-      setTemplatesLoaded(true)
-    }
-  }
-
-  async function uploadTemplate(file: File | null, source: 'composer' | 'profile') {
-    if (!file) return
-    if (!file.name.toLowerCase().endsWith('.pptx')) {
-      setTemplateError('Template must be a .pptx PowerPoint file.')
-      return
-    }
-    setTemplateStatus(source === 'composer' ? 'Saving this template to your profile...' : 'Uploading template...')
-    setTemplateError('')
-    try {
-      const form = new FormData()
-      form.append('file', file)
-      form.append('name', file.name.replace(/\.pptx$/i, '').replace(/[-_]+/g, ' '))
-      const response = await authorizedFetch('/documents/templates', { method: 'POST', body: form })
-      if (!response.ok) throw new Error(await readErrorBody(response, 'Template upload failed'))
-      const uploaded = await response.json() as DocumentTemplateOption
-      setTemplates(prev => [uploaded, ...prev.filter(template => template.id !== uploaded.id)])
-      setSelectedTemplateId(uploaded.id)
-      setTemplateStatus(source === 'composer' ? 'Template saved to your profile.' : 'Template uploaded.')
-      setTemplatesLoaded(true)
-    } catch (err) {
-      setTemplateError(err instanceof Error ? err.message : 'Template upload failed')
-      setTemplateStatus('')
-    }
-  }
-
-  async function deleteTemplate(templateId: string) {
-    setTemplateStatus('Deleting template...')
-    setTemplateError('')
-    try {
-      const response = await authorizedFetch(`/documents/templates/${encodeURIComponent(templateId)}`, { method: 'DELETE' })
-      if (!response.ok) throw new Error(await readErrorBody(response, 'Template delete failed'))
-      setTemplates(prev => prev.filter(template => template.id !== templateId))
-      if (selectedTemplateId === templateId) setSelectedTemplateId('')
-      setTemplateDeleteId(null)
-      setTemplateStatus('Template deleted.')
-    } catch (err) {
-      setTemplateError(err instanceof Error ? err.message : 'Template delete failed')
-      setTemplateStatus('')
     }
   }
 
@@ -383,7 +267,7 @@ export function useAgent() {
     if (!isLoaded || !isSignedIn || running) return
     const runMessage = (option?.message || message).trim()
     if (!runMessage) return
-    const fileForThisTurn = attachedFile
+    const fileForThisTurn = attachmentHook.attachedFile
     activeRunMessageRef.current = runMessage
     setEvents([])
     eventsRef.current = []
@@ -391,7 +275,7 @@ export function useAgent() {
     setError(null)
     setRunning(true)
     setMessage('')
-    clearAttachment()
+    attachmentHook.clearAttachment()
     try {
       const conversationId = await ensureActiveConversation(runMessage)
       const modelOverrides = isAdmin && modelOverride
@@ -407,7 +291,7 @@ export function useAgent() {
           conversation_id: conversationId,
           quality_mode: qualityMode,
           output_format: option?.output_format || outputFormat,
-          template_id: selectedTemplateExists ? selectedTemplateId || undefined : undefined,
+          template_id: templateHook.selectedTemplateExists ? selectedTemplateId || undefined : undefined,
           research_level: option?.research_level || researchLevel,
           confirm_deep_research: Boolean(option?.confirm_deep_research),
           force_route: option?.force_route || undefined,
@@ -769,7 +653,6 @@ export function useAgent() {
     setOutputFormat: updateOutputFormat,
     researchLevel,
     setResearchLevel: updateResearchLevel,
-    profileSettings,
     events,
     activeEvents,
     result,
@@ -807,28 +690,14 @@ export function useAgent() {
     toggleWorkspace,
     startEditingWorkspace,
     saveWorkspaceName,
-    templates,
-    templatesLoaded,
-    templateStatus,
-    templateError,
-    templateDeleteId,
-    setTemplateDeleteId,
-    selectedTemplateId,
-    setSelectedTemplateId,
-    selectedTemplateExists,
-    updateProfileSettings,
-    uploadTemplate,
-    deleteTemplate,
-    refreshTemplates: loadTemplates,
     activeRunMessage: activeRunMessageRef.current,
     isAdmin,
     modelOverride,
     setModelOverride,
-    attachedFile,
-    attachingFile,
-    attachmentError,
-    supportedAttachmentTypes,
-    attachFile,
-    clearAttachment,
+    // ── delegated to sub-hooks ────────────────────────────────────────────────
+    ...templateHook,
+    ...attachmentHook,
+    profileSettings: profileHook.profileSettings,
+    updateProfileSettings: profileHook.updateProfileSettings,
   }
 }

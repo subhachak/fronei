@@ -4,6 +4,10 @@ services:
     env: python
     rootDir: apps/api
     buildCommand: pip install -e .
+    # Run Alembic migrations before starting the server so schema is always
+    # up to date. create_all() is disabled in production (models.py init_db),
+    # so this is the only mechanism that applies pending migrations on deploy.
+    preDeployCommand: alembic upgrade head
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: APP_ENV

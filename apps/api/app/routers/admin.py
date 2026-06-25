@@ -36,11 +36,10 @@ from app.services.clerk import fetch_clerk_user
 from app.services.document_templates import template_path_for_row
 from app.services.llm_gateway import (
     PROVIDER_TEST_MODELS,
-    get_circuit_status,
-    provider_for_model,
     test_provider_connection,
 )
 from app.services.maintenance_jobs import maintenance_job_worker
+from app.services.provider_health import get_circuit_status, provider_for_model
 from app.services.rate_limit import check_rate_limit
 from app.services.web_context import test_nimble_connection, test_tavily_connection, test_you_connection
 
@@ -818,7 +817,13 @@ def providers(admin: AdminPrincipal = RequireAdmin) -> dict:
         for err in recent_errors:
             provider_errors[provider_for_model(err.model_used)] += 1
         circuit_status = get_circuit_status()
-        default_circuit = {"consecutive_failures": 0, "open": False, "cooldown_remaining_s": 0}
+        default_circuit = {
+            "consecutive_failures": 0,
+            "open": False,
+            "half_open": False,
+            "probe_in_flight": False,
+            "cooldown_remaining_s": 0,
+        }
         return {
             "providers": [
                 {

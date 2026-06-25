@@ -8,6 +8,12 @@ from dataclasses import dataclass, field
 
 from app.config import get_settings
 from app.services.agent import model_policy
+from app.services.provider_health import (
+    provider_attempt_allowed,
+    provider_for_model,
+    record_provider_failure,
+    record_provider_success,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +28,7 @@ class ModelResponse:
     preferred_model: str = ""
     attempted_models: list[str] = field(default_factory=list)
     failed_model_attempts: list[dict[str, str]] = field(default_factory=list)
+    skipped_model_attempts: list[dict[str, str]] = field(default_factory=list)
 
 
 def _configure_keys() -> None:
@@ -107,6 +114,7 @@ def telemetry_for_response(response: object, *, overrides: dict[str, str] | None
     preferred_model = str(getattr(response, "preferred_model", "") or "")
     attempted_models = list(getattr(response, "attempted_models", []) or [])
     failed_model_attempts = list(getattr(response, "failed_model_attempts", []) or [])
+    skipped_model_attempts = list(getattr(response, "skipped_model_attempts", []) or [])
     payload: dict[str, object] = telemetry_for_role(
         model_role,
         model_used=model_used,
@@ -118,6 +126,8 @@ def telemetry_for_response(response: object, *, overrides: dict[str, str] | None
         payload["attempted_models"] = attempted_models
     if failed_model_attempts:
         payload["failed_model_attempts"] = failed_model_attempts
+    if skipped_model_attempts:
+        payload["skipped_model_attempts"] = skipped_model_attempts
     payload["model_fallback_used"] = bool(
         preferred_model
         and model_used
@@ -153,7 +163,23 @@ def complete(
     preferred = preferred_model or model_for_role(role, quality_mode=quality_mode, overrides=overrides)
     attempted_models: list[str] = []
     failed_model_attempts: list[dict[str, str]] = []
+    skipped_model_attempts: list[dict[str, str]] = []
     for model in _candidate_models(preferred):
+        provider = provider_for_model(model)
+        if not provider_attempt_allowed(provider):
+            skipped_model_attempts.append(
+                {
+                    "model": model,
+                    "provider": provider,
+                    "reason": "provider circuit is open",
+                }
+            )
+            logger.info(
+                "agent model call skipped for %s role=%s: provider circuit open",
+                model,
+                role or "default",
+            )
+            continue
         attempted_models.append(model)
         started = time.perf_counter()
         try:
@@ -168,6 +194,7 @@ def complete(
             text = getattr(choice.message, "content", None) or ""
             usage = getattr(response, "_hidden_params", {}) or {}
             cost = float(usage.get("response_cost") or 0.0)
+            record_provider_success(provider)
             return ModelResponse(
                 text=str(text).strip(),
                 model_used=str(getattr(response, "model", None) or model),
@@ -177,9 +204,11 @@ def complete(
                 preferred_model=preferred or "",
                 attempted_models=attempted_models,
                 failed_model_attempts=failed_model_attempts,
+                skipped_model_attempts=skipped_model_attempts,
             )
         except Exception as exc:  # pragma: no cover - exact provider failures vary.
             last_error = exc
+            record_provider_failure(provider)
             failed_model_attempts.append(
                 {
                     "model": model,
@@ -189,6 +218,9 @@ def complete(
             )
             logger.warning("agent model call failed for %s role=%s: %s", model, role or "default", exc)
             continue
+    if last_error is None and skipped_model_attempts:
+        skipped = ", ".join(item["provider"] for item in skipped_model_attempts)
+        raise RuntimeError(f"agent model call skipped all candidates because provider circuits are open: {skipped}")
     raise RuntimeError(f"agent model call failed for all candidates: {last_error}")
 
 

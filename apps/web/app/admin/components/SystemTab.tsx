@@ -111,6 +111,10 @@ export function SystemTab({ authorizedFetch }: { authorizedFetch: AuthorizedFetc
                   {provider.circuit ? (
                     provider.circuit.open ? (
                       <span className="font-bold text-red-600 dark:text-red-400">open · cooldown {provider.circuit.cooldown_remaining_s}s</span>
+                    ) : provider.circuit.half_open ? (
+                      <span className="font-bold text-amber-600 dark:text-amber-400">
+                        half-open{provider.circuit.probe_in_flight ? ' · probe in flight' : ' · awaiting probe'}
+                      </span>
                     ) : (
                       <span className="text-neutral-400">closed{provider.circuit.consecutive_failures > 0 ? ` · ${provider.circuit.consecutive_failures} recent failures` : ''}</span>
                     )

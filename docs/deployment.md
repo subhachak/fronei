@@ -41,11 +41,12 @@ Keep this URL handy — you'll need it in Steps 2 and 3.
 
 | Key | Value |
 |-----|-------|
-| `APP_ENV` | Set to `production`. This enables a startup check requiring `CLERK_ISSUER`, `CLERK_AUDIENCE`, and at least one admin allowlist entry — the API will refuse to start without them. |
+| `APP_ENV` | Set to `production`. This enables startup checks for production authentication and storage configuration. |
 | `DATABASE_URL` | Your Postgres connection string from Step 1 |
 | `ALLOWED_ORIGINS` | Your Vercel URL (add after Step 3, e.g. `https://fronei.vercel.app`) |
 | `CLERK_ISSUER` | Your Clerk issuer/frontend API URL |
 | `CLERK_AUDIENCE` | **Required in production.** Set this to your Clerk app's API audience (or configure an `aud` claim in your Clerk JWT template). Without it, JWT audience verification is disabled — the API will fail to start in production until this is set. |
+| `CLERK_AUTHORIZED_PARTIES` | **Required in production.** Comma-separated frontend origins accepted in the token `azp` claim, such as `https://fronei.com,https://www.fronei.com`. This protects against tokens minted for another frontend being replayed against the API. |
 | `OPENAI_API_KEY` | Your key |
 | `ANTHROPIC_API_KEY` | Your key |
 | `GEMINI_API_KEY` | Your key |
@@ -145,6 +146,8 @@ Local dev uses SQLite — no Postgres needed:
 # apps/api/.env
 DATABASE_URL=sqlite:///./fronei.db
 CLERK_ISSUER=https://your-app.clerk.accounts.dev
+CLERK_AUDIENCE=fronei-api
+CLERK_AUTHORIZED_PARTIES=https://fronei.com,https://www.fronei.com
 ```
 
 Apply migrations before the first run:

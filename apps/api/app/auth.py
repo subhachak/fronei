@@ -1,10 +1,10 @@
+import logging
 from dataclasses import dataclass
 from functools import lru_cache
-import logging
 
-from fastapi import Depends, HTTPException, Request
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import jwt
+from fastapi import Depends, HTTPException, Request
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jwt import PyJWKClient
 
 from app.config import get_settings
@@ -22,24 +22,32 @@ class AdminPrincipal:
 @lru_cache(maxsize=1)
 def _jwks_client() -> PyJWKClient:
     settings = get_settings()
-    return PyJWKClient(f"{settings.clerk_issuer}/.well-known/jwks.json")
+    return PyJWKClient(f"{settings.normalized_clerk_issuer}/.well-known/jwks.json")
 
 
 def _decode_token(token: str) -> dict:
     try:
         signing_key = _jwks_client().get_signing_key_from_jwt(token)
         settings = get_settings()
-        # verify_aud is disabled when clerk_audience is not configured; set
-        # CLERK_AUDIENCE in env once the Clerk production app audience is known.
+        audiences = settings.clerk_audience_list
         payload = jwt.decode(
             token,
             signing_key.key,
             algorithms=["RS256"],
-            options={"verify_aud": bool(settings.clerk_audience)},
-            audience=settings.clerk_audience or None,
+            audience=audiences or None,
+            issuer=settings.normalized_clerk_issuer or None,
+            leeway=5,
+            options={
+                "verify_aud": bool(audiences),
+                "verify_iss": bool(settings.normalized_clerk_issuer),
+                "require": ["exp", "iat", "nbf", "iss", "sub"],
+            },
         )
-        if not payload.get("sub"):
-            raise HTTPException(status_code=401, detail="Invalid token")
+        authorized_parties = settings.clerk_authorized_party_list
+        if authorized_parties:
+            authorized_party = str(payload.get("azp") or "").rstrip("/")
+            if authorized_party not in authorized_parties:
+                raise HTTPException(status_code=401, detail="Invalid token")
         return payload
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token expired")
@@ -95,7 +103,12 @@ def get_current_active_user_id(user_id: str = Depends(get_current_user_id)) -> s
     settings = get_settings()
     if not settings.require_user_approval:
         return user_id
-    from app.db.models import SessionLocal, User, bootstrap_user_and_control, get_user_control  # local import: avoid import cycle
+    from app.db.models import (  # local import: avoid import cycle
+        SessionLocal,
+        User,
+        bootstrap_user_and_control,
+        get_user_control,
+    )
     db = SessionLocal()
     try:
         control = get_user_control(db, user_id)

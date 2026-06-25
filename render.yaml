@@ -35,6 +35,8 @@ services:
         sync: false
       - key: CLERK_AUDIENCE
         sync: false          # required when APP_ENV=production — API will not start without this
+      - key: CLERK_AUTHORIZED_PARTIES
+        sync: false          # comma-separated frontend origins checked against the Clerk token azp claim
       - key: ADMIN_USER_IDS
         sync: false          # comma-separated Clerk user IDs allowed to access /admin
       - key: ADMIN_EMAILS

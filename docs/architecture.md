@@ -259,7 +259,6 @@ Model assignments are managed in `model_policy.py` from the DB (`AdminSetting`),
 
 ## Production hardening backlog
 
-- Structured evals and golden-prompt regression tests
 - OpenTelemetry / Langfuse span tracing for model/tool internals
 - Durable execution for profile consolidation and other scheduled jobs
 - Provider availability pre-checks before dispatch

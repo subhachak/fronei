@@ -1,0 +1,72 @@
+name: Live Agent Quality Evals
+
+on:
+  schedule:
+    - cron: "30 8 * * 1"
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "Optional LiteLLM model override"
+        required: false
+        default: "gpt-4.1-mini"
+      max_budget_usd:
+        description: "Hard fixture reservation ceiling in USD"
+        required: true
+        default: "0.25"
+
+concurrency:
+  group: live-agent-evals
+  cancel-in-progress: false
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: apps/api
+    env:
+      DATABASE_URL: sqlite:////tmp/fronei_live_evals.db
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+      LIVE_EVAL_MODEL: ${{ inputs.model || 'gpt-4.1-mini' }}
+      LIVE_EVAL_MAX_BUDGET_USD: ${{ inputs.max_budget_usd || '0.25' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install uv
+        run: pip install uv --quiet
+
+      - name: Install API dependencies
+        run: uv sync --frozen
+
+      - name: Install presentation renderer dependencies
+        working-directory: apps/api/pptx_render
+        run: npm ci --omit=dev
+
+      - name: Migrate evaluation database
+        run: uv run python -m alembic upgrade head
+
+      - name: Run live quality evaluations
+        run: |
+          uv run python -m app.evals.live_runner \
+            --format github \
+            --report artifacts/live-eval-report.json
+
+      - name: Upload evaluation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-agent-eval-report-${{ github.run_number }}
+          path: apps/api/artifacts/live-eval-report.json
+          if-no-files-found: warn
+          retention-days: 30

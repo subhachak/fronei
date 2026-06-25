@@ -21,14 +21,8 @@ unless displaced past the cap -- see _merge_preferences) rather than
 overwritten, since one workspace alone may have too little signal to
 re-detect a preference another workspace already established.
 
-There is no background job queue in this codebase, so consolidation runs
-synchronously inside the calling HTTP request. Each workspace can block for
-up to model_client's per-call timeout, so `limit` (see DEFAULT_BATCH_LIMIT /
-MAX_BATCH_LIMIT) is kept deliberately small and process the
-least-recently-consolidated workspaces first, so a single invocation can't
-time out the calling request as the active user/workspace count grows, and
-no workspace is starved indefinitely -- it just rotates through the backlog
-across consecutive scheduled runs.
+Scheduled consolidation runs through the durable maintenance-job worker.
+The batch helper remains available for focused tests and administrative use.
 """
 from __future__ import annotations
 
@@ -60,17 +54,9 @@ MAX_TURNS_PER_WORKSPACE = 40
 # last run; otherwise a near-idle workspace gets rebuilt from the same
 # handful of turns every run for no benefit.
 MIN_NEW_TURNS_TO_RECONSOLIDATE = 3
-# Default/max cap on workspaces processed per call to
-# /internal/consolidate-profiles (or a direct consolidate_all_active_workspaces()
-# call). Each workspace can block for up to model_client's timeout_s=30
-# waiting on the model call below, so a batch of N is worst-case N*30s of
-# wall-clock time on a single synchronous HTTP request -- there is no
-# background job queue in this codebase, so this has to stay small enough to
-# survive ordinary platform/CI request timeouts (commonly 30-120s) even in
-# the worst case, not just the typical case. Clearing a larger backlog means
-# the *caller* loops over several small calls (see the scheduled workflow),
-# not raising this number. Oldest-consolidated-first ordering means nothing
-# is starved by repeated small batches.
+# Default/max cap retained for direct batch calls and focused tests. Scheduled
+# consolidation uses consolidate_active_workspace_backlog() inside a durable
+# leased maintenance job instead of holding an HTTP request open.
 DEFAULT_BATCH_LIMIT = 3
 MAX_BATCH_LIMIT = 10
 
@@ -225,8 +211,7 @@ def consolidate_all_active_workspaces(
 ) -> dict:
     """Consolidate workspaces with at least one completed turn in the
     lookback window, oldest-consolidated-first, capped at `limit` per call.
-    Called by POST /internal/consolidate-profiles (see the daily
-    "Consolidate Fronei Profiles" scheduled workflow).
+    Retained for focused tests and bounded administrative calls.
     """
     db = SessionLocal()
     try:
@@ -254,7 +239,10 @@ def consolidate_all_active_workspaces(
             for row in (
                 db.query(Workspace.id)
                 .filter(Workspace.id.in_(candidate_ids))
-                .order_by(Workspace.priorities_consolidated_at.asc().nullsfirst())
+                .order_by(
+                    Workspace.priorities_consolidated_at.asc().nullsfirst(),
+                    Workspace.id.asc(),
+                )
                 .all()
             )
         ]
@@ -266,6 +254,61 @@ def consolidate_all_active_workspaces(
         return {
             "workspaces_considered": len(batch),
             "workspaces_remaining": max(0, total_candidates - len(batch)),
+            **counts,
+        }
+    finally:
+        db.close()
+
+
+def consolidate_active_workspace_backlog(
+    *,
+    lookback_days: int = 30,
+    force: bool = False,
+    max_workspaces: int = 500,
+) -> dict:
+    """Process a stable snapshot of eligible workspaces once.
+
+    A failed workspace does not pin the queue: every candidate in the snapshot
+    is attempted at most once during this job attempt. Retried jobs are safe
+    because already-consolidated workspaces are skipped unless enough new
+    activity has accrued.
+    """
+    db = SessionLocal()
+    try:
+        since = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+        candidate_ids = [
+            row[0]
+            for row in (
+                db.query(Conversation.workspace_id)
+                .join(Turn, Turn.conversation_id == Conversation.id)
+                .filter(Turn.created_at >= since, Turn.status == "completed")
+                .distinct()
+                .all()
+            )
+            if row[0]
+        ]
+        if not candidate_ids:
+            return {"workspaces_considered": 0, "workspaces_remaining": 0}
+        ordered_ids = [
+            row[0]
+            for row in (
+                db.query(Workspace.id)
+                .filter(Workspace.id.in_(candidate_ids))
+                .order_by(
+                    Workspace.priorities_consolidated_at.asc().nullsfirst(),
+                    Workspace.id.asc(),
+                )
+                .limit(max(1, max_workspaces))
+                .all()
+            )
+        ]
+        results = [consolidate_workspace(db, workspace_id, force=force) for workspace_id in ordered_ids]
+        counts: dict[str, int] = {}
+        for result in results:
+            counts[result["status"]] = counts.get(result["status"], 0) + 1
+        return {
+            "workspaces_considered": len(ordered_ids),
+            "workspaces_remaining": max(0, len(candidate_ids) - len(ordered_ids)),
             **counts,
         }
     finally:

@@ -9,27 +9,34 @@ jobs:
   consolidate:
     runs-on: ubuntu-latest
     steps:
-      - name: Call profile consolidator in small batches until the backlog clears
+      - name: Enqueue durable profile consolidation
         run: |
-          # Each call processes a small, bounded batch (see
-          # profile_consolidator.DEFAULT_BATCH_LIMIT) so no single HTTP
-          # request risks a platform/curl timeout, even in the worst case
-          # where every workspace in the batch takes the full per-call model
-          # timeout. Loop here instead, with a generous but finite iteration
-          # cap as a safety net -- any remainder rolls over to tomorrow's run
-          # since consolidation is oldest-consolidated-first.
-          max_iterations=30
-          for i in $(seq 1 "$max_iterations"); do
-            response=$(curl -fsS -X POST "$FRONEI_API_URL/internal/consolidate-profiles" \
+          response=$(curl -fsS -X POST "$FRONEI_API_URL/internal/consolidate-profiles" \
+            -H "X-Internal-Secret: $INTERNAL_TASK_SECRET")
+          echo "$response"
+          job_id=$(echo "$response" | python3 -c "import json,sys; print(json.load(sys.stdin)['job']['id'])")
+          echo "JOB_ID=$job_id" >> "$GITHUB_ENV"
+        env:
+          FRONEI_API_URL: ${{ secrets.FRONEI_API_URL }}
+          INTERNAL_TASK_SECRET: ${{ secrets.INTERNAL_TASK_SECRET }}
+
+      - name: Wait for durable job completion
+        run: |
+          for i in $(seq 1 80); do
+            response=$(curl -fsS "$FRONEI_API_URL/internal/maintenance-jobs/$JOB_ID" \
               -H "X-Internal-Secret: $INTERNAL_TASK_SECRET")
             echo "$response"
-            remaining=$(echo "$response" | python3 -c "import json,sys; print(json.load(sys.stdin).get('workspaces_remaining', 0))")
-            if [ "$remaining" -le 0 ]; then
-              echo "Backlog cleared after $i call(s)."
+            status=$(echo "$response" | python3 -c "import json,sys; print(json.load(sys.stdin)['job']['status'])")
+            if [ "$status" = "completed" ]; then
               exit 0
             fi
+            if [ "$status" = "failed" ]; then
+              exit 1
+            fi
+            sleep 15
           done
-          echo "Reached max_iterations ($max_iterations) with workspaces still remaining; the rest will roll over to the next scheduled run."
+          echo "Job is still durable and may continue, but this workflow timed out waiting."
+          exit 1
         env:
           FRONEI_API_URL: ${{ secrets.FRONEI_API_URL }}
           INTERNAL_TASK_SECRET: ${{ secrets.INTERNAL_TASK_SECRET }}

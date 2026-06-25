@@ -17,24 +17,22 @@ from sqlalchemy import func, or_
 
 from app.auth import AdminPrincipal, RequireAdmin, is_env_admin
 from app.config import get_settings
-from app.services.clerk import fetch_clerk_user
 from app.db.models import (
     AdminAuditLog,
+    DocumentTemplate,
     Event,
+    MaintenanceJob,
+    SessionLocal,
     ToolCall,
     Turn,
-    Workspace,
-    DocumentTemplate,
-    SessionLocal,
     User,
     UserAdminControl,
+    Workspace,
     get_monthly_spend,
 )
-from app.services.agent import model_policy
-from app.services.agent import persistence
-from app.services.agent import prompt_library
-from app.services.agent import routing_policy
+from app.services.agent import model_policy, persistence, prompt_library, routing_policy
 from app.services.agent.job_worker import turn_job_worker
+from app.services.clerk import fetch_clerk_user
 from app.services.document_templates import template_path_for_row
 from app.services.llm_gateway import (
     PROVIDER_TEST_MODELS,
@@ -42,9 +40,9 @@ from app.services.llm_gateway import (
     provider_for_model,
     test_provider_connection,
 )
+from app.services.maintenance_jobs import maintenance_job_worker
 from app.services.rate_limit import check_rate_limit
 from app.services.web_context import test_nimble_connection, test_tavily_connection, test_you_connection
-
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 logger = logging.getLogger(__name__)
@@ -265,6 +263,20 @@ def jobs(
             .filter(Turn.status == "queued")
             .scalar()
         )
+        maintenance_counts = {
+            row_status: int(count)
+            for row_status, count in (
+                db.query(MaintenanceJob.status, func.count(MaintenanceJob.id))
+                .group_by(MaintenanceJob.status)
+                .all()
+            )
+        }
+        maintenance_rows = (
+            db.query(MaintenanceJob)
+            .order_by(MaintenanceJob.updated_at.desc())
+            .limit(20)
+            .all()
+        )
 
         query = db.query(Turn)
         if status:
@@ -285,6 +297,13 @@ def jobs(
                 "retry_exhausted": retry_exhausted,
                 "oldest_queued_at": _fmt(oldest_queued),
                 "worker": turn_job_worker.status(),
+                "maintenance": {
+                    "queued": maintenance_counts.get("queued", 0),
+                    "running": maintenance_counts.get("running", 0),
+                    "completed": maintenance_counts.get("completed", 0),
+                    "failed": maintenance_counts.get("failed", 0),
+                    "worker": maintenance_job_worker.status(),
+                },
             },
             "items": [
                 {
@@ -315,6 +334,23 @@ def jobs(
             "total": total,
             "limit": limit,
             "offset": offset,
+            "maintenance_items": [
+                {
+                    "id": row.id,
+                    "job_type": row.job_type,
+                    "status": row.status,
+                    "attempt_count": row.attempt_count,
+                    "max_attempts": row.max_attempts,
+                    "lease_owner": row.lease_owner,
+                    "lease_expires_at": _fmt(row.lease_expires_at),
+                    "heartbeat_at": _fmt(row.heartbeat_at),
+                    "error_message": (row.error_message or "")[:1000] or None,
+                    "created_at": _fmt(row.created_at),
+                    "updated_at": _fmt(row.updated_at),
+                    "completed_at": _fmt(row.completed_at),
+                }
+                for row in maintenance_rows
+            ],
         }
     finally:
         db.close()

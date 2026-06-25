@@ -39,8 +39,7 @@ The codebase already includes fixes or implementations that older review notes c
 
 - Strengthen production Clerk configuration by setting and enforcing
   `CLERK_AUDIENCE`.
-- Move profile consolidation and other scheduled background work onto the
-  durable job boundary.
+- Extend the durable maintenance-job boundary to future scheduled tasks.
 - Add edge-level abuse protection before scaling beyond one API instance.
 
 ### P2

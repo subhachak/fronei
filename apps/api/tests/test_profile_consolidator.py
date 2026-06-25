@@ -284,13 +284,39 @@ def test_consolidate_all_active_workspaces_caps_batch_and_reports_remaining(monk
 
 
 def test_default_and_max_batch_limit_stay_small_enough_to_avoid_request_timeouts():
-    """Regression guard for the timeout risk: with a 30s per-workspace model
-    call and no background job queue, the default and max batch sizes must
-    stay small enough that even the worst case (every workspace in the batch
-    blocking for the full timeout) finishes well within a typical
-    platform/CI HTTP request timeout (commonly 30-120s)."""
+    """Direct administrative batch calls remain deliberately bounded."""
     assert profile_consolidator.DEFAULT_BATCH_LIMIT <= 5
     assert profile_consolidator.MAX_BATCH_LIMIT <= 10
+
+
+def test_durable_backlog_attempts_later_workspaces_after_one_failure(monkeypatch):
+    Session = _sqlite_session()
+    monkeypatch.setattr(profile_consolidator, "SessionLocal", Session)
+    with Session() as db:
+        for i in range(3):
+            user_id = f"u{i}"
+            workspace_id = f"w{i}"
+            conversation_id = f"c{i}"
+            _make_user(db, user_id)
+            _make_workspace(db, workspace_id, user_id)
+            _make_conversation(db, conversation_id, user_id, workspace_id)
+            _make_turn(db, user_id, conversation_id, objective="ask", answer="ok")
+
+    attempted: list[str] = []
+
+    def fake_consolidate(_db, workspace_id, *, force=False):
+        attempted.append(workspace_id)
+        if workspace_id == "w0":
+            return {"workspace_id": workspace_id, "status": "failed"}
+        return {"workspace_id": workspace_id, "status": "consolidated"}
+
+    monkeypatch.setattr(profile_consolidator, "consolidate_workspace", fake_consolidate)
+
+    result = profile_consolidator.consolidate_active_workspace_backlog()
+
+    assert attempted == ["w0", "w1", "w2"]
+    assert result["failed"] == 1
+    assert result["consolidated"] == 2
 
 
 def test_merge_preferences_keeps_new_items_and_preserves_unduplicated_old_ones():

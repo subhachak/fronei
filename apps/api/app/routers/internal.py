@@ -1,17 +1,16 @@
 import hmac
 
-from fastapi import APIRouter, Header, HTTPException, Query
+from fastapi import APIRouter, Header, HTTPException, Query, status
 from sqlalchemy import inspect, text
 
 from app.config import get_settings
 from app.db.models import SessionLocal, engine
 from app.db.schema_check import check_schema_version
-from app.services.agent.profile_consolidator import (
-    DEFAULT_BATCH_LIMIT,
-    MAX_BATCH_LIMIT,
-    consolidate_all_active_workspaces,
+from app.services.maintenance_jobs import (
+    enqueue_profile_consolidation,
+    get_job,
+    maintenance_job_worker,
 )
-
 
 router = APIRouter(prefix="/internal", tags=["internal"])
 
@@ -24,21 +23,32 @@ def _require_internal_secret(x_internal_secret: str) -> None:
         raise HTTPException(status_code=403, detail="Forbidden")
 
 
-@router.post("/consolidate-profiles")
+@router.post("/consolidate-profiles", status_code=status.HTTP_202_ACCEPTED)
 def consolidate_profiles(
     x_internal_secret: str = Header(default=""),
-    limit: int = Query(default=DEFAULT_BATCH_LIMIT, ge=1, le=MAX_BATCH_LIMIT),
+    lookback_days: int = Query(default=30, ge=1, le=365),
+    max_workspaces: int = Query(default=500, ge=1, le=5000),
 ) -> dict:
-    """Capped, oldest-consolidated-first batch so this stays well inside the
-    request timeout regardless of active workspace count. `limit` is kept
-    deliberately small (see profile_consolidator.MAX_BATCH_LIMIT) since each
-    workspace can block for up to 30s on its own model call with no
-    background job queue behind this -- clear a larger backlog by calling
-    this endpoint repeatedly (see the scheduled workflow, which loops) until
-    `workspaces_remaining` is 0, not by raising `limit`."""
+    """Idempotently enqueue durable profile consolidation."""
     _require_internal_secret(x_internal_secret)
-    result = consolidate_all_active_workspaces(limit=limit)
-    return {"status": "ok", **result}
+    job, created = enqueue_profile_consolidation(
+        lookback_days=lookback_days,
+        max_workspaces=max_workspaces,
+    )
+    maintenance_job_worker.notify()
+    return {"status": "queued" if created else "already_queued", "job": job}
+
+
+@router.get("/maintenance-jobs/{job_id}")
+def maintenance_job_status(
+    job_id: str,
+    x_internal_secret: str = Header(default=""),
+) -> dict:
+    _require_internal_secret(x_internal_secret)
+    job = get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Maintenance job not found.")
+    return {"status": "ok", "job": job}
 
 
 @router.post("/smoke")
@@ -52,6 +62,7 @@ def smoke_check(x_internal_secret: str = Header(default="")) -> dict:
         "workspaces",
         "conversations",
         "turns",
+        "maintenance_jobs",
         "admin_settings",
     ]
     inspector = inspect(engine)

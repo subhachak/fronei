@@ -163,7 +163,7 @@ GET    /artifacts/{id}/download
 | `model_client.py` | Thin wrapper over `llm_gateway.py` |
 | `tools.py` / `tool_registry.py` | Tool definitions and registry |
 | `persistence.py` | Turn and event persistence helpers |
-| `profile_consolidator.py` | Background user profile consolidation |
+| `profile_consolidator.py` | User/workspace profile consolidation logic |
 
 Other services:
 
@@ -176,6 +176,7 @@ Other services:
 | `clerk.py` | Clerk JWT verification |
 | `rate_limit.py` | Per-user rate limiting |
 | `notifications.py` | Notification helpers |
+| `maintenance_jobs.py` | Durable leased execution for scheduled maintenance |
 
 ### Data model
 
@@ -260,7 +261,7 @@ Model assignments are managed in `model_policy.py` from the DB (`AdminSetting`),
 ## Production hardening backlog
 
 - OpenTelemetry / Langfuse span tracing for model/tool internals
-- Durable execution for profile consolidation and other scheduled jobs
+- Extend the durable maintenance-job boundary to future scheduled tasks
 - Provider availability pre-checks before dispatch
 - Rate limit abuse protection at the edge
 - Secret rotation and full Clerk audience enforcement in production

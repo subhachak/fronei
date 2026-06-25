@@ -50,6 +50,12 @@ export function SystemTab({ authorizedFetch }: { authorizedFetch: AuthorizedFetc
     { label: 'Sentry', value: system.sentry_configured ? 'configured' : 'not configured' },
     { label: 'Structured logging', value: system.structured_logging ? 'JSON' : 'plain text' },
     { label: 'Turn workers', value: `${system.worker.live_threads}/${system.worker.configured_concurrency} live` },
+    {
+      label: 'Artifact storage',
+      value: system.artifact_storage_backend === 's3'
+        ? `S3-compatible${system.artifact_s3_bucket_configured ? '' : ' (bucket missing)'}`
+        : 'local filesystem',
+    },
   ]
 
   return (

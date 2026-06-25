@@ -48,18 +48,14 @@ be added later if real workloads show that replay cost is material.
 ### TD-03 · Artifact binary data stored as base64 in PostgreSQL TEXT
 **File:** `apps/api/app/db/models.py` (`Artifact.base64_data`), `apps/api/app/services/agent/persistence.py`  
 **Effort:** Medium  
-**Status:** Open
+**Status:** ✅ Complete — local/S3 blob-store abstraction and presigned downloads
 
-PPTX/DOCX files stored as base64 text in the DB bloats the database, inflates query
-results, and forces all artifact bytes through the API process on download. The
-`storage_path` column already exists — it just needs to point at an object store
-instead of local disk (which doesn't survive Railway redeploys without a volume).
-
-**Fix:**
-1. Add S3/R2/GCS client behind a `blob_store.py` abstraction
-2. On artifact write: upload to blob, store presigned URL or object key in `storage_path`, leave `base64_data` empty
-3. On artifact read: generate a short-lived presigned URL; redirect instead of streaming bytes through the API
-4. Migration: backfill existing rows
+New artifacts are stored through a backend-qualified blob location, with local storage
+for development and private S3-compatible storage for production. Database rows retain
+metadata and object keys only; historical turn payloads no longer re-embed stored files.
+Authenticated downloads redirect to short-lived presigned URLs for S3 objects. Legacy
+absolute-path and base64 rows remain readable, and
+`python -m app.services.artifact_migration` migrates them to the configured backend.
 
 ---
 
@@ -196,10 +192,7 @@ This is a larger refactor — do it after TD-02 (durable queue) is resolved.
 
 ### TD-13 · No CDN or presigned URL pattern for artifact delivery
 **Effort:** Low once TD-03 (blob storage) is done  
-**Status:** Blocked on TD-03
-
-Artifacts stream through the API process. With blob storage in place, replace the
-download endpoint with a presigned URL redirect — zero bytes through the API.
+**Status:** ✅ Complete — authenticated presigned URL redirects for S3-compatible storage
 
 ---
 

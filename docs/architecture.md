@@ -231,6 +231,11 @@ Model assignments are managed in `model_policy.py` from the DB (`AdminSetting`),
   turn/user/worker ID. Optional Sentry reporting captures terminal failures,
   while the admin Jobs view reports queue depth, worker liveness, retries,
   stale leases, and recent job details.
+- Generated artifacts use a blob-store boundary. Local files remain available
+  for development, while production can use a private S3-compatible bucket.
+  Artifact rows store object locations and hashes; authenticated downloads use
+  short-lived presigned URLs rather than sending binary data through the API.
+  The private bucket permits browser GET requests from the Fronei web origin.
 - All turn data (events, tool calls, cost, latency, route, result) is persisted for inspection, analytics, and future evals.
 - Signal-based routing provides a fast, explainable pre-filter before LLM orchestration.
 

@@ -95,6 +95,43 @@ ALLOWED_ORIGINS=https://fronei.vercel.app
 
 ---
 
+## Private artifact storage
+
+Production should store generated DOCX/PPTX artifacts in a private
+S3-compatible bucket rather than the API filesystem:
+
+```bash
+ARTIFACT_STORAGE_BACKEND=s3
+ARTIFACT_S3_BUCKET=fronei-artifacts
+ARTIFACT_S3_ENDPOINT_URL=https://<account-id>.r2.cloudflarestorage.com
+ARTIFACT_S3_REGION=auto
+ARTIFACT_S3_ACCESS_KEY_ID=<access-key>
+ARTIFACT_S3_SECRET_ACCESS_KEY=<secret-key>
+ARTIFACT_S3_KEY_PREFIX=artifacts
+ARTIFACT_DOWNLOAD_URL_TTL_SECONDS=300
+```
+
+For AWS S3, omit `ARTIFACT_S3_ENDPOINT_URL` and set the AWS region. Configure
+the bucket CORS policy to allow `GET` from the deployed frontend origin.
+
+After configuring the target bucket, inspect legacy rows:
+
+```bash
+cd apps/api
+uv run python -m app.services.artifact_migration --dry-run
+```
+
+Then migrate them:
+
+```bash
+uv run python -m app.services.artifact_migration
+```
+
+The migration updates rows only after a successful upload and does not delete
+the legacy source file, allowing verification before manual cleanup.
+
+---
+
 ## Local development
 
 Local dev uses SQLite — no Postgres needed:

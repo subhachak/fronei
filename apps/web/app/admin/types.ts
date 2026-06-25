@@ -141,6 +141,8 @@ export type AdminSystem = {
     configured_concurrency: number
     live_threads: number
   }
+  artifact_storage_backend: string
+  artifact_s3_bucket_configured: boolean
 }
 
 export type AdminProvider = {

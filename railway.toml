@@ -25,6 +25,7 @@ restartPolicyMaxRetries = 3
 # DEFAULT_PROFILE=balanced
 # CLERK_ISSUER=<from Clerk dashboard>
 # CLERK_AUDIENCE=fronei-api
+# CLERK_AUTHORIZED_PARTIES=https://fronei.com,https://www.fronei.com
 # ADMIN_USER_IDS=<your Clerk user id>
 # ADMIN_EMAILS=subhachak@gmail.com
 #

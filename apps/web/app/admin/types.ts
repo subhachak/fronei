@@ -165,6 +165,7 @@ export type AdminSystem = {
   planner_fallback_models: string[]
   clerk_issuer_configured: boolean
   clerk_audience_configured: boolean
+  clerk_authorized_parties_configured: boolean
   admin_user_ids_configured: number
   admin_emails_configured: number
   sentry_configured: boolean

@@ -1,5 +1,7 @@
 import logging
 from functools import lru_cache
+from urllib.parse import urlsplit
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
@@ -41,6 +43,9 @@ class Settings(BaseSettings):
     # Required in production. When unset, JWT audience verification (`verify_aud`)
     # is disabled in app/auth.py — acceptable for local dev only.
     clerk_audience: str = ""
+    # Comma-separated frontend origins accepted in the Clerk token `azp` claim.
+    # Keep this explicit instead of deriving it from CORS configuration.
+    clerk_authorized_parties: str = ""
     admin_user_ids: str = ""
     admin_emails: str = ""
 
@@ -145,6 +150,22 @@ class Settings(BaseSettings):
         return [o.strip() for o in self.allowed_origins.split(",") if o.strip()]
 
     @property
+    def clerk_audience_list(self) -> list[str]:
+        return [v.strip() for v in self.clerk_audience.split(",") if v.strip()]
+
+    @property
+    def clerk_authorized_party_list(self) -> list[str]:
+        return [
+            v.strip().rstrip("/")
+            for v in self.clerk_authorized_parties.split(",")
+            if v.strip()
+        ]
+
+    @property
+    def normalized_clerk_issuer(self) -> str:
+        return self.clerk_issuer.strip().rstrip("/")
+
+    @property
     def admin_id_set(self) -> set[str]:
         return {v.strip() for v in self.admin_user_ids.split(",") if v.strip()}
 
@@ -187,6 +208,11 @@ def check_production_config() -> None:
         return
     if not settings.clerk_issuer:
         raise RuntimeError("CLERK_ISSUER must be set when APP_ENV=production.")
+    issuer = urlsplit(settings.normalized_clerk_issuer)
+    if issuer.scheme != "https" or not issuer.netloc:
+        raise RuntimeError(
+            "CLERK_ISSUER must be an absolute HTTPS URL in production."
+        )
     if not settings.clerk_audience:
         raise RuntimeError(
             "CLERK_AUDIENCE must be set when APP_ENV=production. "
@@ -194,6 +220,26 @@ def check_production_config() -> None:
             "Set CLERK_AUDIENCE to your Clerk app's API audience, "
             "or configure an audience claim in your Clerk JWT template."
         )
+    if not settings.clerk_authorized_party_list:
+        raise RuntimeError(
+            "CLERK_AUTHORIZED_PARTIES must be set when APP_ENV=production. "
+            "Set it to the comma-separated frontend origins allowed to mint "
+            "tokens for this API, for example https://fronei.com,https://www.fronei.com."
+        )
+    for party in settings.clerk_authorized_party_list:
+        parsed = urlsplit(party)
+        if (
+            parsed.scheme != "https"
+            or not parsed.netloc
+            or parsed.path not in {"", "/"}
+            or parsed.query
+            or parsed.fragment
+            or parsed.hostname in {"localhost", "127.0.0.1", "::1"}
+        ):
+            raise RuntimeError(
+                "Every CLERK_AUTHORIZED_PARTIES entry must be an HTTPS origin "
+                f"without a path, query, or fragment; invalid entry: {party!r}."
+            )
     if not settings.admin_id_set and not settings.admin_email_set:
         logger.warning(
             "ADMIN_USER_IDS / ADMIN_EMAILS are both empty in production — "

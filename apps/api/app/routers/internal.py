@@ -84,6 +84,9 @@ def smoke_check(x_internal_secret: str = Header(default="")) -> dict:
         "app_env": settings.app_env,
         "clerk_issuer_configured": bool(settings.clerk_issuer),
         "clerk_audience_configured": bool(settings.clerk_audience),
+        "clerk_authorized_parties_configured": bool(
+            settings.clerk_authorized_party_list
+        ),
         "llm_provider_configured": bool(
             settings.openrouter_api_key
             or settings.openai_api_key

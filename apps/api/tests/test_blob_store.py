@@ -125,6 +125,7 @@ def test_s3_settings_require_bucket_in_production(monkeypatch):
         app_env="production",
         clerk_issuer="https://issuer.example",
         clerk_audience="fronei",
+        clerk_authorized_parties="https://fronei.example",
         admin_user_ids="admin",
         artifact_storage_backend="s3",
         artifact_s3_bucket="",

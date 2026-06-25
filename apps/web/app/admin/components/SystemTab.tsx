@@ -60,7 +60,7 @@ export function SystemTab({ authorizedFetch }: { authorizedFetch: AuthorizedFetc
 
   return (
     <div className="grid gap-4">
-      <div className="grid gap-3 sm:grid-cols-2">
+      <div className="grid gap-3 sm:grid-cols-3">
         <div className={`flex items-center gap-2 rounded-xl border p-3.5 ${system.clerk_issuer_configured ? 'border-emerald-200 dark:border-emerald-500/30' : 'border-red-200 dark:border-red-500/30'}`}>
           {system.clerk_issuer_configured ? <CheckCircle2 size={16} className="text-emerald-600 dark:text-emerald-400" /> : <XCircle size={16} className="text-red-600 dark:text-red-400" />}
           <span className="text-sm font-semibold text-neutral-700 dark:text-neutral-200">Clerk issuer configured</span>
@@ -68,6 +68,10 @@ export function SystemTab({ authorizedFetch }: { authorizedFetch: AuthorizedFetc
         <div className={`flex items-center gap-2 rounded-xl border p-3.5 ${system.clerk_audience_configured ? 'border-emerald-200 dark:border-emerald-500/30' : 'border-amber-200 dark:border-amber-500/30'}`}>
           {system.clerk_audience_configured ? <CheckCircle2 size={16} className="text-emerald-600 dark:text-emerald-400" /> : <XCircle size={16} className="text-amber-600 dark:text-amber-400" />}
           <span className="text-sm font-semibold text-neutral-700 dark:text-neutral-200">Clerk audience configured{!system.clerk_audience_configured && ' (required in production)'}</span>
+        </div>
+        <div className={`flex items-center gap-2 rounded-xl border p-3.5 ${system.clerk_authorized_parties_configured ? 'border-emerald-200 dark:border-emerald-500/30' : 'border-amber-200 dark:border-amber-500/30'}`}>
+          {system.clerk_authorized_parties_configured ? <CheckCircle2 size={16} className="text-emerald-600 dark:text-emerald-400" /> : <XCircle size={16} className="text-amber-600 dark:text-amber-400" />}
+          <span className="text-sm font-semibold text-neutral-700 dark:text-neutral-200">Clerk authorized parties configured{!system.clerk_authorized_parties_configured && ' (required in production)'}</span>
         </div>
       </div>
 

@@ -136,6 +136,7 @@ export async function mockFroneiApi(page: Page) {
         planner_fallback_models: ['gpt-4.1-mini'],
         clerk_issuer_configured: true,
         clerk_audience_configured: false,
+        clerk_authorized_parties_configured: false,
         admin_user_ids_configured: 1,
         admin_emails_configured: 1,
         sentry_configured: false,

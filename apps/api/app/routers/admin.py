@@ -1247,6 +1247,9 @@ def system(admin: AdminPrincipal = RequireAdmin) -> dict:
         "planner_fallback_models": settings.planner_fallback_model_list,
         "clerk_issuer_configured": bool(settings.clerk_issuer),
         "clerk_audience_configured": bool(settings.clerk_audience),
+        "clerk_authorized_parties_configured": bool(
+            settings.clerk_authorized_party_list
+        ),
         "admin_user_ids_configured": len(settings.admin_id_set),
         "admin_emails_configured": len(settings.admin_email_set),
         "sentry_configured": bool(settings.sentry_dsn),

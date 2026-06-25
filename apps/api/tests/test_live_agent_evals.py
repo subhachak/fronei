@@ -144,3 +144,18 @@ def test_live_eval_extracts_office_text_for_judging():
     }
 
     assert "Migration goals and success measures" in live_runner._artifact_text([artifact])
+
+
+def test_live_eval_extracts_cdata_and_tolerates_malformed_office_xml():
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr(
+            "word/document.xml",
+            "<w:document xmlns:w='urn:test'><w:p><![CDATA[Migration <ready>]]></w:p>",
+        )
+    artifact = {
+        "kind": "docx",
+        "base64_data": base64.b64encode(buffer.getvalue()).decode("ascii"),
+    }
+
+    assert "Migration" in live_runner._artifact_text([artifact])

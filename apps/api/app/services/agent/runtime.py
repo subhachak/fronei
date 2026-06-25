@@ -4,6 +4,7 @@ import time
 from collections.abc import Iterator
 
 from app.services.agent import model_client
+from app.services.agent.deck_subtree import plan_deck
 from app.services.agent.document_subtree import (
     build_artifact,
     choose_artifact_tool,
@@ -11,17 +12,25 @@ from app.services.agent.document_subtree import (
     plan_document,
     write_document,
 )
-from app.services.agent.deck_subtree import plan_deck
 from app.services.agent.fast_path import (
     answer_direct_fast,
     answer_web_fast,
     decide_fast_path,
 )
+from app.services.agent.models import (
+    Goal,
+    ProgressEvent,
+    Source,
+    StreamEnvelope,
+    TurnRequest,
+    TurnResult,
+    new_id,
+)
 from app.services.agent.orchestrator import OrchestratorDecision, decide_with_options
 from app.services.agent.research_subtree import (
     EvidencePack,
-    ResearchFeedbackLoop,
     ResearchBudgetLedger,
+    ResearchFeedbackLoop,
     bind_evidence,
     build_gap_followup_workers,
     build_research_plan_preview,
@@ -30,20 +39,11 @@ from app.services.agent.research_subtree import (
     get_research_registry,
     is_public_source_url,
     judge_research,
-    rank_sources,
     plan_research,
+    rank_sources,
     repair_research_answer,
     synthesize_answer,
     verify_claims,
-)
-from app.services.agent.models import (
-    TurnRequest,
-    TurnResult,
-    Goal,
-    ProgressEvent,
-    Source,
-    StreamEnvelope,
-    new_id,
 )
 from app.services.agent.tool_registry import ToolRegistry
 from app.services.agent.tools import Tools
@@ -297,7 +297,11 @@ class Runtime:
         except Exception as exc:
             yield StreamEnvelope(
                 type="error",
-                data={"turn_id": turn_id, "message": "Fronei failed.", "detail": str(exc)},
+                data={
+                    "turn_id": turn_id,
+                    "message": "I couldn't complete this request. Please try again.",
+                    "detail": str(exc),
+                },
             )
             yield StreamEnvelope(type="done", data={"turn_id": turn_id, "failed": True})
 

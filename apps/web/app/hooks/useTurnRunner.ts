@@ -135,7 +135,7 @@ export function useTurnRunner(options: TurnRunnerOptions) {
       return true
     }
     if (payload.status === 'failed') {
-      setError(payload.error_message || 'Fronei failed')
+      setError(payload.error_message || "I couldn't complete this request. Please try again.")
       return true
     }
     if (payload.status === 'cancelled') {

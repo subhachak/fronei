@@ -164,7 +164,7 @@ def stream_turn(
                     StreamEnvelope(
                         type="error",
                         data={
-                            "message": "Fronei failed while working on this turn.",
+                            "message": "I couldn't complete this request. Please try again.",
                             "detail": str(exc),
                         },
                     )

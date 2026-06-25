@@ -267,10 +267,11 @@ def execute_job(job_type: str, payload: dict[str, Any]) -> dict[str, Any]:
             lookback_days=int(payload.get("lookback_days") or 30),
             max_workspaces=int(payload.get("max_workspaces") or 500),
         )
-        if int(result.get("failed") or 0) > 0:
-            raise RuntimeError(
-                f"Profile consolidation failed for {result['failed']} workspace(s)."
-            )
+        result["outcome"] = (
+            "partial_success"
+            if int(result.get("failed") or 0) > 0
+            else "success"
+        )
         return result
     raise ValueError(f"Unsupported maintenance job type: {job_type}")
 

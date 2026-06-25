@@ -48,6 +48,12 @@ export type AdminMaintenanceJob = {
   lease_owner: string | null
   lease_expires_at: string | null
   heartbeat_at: string | null
+  result: {
+    outcome?: 'success' | 'partial_success'
+    consolidated?: number
+    failed?: number
+    skipped?: number
+  }
   error_message: string | null
   created_at: string | null
   updated_at: string | null

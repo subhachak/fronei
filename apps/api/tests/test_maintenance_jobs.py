@@ -100,19 +100,24 @@ def test_worker_executes_profile_consolidation_job(monkeypatch):
         assert '"consolidated": 2' in row.result_json
 
 
-def test_profile_consolidation_failure_raises_for_job_retry(monkeypatch):
+def test_profile_consolidation_partial_success_completes_without_replaying_batch(monkeypatch):
     monkeypatch.setattr(
         maintenance_jobs,
         "consolidate_active_workspace_backlog",
-        lambda **_kwargs: {"workspaces_considered": 2, "consolidated": 1, "failed": 1},
+        lambda **_kwargs: {
+            "workspaces_considered": 2,
+            "consolidated": 1,
+            "failed": 1,
+            "failures": [{"workspace_id": "w2", "reason": "model_call_failed"}],
+        },
     )
 
-    try:
-        maintenance_jobs.execute_job(
-            maintenance_jobs.PROFILE_CONSOLIDATION_JOB,
-            {"lookback_days": 30, "max_workspaces": 500},
-        )
-    except RuntimeError as exc:
-        assert "failed for 1 workspace" in str(exc)
-    else:
-        raise AssertionError("Expected workspace failures to trigger a job retry")
+    result = maintenance_jobs.execute_job(
+        maintenance_jobs.PROFILE_CONSOLIDATION_JOB,
+        {"lookback_days": 30, "max_workspaces": 500},
+    )
+
+    assert result["outcome"] == "partial_success"
+    assert result["consolidated"] == 1
+    assert result["failed"] == 1
+    assert result["failures"] == [{"workspace_id": "w2", "reason": "model_call_failed"}]

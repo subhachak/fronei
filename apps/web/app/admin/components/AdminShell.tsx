@@ -5,6 +5,7 @@ import {
   ArrowLeft,
   Cpu,
   LayoutDashboard,
+  ListTodo,
   Loader2,
   Moon,
   ServerCog,
@@ -16,15 +17,17 @@ import { useState } from 'react'
 import { useTheme } from '../../hooks/useTheme'
 import { useAdmin } from '../hooks/useAdmin'
 import { ModelPolicyTab } from './ModelPolicyTab'
+import { JobsTab } from './JobsTab'
 import { OverviewTab } from './OverviewTab'
 import { SystemTab } from './SystemTab'
 import { UsageTab } from './UsageTab'
 import { UsersTab } from './UsersTab'
 
-type AdminTab = 'overview' | 'users' | 'modelpolicy' | 'usage' | 'system'
+type AdminTab = 'overview' | 'jobs' | 'users' | 'modelpolicy' | 'usage' | 'system'
 
 const TABS: { id: AdminTab; label: string; icon: typeof LayoutDashboard }[] = [
   { id: 'overview', label: 'Overview', icon: LayoutDashboard },
+  { id: 'jobs', label: 'Jobs', icon: ListTodo },
   { id: 'users', label: 'Users', icon: Users },
   { id: 'modelpolicy', label: 'Model policy', icon: Cpu },
   { id: 'usage', label: 'Usage', icon: Activity },
@@ -134,6 +137,7 @@ export function AdminShell({ embedded = false, onClose }: { embedded?: boolean; 
         {access === 'granted' && (
           <>
             {tab === 'overview' && <OverviewTab authorizedFetch={authorizedFetch} />}
+            {tab === 'jobs' && <JobsTab authorizedFetch={authorizedFetch} />}
             {tab === 'users' && <UsersTab authorizedFetch={authorizedFetch} />}
             {tab === 'modelpolicy' && <ModelPolicyTab authorizedFetch={authorizedFetch} />}
             {tab === 'usage' && <UsageTab authorizedFetch={authorizedFetch} />}

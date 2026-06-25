@@ -12,6 +12,55 @@ export type AdminOverview = {
   total_research_runs: number
 }
 
+export type AdminJobStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
+
+export type AdminJob = {
+  id: string
+  user_id: string
+  email: string | null
+  name: string | null
+  conversation_id: string | null
+  objective: string
+  route: string
+  quality_mode: string
+  status: AdminJobStatus
+  attempt_count: number
+  max_attempts: number
+  lease_owner: string | null
+  lease_expires_at: string | null
+  heartbeat_at: string | null
+  cancel_requested: boolean
+  model_used: string
+  latency_ms: number
+  cost_usd: number
+  error_message: string | null
+  created_at: string | null
+  updated_at: string | null
+  completed_at: string | null
+}
+
+export type AdminJobsResponse = {
+  summary: {
+    queued: number
+    running: number
+    completed: number
+    failed: number
+    cancelled: number
+    stale_leases: number
+    retried_jobs: number
+    retry_exhausted: number
+    oldest_queued_at: string | null
+    worker: {
+      configured_concurrency: number
+      live_threads: number
+    }
+  }
+  items: AdminJob[]
+  total: number
+  limit: number
+  offset: number
+}
+
 export type UserStatus = 'active' | 'pending' | 'suspended'
 export type UserRole = 'user' | 'admin'
 
@@ -86,6 +135,12 @@ export type AdminSystem = {
   clerk_audience_configured: boolean
   admin_user_ids_configured: number
   admin_emails_configured: number
+  sentry_configured: boolean
+  structured_logging: boolean
+  worker: {
+    configured_concurrency: number
+    live_threads: number
+  }
 }
 
 export type AdminProvider = {

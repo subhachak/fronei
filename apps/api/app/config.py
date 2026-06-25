@@ -12,6 +12,11 @@ class Settings(BaseSettings):
     default_profile: str = "balanced"
     # Default per-user monthly budget cap (USD). Admins (env allowlist) are exempt.
     monthly_budget_usd: float = 5.0
+    log_level: str = "INFO"
+    log_json: bool = False
+    sentry_dsn: str | None = None
+    sentry_traces_sample_rate: float = 0.05
+    app_release: str = ""
 
     openai_api_key: str | None = None
     anthropic_api_key: str | None = None

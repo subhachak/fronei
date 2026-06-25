@@ -169,16 +169,14 @@ If reverting: delete all turn-graph code and flags in a single PR.
 
 ### TD-11 · No observability layer (no APM, no structured logging)
 **Effort:** Low (Sentry SDK is a one-liner; structlog is a near-drop-in)  
-**Status:** Open
+**Status:** ✅ Complete — structured worker telemetry, optional Sentry, admin job monitor
 
-No Sentry, OpenTelemetry, Prometheus, or Datadog. For a multi-LLM agentic system,
-provider failures silently degrade quality without alerting. DB-level cost tracking
-exists but no real-time dashboard or alerting.
-
-**Fix:**
-1. `pip install sentry-sdk[fastapi]` → add `sentry_sdk.init()` in `main.py`
-2. Replace `logging.getLogger` with `structlog` for structured JSON output
-3. Add a Prometheus `/metrics` endpoint (optional, useful on Railway)
+Production can emit JSON logs with correlated `turn_id`, `user_id`, worker, attempt,
+outcome, and exception fields. Sentry is enabled when `SENTRY_DSN` is configured, with
+PII disabled and adjustable trace sampling. The admin Jobs tab exposes queue depth,
+worker liveness, retries, stale leases, failures, recent turn details, and audited
+cancellation. A dedicated Prometheus exporter remains optional if an external metrics
+collector is introduced later.
 
 ---
 

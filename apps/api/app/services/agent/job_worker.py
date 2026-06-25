@@ -6,6 +6,7 @@ import threading
 import uuid
 
 from app.config import get_settings
+from app.observability import log_event
 from app.services.agent import persistence
 from app.services.agent.models import ProgressEvent, TurnRequest
 from app.services.agent.runtime import Runtime
@@ -44,6 +45,12 @@ class TurnJobWorker:
                 )
                 thread.start()
                 self._threads.append(thread)
+            log_event(
+                logger,
+                logging.INFO,
+                "turn_worker_pool_started",
+                worker_concurrency=len(self._threads),
+            )
 
     def stop(self) -> None:
         self._stop.set()
@@ -51,6 +58,7 @@ class TurnJobWorker:
         for thread in list(self._threads):
             thread.join(timeout=1.0)
         self._threads = []
+        log_event(logger, logging.INFO, "turn_worker_pool_stopped")
 
     def notify(self) -> None:
         self._wake.set()
@@ -73,6 +81,14 @@ class TurnJobWorker:
                 self._wake.clear()
                 continue
             turn_id, user_id, request = claimed
+            log_event(
+                logger,
+                logging.INFO,
+                "turn_job_claimed",
+                turn_id=turn_id,
+                user_id=user_id,
+                worker_id=worker_id,
+            )
             self._execute(worker_id, turn_id, user_id, request)
 
     def _execute(self, worker_id: str, turn_id: str, user_id: str, request: TurnRequest) -> None:
@@ -112,8 +128,27 @@ class TurnJobWorker:
                 saw_result = saw_result or envelope.type == "result"
             if not saw_result:
                 raise RuntimeError("Agent runtime ended without a result.")
+            log_event(
+                logger,
+                logging.INFO,
+                "turn_job_completed",
+                turn_id=turn_id,
+                user_id=user_id,
+                worker_id=worker_id,
+            )
         except BaseException as exc:  # pragma: no cover - defensive worker boundary.
             outcome = persistence.fail_or_requeue_turn(turn_id, worker_id, str(exc))
+            log_event(
+                logger,
+                logging.WARNING if outcome in {"queued", "cancelled", "lost"} else logging.ERROR,
+                "turn_job_execution_ended",
+                turn_id=turn_id,
+                user_id=user_id,
+                worker_id=worker_id,
+                outcome=outcome,
+                error=str(exc)[:1000],
+                exc_info=outcome == "failed",
+            )
             if outcome == "queued":
                 persistence.append_event(
                     ProgressEvent(
@@ -124,11 +159,16 @@ class TurnJobWorker:
                     )
                 )
                 self.notify()
-            elif outcome not in {"cancelled", "lost"}:
-                logger.exception("Durable turn %s failed after retries", turn_id)
         finally:
             heartbeat_stop.set()
             heartbeat_thread.join(timeout=0.2)
+
+    def status(self) -> dict[str, int]:
+        with self._lock:
+            return {
+                "configured_concurrency": max(1, get_settings().turn_worker_concurrency),
+                "live_threads": sum(thread.is_alive() for thread in self._threads),
+            }
 
 
 turn_job_worker = TurnJobWorker()

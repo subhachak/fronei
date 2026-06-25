@@ -7,7 +7,7 @@ from queue import Empty, Queue
 from threading import Thread
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import RedirectResponse, Response, StreamingResponse
 
 from app.auth import CurrentActiveUser, CurrentUserIsAdmin
 from app.config import get_settings
@@ -311,7 +311,11 @@ def download_artifact(artifact_id: str, user_id: str = CurrentActiveUser) -> Res
     artifact_payload = persistence.get_artifact_for_user(artifact_id, user_id)
     if artifact_payload is None:
         raise HTTPException(status_code=404, detail="Artifact not found")
-    artifact, content = artifact_payload
+    artifact, content, signed_url = artifact_payload
+    if signed_url:
+        return RedirectResponse(signed_url, status_code=307)
+    if content is None:
+        raise HTTPException(status_code=404, detail="Artifact content is unavailable")
     safe_filename = str(artifact.filename).replace('"', "")
     return Response(
         content=content,

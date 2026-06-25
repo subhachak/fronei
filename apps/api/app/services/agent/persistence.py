@@ -1,15 +1,12 @@
 from __future__ import annotations
 
 import base64
-import hashlib
 import json
 import logging
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
-from app.config import get_settings
 from app.db.models import (
     Artifact as ArtifactRow,
     Conversation,
@@ -21,6 +18,12 @@ from app.db.models import (
     User,
 )
 from app.services.agent import routing_policy
+from app.services.blob_store import (
+    delete_blob_location,
+    get_blob_store,
+    read_legacy_local_path,
+    store_for_location,
+)
 from app.services.agent.models import (
     ConversationSummary,
     TurnResult,
@@ -465,43 +468,40 @@ def _safe_path_segment(value: str) -> str:
     return cleaned[:140] or "unknown"
 
 
-def _artifact_root() -> Path:
-    return Path(get_settings().artifact_storage_dir).expanduser().resolve()
-
-
 def _artifact_download_url(artifact_id: str) -> str:
     return f"/artifacts/{artifact_id}/download"
 
 
-def _artifact_path(user_id: str, turn_id: str, artifact: Artifact) -> Path:
-    filename = _safe_path_segment(artifact.filename) or f"{artifact.id}.bin"
-    return _artifact_root() / _safe_path_segment(user_id) / _safe_path_segment(turn_id) / f"{_safe_path_segment(artifact.id)}_{filename}"
+def artifact_blob_key(user_id: str, turn_id: str, artifact_id: str, filename: str) -> str:
+    safe_filename = _safe_path_segment(filename) or f"{artifact_id}.bin"
+    return "/".join([
+        _safe_path_segment(user_id),
+        _safe_path_segment(turn_id),
+        f"{_safe_path_segment(artifact_id)}_{safe_filename}",
+    ])
 
 
 def _write_artifact_file(user_id: str, turn_id: str, artifact: Artifact) -> tuple[str | None, int, str | None]:
     if not artifact.base64_data:
         return None, 0, None
     try:
-        payload = base64.b64decode(artifact.base64_data)
-    except Exception:
-        return None, 0, None
-    path = _artifact_path(user_id, turn_id, artifact)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(payload)
-    digest = hashlib.sha256(payload).hexdigest()
-    return str(path), len(payload), digest
+        payload = base64.b64decode(artifact.base64_data, validate=True)
+    except Exception as exc:
+        raise ValueError(f"Artifact {artifact.id} contains invalid base64 data.") from exc
+    stored = get_blob_store().put(
+        artifact_blob_key(user_id, turn_id, artifact.id, artifact.filename),
+        payload,
+        content_type=artifact.mime_type,
+    )
+    return stored.location, stored.size_bytes, stored.sha256
 
 
 def _artifact_base64(row: ArtifactRow) -> str:
+    # Stored artifacts are downloaded separately. Returning blob bytes in every
+    # historical turn response defeats external storage and can make a single
+    # conversation payload tens of megabytes.
     if row.storage_path:
-        try:
-            path = Path(row.storage_path).expanduser().resolve()
-            root = _artifact_root()
-            path.relative_to(root)
-            if path.exists() and path.is_file():
-                return base64.b64encode(path.read_bytes()).decode("ascii")
-        except Exception:
-            pass
+        return ""
     return row.base64_data or ""
 
 
@@ -734,9 +734,9 @@ def _delete_conversation_rows(db, user_id: str, conversation_id: str) -> None:
         for artifact in artifacts:
             if artifact.storage_path:
                 try:
-                    Path(artifact.storage_path).unlink(missing_ok=True)
+                    delete_blob_location(artifact.storage_path)
                 except Exception:
-                    pass
+                    logger.warning("Could not delete artifact blob %s", artifact.id, exc_info=True)
             db.delete(artifact)
         db.delete(turn)
 
@@ -768,8 +768,9 @@ def create_turn(goal: Goal, turn_id: str) -> None:
             existing.objective = goal.objective
             existing.route = goal.route
             existing.quality_mode = goal.quality_mode
-            existing.status = "running"
-            existing.error_message = None
+            if existing.status not in {"completed", "failed", "cancelled"}:
+                existing.status = "running"
+                existing.error_message = None
             existing.updated_at = _now()
             db.commit()
             return
@@ -1061,6 +1062,7 @@ def complete_turn(result: TurnResult, *, lease_owner: str | None = None) -> bool
         Turn.error_message: None,
     }
     db = SessionLocal()
+    new_artifact_locations: list[str] = []
     try:
         turn = None
         if lease_owner:
@@ -1133,6 +1135,8 @@ def complete_turn(result: TurnResult, *, lease_owner: str | None = None) -> bool
             if db.get(ArtifactRow, artifact.id):
                 continue
             storage_path, size_bytes, digest = _write_artifact_file(turn.user_id, result.turn_id, artifact)
+            if storage_path:
+                new_artifact_locations.append(storage_path)
             db.add(
                 ArtifactRow(
                     id=artifact.id,
@@ -1140,13 +1144,21 @@ def complete_turn(result: TurnResult, *, lease_owner: str | None = None) -> bool
                     kind=artifact.kind,
                     filename=artifact.filename,
                     mime_type=artifact.mime_type,
-                    base64_data="" if storage_path else artifact.base64_data,
+                    base64_data="",
                     storage_path=storage_path,
                     size_bytes=size_bytes,
                     sha256=digest,
                 )
             )
         db.commit()
+    except Exception:
+        db.rollback()
+        for location in new_artifact_locations:
+            try:
+                delete_blob_location(location)
+            except Exception:
+                logger.warning("Could not clean up uncommitted artifact blob %s", location, exc_info=True)
+        raise
     finally:
         db.close()
     _record_routing_feedback(result)
@@ -1371,7 +1383,7 @@ def list_conversation_turns(user_id: str, conversation_id: str, *, limit: int = 
     return [turn for turn in loaded if turn is not None]
 
 
-def get_artifact_for_user(artifact_id: str, user_id: str) -> tuple[ArtifactRow, bytes] | None:
+def get_artifact_for_user(artifact_id: str, user_id: str) -> tuple[ArtifactRow, bytes | None, str | None] | None:
     db = SessionLocal()
     try:
         artifact = db.get(ArtifactRow, artifact_id)
@@ -1382,17 +1394,39 @@ def get_artifact_for_user(artifact_id: str, user_id: str) -> tuple[ArtifactRow, 
             return None
         if artifact.storage_path:
             try:
-                path = Path(artifact.storage_path).expanduser().resolve()
-                path.relative_to(_artifact_root())
-                if path.exists() and path.is_file():
-                    return artifact, path.read_bytes()
+                if artifact.storage_path.startswith(("local:", "s3:")):
+                    store = store_for_location(artifact.storage_path)
+                    signed_url = store.presigned_download_url(
+                        artifact.storage_path,
+                        filename=artifact.filename,
+                        content_type=artifact.mime_type,
+                    )
+                    if signed_url:
+                        return artifact, None, signed_url
+                    return artifact, store.read(artifact.storage_path), None
+                return artifact, read_legacy_local_path(artifact.storage_path), None
             except Exception:
+                logger.warning("Could not resolve artifact blob %s", artifact.id, exc_info=True)
                 return None
         if artifact.base64_data:
             try:
-                return artifact, base64.b64decode(artifact.base64_data)
+                return artifact, base64.b64decode(artifact.base64_data), None
             except Exception:
                 return None
         return None
     finally:
         db.close()
+
+
+def delete_artifacts_for_turn_ids(db, turn_ids: list[str]) -> int:
+    if not turn_ids:
+        return 0
+    rows = db.query(ArtifactRow).filter(ArtifactRow.turn_id.in_(turn_ids)).all()
+    for row in rows:
+        if row.storage_path:
+            try:
+                delete_blob_location(row.storage_path)
+            except Exception:
+                logger.warning("Could not delete artifact blob %s", row.id, exc_info=True)
+        db.delete(row)
+    return len(rows)

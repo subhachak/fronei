@@ -1189,8 +1189,7 @@ def test_agent_v3_stream_persists_turn_events_tools_and_artifacts(monkeypatch, t
             assert tool_names[-1] == "make_docx_artifact"
             artifact = db.query(Artifact).filter(Artifact.turn_id == turn_id).one()
             assert artifact.base64_data == ""
-            assert artifact.storage_path
-            assert Path(artifact.storage_path).exists()
+            assert artifact.storage_path.startswith("local:")
     finally:
         app.dependency_overrides.clear()
 

@@ -124,3 +124,25 @@ def test_stale_worker_cannot_complete_reclaimed_turn(monkeypatch):
         row = db.get(Turn, "turn_1")
         assert row.status == "completed"
         assert row.answer == "fresh"
+
+
+def test_duplicate_start_event_does_not_reopen_completed_turn(monkeypatch):
+    Session = _session()
+    monkeypatch.setattr(persistence, "SessionLocal", Session)
+    goal = Goal(user_id="u1", conversation_id=None, objective="durable task", route="direct")
+    with Session() as db:
+        db.add(Turn(
+            id="turn_1",
+            user_id="u1",
+            conversation_id=None,
+            objective="durable task",
+            route="direct",
+            quality_mode="standard",
+            status="completed",
+        ))
+        db.commit()
+
+    persistence.create_turn(goal, "turn_1")
+
+    with Session() as db:
+        assert db.get(Turn, "turn_1").status == "completed"

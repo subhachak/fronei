@@ -96,9 +96,17 @@ class Settings(BaseSettings):
     document_template_storage_dir: str = "./data/document_templates"
 
     # Agent v3 generated artifacts. In production this should point at a
-    # mounted volume, e.g. /data/fronei/artifacts. Files are stored
-    # below a per-user directory and referenced from DB rows.
+    # mounted volume when using the local backend. Production should prefer
+    # the S3 backend (AWS S3, Cloudflare R2, MinIO, or another compatible API).
+    artifact_storage_backend: str = "local"
     artifact_storage_dir: str = "./data/artifacts"
+    artifact_s3_bucket: str = ""
+    artifact_s3_endpoint_url: str = ""
+    artifact_s3_region: str = "us-east-1"
+    artifact_s3_access_key_id: str = ""
+    artifact_s3_secret_access_key: str = ""
+    artifact_s3_key_prefix: str = "artifacts"
+    artifact_download_url_ttl_seconds: int = 300
 
     # Whether to run LibreOffice/poppler-based PPTX render QA synchronously on
     # the document-generation request path. This can take up to ~60s per deck
@@ -200,4 +208,14 @@ def check_production_config() -> None:
         logger.warning(
             "ADMIN_USER_IDS / ADMIN_EMAILS are both empty in production — "
             "no user can access /admin endpoints."
+        )
+    backend = settings.artifact_storage_backend.strip().lower()
+    if backend not in {"local", "s3"}:
+        raise RuntimeError("ARTIFACT_STORAGE_BACKEND must be 'local' or 's3'.")
+    if backend == "s3" and not settings.artifact_s3_bucket:
+        raise RuntimeError("ARTIFACT_S3_BUCKET must be set when ARTIFACT_STORAGE_BACKEND=s3.")
+    if backend == "local":
+        logger.warning(
+            "Production artifact storage uses the local filesystem. "
+            "Use a persistent volume or set ARTIFACT_STORAGE_BACKEND=s3."
         )

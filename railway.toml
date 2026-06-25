@@ -68,6 +68,14 @@ restartPolicyMaxRetries = 3
 # SENTRY_DSN=
 # SENTRY_TRACES_SAMPLE_RATE=0.05
 # APP_RELEASE=<git-sha-or-release-name>
+# ARTIFACT_STORAGE_BACKEND=s3
+# ARTIFACT_S3_BUCKET=<private-bucket>
+# ARTIFACT_S3_ENDPOINT_URL=https://<account-id>.r2.cloudflarestorage.com
+# ARTIFACT_S3_REGION=auto
+# ARTIFACT_S3_ACCESS_KEY_ID=
+# ARTIFACT_S3_SECRET_ACCESS_KEY=
+# ARTIFACT_S3_KEY_PREFIX=artifacts
+# ARTIFACT_DOWNLOAD_URL_TTL_SECONDS=300
 #
 # Provider keys (set at least one):
 # OPENAI_API_KEY=

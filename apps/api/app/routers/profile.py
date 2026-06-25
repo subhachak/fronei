@@ -20,7 +20,6 @@ from sqlalchemy import func
 
 from app.auth import CurrentActiveUser
 from app.db.models import (
-    Artifact,
     Conversation,
     DocumentTemplate,
     Event,
@@ -30,6 +29,7 @@ from app.db.models import (
     User,
     Workspace,
 )
+from app.services.agent import persistence
 from app.services.document_templates import list_document_templates, template_path_for_row
 
 router = APIRouter(prefix="/profile", tags=["profile"])
@@ -397,7 +397,7 @@ def delete_my_data(body: PrivacyDeleteConfirm, user_id: str = CurrentActiveUser)
         if turn_ids:
             db.query(Event).filter(Event.turn_id.in_(turn_ids)).delete(synchronize_session=False)
             db.query(ToolCall).filter(ToolCall.turn_id.in_(turn_ids)).delete(synchronize_session=False)
-            db.query(Artifact).filter(Artifact.turn_id.in_(turn_ids)).delete(synchronize_session=False)
+            persistence.delete_artifacts_for_turn_ids(db, turn_ids)
         deleted["turns"] = db.query(Turn).filter(Turn.user_id == user_id).delete(synchronize_session=False)
         # Workspace deletion cascades to Conversation rows (ondelete="CASCADE")
         # and removes Workspace.priorities_json along with the row.

@@ -20,7 +20,6 @@ from app.config import get_settings
 from app.services.clerk import fetch_clerk_user
 from app.db.models import (
     AdminAuditLog,
-    Artifact,
     Event,
     ToolCall,
     Turn,
@@ -653,7 +652,7 @@ def privacy_delete(
             if turn_ids:
                 db.query(Event).filter(Event.turn_id.in_(turn_ids)).delete(synchronize_session=False)
                 db.query(ToolCall).filter(ToolCall.turn_id.in_(turn_ids)).delete(synchronize_session=False)
-                db.query(Artifact).filter(Artifact.turn_id.in_(turn_ids)).delete(synchronize_session=False)
+                persistence.delete_artifacts_for_turn_ids(db, turn_ids)
             deleted["turns"] = db.query(Turn).filter(Turn.user_id == user_id).delete(synchronize_session=False)
             # Per-workspace consolidated priorities (Workspace.priorities_json)
             # are deleted along with the workspace rows themselves below.
@@ -1227,4 +1226,6 @@ def system(admin: AdminPrincipal = Depends(require_admin)) -> dict:
         "sentry_configured": bool(settings.sentry_dsn),
         "structured_logging": settings.log_json,
         "worker": turn_job_worker.status(),
+        "artifact_storage_backend": settings.artifact_storage_backend,
+        "artifact_s3_bucket_configured": bool(settings.artifact_s3_bucket),
     }

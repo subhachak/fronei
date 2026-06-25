@@ -205,6 +205,12 @@ def consolidate_profiles(x_internal_secret: str = Header(...)) -> dict:
     consolidate_all_active_users()
     return {"status": "ok"}
 ```
+
+> Superseded implementation note: this endpoint now idempotently enqueues a
+> leased `maintenance_jobs` row and returns HTTP 202. The maintenance worker
+> executes profile consolidation with renewable leases and retries; the
+> scheduler polls `/internal/maintenance-jobs/{job_id}` rather than holding the
+> consolidation request open.
 - New `Settings.internal_task_secret: str = ""` in `config.py`.
 - Document in `railway.toml`: set up a Railway Cron Job (or external
   cron — e.g. GitHub Actions scheduled workflow, or cron-job.org) hitting

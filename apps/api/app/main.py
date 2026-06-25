@@ -15,6 +15,7 @@ from app.routers.profile import router as profile_router
 from app.routers.users import router as users_router
 from app.services.agent.job_worker import turn_job_worker
 from app.services.llm_gateway import configure_provider_keys
+from app.services.maintenance_jobs import maintenance_job_worker
 
 settings = get_settings()
 configure_observability(settings)
@@ -26,9 +27,11 @@ async def lifespan(app: FastAPI):
     check_schema_version(engine)
     configure_provider_keys()
     turn_job_worker.start()
+    maintenance_job_worker.start()
     try:
         yield
     finally:
+        maintenance_job_worker.stop()
         turn_job_worker.stop()
 
 

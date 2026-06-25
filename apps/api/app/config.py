@@ -90,6 +90,9 @@ class Settings(BaseSettings):
     turn_worker_poll_seconds: float = 0.5
     turn_worker_lease_seconds: int = 90
     turn_worker_max_attempts: int = 3
+    maintenance_worker_poll_seconds: float = 1.0
+    maintenance_worker_lease_seconds: int = 120
+    maintenance_worker_max_attempts: int = 3
 
     # Persistent user-uploaded document templates. In production this should
     # point at a mounted volume, e.g. /data/fronei/document_templates.

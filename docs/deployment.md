@@ -55,6 +55,8 @@ Keep this URL handy — you'll need it in Steps 2 and 3.
 | `DAILY_BUDGET_USD` | Daily per-user budget guard |
 | `ADMIN_USER_IDS` | Comma-separated Clerk user IDs allowed to access admin |
 | `ADMIN_EMAILS` | Optional comma-separated admin emails when available in JWT claims |
+| `MAINTENANCE_WORKER_LEASE_SECONDS` | Optional maintenance lease duration; default `120` |
+| `MAINTENANCE_WORKER_MAX_ATTEMPTS` | Optional maintenance retry cap; default `3` |
 
 At least one model provider key is required for chat. For the default routing policy, configure multiple providers if you want the fallback chains to work as intended.
 

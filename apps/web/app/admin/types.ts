@@ -39,6 +39,21 @@ export type AdminJob = {
   completed_at: string | null
 }
 
+export type AdminMaintenanceJob = {
+  id: string
+  job_type: string
+  status: Exclude<AdminJobStatus, 'cancelled'>
+  attempt_count: number
+  max_attempts: number
+  lease_owner: string | null
+  lease_expires_at: string | null
+  heartbeat_at: string | null
+  error_message: string | null
+  created_at: string | null
+  updated_at: string | null
+  completed_at: string | null
+}
+
 export type AdminJobsResponse = {
   summary: {
     queued: number
@@ -54,8 +69,19 @@ export type AdminJobsResponse = {
       configured_concurrency: number
       live_threads: number
     }
+    maintenance: {
+      queued: number
+      running: number
+      completed: number
+      failed: number
+      worker: {
+        configured_concurrency: number
+        live_threads: number
+      }
+    }
   }
   items: AdminJob[]
+  maintenance_items: AdminMaintenanceJob[]
   total: number
   limit: number
   offset: number

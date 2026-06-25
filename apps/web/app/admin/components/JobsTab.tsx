@@ -86,6 +86,8 @@ export function JobsTab({ authorizedFetch }: { authorizedFetch: AuthorizedFetch 
     ['Retried', summary.retried_jobs],
     ['Failed', summary.failed],
     ['Workers', `${summary.worker.live_threads}/${summary.worker.configured_concurrency}`],
+    ['Maintenance', `${summary.maintenance.running} running`],
+    ['Maint. worker', `${summary.maintenance.worker.live_threads}/${summary.maintenance.worker.configured_concurrency}`],
   ] : []
 
   return (
@@ -121,7 +123,7 @@ export function JobsTab({ authorizedFetch }: { authorizedFetch: AuthorizedFetch 
 
       {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
 
-      <div className="grid grid-cols-2 border-y border-neutral-200 sm:grid-cols-3 lg:grid-cols-6 dark:border-neutral-800">
+      <div className="grid grid-cols-2 border-y border-neutral-200 sm:grid-cols-4 lg:grid-cols-8 dark:border-neutral-800">
         {metrics.map(([label, value]) => (
           <div key={label} className="border-b border-r border-neutral-200 px-3 py-3 last:border-r-0 sm:border-b-0 dark:border-neutral-800">
             <p className="text-[10px] font-bold uppercase text-neutral-400">{label}</p>
@@ -192,6 +194,65 @@ export function JobsTab({ authorizedFetch }: { authorizedFetch: AuthorizedFetch 
             </tbody>
           </table>
         </div>
+      )}
+
+      {data && (
+        <section className="space-y-2">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-bold text-neutral-900 dark:text-neutral-50">Maintenance jobs</h3>
+            <span className="text-xs text-neutral-400">
+              {data.summary.maintenance.queued} queued · {data.summary.maintenance.failed} failed
+            </span>
+          </div>
+          {data.maintenance_items.length === 0 ? (
+            <p className="border-y border-neutral-200 py-8 text-center text-sm text-neutral-400 dark:border-neutral-800">
+              No maintenance jobs recorded.
+            </p>
+          ) : (
+            <div className="overflow-x-auto border border-neutral-200 dark:border-neutral-800">
+              <table className="w-full min-w-[720px] border-collapse text-left text-xs">
+                <thead className="bg-neutral-50 text-[10px] uppercase text-neutral-400 dark:bg-neutral-900">
+                  <tr>
+                    <th className="px-3 py-2.5">Status</th>
+                    <th className="px-3 py-2.5">Job</th>
+                    <th className="px-3 py-2.5">Attempts</th>
+                    <th className="px-3 py-2.5">Heartbeat</th>
+                    <th className="px-3 py-2.5">Completed</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.maintenance_items.map(job => (
+                    <tr key={job.id} className="border-t border-neutral-200 align-top dark:border-neutral-800">
+                      <td className="px-3 py-3">
+                        <span className={`inline-flex rounded px-2 py-1 font-bold ${STATUS_STYLES[job.status]}`}>
+                          {job.status}
+                        </span>
+                      </td>
+                      <td className="px-3 py-3">
+                        <p className="font-medium text-neutral-800 dark:text-neutral-200">
+                          {job.job_type.replaceAll('_', ' ')}
+                        </p>
+                        <p className="mt-1 font-mono text-[10px] text-neutral-400">{job.id}</p>
+                        {job.error_message && (
+                          <p className="mt-1 line-clamp-2 text-[10px] text-red-600 dark:text-red-400">
+                            {job.error_message}
+                          </p>
+                        )}
+                      </td>
+                      <td className="px-3 py-3 tabular-nums text-neutral-600 dark:text-neutral-300">
+                        {job.attempt_count}/{job.max_attempts}
+                      </td>
+                      <td className="px-3 py-3 text-neutral-500">
+                        {formatTime(job.heartbeat_at || job.updated_at)}
+                      </td>
+                      <td className="px-3 py-3 text-neutral-500">{formatTime(job.completed_at)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
       )}
     </div>
   )

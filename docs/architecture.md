@@ -223,7 +223,9 @@ Model assignments are managed in `model_policy.py` from the DB (`AdminSetting`),
 - Admin authorization is enforced server-side; frontend visibility is a convenience layer only.
 - LiteLLM is the single SDK surface for all model providers.
 - The orchestrator decides route and format; the composer controls are user hints that the orchestrator may override or confirm.
-- Streaming is SSE; the client polls for turn status as a recovery fallback.
+- Turn execution updates use authenticated SSE with persisted event replay,
+  `Last-Event-ID` reconnection, and heartbeats. Polling remains a recovery
+  fallback for environments that interrupt streaming responses.
 - Primary turns execute through a bounded database-backed lease queue. Expired
   leases are retried after worker/process failure, and stale workers cannot
   commit a result after another worker has reclaimed the turn.

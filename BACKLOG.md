@@ -112,14 +112,13 @@ No unit tests (frontend is Playwright e2e only).
 ### TD-07 · Turn status delivered by polling at 1.2s — not push-based
 **File:** `apps/web/app/hooks/useAgent.ts` (`pollTurnStatus`), `apps/api/app/routers/agent.py`  
 **Effort:** Medium  
-**Status:** Open; SSE producer pattern already exists in agent router
+**Status:** ✅ Complete — authenticated replayable SSE with polling fallback
 
-A 5-minute deep research run generates ~250 poll requests per client. The SSE streaming
-endpoint and queue/producer pattern already exist in `agent.py`; the primary flow just
-hasn't been migrated to use them.
-
-**Fix:** Wire `GET /turns/{turn_id}/stream` (SSE) as the primary delivery path for the
-background-job turn mode. Fall back to polling when SSE is blocked (corporate proxies).
+The background-job flow now streams persisted progress through
+`GET /turns/{turn_id}/stream`. Event IDs support resume via `Last-Event-ID`, heartbeats
+keep proxy connections alive, terminal snapshots carry the completed/failed/cancelled
+turn, and the browser deduplicates replayed events. After repeated stream failures the
+client automatically returns to the existing polling recovery path.
 
 ---
 

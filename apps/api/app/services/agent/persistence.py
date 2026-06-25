@@ -7,6 +7,8 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any
 
+from sqlalchemy import and_, or_
+
 from app.db.models import (
     Artifact as ArtifactRow,
     Conversation,
@@ -1034,6 +1036,56 @@ def append_event(event: ProgressEvent) -> None:
             )
         )
         db.commit()
+    finally:
+        db.close()
+
+
+def load_turn_events_after(turn_id: str, user_id: str, after_event_id: str | None = None) -> list[ProgressEvent] | None:
+    db = SessionLocal()
+    try:
+        turn = db.get(Turn, turn_id)
+        if turn is None or turn.user_id != user_id:
+            return None
+        query = db.query(Event).filter(Event.turn_id == turn_id)
+        if after_event_id:
+            cursor = db.get(Event, after_event_id)
+            if cursor is not None and cursor.turn_id == turn_id:
+                query = query.filter(
+                    or_(
+                        Event.created_at > cursor.created_at,
+                        and_(Event.created_at == cursor.created_at, Event.id > cursor.id),
+                    )
+                )
+        rows = query.order_by(Event.created_at.asc(), Event.id.asc()).all()
+        return [
+            ProgressEvent(
+                event_id=row.id,
+                turn_id=row.turn_id,
+                stage=row.stage,
+                message=row.message,
+                data=_loads(row.data_json, {}),
+                created_at=row.created_at,
+            )
+            for row in rows
+        ]
+    finally:
+        db.close()
+
+
+def load_turn_state(turn_id: str, user_id: str) -> dict | None:
+    db = SessionLocal()
+    try:
+        turn = db.get(Turn, turn_id)
+        if turn is None or turn.user_id != user_id:
+            return None
+        return {
+            "turn_id": turn.id,
+            "status": turn.status,
+            "error_message": turn.error_message,
+            "attempt_count": turn.attempt_count,
+            "max_attempts": turn.max_attempts,
+            "heartbeat_at": turn.heartbeat_at.isoformat() if turn.heartbeat_at else None,
+        }
     finally:
         db.close()
 

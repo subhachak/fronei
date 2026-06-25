@@ -12,6 +12,7 @@ from app.routers.documents import router as documents_router
 from app.routers.internal import router as internal_router
 from app.routers.profile import router as profile_router
 from app.routers.users import router as users_router
+from app.services.agent.job_worker import turn_job_worker
 from app.services.llm_gateway import configure_provider_keys
 
 settings = get_settings()
@@ -23,7 +24,11 @@ async def lifespan(app: FastAPI):
     init_db()
     check_schema_version(engine)
     configure_provider_keys()
-    yield
+    turn_job_worker.start()
+    try:
+        yield
+    finally:
+        turn_job_worker.stop()
 
 
 app = FastAPI(title="Fronei API", version="0.1.0", lifespan=lifespan)

@@ -29,6 +29,8 @@ from app.services.agent.models import (
     Goal,
     ProgressEvent,
     Source,
+    StreamEnvelope,
+    TurnRequest,
     ToolCall,
     new_id,
 )
@@ -767,6 +769,7 @@ def create_turn(goal: Goal, turn_id: str) -> None:
             existing.route = goal.route
             existing.quality_mode = goal.quality_mode
             existing.status = "running"
+            existing.error_message = None
             existing.updated_at = _now()
             db.commit()
             return
@@ -794,6 +797,226 @@ def create_turn(goal: Goal, turn_id: str) -> None:
         db.close()
 
 
+def enqueue_turn(goal: Goal, turn_id: str, request: TurnRequest, *, max_attempts: int) -> None:
+    db = SessionLocal()
+    try:
+        now = _now()
+        db.add(
+            Turn(
+                id=turn_id,
+                user_id=goal.user_id,
+                conversation_id=goal.conversation_id,
+                objective=goal.objective,
+                route=goal.route,
+                quality_mode=goal.quality_mode,
+                status="queued",
+                request_json=_dumps(request.model_dump(mode="json")),
+                attempt_count=0,
+                max_attempts=max(1, max_attempts),
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+
+def claim_next_turn(worker_id: str, *, lease_seconds: int) -> tuple[str, str, TurnRequest] | None:
+    """Atomically claim one queued or expired turn.
+
+    The conditional UPDATE is the concurrency guard. It works on SQLite and
+    Postgres without relying on backend-specific SKIP LOCKED behavior.
+    """
+    from datetime import timedelta
+
+    db = SessionLocal()
+    try:
+        now = _now()
+        candidates = (
+            db.query(Turn)
+            .filter(
+                Turn.attempt_count < Turn.max_attempts,
+                (
+                    (Turn.status == "queued")
+                    | (
+                        (Turn.status == "running")
+                        & Turn.lease_expires_at.isnot(None)
+                        & (Turn.lease_expires_at < now)
+                    )
+                ),
+            )
+            .order_by(Turn.created_at.asc())
+            .limit(8)
+            .all()
+        )
+        for candidate in candidates:
+            previous_attempt = int(candidate.attempt_count or 0)
+            updated = (
+                db.query(Turn)
+                .filter(
+                    Turn.id == candidate.id,
+                    Turn.attempt_count == previous_attempt,
+                    (
+                        (Turn.status == "queued")
+                        | (
+                            (Turn.status == "running")
+                            & Turn.lease_expires_at.isnot(None)
+                            & (Turn.lease_expires_at < now)
+                        )
+                    ),
+                )
+                .update(
+                    {
+                        Turn.status: "running",
+                        Turn.attempt_count: previous_attempt + 1,
+                        Turn.lease_owner: worker_id,
+                        Turn.lease_expires_at: now + timedelta(seconds=max(10, lease_seconds)),
+                        Turn.heartbeat_at: now,
+                        Turn.error_message: None,
+                        Turn.updated_at: now,
+                    },
+                    synchronize_session=False,
+                )
+            )
+            if not updated:
+                db.rollback()
+                continue
+            db.commit()
+            payload = _loads(candidate.request_json, {})
+            try:
+                return candidate.id, candidate.user_id, TurnRequest.model_validate(payload)
+            except Exception as exc:
+                fail_or_requeue_turn(candidate.id, worker_id, f"Stored turn request is invalid: {exc}")
+                return None
+        return None
+    finally:
+        db.close()
+
+
+def renew_turn_lease(turn_id: str, worker_id: str, *, lease_seconds: int) -> bool:
+    from datetime import timedelta
+
+    db = SessionLocal()
+    try:
+        now = _now()
+        updated = (
+            db.query(Turn)
+            .filter(
+                Turn.id == turn_id,
+                Turn.status == "running",
+                Turn.lease_owner == worker_id,
+                Turn.cancel_requested.is_(False),
+            )
+            .update(
+                {
+                    Turn.heartbeat_at: now,
+                    Turn.lease_expires_at: now + timedelta(seconds=max(10, lease_seconds)),
+                    Turn.updated_at: now,
+                },
+                synchronize_session=False,
+            )
+        )
+        db.commit()
+        return bool(updated)
+    finally:
+        db.close()
+
+
+def worker_owns_turn(turn_id: str, worker_id: str) -> bool:
+    db = SessionLocal()
+    try:
+        row = db.get(Turn, turn_id)
+        return bool(
+            row
+            and row.status == "running"
+            and row.lease_owner == worker_id
+        )
+    finally:
+        db.close()
+
+
+def turn_cancel_requested(turn_id: str, worker_id: str) -> bool:
+    db = SessionLocal()
+    try:
+        row = db.get(Turn, turn_id)
+        return bool(
+            row
+            and row.status == "running"
+            and row.lease_owner == worker_id
+            and row.cancel_requested
+        )
+    finally:
+        db.close()
+
+
+def request_turn_cancellation(turn_id: str, user_id: str) -> bool:
+    db = SessionLocal()
+    try:
+        turn = db.get(Turn, turn_id)
+        if turn is None or turn.user_id != user_id or turn.status not in {"queued", "running"}:
+            return False
+        turn.cancel_requested = True
+        if turn.status == "queued":
+            turn.status = "cancelled"
+            turn.completed_at = _now()
+        turn.updated_at = _now()
+        db.commit()
+        return True
+    finally:
+        db.close()
+
+
+def fail_or_requeue_turn(turn_id: str, worker_id: str, message: str) -> str:
+    db = SessionLocal()
+    try:
+        turn = db.get(Turn, turn_id)
+        if turn is None or turn.lease_owner != worker_id:
+            return "lost"
+        now = _now()
+        if turn.cancel_requested:
+            turn.status = "cancelled"
+            turn.completed_at = now
+            outcome = "cancelled"
+        elif turn.attempt_count < turn.max_attempts:
+            turn.status = "queued"
+            outcome = "queued"
+        else:
+            turn.status = "failed"
+            turn.completed_at = now
+            outcome = "failed"
+        turn.error_message = message[:2000]
+        turn.lease_owner = None
+        turn.lease_expires_at = None
+        turn.heartbeat_at = None
+        turn.updated_at = now
+        db.commit()
+        return outcome
+    finally:
+        db.close()
+
+
+def persist_turn_envelope(
+    envelope: StreamEnvelope,
+    turn_id: str | None,
+    *,
+    lease_owner: str | None = None,
+) -> bool:
+    if lease_owner and turn_id and not worker_owns_turn(turn_id, lease_owner):
+        return False
+    if envelope.type == "start":
+        start_turn_id = str(envelope.data.get("turn_id") or turn_id or "")
+        goal = Goal.model_validate(envelope.data.get("goal"))
+        create_turn(goal, start_turn_id)
+    elif envelope.type == "progress":
+        progress_event = ProgressEvent.model_validate(envelope.data)
+        if not progress_event.data.get("ephemeral"):
+            append_event(progress_event)
+    elif envelope.type == "result":
+        return complete_turn(TurnResult.model_validate(envelope.data), lease_owner=lease_owner)
+    return True
+
+
 def append_event(event: ProgressEvent) -> None:
     db = SessionLocal()
     try:
@@ -814,12 +1037,48 @@ def append_event(event: ProgressEvent) -> None:
         db.close()
 
 
-def complete_turn(result: TurnResult) -> None:
+def complete_turn(result: TurnResult, *, lease_owner: str | None = None) -> bool:
     context_snapshot = _context_snapshot_from_result(result)
     should_update_context = bool(result.goal.conversation_id)
+    completed_at = datetime.now(timezone.utc)
+    completion_values = {
+        Turn.user_id: result.goal.user_id,
+        Turn.conversation_id: result.goal.conversation_id,
+        Turn.objective: result.goal.objective,
+        Turn.route: result.route,
+        Turn.quality_mode: result.goal.quality_mode,
+        Turn.status: "completed",
+        Turn.answer: result.answer,
+        Turn.model_used: result.model_used,
+        Turn.sources_json: _dumps([source.model_dump(mode="json") for source in result.sources]),
+        Turn.latency_ms: result.latency_ms,
+        Turn.cost_usd: result.cost_usd,
+        Turn.completed_at: completed_at,
+        Turn.updated_at: completed_at,
+        Turn.lease_owner: None,
+        Turn.lease_expires_at: None,
+        Turn.heartbeat_at: None,
+        Turn.error_message: None,
+    }
     db = SessionLocal()
     try:
-        turn = db.get(Turn, result.turn_id)
+        turn = None
+        if lease_owner:
+            updated = (
+                db.query(Turn)
+                .filter(
+                    Turn.id == result.turn_id,
+                    Turn.status == "running",
+                    Turn.lease_owner == lease_owner,
+                )
+                .update(completion_values, synchronize_session=False)
+            )
+            if not updated:
+                db.rollback()
+                return False
+            turn = db.get(Turn, result.turn_id)
+        else:
+            turn = db.get(Turn, result.turn_id)
         if turn is None:
             turn = Turn(
                 id=result.turn_id,
@@ -830,19 +1089,9 @@ def complete_turn(result: TurnResult) -> None:
                 quality_mode=result.goal.quality_mode,
             )
             db.add(turn)
-        turn.user_id = result.goal.user_id
-        turn.conversation_id = result.goal.conversation_id
-        turn.objective = result.goal.objective
-        turn.route = result.route
-        turn.quality_mode = result.goal.quality_mode
-        turn.status = "completed"
-        turn.answer = result.answer
-        turn.model_used = result.model_used
-        turn.sources_json = _dumps([source.model_dump(mode="json") for source in result.sources])
-        turn.latency_ms = result.latency_ms
-        turn.cost_usd = result.cost_usd
-        turn.completed_at = datetime.now(timezone.utc)
-        turn.updated_at = turn.completed_at
+        if lease_owner is None:
+            for field, value in completion_values.items():
+                setattr(turn, field.key, value)
 
         if turn.conversation_id:
             conversation = db.get(Conversation, turn.conversation_id)
@@ -903,6 +1152,7 @@ def complete_turn(result: TurnResult) -> None:
     _record_routing_feedback(result)
     if should_update_context:
         _submit_context_update(context_snapshot)
+    return True
 
 
 def _record_routing_feedback(result: TurnResult) -> None:
@@ -935,6 +1185,9 @@ def fail_turn(turn_id: str, message: str) -> None:
             turn.error_message = message
             turn.completed_at = datetime.now(timezone.utc)
             turn.updated_at = turn.completed_at
+            turn.lease_owner = None
+            turn.lease_expires_at = None
+            turn.heartbeat_at = None
             db.commit()
     finally:
         db.close()
@@ -948,6 +1201,9 @@ def load_turn_status(turn_id: str, user_id: str) -> dict | None:
             return None
         status = turn.status
         error_message = turn.error_message
+        attempt_count = turn.attempt_count
+        max_attempts = turn.max_attempts
+        heartbeat_at = turn.heartbeat_at
     finally:
         db.close()
     result = load_turn(turn_id, user_id)
@@ -957,6 +1213,9 @@ def load_turn_status(turn_id: str, user_id: str) -> dict | None:
         "turn_id": turn_id,
         "status": status,
         "error_message": error_message,
+        "attempt_count": attempt_count,
+        "max_attempts": max_attempts,
+        "heartbeat_at": heartbeat_at.isoformat() if heartbeat_at else None,
         "turn": result.model_dump(mode="json"),
     }
 

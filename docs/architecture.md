@@ -15,10 +15,11 @@ The frontend never calls model providers directly. All model access, auth verifi
 
 ```
 Browser (AgentShell)
-  -> POST /turns/stream   (SSE)
+  -> POST /turns          (durable enqueue)
   -> Clerk JWT verification
   -> rate limit check
-  -> persist Turn record
+  -> persist queued Turn + serialized request
+  -> bounded turn worker claims a renewable DB lease
   -> orchestrator.py
        - LLM-backed route decision (OrchestratorDecision)
        - signal-based escalation from routing_policy.py
@@ -32,7 +33,7 @@ Browser (AgentShell)
        - model selected by model_policy.py (DB-backed, per role)
        - per-turn model override for admin users
        - configured fallbacks
-  -> stream SSE events back to client
+  -> persist progress events for status polling
   -> persist Turn result, Events, ToolCalls, Artifacts
   -> background: profile consolidation
 ```
@@ -223,6 +224,9 @@ Model assignments are managed in `model_policy.py` from the DB (`AdminSetting`),
 - LiteLLM is the single SDK surface for all model providers.
 - The orchestrator decides route and format; the composer controls are user hints that the orchestrator may override or confirm.
 - Streaming is SSE; the client polls for turn status as a recovery fallback.
+- Primary turns execute through a bounded database-backed lease queue. Expired
+  leases are retried after worker/process failure, and stale workers cannot
+  commit a result after another worker has reclaimed the turn.
 - All turn data (events, tool calls, cost, latency, route, result) is persisted for inspection, analytics, and future evals.
 - Signal-based routing provides a fast, explainable pre-filter before LLM orchestration.
 

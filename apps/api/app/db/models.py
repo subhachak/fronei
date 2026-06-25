@@ -177,6 +177,13 @@ class Turn(Base):
     latency_ms: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     cost_usd: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    request_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    lease_owner: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(
         DateTime,
@@ -392,6 +399,23 @@ def _ensure_sqlite_schema(bind) -> None:
         statements.append("ALTER TABLE workspaces ADD COLUMN priorities_json TEXT NOT NULL DEFAULT '[]'")
     if has_table("workspaces") and not has_column("workspaces", "priorities_consolidated_at"):
         statements.append("ALTER TABLE workspaces ADD COLUMN priorities_consolidated_at DATETIME")
+    if has_table("turns") and not has_column("turns", "request_json"):
+        statements.append("ALTER TABLE turns ADD COLUMN request_json TEXT NOT NULL DEFAULT '{}'")
+    if has_table("turns") and not has_column("turns", "attempt_count"):
+        statements.append("ALTER TABLE turns ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0")
+    if has_table("turns") and not has_column("turns", "max_attempts"):
+        statements.append("ALTER TABLE turns ADD COLUMN max_attempts INTEGER NOT NULL DEFAULT 3")
+    if has_table("turns") and not has_column("turns", "lease_owner"):
+        statements.append("ALTER TABLE turns ADD COLUMN lease_owner VARCHAR(128)")
+    if has_table("turns") and not has_column("turns", "lease_expires_at"):
+        statements.append("ALTER TABLE turns ADD COLUMN lease_expires_at DATETIME")
+    if has_table("turns") and not has_column("turns", "heartbeat_at"):
+        statements.append("ALTER TABLE turns ADD COLUMN heartbeat_at DATETIME")
+    if has_table("turns") and not has_column("turns", "cancel_requested"):
+        statements.append("ALTER TABLE turns ADD COLUMN cancel_requested BOOLEAN NOT NULL DEFAULT 0")
+    if has_table("turns"):
+        statements.append("CREATE INDEX IF NOT EXISTS ix_turns_lease_owner ON turns (lease_owner)")
+        statements.append("CREATE INDEX IF NOT EXISTS ix_turns_lease_expires_at ON turns (lease_expires_at)")
 
     if not has_table("document_templates"):
         statements.append("""

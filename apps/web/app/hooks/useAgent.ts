@@ -346,6 +346,10 @@ export function useAgent() {
           setError(payload.error_message || 'Agent v3 failed')
           return
         }
+        if (payload.status === 'cancelled') {
+          setError('This turn was cancelled.')
+          return
+        }
       } catch (err) {
         transientFailures += 1
         const elapsed = Date.now() - startedAt

@@ -33,18 +33,15 @@ entry points.
 ### TD-02 · Background thread-per-turn with no durable queue
 **File:** `apps/api/app/routers/agent.py` (lines 137–145)  
 **Effort:** Medium-High  
-**Status:** Open
+**Status:** ✅ Complete — DB-backed leased turn workers
 
-Each turn spawns `Thread(daemon=True)`. Daemon threads are killed on process exit —
-in-flight research or document generation is silently lost on every Railway deploy or
-crash. No thread pool cap means unbounded concurrency under load.
+Turns now persist their full request and are claimed by a bounded worker pool using
+renewable database leases. Expired leases are reclaimed after deploys/crashes, retries
+are capped, cancellation is persisted, and lease-owner fencing prevents a stale worker
+from overwriting a newer attempt.
 
-**Fix:** Replace with a durable task queue. Options in order of effort:
-1. DB-backed polling worker (reuse existing `Turn` table with status column) — lowest infra lift
-2. ARQ (asyncio + Redis) — production-grade, Railway supports Redis
-3. Celery + Redis — standard but heavier
-
-Until fixed, set `RESTART_POLICY=never` on Railway to avoid mid-turn restarts.
+Current recovery restarts the turn from its beginning. Stage-level checkpoint/resume can
+be added later if real workloads show that replay cost is material.
 
 ---
 

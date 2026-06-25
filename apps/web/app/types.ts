@@ -94,8 +94,11 @@ export type AgentResult = {
 
 export type AgentTurnStatus = {
   turn_id: string
-  status: 'running' | 'completed' | 'failed' | string
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | string
   error_message?: string | null
+  attempt_count?: number
+  max_attempts?: number
+  heartbeat_at?: string | null
   turn: AgentResult
 }
 

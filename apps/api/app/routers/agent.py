@@ -10,16 +10,17 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response, StreamingResponse
 
 from app.auth import CurrentActiveUser, CurrentUserIsAdmin
+from app.config import get_settings
 from app.services.agent import model_policy, persistence
+from app.services.agent.job_worker import turn_job_worker
 from app.services.agent.models import (
     ConversationCreate,
-    TurnRequest,
-    TurnResult,
-    WorkspaceCreate,
-    WorkspaceUpdate,
     Goal,
     ProgressEvent,
     StreamEnvelope,
+    TurnRequest,
+    WorkspaceCreate,
+    WorkspaceUpdate,
     new_id,
 )
 from app.services.agent.runtime import Runtime
@@ -72,32 +73,6 @@ def _sse(envelope: StreamEnvelope) -> str:
     return f"event: {envelope.type}\ndata: {json.dumps(envelope.data, default=str)}\n\n"
 
 
-def _persist_turn_envelope(envelope: StreamEnvelope, turn_id: str | None) -> None:
-    if envelope.type == "start":
-        start_turn_id = str(envelope.data.get("turn_id") or turn_id or "")
-        goal = Goal.model_validate(envelope.data.get("goal"))
-        persistence.create_turn(goal, start_turn_id)
-    elif envelope.type == "progress":
-        progress_event = ProgressEvent.model_validate(envelope.data)
-        if not progress_event.data.get("ephemeral"):
-            persistence.append_event(progress_event)
-    elif envelope.type == "result":
-        result = TurnResult.model_validate(envelope.data)
-        persistence.complete_turn(result)
-    elif envelope.type == "error" and turn_id:
-        persistence.fail_turn(turn_id, str(envelope.data.get("message") or "Agent v3 failed"))
-
-
-def _run_turn_background(request: TurnRequest, *, user_id: str, turn_id: str) -> None:
-    runtime = Runtime()
-    try:
-        for envelope in runtime.run_stream(request, user_id=user_id, turn_id=turn_id):
-            _persist_turn_envelope(envelope, turn_id)
-    except BaseException as exc:  # pragma: no cover - defensive background boundary.
-        logger.exception("Agent v3 background turn failed")
-        persistence.fail_turn(turn_id, f"Agent v3 failed while working in the background: {exc}")
-
-
 @router.post("/turns")
 def start_turn(
     request: TurnRequest,
@@ -125,7 +100,13 @@ def start_turn(
         route=request.force_route or ("research_document" if request.output_format != "chat" else "research"),
         quality_mode=request.quality_mode,
     )
-    persistence.create_turn(placeholder_goal, turn_id)
+    settings = get_settings()
+    persistence.enqueue_turn(
+        placeholder_goal,
+        turn_id,
+        request,
+        max_attempts=settings.turn_worker_max_attempts,
+    )
     persistence.append_event(
         ProgressEvent(
             turn_id=turn_id,
@@ -134,13 +115,7 @@ def start_turn(
             data={"conversation_id": conversation.id},
         )
     )
-    worker = Thread(
-        target=_run_turn_background,
-        kwargs={"request": request, "user_id": user_id, "turn_id": turn_id},
-        name=f"turn-bg-{turn_id}",
-        daemon=True,
-    )
-    worker.start()
+    turn_job_worker.notify()
     return {
         "turn_id": turn_id,
         "conversation_id": conversation.id,
@@ -221,7 +196,7 @@ def stream_turn(
             try:
                 if envelope.type == "start":
                     turn_id = str(envelope.data.get("turn_id") or "")
-                _persist_turn_envelope(envelope, turn_id)
+                persistence.persist_turn_envelope(envelope, turn_id)
             except Exception as exc:
                 logger.exception("Agent v3 stream persistence failed for envelope type=%s", envelope.type)
                 if envelope.type == "result" and turn_id:
@@ -260,6 +235,14 @@ def get_turn_status(turn_id: str, user_id: str = CurrentActiveUser) -> dict:
     if status is None:
         raise HTTPException(status_code=404, detail="Agent v3 turn not found")
     return status
+
+
+@router.post("/turns/{turn_id}/cancel")
+def cancel_turn(turn_id: str, user_id: str = CurrentActiveUser) -> dict:
+    if not persistence.request_turn_cancellation(turn_id, user_id):
+        raise HTTPException(status_code=409, detail="Turn is not queued or running.")
+    turn_job_worker.notify()
+    return {"turn_id": turn_id, "status": "cancellation_requested"}
 
 
 @router.get("/workspaces")

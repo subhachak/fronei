@@ -78,6 +78,14 @@ class Settings(BaseSettings):
     max_decompose_workers: int = 4
     max_pptx_render_qa_workers: int = 4
 
+    # Durable turn worker. API requests only enqueue work; a bounded set of
+    # database-backed workers claims turns with renewable leases. Expired
+    # leases are eligible for retry after a deploy or process crash.
+    turn_worker_concurrency: int = 2
+    turn_worker_poll_seconds: float = 0.5
+    turn_worker_lease_seconds: int = 90
+    turn_worker_max_attempts: int = 3
+
     # Persistent user-uploaded document templates. In production this should
     # point at a mounted volume, e.g. /data/fronei/document_templates.
     document_template_storage_dir: str = "./data/document_templates"

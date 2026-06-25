@@ -1,0 +1,349 @@
+[
+  {
+    "id": "direct_plain_explanation",
+    "category": "routing",
+    "description": "Stable explanatory questions should stay on the direct fast path.",
+    "request": {"message": "Explain API rate limiting in plain English."},
+    "fast_router_candidate": {
+      "path": "direct_fast",
+      "confidence": 0.92,
+      "reason": "Stable explanatory request."
+    },
+    "expected": {
+      "fast_path": "direct_fast",
+      "route": "direct"
+    }
+  },
+  {
+    "id": "current_model_pricing_escalates_to_web",
+    "category": "freshness",
+    "description": "Current model pricing must not be answered from memory.",
+    "request": {"message": "What is the latest OpenAI API model pricing?"},
+    "fast_router_candidate": {
+      "path": "direct_fast",
+      "confidence": 0.9,
+      "reason": "Candidate incorrectly chose memory."
+    },
+    "expected": {
+      "fast_path": "web_fast",
+      "route": "research",
+      "research_level": "easy",
+      "matched_signal_groups": ["currentness", "volatile_product_catalog"],
+      "web_query_contains": "OpenAI"
+    }
+  },
+  {
+    "id": "current_provider_recommendation_escalates_to_web",
+    "category": "freshness",
+    "description": "Recommendations among volatile providers require a current lookup.",
+    "request": {"message": "Which LLM provider should I use today for a support chatbot?"},
+    "fast_router_candidate": {
+      "path": "direct_fast",
+      "confidence": 0.88,
+      "reason": "Candidate incorrectly chose memory."
+    },
+    "expected": {
+      "fast_path": "web_fast",
+      "route": "research",
+      "research_level": "easy",
+      "matched_signal_groups": ["currentness", "volatile_product_catalog", "recommendation_selection"]
+    }
+  },
+  {
+    "id": "high_stakes_financial_request_escalates",
+    "category": "safety",
+    "description": "Financial advice should use the full runtime.",
+    "request": {"message": "Should I invest my retirement savings in this private company?"},
+    "fast_router_candidate": {
+      "path": "direct_fast",
+      "confidence": 0.91,
+      "reason": "Candidate incorrectly chose direct."
+    },
+    "orchestrator_candidate": {
+      "route": "research",
+      "confidence": 0.86,
+      "reason": "Source-grounded financial decision support is required.",
+      "research_level": "deep",
+      "requires_confirmation": false
+    },
+    "expected": {
+      "fast_path": "agentic",
+      "route": "research",
+      "research_level": "deep",
+      "requires_confirmation": true,
+      "matched_signal_groups": ["high_stakes"]
+    }
+  },
+  {
+    "id": "pptx_request_forces_document_workflow",
+    "category": "artifacts",
+    "description": "A PPTX request cannot be handled as ordinary chat.",
+    "request": {
+      "message": "Create a five-slide product strategy deck.",
+      "output_format": "pptx"
+    },
+    "orchestrator_candidate": {
+      "route": "document",
+      "confidence": 0.95,
+      "reason": "The requested output is a deck.",
+      "output_format": "pptx"
+    },
+    "expected": {
+      "fast_path": "agentic",
+      "route": "document",
+      "output_format": "pptx"
+    }
+  },
+  {
+    "id": "docx_request_forces_document_workflow",
+    "category": "artifacts",
+    "description": "A DOCX request must use document generation.",
+    "request": {
+      "message": "Write a project kickoff memo from these supplied notes.",
+      "output_format": "docx"
+    },
+    "orchestrator_candidate": {
+      "route": "document",
+      "confidence": 0.94,
+      "reason": "The user requested a document.",
+      "output_format": "docx"
+    },
+    "expected": {
+      "fast_path": "agentic",
+      "route": "document",
+      "output_format": "docx"
+    }
+  },
+  {
+    "id": "markdown_request_forces_document_workflow",
+    "category": "artifacts",
+    "description": "Explicit markdown work products use the document workflow.",
+    "request": {
+      "message": "Produce a structured architecture decision record.",
+      "output_format": "markdown"
+    },
+    "orchestrator_candidate": {
+      "route": "document",
+      "confidence": 0.93,
+      "reason": "The user requested a structured artifact.",
+      "output_format": "markdown"
+    },
+    "expected": {
+      "fast_path": "agentic",
+      "route": "document",
+      "output_format": "markdown"
+    }
+  },
+  {
+    "id": "research_deck_combines_workflows",
+    "category": "artifacts",
+    "description": "A researched deck uses the combined research-document route.",
+    "request": {
+      "message": "Research the current enterprise AI market and create a board deck.",
+      "output_format": "pptx"
+    },
+    "orchestrator_candidate": {
+      "route": "research",
+      "confidence": 0.91,
+      "reason": "Research is required before writing.",
+      "research_level": "regular",
+      "output_format": "pptx"
+    },
+    "expected": {
+      "fast_path": "agentic",
+      "route": "research_document",
+      "research_level": "deep",
+      "requires_confirmation": true,
+      "output_format": "pptx"
+    }
+  },
+  {
+    "id": "comprehensive_market_analysis_requires_confirmation",
+    "category": "research",
+    "description": "Broad strategic research is deep and requires confirmation.",
+    "request": {"message": "Conduct a comprehensive market analysis for our board strategy session."},
+    "fast_router_candidate": {
+      "path": "agentic",
+      "confidence": 0.95,
+      "reason": "Broad strategic research."
+    },
+    "orchestrator_candidate": {
+      "route": "research",
+      "confidence": 0.9,
+      "reason": "Broad market analysis.",
+      "research_level": "regular",
+      "requires_confirmation": false
+    },
+    "expected": {
+      "fast_path": "agentic",
+      "route": "research",
+      "research_level": "deep",
+      "requires_confirmation": true
+    }
+  },
+  {
+    "id": "explicit_deep_mode_requires_confirmation",
+    "category": "research",
+    "description": "Explicit deep mode always requires confirmation.",
+    "request": {
+      "message": "Research the carbon accounting software market.",
+      "research_level": "deep"
+    },
+    "orchestrator_candidate": {
+      "route": "research",
+      "confidence": 0.9,
+      "reason": "Explicit research request.",
+      "research_level": "regular",
+      "requires_confirmation": false
+    },
+    "expected": {
+      "fast_path": "agentic",
+      "route": "research",
+      "research_level": "deep",
+      "requires_confirmation": true
+    }
+  },
+  {
+    "id": "confirmed_deep_mode_stays_deep",
+    "category": "research",
+    "description": "A confirmed deep request remains on the deep research route.",
+    "request": {
+      "message": "Research the carbon accounting software market.",
+      "research_level": "deep",
+      "confirm_deep_research": true
+    },
+    "orchestrator_candidate": {
+      "route": "research",
+      "confidence": 0.92,
+      "reason": "Confirmed deep research.",
+      "research_level": "deep",
+      "requires_confirmation": true
+    },
+    "expected": {
+      "fast_path": "agentic",
+      "route": "research",
+      "research_level": "deep",
+      "requires_confirmation": true
+    }
+  },
+  {
+    "id": "vague_request_asks_for_clarification",
+    "category": "clarification",
+    "description": "An ungrounded vague command should not guess.",
+    "request": {"message": "Do it."},
+    "fast_router_candidate": {
+      "path": "agentic",
+      "confidence": 0.62,
+      "reason": "Insufficient target."
+    },
+    "orchestrator_candidate": null,
+    "expected": {
+      "fast_path": "agentic",
+      "route": "clarify"
+    }
+  },
+  {
+    "id": "vague_research_request_asks_for_target",
+    "category": "clarification",
+    "description": "Research without a subject should pause for clarification.",
+    "request": {"message": "Research it."},
+    "fast_router_candidate": {
+      "path": "agentic",
+      "confidence": 0.7,
+      "reason": "Missing research target."
+    },
+    "orchestrator_candidate": null,
+    "expected": {
+      "fast_path": "agentic",
+      "route": "clarify"
+    }
+  },
+  {
+    "id": "grounded_followup_uses_conversation_context",
+    "category": "context",
+    "description": "A grounded follow-up can remain direct.",
+    "request": {
+      "message": "Summarize its main tradeoffs.",
+      "conversation_context": "Current conversation topic: PostgreSQL connection pooling and PgBouncer."
+    },
+    "fast_router_candidate": {
+      "path": "direct_fast",
+      "confidence": 0.82,
+      "reason": "The target is present in current conversation context."
+    },
+    "expected": {
+      "fast_path": "direct_fast",
+      "route": "direct"
+    }
+  },
+  {
+    "id": "low_confidence_fast_answer_escalates",
+    "category": "routing",
+    "description": "Low-confidence fast routing must fail toward the full runtime.",
+    "request": {"message": "Help me choose an approach for the migration."},
+    "fast_router_candidate": {
+      "path": "direct_fast",
+      "confidence": 0.4,
+      "reason": "Uncertain target."
+    },
+    "orchestrator_candidate": {
+      "route": "clarify",
+      "confidence": 0.76,
+      "reason": "The migration target is underspecified.",
+      "clarification_question": "Which migration are you referring to?"
+    },
+    "expected": {
+      "fast_path": "agentic",
+      "route": "clarify"
+    }
+  },
+  {
+    "id": "forced_research_route_is_honored",
+    "category": "controls",
+    "description": "An explicit route override bypasses fast routing.",
+    "request": {
+      "message": "Explain the history of TCP congestion control.",
+      "force_route": "research",
+      "research_level": "regular"
+    },
+    "expected": {
+      "fast_path": "agentic",
+      "route": "research",
+      "research_level": "regular"
+    }
+  },
+  {
+    "id": "forced_document_route_is_honored",
+    "category": "controls",
+    "description": "An explicit document route remains authoritative.",
+    "request": {
+      "message": "Turn these notes into a concise memo.",
+      "force_route": "document",
+      "output_format": "docx"
+    },
+    "expected": {
+      "fast_path": "agentic",
+      "route": "document",
+      "output_format": "docx"
+    }
+  },
+  {
+    "id": "quick_release_lookup_stays_lightweight",
+    "category": "freshness",
+    "description": "A narrow release-date lookup should use lightweight web research.",
+    "request": {"message": "When was the latest stable Python release announced?"},
+    "fast_router_candidate": {
+      "path": "web_fast",
+      "confidence": 0.86,
+      "reason": "Narrow current lookup.",
+      "web_query": "latest stable Python release announcement"
+    },
+    "expected": {
+      "fast_path": "web_fast",
+      "route": "research",
+      "research_level": "easy",
+      "matched_signal_groups": ["currentness"],
+      "web_query_contains": "Python"
+    }
+  }
+]

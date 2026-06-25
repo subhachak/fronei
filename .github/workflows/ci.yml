@@ -43,6 +43,9 @@ jobs:
       - name: Migrate test database
         run: uv run python -m alembic upgrade head
 
+      - name: Deterministic agent evaluations
+        run: uv run python -m app.evals.runner --format github
+
       - name: Test
         run: uv run python -m pytest
 

@@ -250,6 +250,9 @@ Model assignments are managed in `model_policy.py` from the DB (`AdminSetting`),
   short-lived presigned URLs rather than sending binary data through the API.
   The private bucket permits browser GET requests from the Fronei web origin.
 - All turn data (events, tool calls, cost, latency, route, result) is persisted for inspection, analytics, and future evals.
+- Deterministic golden scenarios exercise routing, freshness escalation,
+  artifact selection, clarification, controls, and deep-research confirmation
+  in CI without calling external models.
 - Signal-based routing provides a fast, explainable pre-filter before LLM orchestration.
 
 ---

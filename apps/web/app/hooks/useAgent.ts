@@ -5,6 +5,7 @@ import { useFroneiAuth } from '../lib/auth'
 import { createApiClient, readErrorBody } from '../lib/api'
 import { copyToClipboard, draftConversationId, draftWorkspaceId, sleep, streamErrorMessage, titleFromMessage, uniqueWorkspaceName } from '../lib/format'
 import { mapConversation, mapTurn, mapWorkspace } from '../lib/mappers'
+import { readSse } from '../lib/sse'
 import { useAttachment } from './useAttachment'
 import { useProfileSettings } from './useProfileSettings'
 import { useTemplates } from './useTemplates'
@@ -28,6 +29,7 @@ import type {
 const INITIAL_VISIBLE_TURNS = 6
 const TURN_POLL_INTERVAL_MS = 1200
 const TURN_POLL_RECOVERY_WINDOW_MS = 20 * 60 * 1000
+const TURN_STREAM_RECONNECT_ATTEMPTS = 3
 
 // Mirrors app/services/agent/model_policy.py:MODEL_ROLES on the backend.
 // The per-turn override is admin-only and intentionally blanket: it applies
@@ -301,13 +303,114 @@ export function useAgent() {
       })
       if (!response.ok) throw new Error(await readErrorBody(response, 'Agent v3 job could not start'))
       const started = await response.json() as { turn_id: string; conversation_id: string; status: string }
-      await pollTurnStatus(started.turn_id, started.conversation_id || conversationId, runMessage, option)
+      const activeConversation = started.conversation_id || conversationId
+      const streamed = await streamTurnStatus(started.turn_id, activeConversation, runMessage, option)
+      if (!streamed) {
+        await pollTurnStatus(started.turn_id, activeConversation, runMessage, option)
+      }
     } catch (err) {
       setError(streamErrorMessage(err))
     } finally {
       setRunning(false)
       activeRunMessageRef.current = null
     }
+  }
+
+  function completeTurn(
+    next: AgentResult,
+    conversationId: string,
+    turnMessage: string,
+    option?: FollowUpOption,
+  ) {
+    const nextEvents = next.events || eventsRef.current
+    eventsRef.current = nextEvents
+    setEvents(nextEvents)
+    setResult(next)
+    appendTurnToActiveConversation({
+      id: next.turn_id,
+      title: titleFromMessage(turnMessage),
+      route: next.route,
+      createdAt: next.created_at || new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+      message: turnMessage,
+      qualityMode,
+      outputFormat: option?.output_format || outputFormat,
+      events: nextEvents,
+      result: next,
+      artifacts: next.artifacts || [],
+      sourceCount: next.sources?.length || 0,
+    }, conversationId)
+  }
+
+  function applyTerminalStatus(
+    payload: AgentTurnStatus,
+    conversationId: string,
+    turnMessage: string,
+    option?: FollowUpOption,
+  ): boolean {
+    if (payload.status === 'completed') {
+      completeTurn(payload.turn, conversationId, turnMessage, option)
+      return true
+    }
+    if (payload.status === 'failed') {
+      setError(payload.error_message || 'Agent v3 failed')
+      return true
+    }
+    if (payload.status === 'cancelled') {
+      setError('This turn was cancelled.')
+      return true
+    }
+    return false
+  }
+
+  async function streamTurnStatus(
+    turnId: string,
+    conversationId: string,
+    turnMessage: string,
+    option?: FollowUpOption,
+  ): Promise<boolean> {
+    let lastEventId = ''
+    const seenEventIds = new Set(
+      eventsRef.current.map(event => event.event_id).filter((value): value is string => Boolean(value)),
+    )
+    for (let attempt = 0; attempt < TURN_STREAM_RECONNECT_ATTEMPTS; attempt += 1) {
+      try {
+        const response = await authorizedFetch(`/turns/${turnId}/stream`, {
+          headers: lastEventId ? { 'Last-Event-ID': lastEventId } : {},
+        })
+        if (!response.ok) throw new Error(await readErrorBody(response, 'Could not stream turn updates'))
+        for await (const message of readSse(response)) {
+          if (message.id) lastEventId = message.id
+          if (message.event === 'progress') {
+            const progress = JSON.parse(message.data) as ProgressEvent
+            const eventId = progress.event_id || message.id
+            if (eventId && seenEventIds.has(eventId)) continue
+            if (eventId) seenEventIds.add(eventId)
+            const nextEvent = eventId ? { ...progress, event_id: eventId } : progress
+            eventsRef.current = [...eventsRef.current, nextEvent]
+            setEvents(eventsRef.current)
+            setError(null)
+          }
+          if (message.event === 'turn') {
+            const payload = JSON.parse(message.data) as AgentTurnStatus
+            return applyTerminalStatus(payload, conversationId, turnMessage, option)
+          }
+        }
+        throw new Error('Turn update stream ended before completion.')
+      } catch {
+        if (attempt + 1 >= TURN_STREAM_RECONNECT_ATTEMPTS) return false
+        const recoveringEvent: ProgressEvent = {
+          stage: 'connection_recovering',
+          message: 'The browser connection is reconnecting while Fronei keeps working in the background.',
+          data: { ephemeral: true, failure_count: attempt + 1, turn_id: turnId },
+          created_at: new Date().toISOString(),
+        }
+        eventsRef.current = [...eventsRef.current.filter(event => event.stage !== 'connection_recovering'), recoveringEvent]
+        setEvents(eventsRef.current)
+        await sleep(Math.min(5000, 750 * 2 ** attempt))
+      }
+    }
+    return false
   }
 
   async function pollTurnStatus(turnId: string, conversationId: string, turnMessage: string, option?: FollowUpOption) {
@@ -324,32 +427,7 @@ export function useAgent() {
         setError(null)
         eventsRef.current = nextEvents
         setEvents(nextEvents)
-        if (payload.status === 'completed') {
-          setResult(next)
-          appendTurnToActiveConversation({
-            id: next.turn_id,
-            title: titleFromMessage(turnMessage),
-            route: next.route,
-            createdAt: next.created_at || new Date().toISOString(),
-            completedAt: new Date().toISOString(),
-            message: turnMessage,
-            qualityMode,
-            outputFormat: option?.output_format || outputFormat,
-            events: nextEvents,
-            result: next,
-            artifacts: next.artifacts || [],
-            sourceCount: next.sources?.length || 0,
-          }, conversationId)
-          return
-        }
-        if (payload.status === 'failed') {
-          setError(payload.error_message || 'Agent v3 failed')
-          return
-        }
-        if (payload.status === 'cancelled') {
-          setError('This turn was cancelled.')
-          return
-        }
+        if (applyTerminalStatus(payload, conversationId, turnMessage, option)) return
       } catch (err) {
         transientFailures += 1
         const elapsed = Date.now() - startedAt

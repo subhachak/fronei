@@ -6,7 +6,7 @@ import time
 from queue import Empty, Queue
 from threading import Thread
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import RedirectResponse, Response, StreamingResponse
 
 from app.auth import CurrentActiveUser, CurrentUserIsAdmin
@@ -29,6 +29,7 @@ router = APIRouter(tags=["agent"])
 logger = logging.getLogger(__name__)
 
 SSE_HEARTBEAT_SECONDS = 10.0
+TURN_STREAM_POLL_SECONDS = 0.5
 
 
 def _sanitize_model_overrides(request: TurnRequest, *, is_admin: bool) -> TurnRequest:
@@ -71,6 +72,15 @@ _DONE = object()
 
 def _sse(envelope: StreamEnvelope) -> str:
     return f"event: {envelope.type}\ndata: {json.dumps(envelope.data, default=str)}\n\n"
+
+
+def _turn_update_sse(event: str, data: dict, *, event_id: str | None = None) -> str:
+    lines = []
+    if event_id:
+        lines.append(f"id: {event_id}")
+    lines.append(f"event: {event}")
+    lines.append(f"data: {json.dumps(data, default=str)}")
+    return "\n".join(lines) + "\n\n"
 
 
 @router.post("/turns")
@@ -235,6 +245,60 @@ def get_turn_status(turn_id: str, user_id: str = CurrentActiveUser) -> dict:
     if status is None:
         raise HTTPException(status_code=404, detail="Agent v3 turn not found")
     return status
+
+
+@router.get("/turns/{turn_id}/stream")
+def stream_turn_updates(
+    turn_id: str,
+    after: str | None = None,
+    last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
+    user_id: str = CurrentActiveUser,
+) -> StreamingResponse:
+    if persistence.load_turn_state(turn_id, user_id) is None:
+        raise HTTPException(status_code=404, detail="Agent v3 turn not found")
+
+    def generate():
+        cursor = last_event_id or after
+        last_heartbeat = time.monotonic()
+        while True:
+            updates = persistence.load_turn_events_after(turn_id, user_id, cursor)
+            if updates is None:
+                return
+            for update in updates:
+                cursor = update.event_id
+                yield _turn_update_sse(
+                    "progress",
+                    update.model_dump(mode="json"),
+                    event_id=update.event_id,
+                )
+
+            state = persistence.load_turn_state(turn_id, user_id)
+            if state is None:
+                return
+            if state["status"] in {"completed", "failed", "cancelled"}:
+                terminal = persistence.load_turn_status(turn_id, user_id)
+                if terminal is not None:
+                    yield _turn_update_sse(
+                        "turn",
+                        terminal,
+                        event_id=f"terminal:{turn_id}:{state['status']}",
+                    )
+                return
+
+            now = time.monotonic()
+            if now - last_heartbeat >= SSE_HEARTBEAT_SECONDS:
+                yield ": keepalive\n\n"
+                last_heartbeat = now
+            time.sleep(TURN_STREAM_POLL_SECONDS)
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.post("/turns/{turn_id}/cancel")

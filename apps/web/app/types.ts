@@ -26,6 +26,8 @@ export type DocumentTemplateOption = {
 }
 
 export type ProgressEvent = {
+  event_id?: string
+  turn_id?: string
   stage: string
   message: string
   data?: Record<string, unknown>

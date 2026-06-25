@@ -138,6 +138,11 @@ export async function mockFroneiApi(page: Page) {
         clerk_audience_configured: false,
         admin_user_ids_configured: 1,
         admin_emails_configured: 1,
+        sentry_configured: false,
+        structured_logging: false,
+        worker: { configured_concurrency: 2, live_threads: 2 },
+        artifact_storage_backend: 'local',
+        artifact_s3_bucket_configured: false,
       })
     }
 
@@ -162,6 +167,29 @@ export async function mockFroneiApi(page: Page) {
         status: 'completed',
         error_message: null,
         turn: completedTurn,
+      })
+    }
+
+    if (method === 'GET' && path === '/turns/turn_e2e/stream') {
+      return route.fulfill({
+        status: 200,
+        contentType: 'text/event-stream',
+        body: [
+          'id: event_e2e',
+          'event: progress',
+          `data: ${JSON.stringify(completedTurn.events[0])}`,
+          '',
+          'id: terminal:turn_e2e:completed',
+          'event: turn',
+          `data: ${JSON.stringify({
+            turn_id: 'turn_e2e',
+            status: 'completed',
+            error_message: null,
+            turn: completedTurn,
+          })}`,
+          '',
+          '',
+        ].join('\n'),
       })
     }
 

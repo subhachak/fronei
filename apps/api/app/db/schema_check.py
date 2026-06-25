@@ -19,8 +19,6 @@ from alembic.runtime.migration import MigrationContext
 from alembic.script import ScriptDirectory
 from sqlalchemy.engine import Engine
 
-from app.config import get_settings
-
 logger = logging.getLogger(__name__)
 
 # apps/api/app/db/schema_check.py -> apps/api
@@ -35,16 +33,9 @@ class SchemaVersionMismatch(RuntimeError):
 def check_schema_version(engine: Engine) -> None:
     """Compare the DB's alembic_version table to the code's migration head.
 
-    Raises SchemaVersionMismatch in production if they differ. Logs a
-    warning (but doesn't block startup) outside production, and skips
-    entirely for local SQLite, which is bootstrapped via
-    Base.metadata.create_all() and isn't alembic-stamped.
+    Raises SchemaVersionMismatch in every environment if they differ.
+    Application startup never creates or repairs schema; run Alembic first.
     """
-    settings = get_settings()
-
-    if "sqlite" in str(engine.url):
-        return
-
     cfg = Config(str(_ALEMBIC_INI))
     script = ScriptDirectory.from_config(cfg)
     expected_heads = set(script.get_heads())
@@ -61,8 +52,6 @@ def check_schema_version(engine: Engine) -> None:
             "run did not commit). Run `alembic upgrade head` against this "
             "database, then redeploy."
         )
-        if settings.is_production:
-            raise SchemaVersionMismatch(message)
-        logger.warning(message)
+        raise SchemaVersionMismatch(message)
     else:
         logger.info("Schema version check OK: alembic head %s matches database.", current_heads)

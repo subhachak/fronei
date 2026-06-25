@@ -107,6 +107,10 @@ templates, attachments, and profile defaults each have focused hooks.
 
 ## Backend
 
+Alembic is the sole schema-management path. API startup compares the live
+database revision to the migration head and fails before serving traffic when
+the database is blank or stale; it never runs `create_all` or ad hoc repair DDL.
+
 ### API routers
 
 | Router | Prefix | Purpose |

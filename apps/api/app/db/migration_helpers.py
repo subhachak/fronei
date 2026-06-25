@@ -1,12 +1,9 @@
 """Shared helpers for writing idempotent Alembic migrations.
 
-Production (Neon Postgres) was originally bootstrapped via SQLAlchemy's
-`Base.metadata.create_all()` rather than Alembic, so the DB may not have an
-`alembic_version` row reflecting its true schema state. To make `alembic
-upgrade head` safe to run from *any* starting point — including a completely
-unstamped DB where every table/column already exists — every migration's
-`upgrade()` should guard its DDL with these helpers instead of assuming a
-clean slate.
+Some legacy databases were originally bootstrapped via SQLAlchemy
+`create_all()` before Alembic became authoritative. These helpers keep older
+migrations idempotent for those historical databases. Application startup no
+longer creates or repairs schema; all new schema evolution belongs in Alembic.
 """
 from __future__ import annotations
 

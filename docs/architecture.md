@@ -97,7 +97,9 @@ CSS custom properties in `globals.css` (`--bg-base`, `--bg-nav`, `--ac`, `--t1`,
 
 ### State management
 
-`useAgent` (custom hook) owns all agent state: workspaces, conversations, turns, running flag, events stream, result, attachments, templates, and all CRUD actions. It is the single source of truth passed down as props.
+`useAgent` is the composition layer passed down to the shell. Durable turn state lives
+in `useTurnRunner`; workspace/conversation loading and CRUD live in `useWorkspaces`;
+templates, attachments, and profile defaults each have focused hooks.
 
 `useTheme` manages the `data-theme` attribute and localStorage persistence.
 

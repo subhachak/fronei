@@ -96,16 +96,16 @@ with a Redis hash.
 ### TD-06 · useAgent.ts is a ~700-line god hook with 40+ state variables
 **File:** `apps/web/app/hooks/useAgent.ts`  
 **Effort:** Medium  
-**Status:** In progress — `useTemplates`, `useAttachment`, `useProfileSettings` extracted
+**Status:** ✅ Complete — focused hooks and frontend unit test foundation
 
-Handles: auth, workspaces CRUD, conversations CRUD, turn polling, file attachments,
-templates, profile settings, admin flag, model override, clipboard, artifact download.
-No unit tests (frontend is Playwright e2e only).
+`useAgent.ts` is now a 222-line composition layer. Workspace/conversation CRUD and
+selection live in `useWorkspaces.ts`; SSE, reconnection, polling fallback, progress,
+terminal state, and run execution live in `useTurnRunner.ts`. Templates, attachments,
+and profile settings remain in their previously extracted hooks.
 
-**Remaining work:**
-- Extract `useWorkspaces.ts` (workspace + conversation CRUD, ~200 lines)
-- Extract `useTurnRunner.ts` (turn lifecycle, polling, ~150 lines)
-- Add Vitest + React Testing Library for unit tests
+Vitest + React Testing Library now cover fragmented SSE parsing, multiline frames,
+stream completion, and optimistic workspace creation. Playwright remains the browser
+workflow layer.
 
 ---
 

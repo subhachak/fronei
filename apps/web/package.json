@@ -7,6 +7,9 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
+    "test": "vitest run",
+    "test:unit": "vitest run",
+    "test:unit:watch": "vitest",
     "test:e2e": "npm run test:e2e:guard && playwright test",
     "test:e2e:guard": "tsx scripts/check-e2e-guard.ts",
     "test:e2e:ui": "playwright test --ui"
@@ -20,7 +23,7 @@
     "@types/react-dom": "^19.2.3",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
-    "dompurify": "^3.4.8",
+    "dompurify": "^3.4.11",
     "highlight.js": "^11.11.1",
     "lucide-react": "^1.18.0",
     "mammoth": "^1.12.0",
@@ -35,9 +38,12 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.61.0",
+    "@testing-library/react": "^16.3.2",
     "autoprefixer": "^10.5.0",
-    "postcss": "^8.4.31",
+    "jsdom": "^29.1.1",
+    "postcss": "^8.5.15",
     "tailwindcss": "^3.4.17",
-    "tsx": "^4.21.0"
+    "tsx": "^4.21.0",
+    "vitest": "^4.1.9"
   }
 }

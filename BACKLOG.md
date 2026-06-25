@@ -132,20 +132,17 @@ Alembic. SQLAlchemy's `JSONB` type handles serialization automatically.
 
 ---
 
-### TD-09 · Feature flag sprawl — 8 env-var booleans gating an in-flight migration
-**File:** `apps/api/app/config.py` (lines 116–139)  
-**Effort:** Low (clean up after migration decision)  
-**Status:** Open; turn-graph migration is stalled at `turn_graph_enabled=False`
+### TD-09 · Feature flag sprawl from runtime migration
+**File:** `apps/api/app/config.py`
+**Effort:** Low
+**Status:** ✅ Complete — obsolete turn-graph rollout flags removed
 
-`turn_graph_enabled`, `turn_graph_authoritative`, `orchestrator_enabled`,
-`turn_graph_debug_enabled`, `agentdeck_usage_stats_weighting_enabled`,
-`agentdeck_vision_judge_enabled`, `agentdeck_warm_renderer_enabled`,
-`seed_registry_on_startup` — all off by default in production.
-
-**Fix:** Make a decision: complete the turn-graph migration or revert it. If completing:
-- Enable flags one at a time in staging, validate, then cut to production
-- Delete each flag + its guarded code path once the cutover is clean
-If reverting: delete all turn-graph code and flags in a single PR.
+Fronei's orchestrator and runtime are the sole live execution architecture.
+The unused `turn_graph_enabled`, `turn_graph_authoritative`,
+`orchestrator_enabled`, and `turn_graph_debug_enabled` settings and their
+superseded rollout documents were removed. Remaining AgentDeck and registry
+settings control active cost, quality, and startup behavior rather than
+parallel execution architectures.
 
 ---
 
@@ -208,6 +205,7 @@ is limited to bootstrap and static-allowlist protection behavior.
 |----|---------|---------------|
 | TD-10 | Pin package.json deps away from `latest` | `apps/web/package.json` |
 | TD-04 ✅ | Remove startup `create_all` and SQLite schema repair; enforce Alembic head in every environment | `apps/api/app/db/models.py`, `apps/api/app/db/schema_check.py` |
+| TD-09 ✅ | Remove dead turn-graph migration flags and superseded rollout documentation | `apps/api/app/config.py`, `docs/architecture.md` |
 | TD-14 ✅ | Consolidate admin authorization behind `RequireAdmin`; make static allowlist checks explicit | `apps/api/app/auth.py`, `apps/api/app/routers/admin.py`, `apps/api/app/routers/users.py` |
 | TD-01 (partial) | Extract all Pydantic models → `research_models.py` (−623 lines); backward-compat re-exports preserved | `research_models.py` (new), `research_subtree.py` |
 | TD-01 (partial) | Extract utilities → `research_utils.py`, profile/brief → `research_profiles.py`, contracts → `research_contracts.py`; planner → `research_planner.py` | `research_utils.py`, `research_profiles.py`, `research_contracts.py`, `research_planner.py` (all new) |

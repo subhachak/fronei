@@ -33,7 +33,7 @@ class OrchestratorDecision(BaseModel):
     fallback_reason: str | None = None
 
 
-SYSTEM_PROMPT = """You are the fresh Fronei Agent v3 orchestrator.
+SYSTEM_PROMPT = """You are Fronei's orchestration agent.
 
 Choose exactly one route:
 - direct: answer from general knowledge; no tool required.

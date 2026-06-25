@@ -89,7 +89,7 @@ def start_turn(
     user_id: str = CurrentActiveUser,
     is_admin: bool = CurrentUserIsAdmin,
 ) -> dict:
-    """Start an Agent v3 turn as a durable background job.
+    """Start an Fronei turn as a durable background job.
 
     The browser can poll /turns/{turn_id}/status for telemetry and
     completion. The run continues server-side if the browser connection drops.
@@ -139,12 +139,7 @@ def stream_turn(
     user_id: str = CurrentActiveUser,
     is_admin: bool = CurrentUserIsAdmin,
 ) -> StreamingResponse:
-    """Run the fresh v3 runtime.
-
-    This endpoint intentionally bypasses conversations, turn_graph, the old planner,
-    legacy research, and legacy document generation. It is an isolated proving
-    ground for the clean runtime.
-    """
+    """Run a turn synchronously and stream progress envelopes to the client."""
     request = _sanitize_model_overrides(request, is_admin=is_admin)
     runtime = Runtime()
     conversation = persistence.ensure_conversation(user_id, request.conversation_id, request.message)
@@ -164,12 +159,12 @@ def stream_turn(
                 for envelope in runtime.run_stream(request, user_id=user_id):
                     stream_queue.put(envelope)
             except BaseException as exc:  # pragma: no cover - defensive stream boundary.
-                logger.exception("Agent v3 runtime stream failed")
+                logger.exception("Fronei runtime stream failed")
                 stream_queue.put(
                     StreamEnvelope(
                         type="error",
                         data={
-                            "message": "Agent v3 failed while working on this turn.",
+                            "message": "Fronei failed while working on this turn.",
                             "detail": str(exc),
                         },
                     )
@@ -208,7 +203,7 @@ def stream_turn(
                     turn_id = str(envelope.data.get("turn_id") or "")
                 persistence.persist_turn_envelope(envelope, turn_id)
             except Exception as exc:
-                logger.exception("Agent v3 stream persistence failed for envelope type=%s", envelope.type)
+                logger.exception("Fronei stream persistence failed for envelope type=%s", envelope.type)
                 if envelope.type == "result" and turn_id:
                     persistence.fail_turn(turn_id, f"Result persistence failed: {exc}")
                 yield _sse(
@@ -216,7 +211,7 @@ def stream_turn(
                         type="error",
                         data={
                             "turn_id": turn_id,
-                            "message": "Agent v3 could not save this turn cleanly.",
+                            "message": "Fronei could not save this turn cleanly.",
                             "detail": str(exc),
                         },
                     )
@@ -235,7 +230,7 @@ def stream_turn(
 def get_turn(turn_id: str, user_id: str = CurrentActiveUser) -> dict:
     result = persistence.load_turn(turn_id, user_id)
     if result is None:
-        raise HTTPException(status_code=404, detail="Agent v3 turn not found")
+        raise HTTPException(status_code=404, detail="Fronei turn not found")
     return result.model_dump(mode="json")
 
 
@@ -243,7 +238,7 @@ def get_turn(turn_id: str, user_id: str = CurrentActiveUser) -> dict:
 def get_turn_status(turn_id: str, user_id: str = CurrentActiveUser) -> dict:
     status = persistence.load_turn_status(turn_id, user_id)
     if status is None:
-        raise HTTPException(status_code=404, detail="Agent v3 turn not found")
+        raise HTTPException(status_code=404, detail="Fronei turn not found")
     return status
 
 
@@ -255,7 +250,7 @@ def stream_turn_updates(
     user_id: str = CurrentActiveUser,
 ) -> StreamingResponse:
     if persistence.load_turn_state(turn_id, user_id) is None:
-        raise HTTPException(status_code=404, detail="Agent v3 turn not found")
+        raise HTTPException(status_code=404, detail="Fronei turn not found")
 
     def generate():
         cursor = last_event_id or after

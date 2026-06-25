@@ -93,7 +93,7 @@ export function useAgent() {
     }
     composerSettingsDirtyRef.current = false
     void workspaceHook.loadWorkspaces().catch(err => {
-      turnRunner.setError(err instanceof Error ? err.message : 'Could not load Agent v3 workspaces')
+      turnRunner.setError(err instanceof Error ? err.message : 'Could not load Fronei workspaces')
     })
     void templateHook.loadTemplates()
     void checkIsAdmin()

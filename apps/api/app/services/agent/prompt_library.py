@@ -98,7 +98,7 @@ def resolve_prompt(
     variables: list[str] | None = None,
     profile: str | None = None,
 ) -> ResolvedPrompt:
-    """Resolve an Agent v3 prompt from DB with safe code fallback."""
+    """Resolve an Fronei prompt from DB with safe code fallback."""
 
     db = SessionLocal()
     try:
@@ -128,7 +128,7 @@ def resolve_prompt(
         if row:
             return _row_to_resolved(row)
     except Exception:
-        logger.warning("Agent v3 prompt DB resolution failed for %s; using code fallback", prompt_id, exc_info=True)
+        logger.warning("Fronei prompt DB resolution failed for %s; using code fallback", prompt_id, exc_info=True)
     finally:
         db.close()
     return ResolvedPrompt(
@@ -374,14 +374,14 @@ def default_prompt_specs() -> list[PromptSpec]:
         PromptSpec(
             id="agent.document.write.default",
             agent_id="document_writer",
-            system_prompt="You are the Agent v3 document writer. Produce only the document body in markdown.",
+            system_prompt="You are the Fronei document writer. Produce only the document body in markdown.",
             variables=["message", "plan", "research_answer"],
             metadata={"kind": "writer"},
         ),
         PromptSpec(
             id="agent.document.section_write.default",
             agent_id="document_section_writer",
-            system_prompt="You are the Agent v3 document section writer. Write only the requested section in markdown.",
+            system_prompt="You are the Fronei document section writer. Write only the requested section in markdown.",
             variables=["section", "outline", "research_answer", "source_context"],
             metadata={"kind": "writer"},
         ),

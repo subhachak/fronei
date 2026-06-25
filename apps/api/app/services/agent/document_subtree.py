@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 class DocumentPlan(BaseModel):
-    title: str = "Agent v3 document"
+    title: str = "Fronei document"
     format: Literal["markdown", "docx", "pptx"] = "docx"
     audience: str = "general business audience"
     sections: list[str] = Field(default_factory=list)
@@ -60,7 +60,7 @@ class SectionWriteResult:
     failed_model_attempts: list[dict[str, str]]
 
 
-PLAN_PROMPT = """You are the Agent v3 document planner.
+PLAN_PROMPT = """You are the Fronei document planner.
 
 Create a document plan sized to the user request. Return only JSON:
 {
@@ -184,7 +184,7 @@ def _write_document_single_call(
     system_prompt = resolve_prompt(
         "agent.document.write.default",
         agent_id="document_writer",
-        fallback_system_prompt="You are the Agent v3 document writer. Produce only the document body in markdown.",
+        fallback_system_prompt="You are the Fronei document writer. Produce only the document body in markdown.",
         variables=["message", "plan", "research_answer"],
         profile=infer_research_profile(request.message),
     )
@@ -303,7 +303,7 @@ def _write_one_section(
     system_prompt = resolve_prompt(
         "agent.document.section_write.default",
         agent_id="document_section_writer",
-        fallback_system_prompt="You are the Agent v3 document section writer. Write only the requested section in markdown.",
+        fallback_system_prompt="You are the Fronei document section writer. Write only the requested section in markdown.",
         variables=["section", "outline", "research_answer", "source_context"],
         profile=infer_research_profile(request.message),
     )
@@ -828,7 +828,7 @@ def _presentation_requested(message: str) -> bool:
 
 def _title_from_message(message: str) -> str:
     cleaned = " ".join(message.replace("\n", " ").split())
-    return cleaned[:80].strip(" .") or "Agent v3 document"
+    return cleaned[:80].strip(" .") or "Fronei document"
 
 
 def _dedupe(values: list[str]) -> list[str]:

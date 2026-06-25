@@ -39,7 +39,7 @@ class DocumentQaIssue:
 
 def document_ast_from_markdown(title: str, markdown: str) -> DocumentAST:
     """Parse the v3 markdown draft into a small Word-oriented document AST."""
-    ast = DocumentAST(title=_clean_text(title) or "Agent v3 document")
+    ast = DocumentAST(title=_clean_text(title) or "Fronei document")
     current = DocumentSection(heading="Overview", level=1)
     paragraph_lines: list[str] = []
     bullet_items: list[str] = []

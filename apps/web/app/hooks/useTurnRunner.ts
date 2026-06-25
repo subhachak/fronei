@@ -135,7 +135,7 @@ export function useTurnRunner(options: TurnRunnerOptions) {
       return true
     }
     if (payload.status === 'failed') {
-      setError(payload.error_message || 'Agent v3 failed')
+      setError(payload.error_message || 'Fronei failed')
       return true
     }
     if (payload.status === 'cancelled') {
@@ -269,7 +269,7 @@ export function useTurnRunner(options: TurnRunnerOptions) {
           attachment_context: attachmentContext,
         }),
       })
-      if (!response.ok) throw new Error(await readErrorBody(response, 'Agent v3 job could not start'))
+      if (!response.ok) throw new Error(await readErrorBody(response, 'Fronei job could not start'))
       const started = await response.json() as { turn_id: string; conversation_id: string; status: string }
       const activeConversation = started.conversation_id || conversationId
       const streamed = await streamTurnStatus(started.turn_id, activeConversation, runMessage, option)

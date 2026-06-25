@@ -1,15 +1,10 @@
-"""Single source of truth for Agent v3 model selection.
+"""Single source of truth for Fronei model selection.
 
-Model assignment used to live in `.env` (AGENT_V3_*_MODEL) with no runtime
-control — changing it meant editing the environment and redeploying, and
-there was no way to grant a narrower "model selection" capability to admins
-without giving them shell/deploy access. This module replaces that: model
-assignment is now DB-backed (the existing generic `admin_settings` key/value
-store), editable through /admin/model-policy without a restart, and
-the `.env` AGENT_V3_*_MODEL variables no longer exist — there is exactly one
-place this is configured.
+Model assignment is DB-backed through the generic `admin_settings` key/value
+store and editable through /admin/model-policy without a restart. This is the
+only model-assignment configuration surface.
 
-Roles are the same logical stages Agent v3 already had. `direct_answer`
+Roles are the same logical stages Fronei already had. `direct_answer`
 intentionally defaults to a mini-tier model now: it is the highest-volume
 role in the system (it's what ordinary chat and quick web lookups route
 through via the fast path), so it has the most cost leverage of any single
@@ -43,7 +38,7 @@ MODEL_ROLES: tuple[str, ...] = (
 # "document_judge". judge_research(), judge_document(), and
 # judge_research_final() are pure rule-based scoring (citation-regex counts,
 # length thresholds, coverage ratios) -- none of them call a model. A
-# AGENT_V3_JUDGE_MODEL-style knob would control nothing, so it isn't here.
+# A model-policy entry for these roles would control nothing, so none exists.
 # If LLM-based judging is added later, give it a real role key then.
 
 DEFAULT_MODEL_POLICY: dict[str, str] = {
@@ -63,14 +58,12 @@ DEFAULT_MODEL_POLICY: dict[str, str] = {
     "profile_consolidation": "gpt-4.1-mini",
 }
 
-# litellm needs the provider prefix to route to Gemini; the old
-# AGENT_V3_FALLBACK_MODELS env value ("gemini-3.5-flash", no prefix) almost
-# certainly failed to route and silently dropped out of the fallback chain.
+# LiteLLM needs the provider prefix to route to Gemini.
 DEFAULT_FALLBACK_MODELS: list[str] = ["gpt-4.1", "gemini/gemini-2.5-flash", "gpt-4.1-mini"]
 
 MODEL_POLICY_SETTING_KEY = "model_policy"
 
-# Module-process cache so the hot path (every Agent v3 model call) doesn't
+# Module-process cache so the hot path (every Fronei model call) doesn't
 # hit the DB every time, while still picking up admin edits without a
 # restart -- worst case staleness is one TTL window. set_model_policy() and
 # reset_model_policy() also drop the cache immediately for same-process
@@ -84,7 +77,7 @@ def _normalize_role(role: str) -> str:
     return role.strip().lower().replace("-", "_")
 
 
-# Synonyms used at various Agent v3 call sites that should resolve to the
+# Synonyms used at various Fronei call sites that should resolve to the
 # same canonical role/policy key.
 _ROLE_ALIASES: dict[str, str] = {
     "direct": "direct_answer",
@@ -122,7 +115,7 @@ def _load_policy_from_db(db) -> dict[str, Any]:
 
 
 def get_effective_model_policy(*, fresh: bool = False) -> dict[str, Any]:
-    """The policy every Agent v3 model call resolves against. Cached briefly
+    """The policy every Fronei model call resolves against. Cached briefly
     (see _CACHE_TTL_SECONDS) so this can sit on the hot path."""
     global _cache, _cache_at
     now = time.monotonic()

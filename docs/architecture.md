@@ -13,6 +13,9 @@ The frontend never calls model providers directly. All model access, auth verifi
 
 ## Runtime Flow
 
+Fronei is the sole turn execution architecture. There is no shadow graph,
+legacy planner, or feature-flagged alternate runtime in the request path.
+
 ```
 Browser (AgentShell)
   -> POST /turns          (durable enqueue)

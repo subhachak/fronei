@@ -946,9 +946,9 @@ def admin_workspaces_view(
     user_id: str | None = Query(default=None),
     admin: AdminPrincipal = RequireAdmin,
 ) -> dict:
-    """Read Agent v3 workspace summaries across users.
+    """Read Fronei workspace summaries across users.
 
-    User-facing Agent v3 endpoints always filter by the authenticated user.
+    User-facing Fronei endpoints always filter by the authenticated user.
     This admin-only view intentionally rolls up all users unless user_id is
     provided.
     """
@@ -1040,7 +1040,7 @@ def admin_prompt_upsert(
 def admin_prompt_activate(prompt_id: str, admin: AdminPrincipal = RequireAdmin) -> dict:
     activated = prompt_library.activate_prompt(prompt_id)
     if activated is None:
-        raise HTTPException(status_code=404, detail="Agent v3 prompt not found")
+        raise HTTPException(status_code=404, detail="Fronei prompt not found")
     db = SessionLocal()
     try:
         _audit(
@@ -1062,7 +1062,7 @@ def admin_prompt_activate(prompt_id: str, admin: AdminPrincipal = RequireAdmin) 
 def admin_prompt_rollback(prompt_id: str, admin: AdminPrincipal = RequireAdmin) -> dict:
     rolled_back = prompt_library.rollback_prompt(prompt_id)
     if rolled_back is None:
-        raise HTTPException(status_code=409, detail="No previous Agent v3 prompt version exists")
+        raise HTTPException(status_code=409, detail="No previous Fronei prompt version exists")
     db = SessionLocal()
     try:
         _audit(
@@ -1082,7 +1082,7 @@ def admin_prompt_rollback(prompt_id: str, admin: AdminPrincipal = RequireAdmin) 
 
 @router.get("/model-policy")
 def admin_model_policy_view(admin: AdminPrincipal = RequireAdmin) -> dict:
-    """Effective Agent v3 model assignment: defaults merged with whatever an
+    """Effective Fronei model assignment: defaults merged with whatever an
     admin has overridden. This is the single source of truth — there is no
     .env fallback for model identity anymore."""
     db = SessionLocal()
@@ -1157,7 +1157,7 @@ def admin_routing_signals_view(
 def admin_routing_signal_approve(candidate_id: str, admin: AdminPrincipal = RequireAdmin) -> dict:
     candidate = routing_policy.set_signal_candidate_status(candidate_id, "approved")
     if candidate is None:
-        raise HTTPException(status_code=404, detail="Agent v3 routing signal candidate not found")
+        raise HTTPException(status_code=404, detail="Fronei routing signal candidate not found")
     db = SessionLocal()
     try:
         _audit(db, admin, "routing_signal.approve", details={"candidate_id": candidate_id})
@@ -1174,7 +1174,7 @@ def admin_routing_signal_approve(candidate_id: str, admin: AdminPrincipal = Requ
 def admin_routing_signal_reject(candidate_id: str, admin: AdminPrincipal = RequireAdmin) -> dict:
     candidate = routing_policy.set_signal_candidate_status(candidate_id, "rejected")
     if candidate is None:
-        raise HTTPException(status_code=404, detail="Agent v3 routing signal candidate not found")
+        raise HTTPException(status_code=404, detail="Fronei routing signal candidate not found")
     db = SessionLocal()
     try:
         _audit(db, admin, "routing_signal.reject", details={"candidate_id": candidate_id})

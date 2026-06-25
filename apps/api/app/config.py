@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     nimble_api_endpoint: str = "https://sdk.nimbleway.com/v1/search"
     planner_model: str = "openrouter/qwen/qwen3.7-max"
     planner_fallback_models: str = "claude-sonnet-4-6,gemini/gemini-2.5-flash"
-    # Agent v3 model assignment (which model handles each role: fast_router,
+    # Fronei model assignment (which model handles each role: fast_router,
     # orchestrator, direct_answer, research_planner, synthesis, document_writer,
     # etc.) is no longer configured here. It is DB-backed and admin-editable at
     # runtime via GET/PATCH /admin/model-policy — see
@@ -95,7 +95,7 @@ class Settings(BaseSettings):
     # point at a mounted volume, e.g. /data/fronei/document_templates.
     document_template_storage_dir: str = "./data/document_templates"
 
-    # Agent v3 generated artifacts. In production this should point at a
+    # Fronei generated artifacts. In production this should point at a
     # mounted volume when using the local backend. Production should prefer
     # the S3 backend (AWS S3, Cloudflare R2, MinIO, or another compatible API).
     artifact_storage_backend: str = "local"
@@ -131,19 +131,6 @@ class Settings(BaseSettings):
     # Falls back to one-shot subprocess rendering if the warm process fails.
     agentdeck_warm_renderer_enabled: bool = True
 
-    # Agentic runtime migration. Keep disabled until the graph shell is wired
-    # in shadow mode and admin traces can show graph events beside the current
-    # execution log.
-    turn_graph_enabled: bool = False
-    # Cutover switch: when true and turn_graph_enabled is also true, graph
-    # research/document agents become authoritative instead of shadow wrappers.
-    turn_graph_authoritative: bool = False
-    # Phase D: enable the LLM-backed orchestrator agent node in the turn graph
-    # shell. Existing pipeline remains the fallback on every error.
-    orchestrator_enabled: bool = False
-    # Temporary operational diagnostics for rollout/cutover. Emits structured
-    # INFO logs with prefix "turn_graph_debug" when enabled.
-    turn_graph_debug_enabled: bool = False
     # Seed the DB-backed agent registry from file defaults on startup. When
     # unset, this defaults on for local/dev/CI and off for production.
     seed_registry_on_startup: bool | None = None

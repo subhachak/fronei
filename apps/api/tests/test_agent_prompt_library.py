@@ -20,7 +20,7 @@ def _sqlite_session():
     return sessionmaker(bind=engine)
 
 
-def test_agent_v3_prompt_resolves_code_fallback_when_db_empty(monkeypatch):
+def test_agent_prompt_resolves_code_fallback_when_db_empty(monkeypatch):
     Session = _sqlite_session()
     monkeypatch.setattr(prompt_library, "SessionLocal", Session)
 
@@ -38,7 +38,7 @@ def test_agent_v3_prompt_resolves_code_fallback_when_db_empty(monkeypatch):
     assert resolved.telemetry()["prompt_source"] == "code"
 
 
-def test_agent_v3_prompt_seed_and_resolve_from_db(monkeypatch):
+def test_agent_prompt_seed_and_resolve_from_db(monkeypatch):
     Session = _sqlite_session()
     monkeypatch.setattr(prompt_library, "SessionLocal", Session)
 
@@ -55,7 +55,7 @@ def test_agent_v3_prompt_seed_and_resolve_from_db(monkeypatch):
     assert "source-grounded" in resolved.system_prompt.lower() or "synthes" in resolved.system_prompt.lower()
 
 
-def test_agent_v3_prompt_activate_archives_same_agent_profile(monkeypatch):
+def test_agent_prompt_activate_archives_same_agent_profile(monkeypatch):
     Session = _sqlite_session()
     monkeypatch.setattr(prompt_library, "SessionLocal", Session)
     prompt_library.seed_defaults()
@@ -79,7 +79,7 @@ def test_agent_v3_prompt_activate_archives_same_agent_profile(monkeypatch):
         assert old.status == "archived"
 
 
-def test_agent_v3_prompt_rollback_restores_archived_version(monkeypatch):
+def test_agent_prompt_rollback_restores_archived_version(monkeypatch):
     Session = _sqlite_session()
     monkeypatch.setattr(prompt_library, "SessionLocal", Session)
     prompt_library.seed_defaults()
@@ -101,7 +101,7 @@ def test_agent_v3_prompt_rollback_restores_archived_version(monkeypatch):
     assert rolled_back.status == "active"
 
 
-def test_admin_agent_v3_prompt_endpoints(monkeypatch):
+def test_admin_agent_prompt_endpoints(monkeypatch):
     Session = _sqlite_session()
     monkeypatch.setattr(prompt_library, "SessionLocal", Session)
     monkeypatch.setattr(admin_router, "SessionLocal", Session)

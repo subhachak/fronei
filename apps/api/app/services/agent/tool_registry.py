@@ -122,7 +122,7 @@ class ToolRegistry:
         return self.tools.extract_urls(urls, max_chars_per_source=max_chars)
 
     def _make_markdown_artifact(self, inputs: dict[str, Any]) -> tuple[Artifact, ToolCall]:
-        title = str(inputs.get("title") or "Agent v3 document")
+        title = str(inputs.get("title") or "Fronei document")
         markdown = str(inputs.get("markdown") or "")
         artifact = self.tools.make_markdown_artifact(title, markdown)
         return artifact, ToolCall(
@@ -132,7 +132,7 @@ class ToolRegistry:
         )
 
     def _make_docx_artifact(self, inputs: dict[str, Any]) -> tuple[Artifact, ToolCall]:
-        title = str(inputs.get("title") or "Agent v3 document")
+        title = str(inputs.get("title") or "Fronei document")
         markdown = str(inputs.get("markdown") or "")
         expected_sections = [str(section) for section in (inputs.get("expected_sections") or []) if section]
         artifact, qa_issue_codes = self.tools.make_docx_artifact(title, markdown, expected_sections=expected_sections)
@@ -148,7 +148,7 @@ class ToolRegistry:
         )
 
     def _make_pptx_artifact(self, inputs: dict[str, Any]) -> tuple[Artifact, ToolCall]:
-        title = str(inputs.get("title") or "Agent v3 presentation")
+        title = str(inputs.get("title") or "Fronei presentation")
         markdown = str(inputs.get("markdown") or "")
         expected_slides = [str(slide) for slide in (inputs.get("expected_slides") or []) if slide]
         template_id = str(inputs.get("template_id") or "") or None

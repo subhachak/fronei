@@ -1,7 +1,4 @@
-"""Coverage for the DB-backed Agent v3 model policy
-(app/services/agent/model_policy.py), the single source of truth that
-replaced the old AGENT_V3_*_MODEL env vars.
-"""
+"""Coverage for the DB-backed Fronei model policy."""
 from __future__ import annotations
 
 import pytest

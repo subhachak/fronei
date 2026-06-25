@@ -1,5 +1,5 @@
 """Periodic distillation of "how this user likes responses" and "what's
-actively being worked on" from a user's recent Agent v3 turns.
+actively being worked on" from a user's recent Fronei turns.
 
 This is distinct from the per-conversation/per-workspace rolling context in
 persistence.py (which appends raw turn text to a FIFO-trimmed window for

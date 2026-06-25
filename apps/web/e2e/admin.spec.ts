@@ -18,7 +18,7 @@ test('switches admin tabs', async ({ page }) => {
   await page.goto('/admin')
 
   await page.getByRole('button', { name: 'Model policy' }).click()
-  await expect(page.getByRole('heading', { name: 'Agent v3 model policy' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Fronei model policy' })).toBeVisible()
 
   await page.getByRole('button', { name: 'System' }).click()
   await expect(page.getByText('Configuration')).toBeVisible()

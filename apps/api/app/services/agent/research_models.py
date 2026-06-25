@@ -1,4 +1,4 @@
-"""Pydantic models for the Agent v3 research pipeline.
+"""Pydantic models for the Fronei research pipeline.
 
 Extracted from research_subtree.py (TD-01) to reduce that file's size and
 make the data contracts discoverable without reading 5k lines of logic.

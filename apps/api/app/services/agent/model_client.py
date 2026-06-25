@@ -51,7 +51,7 @@ def model_for_role(
     quality_mode: str = "standard",
     overrides: dict[str, str] | None = None,
 ) -> str | None:
-    """Return the preferred Agent v3 model for a role.
+    """Return the preferred Fronei model for a role.
 
     Backed by the DB model policy (see app/services/agent/model_policy.py)
     rather than `.env` — admin-editable without a restart, with hardcoded

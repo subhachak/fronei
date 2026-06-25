@@ -65,7 +65,7 @@ export function streamErrorMessage(err: unknown): string {
   if (/network|failed to fetch|load failed|terminated|aborted/i.test(message)) {
     return 'The live connection dropped while Fronei was working. The task may still finish on the server; reopen this conversation or retry if it does not appear shortly.'
   }
-  return message || 'Unknown Agent v3 error'
+  return message || 'Unknown Fronei error'
 }
 
 export async function fallbackCopyText(text: string): Promise<boolean> {

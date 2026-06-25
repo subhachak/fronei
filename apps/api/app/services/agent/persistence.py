@@ -356,7 +356,7 @@ def _update_context_for_completed_turn(snapshot: dict) -> None:
         db.commit()
     except Exception:
         db.rollback()
-        logger.exception("Agent v3 context update failed for turn %s", snapshot.get("turn_id"))
+        logger.exception("Fronei context update failed for turn %s", snapshot.get("turn_id"))
     finally:
         db.close()
 
@@ -370,7 +370,7 @@ def _submit_context_update(snapshot: dict) -> None:
         try:
             done.result()
         except Exception:
-            logger.exception("Agent v3 context update worker failed")
+            logger.exception("Fronei context update worker failed")
 
     future.add_done_callback(_cleanup)
 
@@ -1237,7 +1237,7 @@ def _record_routing_feedback(result: TurnResult) -> None:
             matched_signals=matched_signals if isinstance(matched_signals, list) else [],
         )
     except Exception:
-        logger.exception("Agent v3 routing feedback capture failed")
+        logger.exception("Fronei routing feedback capture failed")
 
 
 def fail_turn(turn_id: str, message: str) -> None:

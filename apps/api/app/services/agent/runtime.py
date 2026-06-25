@@ -50,7 +50,7 @@ from app.services.agent.tools import Tools
 
 
 class Runtime:
-    """Fresh isolated runtime with no dependency on the legacy/hybrid pipelines."""
+    """Canonical Fronei turn runtime."""
 
     def __init__(self, tools: Tools | None = None):
         self.tool_registry = ToolRegistry(tools or Tools.from_settings())
@@ -208,7 +208,7 @@ class Runtime:
 
         first = progress(
             "orchestrator",
-            f"Fresh orchestrator selected the {route} route.",
+            f"Fronei selected the {route} route.",
             route=route,
             research_level=decision.research_level if route in {"research", "research_document"} else None,
             requires_confirmation=decision.requires_confirmation,
@@ -297,7 +297,7 @@ class Runtime:
         except Exception as exc:
             yield StreamEnvelope(
                 type="error",
-                data={"turn_id": turn_id, "message": "Agent v3 failed.", "detail": str(exc)},
+                data={"turn_id": turn_id, "message": "Fronei failed.", "detail": str(exc)},
             )
             yield StreamEnvelope(type="done", data={"turn_id": turn_id, "failed": True})
 
@@ -1199,7 +1199,7 @@ class Runtime:
             error=artifact_call.error,
         )
         yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
-        answer = f"Done. I created `{artifact.filename}` with the fresh Agent v3 runtime."
+        answer = f"Done. I created `{artifact.filename}`."
         return TurnResult(
             turn_id=turn_id,
             goal=goal,

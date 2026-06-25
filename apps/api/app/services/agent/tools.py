@@ -364,8 +364,8 @@ def render_pptx_from_markdown(title: str, markdown: str) -> bytes:
 
 
 def _slides_from_markdown(title: str, markdown: str) -> list[dict[str, Any]]:
-    deck_title = title.strip() or "Agent v3 presentation"
-    slides: list[dict[str, Any]] = [{"title": deck_title, "subtitle": "Agent v3 slide deck", "bullets": [], "notes": ""}]
+    deck_title = title.strip() or "Fronei presentation"
+    slides: list[dict[str, Any]] = [{"title": deck_title, "subtitle": "Fronei slide deck", "bullets": [], "notes": ""}]
     current: dict[str, Any] | None = None
     in_notes = False
     for raw_line in (markdown or "").splitlines():

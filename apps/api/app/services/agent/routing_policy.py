@@ -191,7 +191,7 @@ def record_routing_feedback(
         db.commit()
     except Exception:
         db.rollback()
-        logger.exception("Agent v3 routing feedback write failed")
+        logger.exception("Fronei routing feedback write failed")
     finally:
         db.close()
 
@@ -272,7 +272,7 @@ def _approved_candidate_matches(text: str) -> list[SignalMatch]:
                 )
         return matches
     except Exception as exc:
-        logger.debug("Agent v3 learned routing signals unavailable: %s", exc)
+        logger.debug("Fronei learned routing signals unavailable: %s", exc)
         return []
     finally:
         db.close()

@@ -70,7 +70,7 @@ def _patch_completion(monkeypatch, text="# Answer\n\nDone."):
             return SimpleNamespace(
                 text=json.dumps(
                     {
-                        "title": "Agent V3 Report",
+                        "title": "Fronei Report",
                         "format": "docx",
                         "audience": "executives",
                         "sections": ["Executive summary", "Evidence", "Next steps"],
@@ -164,7 +164,7 @@ def _set_artifact_dir(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "artifact_storage_dir", str(tmp_path / "artifacts"))
 
 
-def test_agent_v3_direct_stream(monkeypatch):
+def test_agent_direct_stream(monkeypatch):
     _patch_completion(monkeypatch, "Plain answer.")
     runtime = Runtime(tools=FakeTools())
 
@@ -179,7 +179,7 @@ def test_agent_v3_direct_stream(monkeypatch):
     assert "web_search" in envelopes[1].data["data"]["available_tools"]
 
 
-def test_agent_v3_direct_fast_path_skips_orchestrator(monkeypatch):
+def test_agent_direct_fast_path_skips_orchestrator(monkeypatch):
     from app.services.agent import model_client
 
     calls: list[str | None] = []
@@ -236,7 +236,7 @@ def test_agent_v3_direct_fast_path_skips_orchestrator(monkeypatch):
     assert result_event["data"]["attempted_models"] == ["gpt-4.1-mini"]
 
 
-def test_agent_v3_web_fast_path_uses_optional_web_search(monkeypatch):
+def test_agent_web_fast_path_uses_optional_web_search(monkeypatch):
     from app.services.agent import model_client
 
     def fake_complete(messages, *, preferred_model=None, role=None, quality_mode="standard", timeout_s=30, max_tokens=1200, **_kwargs):
@@ -292,7 +292,7 @@ def test_agent_v3_web_fast_path_uses_optional_web_search(monkeypatch):
     assert result_event["data"]["failed_model_attempts"][0]["model"] == "gpt-4.1-mini"
 
 
-def test_agent_v3_model_recommendation_forces_web_fast(monkeypatch):
+def test_agent_model_recommendation_forces_web_fast(monkeypatch):
     from app.services.agent import model_client
 
     def fake_complete(messages, *, preferred_model=None, role=None, quality_mode="standard", timeout_s=30, max_tokens=1200, **_kwargs):
@@ -343,7 +343,7 @@ def test_agent_v3_model_recommendation_forces_web_fast(monkeypatch):
     assert "volatile_product_catalog" in router_event["data"]["matched_signal_groups"]
 
 
-def test_agent_v3_routing_policy_bootstrap_escalates_current_recommendation():
+def test_agent_routing_policy_bootstrap_escalates_current_recommendation():
     from app.services.agent.routing_policy import evaluate_routing_signals
 
     decision = evaluate_routing_signals("Which model should I use today for chatbot pricing?")
@@ -353,7 +353,7 @@ def test_agent_v3_routing_policy_bootstrap_escalates_current_recommendation():
     assert "volatile_product_catalog" in decision.matched_groups
 
 
-def test_agent_v3_routing_feedback_creates_candidate(monkeypatch):
+def test_agent_routing_feedback_creates_candidate(monkeypatch):
     from app.services.agent import routing_policy
 
     Session = _sqlite_session()
@@ -381,7 +381,7 @@ def test_agent_v3_routing_feedback_creates_candidate(monkeypatch):
         db.close()
 
 
-def test_agent_v3_approved_learned_signal_forces_web_fast(monkeypatch):
+def test_agent_approved_learned_signal_forces_web_fast(monkeypatch):
     from app.services.agent import model_client
     from app.services.agent import routing_policy
 
@@ -444,7 +444,7 @@ def test_agent_v3_approved_learned_signal_forces_web_fast(monkeypatch):
     assert router_event["data"]["matched_signals"][0]["source"] == "learned"
 
 
-def test_agent_v3_clarify_route(monkeypatch):
+def test_agent_clarify_route(monkeypatch):
     from app.services.agent import model_client
 
     def fake_complete(messages, *, preferred_model=None, role=None, quality_mode="standard", timeout_s=30, max_tokens=1200, **_kwargs):
@@ -473,7 +473,7 @@ def test_agent_v3_clarify_route(monkeypatch):
     assert not result["tool_calls"]
 
 
-def test_agent_v3_orchestrator_falls_back_to_heuristic(monkeypatch):
+def test_agent_orchestrator_falls_back_to_heuristic(monkeypatch):
     from app.services.agent import model_client
 
     def fail_complete(*args, **kwargs):
@@ -495,7 +495,7 @@ def test_agent_v3_orchestrator_falls_back_to_heuristic(monkeypatch):
     assert result["route"] == "research"
 
 
-def test_agent_v3_research_streams_milestones(monkeypatch):
+def test_agent_research_streams_milestones(monkeypatch):
     _patch_completion(monkeypatch, "Research answer [S1].")
     runtime = Runtime(tools=FakeTools())
 
@@ -533,7 +533,7 @@ def test_agent_v3_research_streams_milestones(monkeypatch):
     assert provider_events[0]["data"]["provider"] == "FakeSearch"
 
 
-def test_agent_v3_research_registry_exposes_agent_team():
+def test_agent_research_registry_exposes_agent_team():
     from app.services.agent.research_subtree import get_research_registry
 
     registry = get_research_registry()
@@ -556,7 +556,7 @@ def test_agent_v3_research_registry_exposes_agent_team():
     assert registry.prompt_for("research_lead").id == "research.lead.v1"
 
 
-def test_agent_v3_research_public_url_guardrail_filters_private_sources():
+def test_agent_research_public_url_guardrail_filters_private_sources():
     from app.services.agent.research_subtree import is_public_source_url
 
     assert is_public_source_url("https://example.com/report")
@@ -565,7 +565,7 @@ def test_agent_v3_research_public_url_guardrail_filters_private_sources():
     assert not is_public_source_url("file:///tmp/secret")
 
 
-def test_agent_v3_research_budget_ledger_stops_tools_but_allows_synthesis():
+def test_agent_research_budget_ledger_stops_tools_but_allows_synthesis():
     from app.services.agent.research_subtree import ResearchBudget, ResearchBudgetLedger
 
     ledger = ResearchBudgetLedger(
@@ -585,7 +585,7 @@ def test_agent_v3_research_budget_ledger_stops_tools_but_allows_synthesis():
     assert ledger.can_start_model("synthesis_agent")
 
 
-def test_agent_v3_research_emits_agentic_goal_guardrail_and_judge_events(monkeypatch):
+def test_agent_research_emits_agentic_goal_guardrail_and_judge_events(monkeypatch):
     _patch_completion(monkeypatch, "Research answer [S1].")
     runtime = Runtime(tools=FakeTools())
 
@@ -606,7 +606,7 @@ def test_agent_v3_research_emits_agentic_goal_guardrail_and_judge_events(monkeyp
     assert "max_tool_calls" in by_stage["research_goal"]["data"]["goal"]["budget"]
 
 
-def test_agent_v3_research_source_ranking_and_deep_link_helpers():
+def test_agent_research_source_ranking_and_deep_link_helpers():
     from app.services.agent.research_subtree import (
         ResearchPlan,
         SearchWorkerPlan,
@@ -641,7 +641,7 @@ def test_agent_v3_research_source_ranking_and_deep_link_helpers():
     assert [link.url for link in links] == ["https://example.com/b"]
 
 
-def test_agent_v3_research_repair_loop_runs_when_judge_requests_repair(monkeypatch):
+def test_agent_research_repair_loop_runs_when_judge_requests_repair(monkeypatch):
     from app.services.agent import model_client
 
     def fake_complete(messages, *, preferred_model=None, role=None, quality_mode="standard", timeout_s=30, max_tokens=1200, **_kwargs):
@@ -700,7 +700,7 @@ def test_agent_v3_research_repair_loop_runs_when_judge_requests_repair(monkeypat
     assert "repaired answer" in result["answer"]
 
 
-def test_agent_v3_web_search_prefers_tavily_provider(monkeypatch):
+def test_agent_web_search_prefers_tavily_provider(monkeypatch):
     import app.services.agent.tools as tools_module
 
     get_calls: list = []
@@ -742,7 +742,7 @@ def test_agent_v3_web_search_prefers_tavily_provider(monkeypatch):
     assert get_calls == []
 
 
-def test_agent_v3_web_search_falls_back_to_you_provider(monkeypatch):
+def test_agent_web_search_falls_back_to_you_provider(monkeypatch):
     import app.services.agent.tools as tools_module
 
     get_calls: list = []
@@ -792,7 +792,7 @@ def test_agent_v3_web_search_falls_back_to_you_provider(monkeypatch):
     assert get_calls[0][0][0] == "https://ydc-index.io/v1/search"
 
 
-def test_agent_v3_web_search_falls_back_to_nimble(monkeypatch):
+def test_agent_web_search_falls_back_to_nimble(monkeypatch):
     import app.services.agent.tools as tools_module
 
     post_calls: list[dict] = []
@@ -843,7 +843,7 @@ def test_agent_v3_web_search_falls_back_to_nimble(monkeypatch):
     assert post_calls[0]["json"]["focus"] == "general"
 
 
-def test_agent_v3_research_document_creates_artifact(monkeypatch):
+def test_agent_research_document_creates_artifact(monkeypatch):
     _patch_completion(monkeypatch, "## Report\n\n- Finding")
     runtime = Runtime(tools=FakeTools())
 
@@ -872,7 +872,7 @@ def test_agent_v3_research_document_creates_artifact(monkeypatch):
     ]:
         assert stage in progress_stages
     plan_event = next(e.data for e in envelopes if e.type == "progress" and e.data["stage"] == "document_plan")
-    assert plan_event["data"]["title"] == "Agent V3 Report"
+    assert plan_event["data"]["title"] == "Fronei Report"
     assert [call["name"] for call in result["tool_calls"]] == [
         "web_search",
         "web_search",
@@ -881,7 +881,7 @@ def test_agent_v3_research_document_creates_artifact(monkeypatch):
     ]
 
 
-def test_agent_v3_markdown_output_renders_in_chat_without_artifact(monkeypatch):
+def test_agent_markdown_output_renders_in_chat_without_artifact(monkeypatch):
     markdown = "## Report\n\n- Finding"
     _patch_completion(monkeypatch, markdown)
     runtime = Runtime(tools=FakeTools())
@@ -908,7 +908,7 @@ def test_agent_v3_markdown_output_renders_in_chat_without_artifact(monkeypatch):
     assert "artifact_builder" not in progress_stages
 
 
-def test_agent_v3_pptx_output_creates_presentation_artifact(monkeypatch):
+def test_agent_pptx_output_creates_presentation_artifact(monkeypatch):
     from app.services import pptx_render_qa
     from app.services.agent import pptx_design
     from app.services.agent.tools import render_pptx_from_markdown
@@ -970,7 +970,7 @@ Notes: Close with the implementation path.
     assert result["tool_calls"][0]["input"]["render_plan"] is True
 
 
-def test_agent_v3_pptx_markdown_maps_to_agentdeck_layouts():
+def test_agent_pptx_markdown_maps_to_agentdeck_layouts():
     from app.services.agent.pptx_design import agentdeck_render_plan_from_markdown
 
     markdown = """# Board briefing
@@ -1006,7 +1006,7 @@ def test_agent_v3_pptx_markdown_maps_to_agentdeck_layouts():
     assert roadmap_slide.zones["body"].component_id == "timeline"
 
 
-def test_agent_v3_pptx_template_resolves_brand_design_system(monkeypatch):
+def test_agent_pptx_template_resolves_brand_design_system(monkeypatch):
     from app.services.agent import pptx_design
     from app.services.design_systems.brand_generator import design_system_id_for_template
 
@@ -1025,7 +1025,7 @@ def test_agent_v3_pptx_template_resolves_brand_design_system(monkeypatch):
     assert seen[0] == expected
 
 
-def test_agent_v3_pptx_repairs_dense_slides():
+def test_agent_pptx_repairs_dense_slides():
     from app.services.agent.pptx_design import agentdeck_render_plan_from_markdown
 
     markdown = """# Dense deck
@@ -1048,7 +1048,7 @@ def test_agent_v3_pptx_repairs_dense_slides():
     assert len(finding_slides) == 2
 
 
-def test_agent_v3_api_stream(monkeypatch):
+def test_agent_api_stream(monkeypatch):
     _patch_completion(monkeypatch, "API answer.")
     from app.services.agent import persistence
 
@@ -1066,7 +1066,7 @@ def test_agent_v3_api_stream(monkeypatch):
         app.dependency_overrides.clear()
 
 
-def test_agent_v3_background_turn_persists_and_polls_status(monkeypatch):
+def test_agent_background_turn_persists_and_polls_status(monkeypatch):
     _patch_completion(monkeypatch, "Background answer.")
     from app.services.agent import persistence
 
@@ -1102,7 +1102,7 @@ def test_agent_v3_background_turn_persists_and_polls_status(monkeypatch):
         app.dependency_overrides.clear()
 
 
-def test_agent_v3_api_stream_emits_keepalive_during_quiet_work(monkeypatch):
+def test_agent_api_stream_emits_keepalive_during_quiet_work(monkeypatch):
     from app.routers import agent as agent_router
     from app.services.agent import persistence
     from app.services.agent.models import Goal, StreamEnvelope
@@ -1140,7 +1140,7 @@ def test_agent_v3_api_stream_emits_keepalive_during_quiet_work(monkeypatch):
         app.dependency_overrides.clear()
 
 
-def test_agent_v3_stream_persists_turn_events_tools_and_artifacts(monkeypatch, tmp_path):
+def test_agent_stream_persists_turn_events_tools_and_artifacts(monkeypatch, tmp_path):
     _patch_completion(monkeypatch, "## Durable report\n\nDone.")
     from app.services.agent import persistence
 
@@ -1194,7 +1194,7 @@ def test_agent_v3_stream_persists_turn_events_tools_and_artifacts(monkeypatch, t
         app.dependency_overrides.clear()
 
 
-def test_agent_v3_workspace_api_is_user_isolated(monkeypatch):
+def test_agent_workspace_api_is_user_isolated(monkeypatch):
     from app.services.agent import persistence
 
     Session = _sqlite_session()
@@ -1232,7 +1232,7 @@ def test_agent_v3_workspace_api_is_user_isolated(monkeypatch):
         app.dependency_overrides.clear()
 
 
-def test_agent_v3_conversation_turns_are_conversation_scoped(monkeypatch, tmp_path):
+def test_agent_conversation_turns_are_conversation_scoped(monkeypatch, tmp_path):
     _patch_completion(monkeypatch, "Stored answer.")
     from app.services.agent import persistence
 
@@ -1268,7 +1268,7 @@ def test_agent_v3_conversation_turns_are_conversation_scoped(monkeypatch, tmp_pa
         app.dependency_overrides.clear()
 
 
-def test_agent_v3_conversation_context_connects_followup_turns(monkeypatch, tmp_path):
+def test_agent_conversation_context_connects_followup_turns(monkeypatch, tmp_path):
     from app.services.agent import model_client, persistence
 
     _set_artifact_dir(monkeypatch, tmp_path)
@@ -1326,7 +1326,7 @@ def test_agent_v3_conversation_context_connects_followup_turns(monkeypatch, tmp_
         app.dependency_overrides.clear()
 
 
-def test_agent_v3_workspace_context_is_shared_across_conversations(monkeypatch, tmp_path):
+def test_agent_workspace_context_is_shared_across_conversations(monkeypatch, tmp_path):
     from app.services.agent import model_client, persistence
 
     _set_artifact_dir(monkeypatch, tmp_path)
@@ -1388,7 +1388,7 @@ def test_agent_v3_workspace_context_is_shared_across_conversations(monkeypatch, 
         app.dependency_overrides.clear()
 
 
-def test_agent_v3_vague_followup_does_not_import_other_workspace_conversation(monkeypatch, tmp_path):
+def test_agent_vague_followup_does_not_import_other_workspace_conversation(monkeypatch, tmp_path):
     from app.services.agent import model_client, persistence
 
     _set_artifact_dir(monkeypatch, tmp_path)
@@ -1449,7 +1449,7 @@ def test_agent_v3_vague_followup_does_not_import_other_workspace_conversation(mo
         app.dependency_overrides.clear()
 
 
-def test_agent_v3_runtime_source_does_not_import_legacy_pipelines():
+def test_agent_runtime_source_does_not_import_legacy_pipelines():
     root = Path(__file__).resolve().parents[1] / "app" / "services" / "agent"
     combined = "\n".join(path.read_text() for path in root.glob("*.py"))
     forbidden = [
@@ -1464,7 +1464,7 @@ def test_agent_v3_runtime_source_does_not_import_legacy_pipelines():
         assert token not in combined
 
 
-def test_agent_v3_research_level_budgets_are_distinct():
+def test_agent_research_level_budgets_are_distinct():
     from app.services.agent.research_subtree import research_budget_for
 
     easy = research_budget_for(TurnRequest(message="Check the latest RBI repo rate.", research_level="easy"))
@@ -1481,7 +1481,7 @@ def test_agent_v3_research_level_budgets_are_distinct():
     assert deep.repair_iterations > regular.repair_iterations
 
 
-def test_agent_v3_deep_research_uses_brief_objective_for_followup_queries():
+def test_agent_deep_research_uses_brief_objective_for_followup_queries():
     from app.services.agent.research_subtree import (
         CoverageContract,
         ResearchBrief,
@@ -1515,7 +1515,7 @@ def test_agent_v3_deep_research_uses_brief_objective_for_followup_queries():
     assert "official" in queries
 
 
-def test_agent_v3_vendor_comparison_targets_official_llm_provider_lanes():
+def test_agent_vendor_comparison_targets_official_llm_provider_lanes():
     from app.services.agent.research_subtree import (
         CoverageCell,
         CoverageContract,
@@ -1545,7 +1545,7 @@ def test_agent_v3_vendor_comparison_targets_official_llm_provider_lanes():
     assert any("site:ai.google.dev" in query or "google gemini" in query for query in queries)
 
 
-def test_agent_v3_model_role_routing(monkeypatch):
+def test_agent_model_role_routing(monkeypatch):
     """Model assignment is DB-backed (app/services/agent/model_policy.py),
     not env-backed -- see test_model_policy_view.py for full coverage of
     that module. This test just confirms model_client reads through it."""
@@ -1593,7 +1593,7 @@ def test_agent_v3_model_role_routing(monkeypatch):
         model_policy.invalidate_cache()
 
 
-def test_agent_v3_deep_research_requires_confirmation(monkeypatch):
+def test_agent_deep_research_requires_confirmation(monkeypatch):
     from app.services.agent import model_client
 
     def fake_complete(messages, *, preferred_model=None, role=None, quality_mode="standard", timeout_s=30, max_tokens=1200, **_kwargs):
@@ -1632,7 +1632,7 @@ def test_agent_v3_deep_research_requires_confirmation(monkeypatch):
     assert not any(e.data.get("stage") == "research_registry" for e in envelopes if e.type == "progress")
 
 
-def test_agent_v3_confirmed_deep_research_runs_deep_budget(monkeypatch):
+def test_agent_confirmed_deep_research_runs_deep_budget(monkeypatch):
     _patch_completion(monkeypatch, "Deep research answer [S1].")
     runtime = Runtime(tools=FakeTools())
 

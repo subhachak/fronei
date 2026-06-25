@@ -131,7 +131,7 @@ def test_research_profile_classifier_handles_non_architecture_profiles():
             "general",
         ),
         (
-            "Create an implementation roadmap for migrating Agent v3 to production.",
+            "Create an implementation roadmap for migrating Fronei to production.",
             "implementation_plan",
         ),
         (

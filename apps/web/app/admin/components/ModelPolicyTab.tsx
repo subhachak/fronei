@@ -79,9 +79,9 @@ export function ModelPolicyTab({ authorizedFetch }: { authorizedFetch: Authorize
     <div className="grid gap-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="text-base font-bold text-neutral-900 dark:text-neutral-50">Agent v3 model policy</h2>
+          <h2 className="text-base font-bold text-neutral-900 dark:text-neutral-50">Fronei model policy</h2>
           <p className="mt-0.5 max-w-2xl text-sm text-neutral-500 dark:text-neutral-400">
-            Which model handles each Agent v3 stage. This is the only place it&apos;s configured — there is no .env fallback.
+            Which model handles each workflow stage. This is the only place it&apos;s configured; there is no environment fallback.
             Clear a field and save to revert that role back to the default shown beside it.
           </p>
         </div>

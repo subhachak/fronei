@@ -104,7 +104,7 @@ def agentdeck_render_plan_from_markdown(
             slide_layout="TITLE",
             hero_title=deck_title,
             subtitle=deck_subtitle,
-            deck_type_label="Agent v3 deck",
+            deck_type_label="Fronei deck",
             confidentiality="Generated work product",
         )
     ]
@@ -134,7 +134,7 @@ def agentdeck_render_plan_from_markdown(
 
 
 def _parse_deck_markdown(title: str, markdown: str) -> tuple[str, str | None, list[SlideSpec]]:
-    deck_title = title.strip() or "Agent v3 presentation"
+    deck_title = title.strip() or "Fronei presentation"
     deck_subtitle: str | None = None
     slides: list[SlideSpec] = []
     current: SlideSpec | None = None

@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 # LLM prompt strings co-located with the functions that use them.
 # ---------------------------------------------------------------------------
 
-PLAN_PROMPT = """You are the Agent v3 research lead.
+PLAN_PROMPT = """You are the Fronei research lead.
 
 Create a compact multi-agent research plan for the user request. Return only JSON:
 {
@@ -55,7 +55,7 @@ Create a compact multi-agent research plan for the user request. Return only JSO
 Prefer sourceable, specific questions. Do not answer the request.
 """
 
-SYNTHESIS_PROMPT = """You are the Agent v3 synthesis agent.
+SYNTHESIS_PROMPT = """You are the Fronei synthesis agent.
 
 Write a source-grounded answer using only the evidence pack. Use clear structure,
 specific findings, and [S#] citations for claims tied to evidence. If evidence is
@@ -71,7 +71,7 @@ include named examples from sources, compare patterns, and avoid compressing the
 answer into an executive summary unless the user explicitly asks for brevity.
 """
 
-REPAIR_PROMPT = """You are the Agent v3 repair agent.
+REPAIR_PROMPT = """You are the Fronei repair agent.
 
 Revise the answer according to the judge feedback. Preserve useful content, add
 source citations where evidence supports a claim, and be transparent about gaps.

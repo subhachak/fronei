@@ -29,13 +29,13 @@ from app.db.models import (
     SessionLocal,
     User,
     UserAdminControl,
-    get_global_monthly_spend,
     get_monthly_spend,
 )
 from app.services.agent import model_policy
 from app.services.agent import persistence
 from app.services.agent import prompt_library
 from app.services.agent import routing_policy
+from app.services.agent.job_worker import turn_job_worker
 from app.services.document_templates import template_path_for_row
 from app.services.llm_gateway import (
     PROVIDER_TEST_MODELS,
@@ -91,6 +91,10 @@ class PromptUpsertRequest(BaseModel):
 class ModelPolicyUpdate(BaseModel):
     roles: dict[str, str] = Field(default_factory=dict)
     fallback_models: list[str] | None = None
+
+
+class AdminJobCancelRequest(BaseModel):
+    reason: str | None = Field(default=None, max_length=500)
 
 
 def require_admin(request: Request, payload: dict = Depends(get_current_user_payload)) -> AdminPrincipal:
@@ -250,6 +254,122 @@ def overview(admin: AdminPrincipal = Depends(require_admin)) -> dict:
             "total_writing_samples": 0,
             "total_research_runs": db.query(Turn).filter(Turn.route == "research").count(),
         }
+    finally:
+        db.close()
+
+
+@router.get("/jobs")
+def jobs(
+    status: str | None = Query(default=None, pattern="^(queued|running|completed|failed|cancelled)$"),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    admin: AdminPrincipal = Depends(require_admin),
+) -> dict:
+    now = _now()
+    db = SessionLocal()
+    try:
+        status_counts = {
+            row_status: int(count)
+            for row_status, count in db.query(Turn.status, func.count(Turn.id)).group_by(Turn.status).all()
+        }
+        stale_leases = db.query(Turn).filter(
+            Turn.status == "running",
+            Turn.lease_expires_at.isnot(None),
+            Turn.lease_expires_at < now,
+        ).count()
+        retried_jobs = db.query(Turn).filter(Turn.attempt_count > 1).count()
+        retry_exhausted = db.query(Turn).filter(
+            Turn.status == "failed",
+            Turn.attempt_count >= Turn.max_attempts,
+        ).count()
+        oldest_queued = (
+            db.query(func.min(Turn.created_at))
+            .filter(Turn.status == "queued")
+            .scalar()
+        )
+
+        query = db.query(Turn)
+        if status:
+            query = query.filter(Turn.status == status)
+        total = query.count()
+        rows = query.order_by(Turn.updated_at.desc()).offset(offset).limit(limit).all()
+        profiles = _user_profiles(db, [row.user_id for row in rows])
+
+        return {
+            "summary": {
+                "queued": status_counts.get("queued", 0),
+                "running": status_counts.get("running", 0),
+                "completed": status_counts.get("completed", 0),
+                "failed": status_counts.get("failed", 0),
+                "cancelled": status_counts.get("cancelled", 0),
+                "stale_leases": stale_leases,
+                "retried_jobs": retried_jobs,
+                "retry_exhausted": retry_exhausted,
+                "oldest_queued_at": _fmt(oldest_queued),
+                "worker": turn_job_worker.status(),
+            },
+            "items": [
+                {
+                    "id": row.id,
+                    "user_id": row.user_id,
+                    **_profile_fields(profiles, row.user_id),
+                    "conversation_id": row.conversation_id,
+                    "objective": row.objective[:300],
+                    "route": row.route,
+                    "quality_mode": row.quality_mode,
+                    "status": row.status,
+                    "attempt_count": row.attempt_count,
+                    "max_attempts": row.max_attempts,
+                    "lease_owner": row.lease_owner,
+                    "lease_expires_at": _fmt(row.lease_expires_at),
+                    "heartbeat_at": _fmt(row.heartbeat_at),
+                    "cancel_requested": row.cancel_requested,
+                    "model_used": row.model_used,
+                    "latency_ms": row.latency_ms,
+                    "cost_usd": row.cost_usd,
+                    "error_message": (row.error_message or "")[:1000] or None,
+                    "created_at": _fmt(row.created_at),
+                    "updated_at": _fmt(row.updated_at),
+                    "completed_at": _fmt(row.completed_at),
+                }
+                for row in rows
+            ],
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        }
+    finally:
+        db.close()
+
+
+@router.post("/jobs/{turn_id}/cancel")
+def cancel_job(
+    turn_id: str,
+    body: AdminJobCancelRequest,
+    admin: AdminPrincipal = Depends(require_admin),
+) -> dict:
+    db = SessionLocal()
+    try:
+        turn = db.get(Turn, turn_id)
+        if turn is None:
+            raise HTTPException(status_code=404, detail="Turn not found.")
+        if turn.status not in {"queued", "running"}:
+            raise HTTPException(status_code=409, detail="Only queued or running turns can be cancelled.")
+        turn.cancel_requested = True
+        if turn.status == "queued":
+            turn.status = "cancelled"
+            turn.completed_at = _now()
+        turn.updated_at = _now()
+        _audit(
+            db,
+            admin,
+            "job.cancel",
+            turn.user_id,
+            {"turn_id": turn_id, "reason": body.reason},
+        )
+        db.commit()
+        turn_job_worker.notify()
+        return {"turn_id": turn_id, "status": turn.status, "cancellation_requested": True}
     finally:
         db.close()
 
@@ -1104,4 +1224,7 @@ def system(admin: AdminPrincipal = Depends(require_admin)) -> dict:
         "clerk_audience_configured": bool(settings.clerk_audience),
         "admin_user_ids_configured": len(settings.admin_id_set),
         "admin_emails_configured": len(settings.admin_email_set),
+        "sentry_configured": bool(settings.sentry_dsn),
+        "structured_logging": settings.log_json,
+        "worker": turn_job_worker.status(),
     }

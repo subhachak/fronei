@@ -63,6 +63,11 @@ restartPolicyMaxRetries = 3
 # TURN_WORKER_CONCURRENCY=2
 # TURN_WORKER_LEASE_SECONDS=90
 # TURN_WORKER_MAX_ATTEMPTS=3
+# LOG_JSON=true
+# LOG_LEVEL=INFO
+# SENTRY_DSN=
+# SENTRY_TRACES_SAMPLE_RATE=0.05
+# APP_RELEASE=<git-sha-or-release-name>
 #
 # Provider keys (set at least one):
 # OPENAI_API_KEY=

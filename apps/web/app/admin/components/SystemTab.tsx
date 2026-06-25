@@ -47,6 +47,9 @@ export function SystemTab({ authorizedFetch }: { authorizedFetch: AuthorizedFetc
     { label: 'Planner fallbacks', value: system.planner_fallback_models.join(', ') || '—' },
     { label: 'Admin IDs configured', value: String(system.admin_user_ids_configured) },
     { label: 'Admin emails configured', value: String(system.admin_emails_configured) },
+    { label: 'Sentry', value: system.sentry_configured ? 'configured' : 'not configured' },
+    { label: 'Structured logging', value: system.structured_logging ? 'JSON' : 'plain text' },
+    { label: 'Turn workers', value: `${system.worker.live_threads}/${system.worker.configured_concurrency} live` },
   ]
 
   return (

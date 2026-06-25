@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import check_production_config, get_settings
 from app.db.models import engine, init_db
 from app.db.schema_check import check_schema_version
+from app.observability import configure_observability
 from app.routers.admin import router as admin_router
 from app.routers.agent import router as agent_router
 from app.routers.documents import router as documents_router
@@ -16,6 +17,7 @@ from app.services.agent.job_worker import turn_job_worker
 from app.services.llm_gateway import configure_provider_keys
 
 settings = get_settings()
+configure_observability(settings)
 
 
 @asynccontextmanager

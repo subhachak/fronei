@@ -227,6 +227,10 @@ Model assignments are managed in `model_policy.py` from the DB (`AdminSetting`),
 - Primary turns execute through a bounded database-backed lease queue. Expired
   leases are retried after worker/process failure, and stale workers cannot
   commit a result after another worker has reclaimed the turn.
+- Worker lifecycle logs can be emitted as structured JSON and correlated by
+  turn/user/worker ID. Optional Sentry reporting captures terminal failures,
+  while the admin Jobs view reports queue depth, worker liveness, retries,
+  stale leases, and recent job details.
 - All turn data (events, tool calls, cost, latency, route, result) is persisted for inspection, analytics, and future evals.
 - Signal-based routing provides a fast, explainable pre-filter before LLM orchestration.
 
@@ -235,8 +239,8 @@ Model assignments are managed in `model_policy.py` from the DB (`AdminSetting`),
 ## Production hardening backlog
 
 - Structured evals and golden-prompt regression tests
-- OpenTelemetry / Langfuse tracing
-- Background job queue for long research runs and profile consolidation
+- OpenTelemetry / Langfuse span tracing for model/tool internals
+- Durable execution for profile consolidation and other scheduled jobs
 - Provider availability pre-checks before dispatch
 - Rate limit abuse protection at the edge
 - Secret rotation and full Clerk audience enforcement in production

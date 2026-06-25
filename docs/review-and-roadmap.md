@@ -8,15 +8,16 @@ Fronei is a personal AI workbench with:
 
 - Authenticated multi-turn chat through Clerk.
 - Streaming responses over Server-Sent Events.
-- Planner-driven prompt enrichment, task classification, web-search detection, and sub-query decomposition.
-- YAML policy routing across OpenAI, Anthropic, Gemini, OpenRouter, DeepSeek, Qwen, and Perplexity model strings.
-- Deep research runs with persisted questions, sources, claims, findings, gaps, contradictions, confidence, and verifier notes.
+- Orchestrator-led routing with direct, web, research, document, and
+  research-document workflows.
+- DB-backed model policy with per-role assignment and controlled fallbacks.
+- Durable deep research with persisted events, tools, sources, citations,
+  budgets, verification, and repair.
 - Document and image attachment extraction.
-- Conversation-local memory through rolling summary and active task state.
-- Persistent user memories extracted in the background.
-- Twin profile voice adaptation from writing samples.
+- Conversation and workspace context plus consolidated user preferences.
 - Usage analytics for cost, requests, tokens, latency, model usage, and task distribution.
-- Workbench/persona UI, artifact formatting, developer execution logs, and dashboard views.
+- Workspace-oriented UI, downloadable artifacts, structured execution events,
+  admin operations, and provider/job monitoring.
 
 ## Recently Addressed Areas
 
@@ -36,25 +37,23 @@ The codebase already includes fixes or implementations that older review notes c
 
 ### P0/P1
 
-- Add rate limiting and abuse controls around chat, document extraction, and research endpoints.
-- Move background LLM work to a durable queue for production. Current memory, summary, and fingerprint jobs run in local thread pools.
-- Add provider health checks or circuit breakers so repeated provider outages do not burn latency across every fallback chain.
-- Strengthen production Clerk configuration by setting and enforcing `CLERK_AUDIENCE`.
-- Add request-level cancellation/cleanup for long research runs when clients disconnect.
+- Strengthen production Clerk configuration by setting and enforcing
+  `CLERK_AUDIENCE`.
+- Move profile consolidation and other scheduled background work onto the
+  durable job boundary.
+- Add edge-level abuse protection before scaling beyond one API instance.
 
 ### P2
 
-- Add more regression coverage for streaming SSE event sequences and frontend state transitions.
-- Add evals/golden prompts for planner JSON quality, routing decisions, research citation quality, and voice refinement.
+- Expand live eval coverage for citation quality, artifact rendering, and
+  personalization as production examples accumulate.
 - Improve model cost estimation before dispatch, especially for document-heavy and research-heavy requests.
-- Add pagination/search to memory and research-run endpoints if those surfaces become large.
-- Consider normalizing execution logs into first-class tables if analytics needs deeper slicing.
+- Add pagination/search to admin and workspace surfaces as datasets grow.
 
 ### P3
 
 - Add OpenTelemetry, Langfuse, or equivalent tracing.
 - Expand deployment docs for Fly.io/Railway in addition to Render/Vercel.
-- Build an admin/provider status view for configured model/search providers.
 - Add explicit retention controls for uploaded document text, memories, writing samples, and research evidence.
 
 ## Product Roadmap
@@ -69,15 +68,12 @@ The codebase already includes fixes or implementations that older review notes c
 
 ### Medium Term
 
-- Add workspace/project organization around conversations and research.
 - Add share/export flows for research briefs and architecture artifacts.
-- Support reusable prompt/artifact templates.
 - Add feedback capture on answers, routes, research sources, and refinements.
-- Add per-user/provider budgets and usage limits.
+- Refine per-user/provider budgets and usage limits.
 
 ### Longer Term
 
-- Durable job orchestration for deep research and long document workflows.
 - Multi-agent research/evaluation loops with explicit quality thresholds.
 - Team/shared workspace mode with permissions.
 - Evaluation-driven routing policy tuning.

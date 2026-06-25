@@ -1,0 +1,77 @@
+[
+  {
+    "id": "live_direct_explanation",
+    "category": "answer",
+    "description": "Direct answers should be useful, focused, and complete.",
+    "request": {
+      "message": "Explain idempotency keys for payment APIs, including one concrete retry example.",
+      "force_route": "direct",
+      "quality_mode": "standard"
+    },
+    "expected": {
+      "route": "direct",
+      "min_answer_chars": 350,
+      "min_judge_score": 0.75,
+      "max_latency_ms": 60000
+    },
+    "reserved_cost_usd": 0.025
+  },
+  {
+    "id": "live_sourced_research",
+    "category": "research",
+    "description": "Current research should return grounded sources and valid citations.",
+    "request": {
+      "message": "Research the current Python release cadence and summarize the latest stable release with sources.",
+      "force_route": "research",
+      "research_level": "easy",
+      "quality_mode": "standard"
+    },
+    "expected": {
+      "route": "research",
+      "min_answer_chars": 300,
+      "min_sources": 2,
+      "min_citations": 2,
+      "min_judge_score": 0.7,
+      "max_latency_ms": 150000
+    },
+    "reserved_cost_usd": 0.08
+  },
+  {
+    "id": "live_docx_artifact",
+    "category": "document",
+    "description": "Document generation should produce a usable DOCX artifact.",
+    "request": {
+      "message": "Create a concise project kickoff memo for migrating a small API from SQLite to PostgreSQL. Include goals, risks, phases, and success measures.",
+      "force_route": "document",
+      "output_format": "docx",
+      "quality_mode": "standard"
+    },
+    "expected": {
+      "route": "document",
+      "min_answer_chars": 20,
+      "artifact_kind": "docx",
+      "min_judge_score": 0.7,
+      "max_latency_ms": 150000
+    },
+    "reserved_cost_usd": 0.06
+  },
+  {
+    "id": "live_pptx_artifact",
+    "category": "presentation",
+    "description": "Presentation generation should produce a PPTX artifact.",
+    "request": {
+      "message": "Create a five-slide executive presentation on adopting AI-assisted software development. Include the opportunity, risks, operating model, metrics, and next steps.",
+      "force_route": "document",
+      "output_format": "pptx",
+      "quality_mode": "draft"
+    },
+    "expected": {
+      "route": "document",
+      "min_answer_chars": 20,
+      "artifact_kind": "pptx",
+      "min_judge_score": 0.65,
+      "max_latency_ms": 180000
+    },
+    "reserved_cost_usd": 0.075
+  }
+]

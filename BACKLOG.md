@@ -62,16 +62,12 @@ absolute-path and base64 rows remain readable, and
 ### TD-04 · Triple-track schema management (Alembic + create_all + _ensure_sqlite_schema)
 **File:** `apps/api/app/db/models.py` (`init_db`, `_ensure_sqlite_schema`)  
 **Effort:** Low  
-**Status:** Partially fixed — `init_db` now skips `create_all` in production; `_ensure_sqlite_schema` documented as dev-only
+**Status:** ✅ Complete — Alembic is the only application schema-management path
 
-Three mechanisms run on startup:
-- `Base.metadata.create_all()` — additive, ignores existing columns
-- `_ensure_sqlite_schema()` — 100+ lines of manual `ALTER TABLE` statements
-- Alembic migrations (41 and counting) — the canonical tool
-
-**Remaining work:** Once all local dev DBs have been migrated via `alembic upgrade head`,
-delete `_ensure_sqlite_schema` entirely. Commit that deletion as a named PR so it's
-clearly intentional.
+Application startup no longer calls `create_all`, runs manual SQLite DDL, or repairs
+missing columns. Every database, including local SQLite, must be Alembic-stamped at the
+code migration head. Startup and the internal smoke endpoint fail with an explicit
+`alembic upgrade head` instruction when the database is blank or stale.
 
 ---
 
@@ -214,7 +210,7 @@ DB-assigned admin roles.
 | ID | Summary | Files changed |
 |----|---------|---------------|
 | TD-10 | Pin package.json deps away from `latest` | `apps/web/package.json` |
-| TD-04 (partial) | Guard `init_db` create_all behind `not is_production`; document Alembic as authoritative | `apps/api/app/db/models.py` |
+| TD-04 ✅ | Remove startup `create_all` and SQLite schema repair; enforce Alembic head in every environment | `apps/api/app/db/models.py`, `apps/api/app/db/schema_check.py` |
 | TD-14 (partial) | Add `RequireAdmin` FastAPI dependency; annotate intentional env-only call sites | `apps/api/app/auth.py`, `apps/api/app/routers/admin.py` |
 | TD-01 (partial) | Extract all Pydantic models → `research_models.py` (−623 lines); backward-compat re-exports preserved | `research_models.py` (new), `research_subtree.py` |
 | TD-01 (partial) | Extract utilities → `research_utils.py`, profile/brief → `research_profiles.py`, contracts → `research_contracts.py`; planner → `research_planner.py` | `research_utils.py`, `research_profiles.py`, `research_contracts.py`, `research_planner.py` (all new) |

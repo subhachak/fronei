@@ -1,10 +1,13 @@
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from alembic.config import Config
+from alembic.script import ScriptDirectory
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.config import get_settings
 from app.db.models import Base
+from app.db.schema_check import _ALEMBIC_INI
 from app.main import app
 from app.routers import internal
 
@@ -24,6 +27,11 @@ def test_internal_smoke_checks_database(monkeypatch):
         poolclass=StaticPool,
     )
     Base.metadata.create_all(bind=engine)
+    config = Config(str(_ALEMBIC_INI))
+    head = ScriptDirectory.from_config(config).get_current_head()
+    with engine.begin() as connection:
+        connection.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
+        connection.execute(text("INSERT INTO alembic_version VALUES (:head)"), {"head": head})
     Session = sessionmaker(bind=engine)
     settings = get_settings()
     monkeypatch.setattr(settings, "internal_task_secret", "test-secret")

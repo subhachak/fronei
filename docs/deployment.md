@@ -25,7 +25,10 @@
 
 Keep this URL handy — you'll need it in Steps 2 and 3.
 
-> **Schema migrations are managed by Alembic.** Run `alembic upgrade head` once before starting the API for the first time, and again whenever you pull changes that include new migrations.
+> **Schema migrations are managed only by Alembic.** Application startup never
+> creates or repairs tables. Run `uv run python -m alembic upgrade head` before
+> the first start and whenever deployed code includes migrations. A blank or
+> stale database causes startup to fail with a schema-version error.
 
 ---
 
@@ -146,8 +149,8 @@ Apply migrations before the first run:
 
 ```bash
 cd apps/api
-alembic upgrade head
-uvicorn app.main:app --reload --port 8000
+uv run python -m alembic upgrade head
+uv run uvicorn app.main:app --reload --port 8000
 ```
 
 Run the web app separately:

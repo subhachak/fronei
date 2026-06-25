@@ -7,6 +7,8 @@ on:
 jobs:
   api:
     runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: sqlite:////tmp/fronei_ci.db
     defaults:
       run:
         working-directory: apps/api
@@ -38,13 +40,16 @@ jobs:
         continue-on-error: true
         run: uv run ruff check .
 
+      - name: Migrate test database
+        run: uv run python -m alembic upgrade head
+
       - name: Test
         run: uv run python -m pytest
 
-      - name: Alembic upgrade on scratch SQLite
+      - name: Alembic upgrade chain on fresh scratch SQLite
         run: uv run python -m alembic upgrade head
         env:
-          DATABASE_URL: sqlite:////tmp/fronei_ci_migration.db
+          DATABASE_URL: sqlite:////tmp/fronei_ci_fresh_migration.db
 
       - name: FastAPI OpenAPI import check
         run: uv run python -c "from app.main import app; app.openapi(); print('openapi ok')"

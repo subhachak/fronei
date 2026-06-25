@@ -8,7 +8,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from app.services.agent import model_client
-from app.services.agent.models import TurnRequest, ResearchLevel, RouteName
+from app.services.agent.models import RouteName, TurnRequest
 
 logger = logging.getLogger(__name__)
 
@@ -208,7 +208,9 @@ def choose_research_level(request: TurnRequest, route: RouteName) -> Literal["ea
         "regulatory",
         "compliance",
         "financial",
+        "invest",
         "investment",
+        "retirement",
         "vendor selection",
         "board",
         "ciso",

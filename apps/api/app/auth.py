@@ -1,6 +1,8 @@
+from dataclasses import dataclass
 from functools import lru_cache
+import logging
 
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import jwt
 from jwt import PyJWKClient
@@ -8,6 +10,13 @@ from jwt import PyJWKClient
 from app.config import get_settings
 
 security = HTTPBearer()
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class AdminPrincipal:
+    user_id: str
+    email: str | None = None
 
 
 @lru_cache(maxsize=1)
@@ -81,7 +90,7 @@ def get_current_active_user_id(user_id: str = Depends(get_current_user_id)) -> s
     no test needs to know this gate exists unless it's specifically testing
     approval/suspension behavior.
     """
-    if is_admin_user(user_id, None):
+    if is_env_admin(user_id, None):
         return user_id
     settings = get_settings()
     if not settings.require_user_approval:
@@ -146,9 +155,8 @@ def get_claim_name(payload: dict) -> str | None:
     return None
 
 
-def is_admin_user(user_id: str, email: str | None) -> bool:
-    """Env-allowlist admin check (ID or email). This is the static, deploy-time
-    allowlist; see `is_admin_user_db` for the combined env + DB-role check."""
+def is_env_admin(user_id: str, email: str | None) -> bool:
+    """Return whether a user is protected by the static deployment allowlist."""
     settings = get_settings()
     return (
         user_id in settings.admin_id_set
@@ -156,11 +164,11 @@ def is_admin_user(user_id: str, email: str | None) -> bool:
     )
 
 
-def is_admin_user_db(user_id: str, email: str | None) -> bool:
+def is_admin_user(user_id: str, email: str | None) -> bool:
     """Single source of truth for admin access: env allowlist OR a DB-assigned
     'admin' role on the user's UserAdminControl row. The DB role lets admins
     grant/revoke admin access for other users at runtime via the admin UI."""
-    if is_admin_user(user_id, email):
+    if is_env_admin(user_id, email):
         return True
     from app.db.models import SessionLocal, UserAdminControl  # local import: avoid import cycle
     db = SessionLocal()
@@ -172,34 +180,30 @@ def is_admin_user_db(user_id: str, email: str | None) -> bool:
 
 
 def get_current_user_is_admin(payload: dict = Depends(get_current_user_payload)) -> bool:
-    return is_admin_user_db(str(payload.get("sub") or ""), get_claim_email(payload))
+    return is_admin_user(str(payload.get("sub") or ""), get_claim_email(payload))
 
 
-def _require_admin(payload: dict = Depends(get_current_user_payload)) -> str:
-    """FastAPI dependency that enforces admin access and returns the user_id.
-
-    Use as the *single* admin gate in route handlers:
-
-        @router.get("/admin/something")
-        def my_admin_endpoint(admin_id: str = RequireAdmin) -> dict:
-            ...
-
-    This always uses the combined env-allowlist + DB-role check (`is_admin_user_db`),
-    so runtime-granted admin roles are always respected.  Never use the bare
-    `is_admin_user()` (env-only) call in new route handlers.
-    """
+def require_admin_principal(
+    request: Request,
+    payload: dict = Depends(get_current_user_payload),
+) -> AdminPrincipal:
+    """Enforce the canonical admin policy and return the authenticated principal."""
     user_id = str(payload.get("sub") or "")
     email = get_claim_email(payload)
-    if not is_admin_user_db(user_id, email):
+    if not is_admin_user(user_id, email):
+        logger.warning(
+            "Admin access denied: user_id=%s email=%s path=%s ua=%s",
+            user_id,
+            email,
+            request.url.path,
+            request.headers.get("user-agent", ""),
+        )
         raise HTTPException(status_code=403, detail="Admin access required.")
-    return user_id
+    return AdminPrincipal(user_id=user_id, email=email)
 
 
 CurrentUser = Depends(get_current_user_id)
 CurrentActiveUser = Depends(get_current_active_user_id)
 CurrentUserPayload = Depends(get_current_user_payload)
 CurrentUserIsAdmin = Depends(get_current_user_is_admin)
-# Preferred admin gate for new endpoints: enforces the combined env + DB role
-# check and raises 403 directly, removing the need for every handler to call
-# is_admin_user_db() manually.
-RequireAdmin = Depends(_require_admin)
+RequireAdmin = Depends(require_admin_principal)

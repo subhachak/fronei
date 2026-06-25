@@ -306,9 +306,18 @@ def consolidate_active_workspace_backlog(
         counts: dict[str, int] = {}
         for result in results:
             counts[result["status"]] = counts.get(result["status"], 0) + 1
+        failures = [
+            {
+                "workspace_id": result["workspace_id"],
+                "reason": result.get("reason") or "unknown",
+            }
+            for result in results
+            if result["status"] == "failed"
+        ]
         return {
             "workspaces_considered": len(ordered_ids),
             "workspaces_remaining": max(0, len(candidate_ids) - len(ordered_ids)),
+            "failures": failures,
             **counts,
         }
     finally:

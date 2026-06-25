@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
 from typing import Any
+from xml.etree import ElementTree
 
 from pydantic import BaseModel, Field
 
@@ -261,7 +262,16 @@ def _artifact_text(artifacts: list[dict[str, Any]]) -> str:
                     ):
                         continue
                     xml = archive.read(name).decode("utf-8", errors="ignore")
-                    text = re.sub(r"<[^>]+>", " ", xml)
+                    try:
+                        text = " ".join(ElementTree.fromstring(xml).itertext())
+                    except ElementTree.ParseError:
+                        escaped_cdata = re.sub(
+                            r"<!\[CDATA\[(.*?)\]\]>",
+                            lambda match: html.escape(match.group(1)),
+                            xml,
+                            flags=re.DOTALL,
+                        )
+                        text = re.sub(r"<[^>]+>", " ", escaped_cdata)
                     chunks.append(html.unescape(re.sub(r"\s+", " ", text)).strip())
         except (ValueError, zipfile.BadZipFile):
             continue

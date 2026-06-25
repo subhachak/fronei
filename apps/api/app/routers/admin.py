@@ -270,12 +270,17 @@ def jobs(
                 .all()
             )
         }
-        maintenance_rows = (
-            db.query(MaintenanceJob)
-            .order_by(MaintenanceJob.updated_at.desc())
-            .limit(20)
-            .all()
-        )
+        maintenance_query = db.query(MaintenanceJob)
+        if status == "cancelled":
+            maintenance_rows = []
+        else:
+            if status:
+                maintenance_query = maintenance_query.filter(MaintenanceJob.status == status)
+            maintenance_rows = (
+                maintenance_query.order_by(MaintenanceJob.updated_at.desc())
+                .limit(20)
+                .all()
+            )
 
         query = db.query(Turn)
         if status:
@@ -343,6 +348,7 @@ def jobs(
                     "lease_owner": row.lease_owner,
                     "lease_expires_at": _fmt(row.lease_expires_at),
                     "heartbeat_at": _fmt(row.heartbeat_at),
+                    "result": json.loads(row.result_json or "{}"),
                     "error_message": (row.error_message or "")[:1000] or None,
                     "created_at": _fmt(row.created_at),
                     "updated_at": _fmt(row.updated_at),

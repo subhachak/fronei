@@ -233,6 +233,11 @@ export function JobsTab({ authorizedFetch }: { authorizedFetch: AuthorizedFetch 
                           {job.job_type.replaceAll('_', ' ')}
                         </p>
                         <p className="mt-1 font-mono text-[10px] text-neutral-400">{job.id}</p>
+                        {job.result.outcome === 'partial_success' && (
+                          <p className="mt-1 text-[10px] font-semibold text-amber-600 dark:text-amber-400">
+                            Partial success · {job.result.consolidated ?? 0} consolidated · {job.result.failed ?? 0} failed
+                          </p>
+                        )}
                         {job.error_message && (
                           <p className="mt-1 line-clamp-2 text-[10px] text-red-600 dark:text-red-400">
                             {job.error_message}

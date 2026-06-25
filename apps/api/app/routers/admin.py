@@ -11,11 +11,11 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_
 
-from app.auth import get_claim_email, get_current_user_payload, is_admin_user, is_admin_user_db
+from app.auth import AdminPrincipal, RequireAdmin, is_env_admin
 from app.config import get_settings
 from app.services.clerk import fetch_clerk_user
 from app.db.models import (
@@ -48,11 +48,6 @@ from app.services.web_context import test_nimble_connection, test_tavily_connect
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 logger = logging.getLogger(__name__)
-
-
-class AdminPrincipal(BaseModel):
-    user_id: str
-    email: str | None = None
 
 
 class AdminControlUpdate(BaseModel):
@@ -94,21 +89,6 @@ class ModelPolicyUpdate(BaseModel):
 
 class AdminJobCancelRequest(BaseModel):
     reason: str | None = Field(default=None, max_length=500)
-
-
-def require_admin(request: Request, payload: dict = Depends(get_current_user_payload)) -> AdminPrincipal:
-    user_id = str(payload.get("sub") or "")
-    email = get_claim_email(payload)
-    if not is_admin_user_db(user_id, email):
-        logger.warning(
-            "Admin access denied: user_id=%s email=%s path=%s ua=%s",
-            user_id,
-            email,
-            request.url.path,
-            request.headers.get("user-agent", ""),
-        )
-        raise HTTPException(status_code=403, detail="Admin access required")
-    return AdminPrincipal(user_id=user_id, email=email)
 
 
 def _now() -> datetime:
@@ -178,11 +158,10 @@ def _control_out(control: UserAdminControl | None) -> dict:
 def _effective_role(user_id: str, db_role: str | None, email: str | None = None) -> str:
     """An env-allowlisted admin is always 'admin' regardless of the DB role.
 
-    Intentionally uses is_admin_user() (env-only) here, not is_admin_user_db(),
-    because we specifically want to know if the user is protected by the static
-    env allowlist — the DB role is passed in separately as `db_role`.
+    This intentionally checks only static deployment configuration because the
+    DB role is already supplied separately as `db_role`.
     """
-    if is_admin_user(user_id, email):
+    if is_env_admin(user_id, email):
         return "admin"
     return db_role or "user"
 
@@ -225,12 +204,12 @@ def _all_known_user_ids(db) -> set[str]:
 
 
 @router.get("/me")
-def admin_me(admin: AdminPrincipal = Depends(require_admin)) -> dict:
+def admin_me(admin: AdminPrincipal = RequireAdmin) -> dict:
     return {"is_admin": True, "user_id": admin.user_id, "email": admin.email}
 
 
 @router.get("/overview")
-def overview(admin: AdminPrincipal = Depends(require_admin)) -> dict:
+def overview(admin: AdminPrincipal = RequireAdmin) -> dict:
     db = SessionLocal()
     try:
         start = _start_for_range("1d")
@@ -262,7 +241,7 @@ def jobs(
     status: str | None = Query(default=None, pattern="^(queued|running|completed|failed|cancelled)$"),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
-    admin: AdminPrincipal = Depends(require_admin),
+    admin: AdminPrincipal = RequireAdmin,
 ) -> dict:
     now = _now()
     db = SessionLocal()
@@ -345,7 +324,7 @@ def jobs(
 def cancel_job(
     turn_id: str,
     body: AdminJobCancelRequest,
-    admin: AdminPrincipal = Depends(require_admin),
+    admin: AdminPrincipal = RequireAdmin,
 ) -> dict:
     db = SessionLocal()
     try:
@@ -378,7 +357,7 @@ def users(
     query: str = "",
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
-    admin: AdminPrincipal = Depends(require_admin),
+    admin: AdminPrincipal = RequireAdmin,
 ) -> dict:
     db = SessionLocal()
     try:
@@ -467,7 +446,7 @@ def users(
 
 
 @router.get("/users/{user_id}")
-def user_detail(user_id: str, admin: AdminPrincipal = Depends(require_admin)) -> dict:
+def user_detail(user_id: str, admin: AdminPrincipal = RequireAdmin) -> dict:
     db = SessionLocal()
     try:
         _ensure_target_user_id(user_id)
@@ -553,7 +532,7 @@ def user_detail(user_id: str, admin: AdminPrincipal = Depends(require_admin)) ->
 def update_user_control(
     user_id: str,
     body: AdminControlUpdate,
-    admin: AdminPrincipal = Depends(require_admin),
+    admin: AdminPrincipal = RequireAdmin,
 ) -> dict:
     db = SessionLocal()
     try:
@@ -580,7 +559,7 @@ def update_user_control(
 def update_user_role(
     user_id: str,
     body: UserRoleUpdate,
-    admin: AdminPrincipal = Depends(require_admin),
+    admin: AdminPrincipal = RequireAdmin,
 ) -> dict:
     """Grant or revoke admin access for a user. Backed by `user_admin_controls.role`,
     layered on top of the static ADMIN_USER_IDS/ADMIN_EMAILS env allowlist."""
@@ -589,10 +568,11 @@ def update_user_role(
         _ensure_target_user_id(user_id)
         if user_id == admin.user_id and body.role != "admin":
             raise HTTPException(status_code=400, detail="Admins cannot remove their own admin role.")
+        user_email = db.query(User.email).filter(User.clerk_id == user_id).scalar()
         # Intentionally env-only: we're checking if this specific user is protected
         # by the static ADMIN_USER_IDS/ADMIN_EMAILS allowlist, not whether they're
-        # an admin generally (which is_admin_user_db would answer).
-        if is_admin_user(user_id, None) and body.role != "admin":
+        # an admin generally (which the canonical admin policy would answer).
+        if is_env_admin(user_id, user_email) and body.role != "admin":
             raise HTTPException(
                 status_code=400,
                 detail="This user is an admin via ADMIN_USER_IDS/ADMIN_EMAILS env config; "
@@ -607,7 +587,6 @@ def update_user_role(
         _audit(db, admin, "user_role.update", user_id, {"role": body.role})
         db.commit()
         db.refresh(control)
-        user_email = db.query(User.email).filter(User.clerk_id == user_id).scalar()
         return {"user_id": user_id, "role": _effective_role(user_id, control.role, user_email)}
     finally:
         db.close()
@@ -618,7 +597,7 @@ def privacy_delete(
     user_id: str,
     body: PrivacyDeleteRequest,
     dry_run: bool = Query(default=False),
-    admin: AdminPrincipal = Depends(require_admin),
+    admin: AdminPrincipal = RequireAdmin,
 ) -> dict:
     db = SessionLocal()
     try:
@@ -676,7 +655,7 @@ def privacy_delete(
 @router.get("/usage")
 def usage(
     range: str = Query(default="7d", pattern="^(1d|7d|30d|all)$"),
-    admin: AdminPrincipal = Depends(require_admin),
+    admin: AdminPrincipal = RequireAdmin,
 ) -> dict:
     db = SessionLocal()
     try:
@@ -790,7 +769,7 @@ def usage(
 
 
 @router.get("/providers")
-def providers(admin: AdminPrincipal = Depends(require_admin)) -> dict:
+def providers(admin: AdminPrincipal = RequireAdmin) -> dict:
     settings = get_settings()
     db = SessionLocal()
     try:
@@ -860,7 +839,7 @@ def providers(admin: AdminPrincipal = Depends(require_admin)) -> dict:
 
 
 @router.post("/providers/test")
-def providers_test(body: ProviderTestRequest, admin: AdminPrincipal = Depends(require_admin)) -> dict:
+def providers_test(body: ProviderTestRequest, admin: AdminPrincipal = RequireAdmin) -> dict:
     provider = body.provider
     # Live provider/search calls cost money and quota — throttle repeated clicks
     # per admin per provider, independent of the per-user rate limits.
@@ -894,7 +873,7 @@ def providers_test(body: ProviderTestRequest, admin: AdminPrincipal = Depends(re
 def errors(
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
-    admin: AdminPrincipal = Depends(require_admin),
+    admin: AdminPrincipal = RequireAdmin,
 ) -> dict:
     db = SessionLocal()
     try:
@@ -929,7 +908,7 @@ def errors(
 def audit(
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
-    admin: AdminPrincipal = Depends(require_admin),
+    admin: AdminPrincipal = RequireAdmin,
 ) -> dict:
     db = SessionLocal()
     try:
@@ -965,7 +944,7 @@ def audit(
 @router.get("/workspaces")
 def admin_workspaces_view(
     user_id: str | None = Query(default=None),
-    admin: AdminPrincipal = Depends(require_admin),
+    admin: AdminPrincipal = RequireAdmin,
 ) -> dict:
     """Read Agent v3 workspace summaries across users.
 
@@ -1014,12 +993,12 @@ def admin_workspaces_view(
 
 
 @router.get("/prompts")
-def admin_prompts_view(admin: AdminPrincipal = Depends(require_admin)) -> dict:
+def admin_prompts_view(admin: AdminPrincipal = RequireAdmin) -> dict:
     return {"prompts": [item.model_dump(mode="json") for item in prompt_library.list_prompts()]}
 
 
 @router.post("/prompts/seed")
-def admin_prompt_seed(admin: AdminPrincipal = Depends(require_admin)) -> dict:
+def admin_prompt_seed(admin: AdminPrincipal = RequireAdmin) -> dict:
     counts = prompt_library.seed_defaults()
     db = SessionLocal()
     try:
@@ -1036,7 +1015,7 @@ def admin_prompt_seed(admin: AdminPrincipal = Depends(require_admin)) -> dict:
 @router.post("/prompts")
 def admin_prompt_upsert(
     body: PromptUpsertRequest,
-    admin: AdminPrincipal = Depends(require_admin),
+    admin: AdminPrincipal = RequireAdmin,
 ) -> dict:
     spec = prompt_library.PromptSpec(**body.model_dump())
     saved = prompt_library.upsert_prompt(spec)
@@ -1058,7 +1037,7 @@ def admin_prompt_upsert(
 
 
 @router.post("/prompts/{prompt_id}/activate")
-def admin_prompt_activate(prompt_id: str, admin: AdminPrincipal = Depends(require_admin)) -> dict:
+def admin_prompt_activate(prompt_id: str, admin: AdminPrincipal = RequireAdmin) -> dict:
     activated = prompt_library.activate_prompt(prompt_id)
     if activated is None:
         raise HTTPException(status_code=404, detail="Agent v3 prompt not found")
@@ -1080,7 +1059,7 @@ def admin_prompt_activate(prompt_id: str, admin: AdminPrincipal = Depends(requir
 
 
 @router.post("/prompts/{prompt_id}/rollback")
-def admin_prompt_rollback(prompt_id: str, admin: AdminPrincipal = Depends(require_admin)) -> dict:
+def admin_prompt_rollback(prompt_id: str, admin: AdminPrincipal = RequireAdmin) -> dict:
     rolled_back = prompt_library.rollback_prompt(prompt_id)
     if rolled_back is None:
         raise HTTPException(status_code=409, detail="No previous Agent v3 prompt version exists")
@@ -1102,7 +1081,7 @@ def admin_prompt_rollback(prompt_id: str, admin: AdminPrincipal = Depends(requir
 
 
 @router.get("/model-policy")
-def admin_model_policy_view(admin: AdminPrincipal = Depends(require_admin)) -> dict:
+def admin_model_policy_view(admin: AdminPrincipal = RequireAdmin) -> dict:
     """Effective Agent v3 model assignment: defaults merged with whatever an
     admin has overridden. This is the single source of truth — there is no
     .env fallback for model identity anymore."""
@@ -1125,7 +1104,7 @@ def admin_model_policy_view(admin: AdminPrincipal = Depends(require_admin)) -> d
 @router.patch("/model-policy")
 def admin_model_policy_update(
     body: ModelPolicyUpdate,
-    admin: AdminPrincipal = Depends(require_admin),
+    admin: AdminPrincipal = RequireAdmin,
 ) -> dict:
     db = SessionLocal()
     try:
@@ -1151,7 +1130,7 @@ def admin_model_policy_update(
 
 
 @router.post("/model-policy/reset")
-def admin_model_policy_reset(admin: AdminPrincipal = Depends(require_admin)) -> dict:
+def admin_model_policy_reset(admin: AdminPrincipal = RequireAdmin) -> dict:
     db = SessionLocal()
     try:
         policy = model_policy.reset_model_policy(db)
@@ -1169,13 +1148,13 @@ def admin_model_policy_reset(admin: AdminPrincipal = Depends(require_admin)) -> 
 def admin_routing_signals_view(
     status: str | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
-    admin: AdminPrincipal = Depends(require_admin),
+    admin: AdminPrincipal = RequireAdmin,
 ) -> dict:
     return routing_policy.list_signal_candidates(status=status, limit=limit)
 
 
 @router.post("/routing-signals/{candidate_id}/approve")
-def admin_routing_signal_approve(candidate_id: str, admin: AdminPrincipal = Depends(require_admin)) -> dict:
+def admin_routing_signal_approve(candidate_id: str, admin: AdminPrincipal = RequireAdmin) -> dict:
     candidate = routing_policy.set_signal_candidate_status(candidate_id, "approved")
     if candidate is None:
         raise HTTPException(status_code=404, detail="Agent v3 routing signal candidate not found")
@@ -1192,7 +1171,7 @@ def admin_routing_signal_approve(candidate_id: str, admin: AdminPrincipal = Depe
 
 
 @router.post("/routing-signals/{candidate_id}/reject")
-def admin_routing_signal_reject(candidate_id: str, admin: AdminPrincipal = Depends(require_admin)) -> dict:
+def admin_routing_signal_reject(candidate_id: str, admin: AdminPrincipal = RequireAdmin) -> dict:
     candidate = routing_policy.set_signal_candidate_status(candidate_id, "rejected")
     if candidate is None:
         raise HTTPException(status_code=404, detail="Agent v3 routing signal candidate not found")
@@ -1209,7 +1188,7 @@ def admin_routing_signal_reject(candidate_id: str, admin: AdminPrincipal = Depen
 
 
 @router.get("/system")
-def system(admin: AdminPrincipal = Depends(require_admin)) -> dict:
+def system(admin: AdminPrincipal = RequireAdmin) -> dict:
     settings = get_settings()
     return {
         "app_env": settings.app_env,

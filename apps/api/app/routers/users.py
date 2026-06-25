@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from app.auth import CurrentUserPayload, get_claim_email, get_claim_name, is_admin_user
+from app.auth import CurrentUserPayload, get_claim_email, get_claim_name, is_env_admin
 from app.config import get_settings
 from app.db.models import SessionLocal, bootstrap_user_and_control
 
@@ -33,7 +33,7 @@ def me(payload: dict = CurrentUserPayload) -> dict:
     try:
         user, control, _ = bootstrap_user_and_control(
             db, user_id, email, name,
-            is_admin=is_admin_user(user_id, email),
+            is_admin=is_env_admin(user_id, email),
             require_approval=settings.require_user_approval,
         )
         account_status = control.status if control else "active"

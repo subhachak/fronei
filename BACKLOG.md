@@ -194,14 +194,11 @@ This is a larger refactor — do it after TD-02 (durable queue) is resolved.
 ### TD-14 · Admin role checked via two separate code paths
 **File:** `apps/api/app/auth.py`, `apps/api/app/routers/admin.py`  
 **Effort:** Low  
-**Status:** Partially fixed — `RequireAdmin` dependency added to `auth.py`
+**Status:** ✅ Complete — one canonical server-side admin policy
 
-`is_admin_user()` (env-only) and `is_admin_user_db()` (env + DB role) exist as separate
-functions. Call sites must pick the right one; using the env-only path silently misses
-DB-assigned admin roles.
-
-**Remaining work:** Audit every `is_admin_user()` call site and replace with
-`is_admin_user_db()` or the new `RequireAdmin` dependency.
+`is_admin_user()` is the canonical env + DB-role policy and `RequireAdmin`
+enforces it for every admin route. The explicitly named `is_env_admin()` helper
+is limited to bootstrap and static-allowlist protection behavior.
 
 ---
 
@@ -211,7 +208,7 @@ DB-assigned admin roles.
 |----|---------|---------------|
 | TD-10 | Pin package.json deps away from `latest` | `apps/web/package.json` |
 | TD-04 ✅ | Remove startup `create_all` and SQLite schema repair; enforce Alembic head in every environment | `apps/api/app/db/models.py`, `apps/api/app/db/schema_check.py` |
-| TD-14 (partial) | Add `RequireAdmin` FastAPI dependency; annotate intentional env-only call sites | `apps/api/app/auth.py`, `apps/api/app/routers/admin.py` |
+| TD-14 ✅ | Consolidate admin authorization behind `RequireAdmin`; make static allowlist checks explicit | `apps/api/app/auth.py`, `apps/api/app/routers/admin.py`, `apps/api/app/routers/users.py` |
 | TD-01 (partial) | Extract all Pydantic models → `research_models.py` (−623 lines); backward-compat re-exports preserved | `research_models.py` (new), `research_subtree.py` |
 | TD-01 (partial) | Extract utilities → `research_utils.py`, profile/brief → `research_profiles.py`, contracts → `research_contracts.py`; planner → `research_planner.py` | `research_utils.py`, `research_profiles.py`, `research_contracts.py`, `research_planner.py` (all new) |
 | TD-01 ✅ | Extract `research_evidence.py`, `research_synthesis.py`, `research_lead.py`; `research_subtree.py` is now a 226-line re-export hub (−95% from 4915 lines); all 69 .py files compile clean | `research_evidence.py`, `research_synthesis.py`, `research_lead.py` (new); `research_subtree.py` |

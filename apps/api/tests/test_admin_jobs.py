@@ -8,6 +8,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from app.auth import AdminPrincipal
 from app.db.models import AdminAuditLog, Base, Turn
 from app.observability import JsonLogFormatter, log_event
 from app.routers import admin as admin_router
@@ -64,7 +65,7 @@ def test_admin_jobs_reports_queue_health(monkeypatch):
         status=None,
         limit=50,
         offset=0,
-        admin=admin_router.AdminPrincipal(user_id="admin"),
+        admin=AdminPrincipal(user_id="admin"),
     )
 
     assert response["summary"]["queued"] == 1
@@ -88,7 +89,7 @@ def test_admin_can_cancel_queued_job_and_audit(monkeypatch):
     response = admin_router.cancel_job(
         "queued",
         admin_router.AdminJobCancelRequest(reason="operator request"),
-        admin=admin_router.AdminPrincipal(user_id="admin"),
+        admin=AdminPrincipal(user_id="admin"),
     )
 
     assert response["status"] == "cancelled"

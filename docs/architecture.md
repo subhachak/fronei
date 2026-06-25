@@ -226,7 +226,9 @@ Model assignments are managed in `model_policy.py` from the DB (`AdminSetting`),
 ## Design decisions
 
 - Provider keys are server-side only; the frontend never sees them.
-- Admin authorization is enforced server-side; frontend visibility is a convenience layer only.
+- Admin authorization is enforced server-side through the canonical
+  `RequireAdmin` dependency; frontend visibility is a convenience layer only.
+  Runtime DB roles and static deployment allowlists use the same access policy.
 - LiteLLM is the single SDK surface for all model providers.
 - The orchestrator decides route and format; the composer controls are user hints that the orchestrator may override or confirm.
 - Turn execution updates use authenticated SSE with persisted event replay,

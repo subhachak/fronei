@@ -5,6 +5,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.db.models import PromptTemplate, Base
 from app.main import app
+from app.auth import AdminPrincipal, require_admin_principal
 from app.routers import admin as admin_router
 from app.services.agent import prompt_library
 
@@ -104,7 +105,7 @@ def test_admin_agent_v3_prompt_endpoints(monkeypatch):
     Session = _sqlite_session()
     monkeypatch.setattr(prompt_library, "SessionLocal", Session)
     monkeypatch.setattr(admin_router, "SessionLocal", Session)
-    app.dependency_overrides[admin_router.require_admin] = lambda: admin_router.AdminPrincipal(
+    app.dependency_overrides[require_admin_principal] = lambda: AdminPrincipal(
         user_id="admin_1",
         email="admin@example.com",
     )

@@ -1,11 +1,20 @@
+from types import SimpleNamespace
+
 import pytest
+
+from app.services import document_extractor, provider_health
 from app.services.document_extractor import (
     MAX_CHARS,
     ExtractionError,
-    _extract_csv,
-    _extract_xlsx,
     extract_text,
 )
+
+
+@pytest.fixture(autouse=True)
+def clean_provider_circuits():
+    provider_health.reset_circuit_state()
+    yield
+    provider_health.reset_circuit_state()
 
 
 def test_extract_txt_plain():
@@ -45,3 +54,23 @@ def test_md_preserves_content():
     text, _, _, method = extract_text("doc.md", md)
     assert "Heading" in text
     assert method == "parser"
+
+
+def test_vision_extraction_skips_provider_with_open_circuit(monkeypatch):
+    for _ in range(provider_health.CIRCUIT_FAILURE_THRESHOLD):
+        provider_health.record_provider_failure("Gemini")
+    calls: list[str] = []
+
+    def fake_completion(*, model, **_kwargs):
+        calls.append(model)
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="image text"))]
+        )
+
+    monkeypatch.setattr(document_extractor, "completion", fake_completion)
+
+    text, _, _, method = extract_text("image.png", b"not-a-real-image")
+
+    assert calls == [document_extractor._FALLBACK_MODEL]
+    assert text == "image text"
+    assert method == "vision"

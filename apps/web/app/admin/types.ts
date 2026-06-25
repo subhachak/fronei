@@ -177,7 +177,13 @@ export type AdminProvider = {
   configured: boolean
   key_hint: string | null
   testable: boolean
-  circuit?: { consecutive_failures: number; open: boolean; cooldown_remaining_s: number }
+  circuit?: {
+    consecutive_failures: number
+    open: boolean
+    half_open: boolean
+    probe_in_flight: boolean
+    cooldown_remaining_s: number
+  }
 }
 
 export type AdminProvidersResponse = {

@@ -17,6 +17,12 @@ from pathlib import Path
 from litellm import completion
 
 from app.config import get_settings
+from app.services.provider_health import (
+    provider_attempt_allowed,
+    provider_for_model,
+    record_provider_failure,
+    record_provider_success,
+)
 
 MAX_CHARS     = 60_000   # higher limit — vision extraction produces clean markdown
 MAX_PDF_PAGES = 30
@@ -135,6 +141,27 @@ def _finalize(text: str, pages: int, method: str) -> tuple[str, int, bool, str]:
     return text, pages, truncated, method
 
 
+def _complete_vision(model: str, messages: list[dict]) -> str:
+    provider = provider_for_model(model)
+    if not provider_attempt_allowed(provider):
+        return ""
+    try:
+        response = completion(
+            model=model,
+            messages=messages,
+            temperature=0.0,
+            max_tokens=4096,
+        )
+        text = (response.choices[0].message.content or "").strip()
+        if text:
+            record_provider_success(provider)
+            return text
+        record_provider_failure(provider)
+    except Exception:
+        record_provider_failure(provider)
+    return ""
+
+
 # ── Vision: images ───────────────────────────────────────────────────
 
 def _extract_image_vision(
@@ -154,15 +181,9 @@ def _extract_image_vision(
         ],
     }]
     for model in [_VISION_MODEL, _FALLBACK_MODEL]:
-        try:
-            resp = completion(
-                model=model, messages=msgs, temperature=0.0, max_tokens=4096
-            )
-            text = (resp.choices[0].message.content or "").strip()
-            if text:
-                return _finalize(text, 1, "vision")
-        except Exception:
-            continue
+        text = _complete_vision(model, msgs)
+        if text:
+            return _finalize(text, 1, "vision")
     raise ExtractionError("Vision model could not process this image.")
 
 
@@ -197,14 +218,9 @@ def _extract_page_via_vision(image_bytes: bytes, page_num: int) -> tuple[int, st
         ],
     }]
     for model in [_VISION_MODEL, _FALLBACK_MODEL]:
-        try:
-            resp = completion(model=model, messages=msgs,
-                              temperature=0.0, max_tokens=4096)
-            text = (resp.choices[0].message.content or "").strip()
-            if text:
-                return page_num, text
-        except Exception:
-            continue
+        text = _complete_vision(model, msgs)
+        if text:
+            return page_num, text
     return page_num, ""   # blank page or all models failed
 
 

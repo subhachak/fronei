@@ -39,8 +39,13 @@ Choose exactly one route:
 - direct: answer from general knowledge; no tool required.
 - clarify: the user request is ambiguous, risky, under-specified, or missing a required target.
 - research: the answer needs current, source-grounded, market, pricing, legal, financial, product, vendor, or time-sensitive information.
-- document: the user primarily wants a document/report/memo/deck, and enough content is already provided.
-- research_document: the user wants a document/report/memo/deck and the contents need source-grounded research first.
+- document: the user primarily wants Fronei to create/write/export a document/report/memo/deck artifact, and enough content is already provided.
+- research_document: the user wants Fronei to create/write/export a document/report/memo/deck artifact and the contents need source-grounded research first.
+
+Important distinction:
+- If the user asks to research, find, compare, or look up tools/projects/repos that generate documents/decks/PPTs,
+  the deliverable is a chat research answer, not a generated document. Choose research unless they explicitly ask
+  Fronei to create/export the artifact.
 
 If the route is research or research_document, also choose exactly one research_level:
 - easy: very narrow freshness check or simple sourced lookup; minimal web use.
@@ -148,7 +153,7 @@ def heuristic_decide(
     available_routes = available_routes or ["direct", "clarify", "research", "document", "research_document"]
     available_tools = available_tools or []
     text = request.message.lower()
-    asks_doc = any(term in text for term in ["document", "report", "docx", "memo", "briefing", "deck", "ppt", "slides", "presentation", "powerpoint"])
+    asks_doc = _asks_for_document_artifact(text)
     asks_research = any(
         term in text
         for term in [
@@ -232,7 +237,7 @@ def choose_research_level(request: TurnRequest, route: RouteName) -> Literal["ea
         "board-ready",
     ]
     easy_terms = ["quick", "briefly", "check", "current", "latest", "what is", "when is", "find out"]
-    asks_doc = any(term in text for term in ["document", "report", "docx", "memo", "briefing", "deck", "ppt", "slides", "presentation", "powerpoint"])
+    asks_doc = _asks_for_document_artifact(text)
     if any(term in text for term in deep_terms) or any(term in text for term in high_stakes_terms):
         return "deep"
     explicit_research = "research" in text
@@ -246,10 +251,12 @@ def choose_research_level(request: TurnRequest, route: RouteName) -> Literal["ea
 def _normalize_research_decision(request: TurnRequest, decision: OrchestratorDecision) -> OrchestratorDecision:
     text = request.message.lower()
     asks_research = "research" in text or decision.route in {"research", "research_document"}
-    asks_doc = any(
-        term in text
-        for term in ["document", "report", "docx", "memo", "briefing", "deck", "ppt", "slides", "presentation", "powerpoint"]
-    )
+    asks_doc = _asks_for_document_artifact(text)
+    if request.output_format == "chat" and _asks_research_about_document_tools(text):
+        decision.route = "research"
+        decision.output_format = "chat"
+        asks_doc = False
+        asks_research = True
     if decision.route == "research" and asks_research and asks_doc:
         decision.route = "research_document"
         decision.output_format = decision.output_format or request.output_format
@@ -295,3 +302,49 @@ def _looks_too_vague(text: str) -> bool:
     if len(words) <= 2 and any(w in {"it", "this", "that", "them", "better", "fix", "research"} for w in words):
         return True
     return text.strip() in {"help", "do it", "make it better", "research it", "create it"}
+
+
+def _asks_for_document_artifact(text: str) -> bool:
+    if _asks_research_about_document_tools(text):
+        return False
+    artifact_terms = r"(?:document|report|docx|memo|briefing|deck|pptx?|slides?|presentation|powerpoint)"
+    explicit_create = (
+        rf"\b(?:create|make|generate|write|draft|build|compose|produce|export|download|turn|convert)\b"
+        rf".{{0,80}}\b{artifact_terms}\b"
+    )
+    artifact_first = (
+        rf"\b{artifact_terms}\b"
+        rf".{{0,80}}\b(?:for me|from this|from the brief|from a brief|using the template|using templates|with the template|as a file|downloadable)\b"
+    )
+    return bool(re.search(explicit_create, text) or re.search(artifact_first, text))
+
+
+def _asks_research_about_document_tools(text: str) -> bool:
+    research_terms = (
+        "look in",
+        "look up",
+        "find",
+        "research",
+        "compare",
+        "see if",
+        "are there",
+        "recent projects",
+        "github repos",
+        "repositories",
+        "tools",
+        "alternatives",
+    )
+    artifact_tool_terms = (
+        "generate ppt",
+        "generate ppts",
+        "generate pptx",
+        "generate slides",
+        "generate presentations",
+        "generate decks",
+        "ppt generator",
+        "pptx generator",
+        "slide generator",
+        "presentation generator",
+        "deck generator",
+    )
+    return any(term in text for term in research_terms) and any(term in text for term in artifact_tool_terms)

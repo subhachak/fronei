@@ -10,9 +10,22 @@ GITHUB_PPT_RESEARCH_PROMPT = (
     "from a brief and preconfigured templates"
 )
 
+SEARCH_GITHUB_PPT_RESEARCH_PROMPT = (
+    "Search GitHub for recent open-source projects that generate PPTX slide decks from short briefs "
+    "and preconfigured templates. Summarize in chat with a concise comparison including project name, "
+    "GitHub link, generated outputs, template support, maturity signals, and which project looks most promising."
+)
+
 
 def test_ppt_generator_repo_lookup_routes_to_chat_research_in_heuristic():
     decision = heuristic_decide(TurnRequest(message=GITHUB_PPT_RESEARCH_PROMPT, output_format="chat"))
+
+    assert decision.route == "research"
+    assert decision.output_format == "chat"
+
+
+def test_search_github_ppt_generator_lookup_routes_to_chat_research_in_heuristic():
+    decision = heuristic_decide(TurnRequest(message=SEARCH_GITHUB_PPT_RESEARCH_PROMPT, output_format="chat"))
 
     assert decision.route == "research"
     assert decision.output_format == "chat"
@@ -42,6 +55,38 @@ def test_ppt_generator_repo_lookup_normalizes_llm_document_route(monkeypatch):
 
     decision = decide_with_options(
         TurnRequest(message=GITHUB_PPT_RESEARCH_PROMPT, output_format="chat"),
+        available_routes=["direct", "clarify", "research", "document", "research_document"],
+        available_tools=[],
+    )
+
+    assert decision.route == "research"
+    assert decision.output_format == "chat"
+
+
+def test_search_github_ppt_generator_lookup_normalizes_llm_document_route(monkeypatch):
+    from app.services.agent import model_client
+
+    def fake_complete(messages, **_kwargs):
+        return SimpleNamespace(
+            text=json.dumps(
+                {
+                    "route": "research_document",
+                    "confidence": 0.9,
+                    "reason": "Mistakenly treated PPT generators as a PPT deliverable.",
+                    "output_format": "pptx",
+                    "research_level": "regular",
+                    "requires_confirmation": False,
+                }
+            ),
+            model_used="fake-orchestrator",
+            latency_ms=1,
+            cost_usd=0.0,
+        )
+
+    monkeypatch.setattr(model_client, "complete", fake_complete)
+
+    decision = decide_with_options(
+        TurnRequest(message=SEARCH_GITHUB_PPT_RESEARCH_PROMPT, output_format="chat"),
         available_routes=["direct", "clarify", "research", "document", "research_document"],
         available_tools=[],
     )

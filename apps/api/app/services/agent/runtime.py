@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 from collections.abc import Iterator
 
@@ -13,8 +14,8 @@ from app.services.agent.document_subtree import (
     write_document,
 )
 from app.services.agent.fast_path import (
-    answer_direct_fast,
-    answer_web_fast,
+    DIRECT_FAST_PROMPT,
+    WEB_FAST_PROMPT,
     decide_fast_path,
 )
 from app.services.agent.models import (
@@ -46,7 +47,7 @@ from app.services.agent.research_subtree import (
     verify_claims,
 )
 from app.services.agent.tool_registry import ToolRegistry
-from app.services.agent.tools import Tools
+from app.services.agent.tools import Tools, source_context
 
 
 class Runtime:
@@ -109,7 +110,21 @@ class Runtime:
             if fast_decision.path == "direct_fast":
                 event = progress("direct_fast_answer", "Answering from the current conversation context.")
                 yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
-                response = answer_direct_fast(request)
+                user_prompt = request.message
+                if request.conversation_context:
+                    user_prompt = f"{request.conversation_context}\n\nCurrent user request:\n{request.message}"
+                response = yield from self._stream_model_response(
+                    progress,
+                    [
+                        {"role": "system", "content": DIRECT_FAST_PROMPT},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    role="direct_answer",
+                    quality_mode=request.quality_mode,
+                    overrides=request.model_overrides,
+                    max_tokens=1600,
+                    timeout_s=14,
+                )
                 event = progress(
                     "direct_fast_result",
                     f"Direct answer used {response.model_used or 'the configured direct model'}.",
@@ -156,11 +171,29 @@ class Runtime:
                 read_count=len(extracted_sources),
             )
             yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
-            response = answer_web_fast(
-                request,
-                web_query=web_query,
-                sources=sources,
-                extracted_sources=extracted_sources,
+            merged_web_sources = self._merge_sources(sources, extracted_sources)
+            response = yield from self._stream_model_response(
+                progress,
+                [
+                    {"role": "system", "content": WEB_FAST_PROMPT},
+                    {
+                        "role": "user",
+                        "content": json.dumps(
+                            {
+                                "message": request.message,
+                                "web_query": web_query,
+                                "source_context": source_context(merged_web_sources[:3]),
+                                "conversation_context": request.conversation_context[-1800:] if request.conversation_context else "",
+                            },
+                            ensure_ascii=False,
+                        ),
+                    },
+                ],
+                role="direct_answer",
+                quality_mode=request.quality_mode,
+                overrides=request.model_overrides,
+                max_tokens=1000,
+                timeout_s=16,
             )
             event = progress(
                 "web_fast_result",
@@ -177,7 +210,7 @@ class Runtime:
                 answer=response.text,
                 route=goal.route,
                 model_used=response.model_used,
-                sources=self._merge_sources(sources, extracted_sources),
+                sources=merged_web_sources,
                 tool_calls=tool_calls,
                 events=events,
                 latency_ms=int((time.perf_counter() - started) * 1000),
@@ -243,7 +276,7 @@ class Runtime:
             elif route == "direct":
                 event = progress("direct_answer", "Drafting a direct response.")
                 yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
-                result = self._run_direct(request, goal, turn_id, events, progress)
+                result = yield from self._run_direct(request, goal, turn_id, events, progress)
             elif route == "research":
                 research = yield from self._run_research_subtree(request, progress)
                 response = research["response"]
@@ -326,6 +359,61 @@ class Runtime:
         )
         yield StreamEnvelope(type="progress", data=result.model_dump(mode="json"))
         return output or [], call
+
+    def _stream_model_response(
+        self,
+        progress,
+        messages: list[dict[str, str]],
+        *,
+        role: str,
+        quality_mode: str,
+        overrides: dict[str, str] | None,
+        max_tokens: int,
+        timeout_s: int,
+    ):
+        buffered = ""
+        response: model_client.ModelResponse | None = None
+        for item in model_client.stream_complete(
+            messages,
+            role=role,
+            quality_mode=quality_mode,
+            overrides=overrides,
+            max_tokens=max_tokens,
+            timeout_s=timeout_s,
+        ):
+            if isinstance(item, model_client.ModelDelta):
+                if not item.text:
+                    continue
+                buffered += item.text
+                event = progress(
+                    "answer_delta",
+                    "Streaming answer.",
+                    delta=item.text,
+                    char_count=len(buffered),
+                    ephemeral_ui=True,
+                )
+                yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
+            else:
+                response = item
+        if response is None:
+            response = model_client.ModelResponse(
+                text=buffered.strip(),
+                model_used="",
+                latency_ms=0,
+                cost_usd=0.0,
+                model_role=role,
+            )
+        event = progress(
+            "answer_complete",
+            "Answer stream complete.",
+            char_count=len(response.text),
+            model_used=response.model_used,
+            latency_ms=response.latency_ms,
+            cost_usd=response.cost_usd,
+            ephemeral_ui=True,
+        )
+        yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
+        return response
 
     def _run_research_subtree(self, request: TurnRequest, progress):
         if request.research_level == "deep":
@@ -896,13 +984,17 @@ class Runtime:
         user_prompt = request.message
         if request.conversation_context:
             user_prompt = f"{request.conversation_context}\n\nCurrent user request:\n{request.message}"
-        response = model_client.simple_completion(
-            "You are Fronei v3, a concise and helpful assistant. Answer directly.",
-            user_prompt,
-            max_tokens=900,
+        response = yield from self._stream_model_response(
+            progress,
+            [
+                {"role": "system", "content": "You are Fronei v3, a concise and helpful assistant. Answer directly."},
+                {"role": "user", "content": user_prompt},
+            ],
             role="direct_answer",
             quality_mode=request.quality_mode,
             overrides=request.model_overrides,
+            max_tokens=900,
+            timeout_s=30,
         )
         return TurnResult(
             turn_id=turn_id,

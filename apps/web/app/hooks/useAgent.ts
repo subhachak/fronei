@@ -196,6 +196,7 @@ export function useAgent() {
     events: turnRunner.events,
     activeEvents: turnRunner.activeEvents,
     result: turnRunner.result,
+    liveAnswer: turnRunner.liveAnswer,
     error: turnRunner.error,
     setError: turnRunner.setError,
     running: turnRunner.running,

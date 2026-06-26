@@ -78,13 +78,14 @@ export function useTurnRunner(options: TurnRunnerOptions) {
   } = options
   const [events, setEvents] = useState<ProgressEvent[]>([])
   const [result, setResult] = useState<AgentResult | null>(null)
+  const [liveAnswer, setLiveAnswer] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [running, setRunning] = useState(false)
   const eventsRef = useRef<ProgressEvent[]>([])
   const activeRunMessageRef = useRef<string | null>(null)
 
   const activeEvents = useMemo(
-    () => events.filter(event => !['tool_selection', 'tool_result'].includes(event.stage)),
+    () => events.filter(event => !['tool_selection', 'tool_result', 'answer_delta', 'answer_complete'].includes(event.stage)),
     [events],
   )
   const canRun = isLoaded && isSignedIn && message.trim().length > 0 && !running
@@ -93,6 +94,7 @@ export function useTurnRunner(options: TurnRunnerOptions) {
     eventsRef.current = nextEvents
     setEvents(nextEvents)
     setResult(nextResult)
+    setLiveAnswer(nextResult?.answer || '')
     setError(null)
   }
 
@@ -171,6 +173,7 @@ export function useTurnRunner(options: TurnRunnerOptions) {
             const nextEvent = eventId ? { ...progress, event_id: eventId } : progress
             eventsRef.current = [...eventsRef.current, nextEvent]
             setEvents(eventsRef.current)
+            applyAnswerProgress(nextEvent)
             setError(null)
           }
           if (streamMessage.event === 'turn') {
@@ -213,6 +216,7 @@ export function useTurnRunner(options: TurnRunnerOptions) {
         setError(null)
         eventsRef.current = nextEvents
         setEvents(nextEvents)
+        setLiveAnswer(payload.turn.answer || answerFromEvents(nextEvents))
         if (applyTerminalStatus(payload, conversationId, turnMessage, option)) return
       } catch {
         transientFailures += 1
@@ -286,6 +290,7 @@ export function useTurnRunner(options: TurnRunnerOptions) {
     events,
     activeEvents,
     result,
+    liveAnswer,
     error,
     setError,
     running,
@@ -294,5 +299,22 @@ export function useTurnRunner(options: TurnRunnerOptions) {
     activeRunMessage: activeRunMessageRef.current,
     resetTurnState,
     setTurnState,
+  }
+
+  function applyAnswerProgress(event: ProgressEvent) {
+    if (event.stage !== 'answer_delta') return
+    const delta = typeof event.data?.delta === 'string' ? event.data.delta : ''
+    if (!delta) return
+    setLiveAnswer(current => `${current}${delta}`)
+  }
+
+  function answerFromEvents(sourceEvents: ProgressEvent[]) {
+    let answer = ''
+    for (const event of sourceEvents) {
+      if (event.stage !== 'answer_delta') continue
+      const delta = typeof event.data?.delta === 'string' ? event.data.delta : ''
+      if (delta) answer += delta
+    }
+    return answer
   }
 }

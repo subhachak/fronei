@@ -35,6 +35,7 @@ from app.services.agent.research_subtree import (
     bind_evidence,
     build_gap_followup_workers,
     build_research_plan_preview,
+    build_synthesis_prompt,
     create_research_goal,
     extract_deep_link_candidates,
     get_research_registry,
@@ -43,9 +44,10 @@ from app.services.agent.research_subtree import (
     plan_research,
     rank_sources,
     repair_research_answer,
-    synthesize_answer,
+    _synthesis_token_budget,
     verify_claims,
 )
+from app.services.agent.research_planner import _longform_timeout_s
 from app.services.agent.tool_registry import ToolRegistry
 from app.services.agent.tools import Tools, source_context
 
@@ -754,7 +756,19 @@ class Runtime:
             budget_ledger=ledger.model_dump(mode="json"),
         )
         yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
-        response = synthesize_answer(request, plan, evidence)
+        system_prompt, user_prompt = build_synthesis_prompt(request, plan, evidence)
+        response = yield from self._stream_model_response(
+            progress,
+            [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            role="synthesis",
+            quality_mode=request.quality_mode,
+            overrides=request.model_overrides,
+            max_tokens=_synthesis_token_budget(request, plan),
+            timeout_s=_longform_timeout_s(),
+        )
         ledger.record_model_call(cost_usd=response.cost_usd, latency_ms=response.latency_ms)
         event = progress(
             "synthesis_result",

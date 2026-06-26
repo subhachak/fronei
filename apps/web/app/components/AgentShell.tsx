@@ -379,6 +379,7 @@ export function AgentShell() {
                     )}
                     <Timeline
                       draftMessage={agent.running ? agent.activeRunMessage || agent.message : agent.message}
+                      liveAnswer={agent.liveAnswer}
                       turns={agent.visibleTurns}
                       events={agent.activeEvents}
                       running={agent.running}

@@ -139,12 +139,35 @@ def _patch_completion(monkeypatch, text="# Answer\n\nDone."):
     def fake_simple_completion(system, user, *, max_tokens=1200, **kwargs):
         return SimpleNamespace(text=text, model_used="fake-model", latency_ms=3, cost_usd=0.0)
 
+    def fake_stream_complete(messages, **kwargs):
+        midpoint = max(1, len(text) // 2)
+        yield model_client.ModelDelta(text[:midpoint])
+        yield model_client.ModelDelta(text[midpoint:])
+        yield model_client.ModelResponse(text=text, model_used="fake-model", latency_ms=3, cost_usd=0.0)
+
     monkeypatch.setattr(model_client, "complete", fake_complete)
     monkeypatch.setattr(model_client, "simple_completion", fake_simple_completion)
+    monkeypatch.setattr(model_client, "stream_complete", fake_stream_complete)
 
 
 def _collect_stream(runtime: Runtime, request: TurnRequest):
     return list(runtime.run_stream(request, user_id="u1"))
+
+
+def _stream_response(model_client, text: str, *, model: str = "fake-direct"):
+    midpoint = max(1, len(text) // 2)
+    yield model_client.ModelDelta(text[:midpoint])
+    yield model_client.ModelDelta(text[midpoint:])
+    yield model_client.ModelResponse(
+        text=text,
+        model_used=model,
+        latency_ms=3,
+        cost_usd=0.002,
+        model_role="direct_answer",
+        preferred_model="gpt-4.1-mini",
+        attempted_models=["gpt-4.1-mini"],
+        failed_model_attempts=[],
+    )
 
 
 def _sqlite_session():
@@ -170,13 +193,18 @@ def test_agent_direct_stream(monkeypatch):
 
     envelopes = _collect_stream(runtime, TurnRequest(message="Explain API rate limits."))
 
-    assert [e.type for e in envelopes] == ["start", "progress", "progress", "result", "done"]
-    result = envelopes[3].data
+    assert [e.type for e in envelopes] == ["start", "progress", "progress", "progress", "progress", "progress", "result", "done"]
+    result = next(e.data for e in envelopes if e.type == "result")
     assert result["route"] == "direct"
     assert result["answer"] == "Plain answer."
     assert envelopes[1].data["data"]["model_used"] == "fake-orchestrator"
     assert "available_routes" in envelopes[1].data["data"]
     assert "web_search" in envelopes[1].data["data"]["available_tools"]
+    assert [e.data["stage"] for e in envelopes if e.type == "progress" and e.data["stage"].startswith("answer_")] == [
+        "answer_delta",
+        "answer_delta",
+        "answer_complete",
+    ]
 
 
 def test_agent_direct_fast_path_skips_orchestrator(monkeypatch):
@@ -200,23 +228,15 @@ def test_agent_direct_fast_path_skips_orchestrator(monkeypatch):
             cost_usd=0.001,
         )
 
-    def fake_simple_completion(system, user, *, max_tokens=1200, **kwargs):
+    def fake_stream_complete(messages, *, max_tokens=1200, **kwargs):
+        system = messages[0]["content"]
         assert "Be clear and complete, not terse." in system
         assert "definition, analogy or example" in system
         assert max_tokens == 1600
-        return SimpleNamespace(
-            text="Fast answer.",
-            model_used="fake-direct",
-            latency_ms=3,
-            cost_usd=0.002,
-            model_role="direct_answer",
-            preferred_model="gpt-4.1-mini",
-            attempted_models=["gpt-4.1-mini"],
-            failed_model_attempts=[],
-        )
+        yield from _stream_response(model_client, "Fast answer.")
 
     monkeypatch.setattr(model_client, "complete", fake_complete)
-    monkeypatch.setattr(model_client, "simple_completion", fake_simple_completion)
+    monkeypatch.setattr(model_client, "stream_complete", fake_stream_complete)
     runtime = Runtime(tools=FakeTools())
 
     envelopes = _collect_stream(runtime, TurnRequest(message="Help me think through a friendly birthday toast."))
@@ -224,7 +244,14 @@ def test_agent_direct_fast_path_skips_orchestrator(monkeypatch):
     progress_stages = [e.data["stage"] for e in envelopes if e.type == "progress"]
     result = next(e.data for e in envelopes if e.type == "result")
     assert calls == ["fast_router"]
-    assert progress_stages == ["fast_router", "direct_fast_answer", "direct_fast_result"]
+    assert progress_stages == [
+        "fast_router",
+        "direct_fast_answer",
+        "answer_delta",
+        "answer_delta",
+        "answer_complete",
+        "direct_fast_result",
+    ]
     assert result["route"] == "direct"
     assert result["answer"] == "Fast answer."
     assert result["tool_calls"] == []
@@ -255,11 +282,13 @@ def test_agent_web_fast_path_uses_optional_web_search(monkeypatch):
             cost_usd=0.001,
         )
 
-    def fake_simple_completion(system, user, *, max_tokens=1200, **kwargs):
-        payload = json.loads(user)
+    def fake_stream_complete(messages, **kwargs):
+        payload = json.loads(messages[-1]["content"])
         assert payload["web_query"] == "OpenAI CEO today"
         assert "Detailed evidence" in payload["source_context"]
-        return SimpleNamespace(
+        yield model_client.ModelDelta("Web fast ")
+        yield model_client.ModelDelta("answer.")
+        yield model_client.ModelResponse(
             text="Web fast answer.",
             model_used="fake-direct",
             latency_ms=3,
@@ -271,7 +300,7 @@ def test_agent_web_fast_path_uses_optional_web_search(monkeypatch):
         )
 
     monkeypatch.setattr(model_client, "complete", fake_complete)
-    monkeypatch.setattr(model_client, "simple_completion", fake_simple_completion)
+    monkeypatch.setattr(model_client, "stream_complete", fake_stream_complete)
     runtime = Runtime(tools=FakeTools())
 
     envelopes = _collect_stream(runtime, TurnRequest(message="Who is the CEO of OpenAI today?"))
@@ -310,22 +339,13 @@ def test_agent_model_recommendation_forces_web_fast(monkeypatch):
             cost_usd=0.001,
         )
 
-    def fake_simple_completion(system, user, *, max_tokens=1200, **kwargs):
-        payload = json.loads(user)
+    def fake_stream_complete(messages, **kwargs):
+        payload = json.loads(messages[-1]["content"])
         assert "OpenAI Anthropic Gemini API model pricing" in payload["web_query"]
-        return SimpleNamespace(
-            text="Use current model docs.",
-            model_used="fake-direct",
-            latency_ms=3,
-            cost_usd=0.002,
-            model_role="direct_answer",
-            preferred_model="gpt-4.1-mini",
-            attempted_models=["gpt-4.1-mini"],
-            failed_model_attempts=[],
-        )
+        yield from _stream_response(model_client, "Use current model docs.")
 
     monkeypatch.setattr(model_client, "complete", fake_complete)
-    monkeypatch.setattr(model_client, "simple_completion", fake_simple_completion)
+    monkeypatch.setattr(model_client, "stream_complete", fake_stream_complete)
     runtime = Runtime(tools=FakeTools())
 
     envelopes = _collect_stream(
@@ -417,20 +437,11 @@ def test_agent_approved_learned_signal_forces_web_fast(monkeypatch):
             cost_usd=0.001,
         )
 
-    def fake_simple_completion(system, user, *, max_tokens=1200, **kwargs):
-        return SimpleNamespace(
-            text="Learned signal web answer.",
-            model_used="fake-direct",
-            latency_ms=3,
-            cost_usd=0.002,
-            model_role="direct_answer",
-            preferred_model="gpt-4.1-mini",
-            attempted_models=["gpt-4.1-mini"],
-            failed_model_attempts=[],
-        )
+    def fake_stream_complete(messages, **kwargs):
+        yield from _stream_response(model_client, "Learned signal web answer.")
 
     monkeypatch.setattr(model_client, "complete", fake_complete)
-    monkeypatch.setattr(model_client, "simple_completion", fake_simple_completion)
+    monkeypatch.setattr(model_client, "stream_complete", fake_stream_complete)
 
     envelopes = _collect_stream(
         Runtime(tools=FakeTools()),
@@ -1305,12 +1316,12 @@ def test_agent_conversation_context_connects_followup_turns(monkeypatch, tmp_pat
 
     answers = iter(["First answer about gateway limits.", "Follow-up answer using prior context."])
 
-    def fake_simple_completion(system, user, *, max_tokens=1200, **kwargs):
-        captured_prompts.append(user)
-        return SimpleNamespace(text=next(answers), model_used="fake-model", latency_ms=1, cost_usd=0.0)
+    def fake_stream_complete(messages, **kwargs):
+        captured_prompts.append(messages[-1]["content"])
+        yield from _stream_response(model_client, next(answers), model="fake-model")
 
     monkeypatch.setattr(model_client, "complete", fake_complete)
-    monkeypatch.setattr(model_client, "simple_completion", fake_simple_completion)
+    monkeypatch.setattr(model_client, "stream_complete", fake_stream_complete)
     app.dependency_overrides[get_current_user_id] = lambda: "u1"
     app.dependency_overrides[get_current_user_is_admin] = lambda: False
     try:
@@ -1363,12 +1374,12 @@ def test_agent_workspace_context_is_shared_across_conversations(monkeypatch, tmp
 
     answers = iter(["Shared workspace context about platform modernization.", "Second conversation answer."])
 
-    def fake_simple_completion(system, user, *, max_tokens=1200, **kwargs):
-        captured_prompts.append(user)
-        return SimpleNamespace(text=next(answers), model_used="fake-model", latency_ms=1, cost_usd=0.0)
+    def fake_stream_complete(messages, **kwargs):
+        captured_prompts.append(messages[-1]["content"])
+        yield from _stream_response(model_client, next(answers), model="fake-model")
 
     monkeypatch.setattr(model_client, "complete", fake_complete)
-    monkeypatch.setattr(model_client, "simple_completion", fake_simple_completion)
+    monkeypatch.setattr(model_client, "stream_complete", fake_stream_complete)
     app.dependency_overrides[get_current_user_id] = lambda: "u1"
     app.dependency_overrides[get_current_user_is_admin] = lambda: False
     try:
@@ -1427,11 +1438,11 @@ def test_agent_vague_followup_does_not_import_other_workspace_conversation(monke
         "Bengali-style bonde recipe attempt.",
     ])
 
-    def fake_simple_completion(system, user, *, max_tokens=1200, **kwargs):
-        return SimpleNamespace(text=next(answers), model_used="fake-model", latency_ms=1, cost_usd=0.0)
+    def fake_stream_complete(messages, **kwargs):
+        yield from _stream_response(model_client, next(answers), model="fake-model")
 
     monkeypatch.setattr(model_client, "complete", fake_complete)
-    monkeypatch.setattr(model_client, "simple_completion", fake_simple_completion)
+    monkeypatch.setattr(model_client, "stream_complete", fake_stream_complete)
     app.dependency_overrides[get_current_user_id] = lambda: "u1"
     app.dependency_overrides[get_current_user_is_admin] = lambda: False
     try:

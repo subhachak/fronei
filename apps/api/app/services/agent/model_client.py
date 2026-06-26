@@ -5,6 +5,7 @@ import os
 import re
 import time
 from dataclasses import dataclass, field
+from typing import Iterator
 
 from app.config import get_settings
 from app.services.agent import model_policy
@@ -29,6 +30,11 @@ class ModelResponse:
     attempted_models: list[str] = field(default_factory=list)
     failed_model_attempts: list[dict[str, str]] = field(default_factory=list)
     skipped_model_attempts: list[dict[str, str]] = field(default_factory=list)
+
+
+@dataclass
+class ModelDelta:
+    text: str
 
 
 def _configure_keys() -> None:
@@ -217,6 +223,102 @@ def complete(
                 }
             )
             logger.warning("agent model call failed for %s role=%s: %s", model, role or "default", exc)
+            continue
+    if last_error is None and skipped_model_attempts:
+        skipped = ", ".join(item["provider"] for item in skipped_model_attempts)
+        raise RuntimeError(f"agent model call skipped all candidates because provider circuits are open: {skipped}")
+    raise RuntimeError(f"agent model call failed for all candidates: {last_error}")
+
+
+def stream_complete(
+    messages: list[dict[str, str]],
+    *,
+    preferred_model: str | None = None,
+    role: str | None = None,
+    quality_mode: str = "standard",
+    overrides: dict[str, str] | None = None,
+    timeout_s: int = 30,
+    max_tokens: int = 1200,
+) -> Iterator[ModelDelta | ModelResponse]:
+    """Stream an LLM response and finish with the same metadata shape as complete()."""
+
+    _configure_keys()
+    from litellm import completion
+
+    last_error: Exception | None = None
+    preferred = preferred_model or model_for_role(role, quality_mode=quality_mode, overrides=overrides)
+    attempted_models: list[str] = []
+    failed_model_attempts: list[dict[str, str]] = []
+    skipped_model_attempts: list[dict[str, str]] = []
+    for model in _candidate_models(preferred):
+        provider = provider_for_model(model)
+        if not provider_attempt_allowed(provider):
+            skipped_model_attempts.append(
+                {
+                    "model": model,
+                    "provider": provider,
+                    "reason": "provider circuit is open",
+                }
+            )
+            logger.info(
+                "agent streaming model call skipped for %s role=%s: provider circuit open",
+                model,
+                role or "default",
+            )
+            continue
+        attempted_models.append(model)
+        started = time.perf_counter()
+        chunks: list[str] = []
+        emitted_any = False
+        try:
+            response_stream = completion(
+                model=model,
+                messages=messages,
+                timeout=timeout_s,
+                max_tokens=max_tokens,
+                stream=True,
+            )
+            response_model = model
+            response_cost = 0.0
+            for chunk in response_stream:
+                response_model = str(getattr(chunk, "model", None) or response_model)
+                usage = getattr(chunk, "_hidden_params", {}) or {}
+                response_cost += float(usage.get("response_cost") or 0.0)
+                choice = chunk.choices[0] if getattr(chunk, "choices", None) else None
+                delta = getattr(choice, "delta", None) if choice is not None else None
+                text = getattr(delta, "content", None) or ""
+                if not text:
+                    continue
+                emitted_any = True
+                chunks.append(str(text))
+                yield ModelDelta(str(text))
+            latency_ms = int((time.perf_counter() - started) * 1000)
+            record_provider_success(provider)
+            yield ModelResponse(
+                text="".join(chunks).strip(),
+                model_used=response_model,
+                latency_ms=latency_ms,
+                cost_usd=response_cost,
+                model_role=role or "",
+                preferred_model=preferred or "",
+                attempted_models=attempted_models,
+                failed_model_attempts=failed_model_attempts,
+                skipped_model_attempts=skipped_model_attempts,
+            )
+            return
+        except Exception as exc:  # pragma: no cover - exact provider failures vary.
+            last_error = exc
+            record_provider_failure(provider)
+            failed_model_attempts.append(
+                {
+                    "model": model,
+                    "error_type": exc.__class__.__name__,
+                    "error": _safe_error_text(exc),
+                }
+            )
+            logger.warning("agent streaming model call failed for %s role=%s: %s", model, role or "default", exc)
+            if emitted_any:
+                raise RuntimeError(f"agent streaming model call failed after partial output: {_safe_error_text(exc)}") from exc
             continue
     if last_error is None and skipped_model_attempts:
         skipped = ", ".join(item["provider"] for item in skipped_model_attempts)

@@ -9,6 +9,7 @@ import { ResearchPlanCard } from './ResearchPlanCard'
 
 export function Timeline({
   draftMessage,
+  liveAnswer,
   turns,
   events,
   running,
@@ -18,6 +19,7 @@ export function Timeline({
   onFollowUp,
 }: {
   draftMessage: string
+  liveAnswer: string
   turns: WorkItem[]
   events: ProgressEvent[]
   running: boolean
@@ -48,7 +50,7 @@ export function Timeline({
       {turns.map(turn => (
         <TurnPair key={turn.id} turn={turn} downloadArtifact={downloadArtifact} onFollowUp={onFollowUp} copiedKey={copiedKey} onCopyText={onCopyText} />
       ))}
-      {running && <LiveTurn message={draftMessage} events={events} copiedKey={copiedKey} onCopyText={onCopyText} />}
+      {running && <LiveTurn message={draftMessage} answer={liveAnswer} events={events} copiedKey={copiedKey} onCopyText={onCopyText} />}
     </div>
   )
 }
@@ -148,11 +150,13 @@ function TurnPair({
 
 function LiveTurn({
   message,
+  answer,
   events,
   copiedKey,
   onCopyText,
 }: {
   message: string
+  answer: string
   events: ProgressEvent[]
   copiedKey: string | null
   onCopyText: (value: string, key: string) => void | Promise<void>
@@ -170,6 +174,21 @@ function LiveTurn({
         <p className="whitespace-pre-wrap text-[15px] leading-relaxed [overflow-wrap:anywhere]">{message}</p>
       </div>
 
+      {answer ? (
+        <div className="w-full max-w-[860px] rounded-2xl rounded-bl-md border border-neutral-200 bg-white p-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+          <div className="mb-3.5 flex items-start gap-3">
+            <span className="grid h-9 w-9 flex-shrink-0 place-items-center rounded-full bg-neutral-900 text-white dark:bg-white dark:text-neutral-900">
+              <Sparkles size={16} />
+            </span>
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-bold text-neutral-900 dark:text-neutral-50">Fronei</p>
+              <p className="mt-0.5 text-sm leading-relaxed text-neutral-500 dark:text-neutral-400">Writing the response…</p>
+            </div>
+            <CopyButton copied={copiedKey === 'live:assistant'} label="Copy current response" onClick={() => onCopyText(answer, 'live:assistant')} />
+          </div>
+          <MarkdownResult content={answer} />
+        </div>
+      ) : (
       <div className="w-full max-w-[860px] rounded-2xl rounded-bl-md border border-neutral-200 bg-white p-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
         <div className="mb-3.5 flex items-start gap-3">
           <span className="av3-pulse-ring grid h-9 w-9 flex-shrink-0 place-items-center rounded-full bg-neutral-900 text-white dark:bg-white dark:text-neutral-900">
@@ -188,6 +207,7 @@ function LiveTurn({
           <span className="h-1 rounded-full bg-emerald-500/70" />
         </div>
       </div>
+      )}
     </div>
   )
 }

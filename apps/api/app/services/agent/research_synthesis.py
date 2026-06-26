@@ -70,7 +70,7 @@ def is_public_source_url(url: str) -> bool:
     except ValueError:
         return True
 
-def synthesize_answer(request: TurnRequest, plan: ResearchPlan, evidence: EvidencePack):
+def build_synthesis_prompt(request: TurnRequest, plan: ResearchPlan, evidence: EvidencePack) -> tuple[str, str]:
     architecture_context = _architecture_cards_context(evidence)
     claim_context = "\n".join(
         f"[{claim.source_id}] {claim.claim_type}/{claim.claim_role} "
@@ -98,23 +98,28 @@ def synthesize_answer(request: TurnRequest, plan: ResearchPlan, evidence: Eviden
         variables=["message", "evidence_pack", "profile"],
         profile=plan.research_profile,
     )
+    user_prompt = (
+        f"{request.conversation_context}\n\n" if request.conversation_context else ""
+    ) + (
+        f"User request:\n{request.message}\n\n"
+        f"Research profile: {plan.research_profile}\n\n"
+        f"Secondary profiles: {json.dumps(plan.secondary_profiles, ensure_ascii=False)}\n\n"
+        f"Source lanes used: {json.dumps(plan.source_lanes, ensure_ascii=False)}\n\n"
+        f"Required deliverable shape:\n{report_contract}\n\n"
+        f"Research questions:\n{json.dumps(plan.questions, ensure_ascii=False)}\n\n"
+        f"Architecture extraction cards:\n{architecture_context}\n\n"
+        f"Typed evidence claims:\n{claim_context}\n\n"
+        f"Evidence pack:\n{evidence_context}\n\n"
+        f"Known gaps:\n{json.dumps(evidence.gaps, ensure_ascii=False)}"
+    )
+    return prompt.system_prompt, user_prompt
+
+
+def synthesize_answer(request: TurnRequest, plan: ResearchPlan, evidence: EvidencePack):
+    system_prompt, user_prompt = build_synthesis_prompt(request, plan, evidence)
     return model_client.simple_completion(
-        prompt.system_prompt,
-        (
-            f"{request.conversation_context}\n\n" if request.conversation_context else ""
-        )
-        + (
-            f"User request:\n{request.message}\n\n"
-            f"Research profile: {plan.research_profile}\n\n"
-            f"Secondary profiles: {json.dumps(plan.secondary_profiles, ensure_ascii=False)}\n\n"
-            f"Source lanes used: {json.dumps(plan.source_lanes, ensure_ascii=False)}\n\n"
-            f"Required deliverable shape:\n{report_contract}\n\n"
-            f"Research questions:\n{json.dumps(plan.questions, ensure_ascii=False)}\n\n"
-            f"Architecture extraction cards:\n{architecture_context}\n\n"
-            f"Typed evidence claims:\n{claim_context}\n\n"
-            f"Evidence pack:\n{evidence_context}\n\n"
-            f"Known gaps:\n{json.dumps(evidence.gaps, ensure_ascii=False)}"
-        ),
+        system_prompt,
+        user_prompt,
         max_tokens=_synthesis_token_budget(request, plan),
         role="synthesis",
         quality_mode=request.quality_mode,
@@ -399,6 +404,13 @@ def build_gap_followup_workers(request: TurnRequest, plan: ResearchPlan, evidenc
     ]
 
 def _synthesis_report_contract(profile: ResearchProfile, request: TurnRequest) -> str:
+    if request.output_format == "chat" and "report" not in request.message.lower():
+        return (
+            "Produce a concise chat answer, not a report or artifact. "
+            "Follow the user's requested shape exactly. Prefer a short ranked list or compact bullets over large tables. "
+            "For comparisons, include only the fields the user asked for, cite factual claims with [S#], "
+            "name the most promising option, and keep caveats brief."
+        )
     if profile == "technical_architecture":
         return (
             "Produce a detailed architectural report. "

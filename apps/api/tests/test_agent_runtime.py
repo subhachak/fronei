@@ -538,7 +538,13 @@ def test_agent_research_streams_milestones(monkeypatch):
         "synthesis",
     ]:
         assert stage in stages
+    assert [stage for stage in stages if stage.startswith("answer_")] == [
+        "answer_delta",
+        "answer_delta",
+        "answer_complete",
+    ]
     result = next(e.data for e in envelopes if e.type == "result")
+    assert result["answer"] == "Research answer [S1]."
     assert result["sources"][0]["url"] == "https://example.com"
     provider_events = [e.data for e in envelopes if e.type == "progress" and e.data["stage"] == "search_worker_provider"]
     assert provider_events[0]["data"]["provider"] == "FakeSearch"
@@ -698,8 +704,14 @@ def test_agent_research_repair_loop_runs_when_judge_requests_repair(monkeypatch)
     def fake_simple_completion(system, user, *, max_tokens=1200, **kwargs):
         return SimpleNamespace(text=next(responses), model_used="fake-model", latency_ms=3, cost_usd=0.0)
 
+    def fake_stream_complete(messages, **kwargs):
+        text = next(responses)
+        yield model_client.ModelDelta(text)
+        yield model_client.ModelResponse(text=text, model_used="fake-model", latency_ms=3, cost_usd=0.0)
+
     monkeypatch.setattr(model_client, "complete", fake_complete)
     monkeypatch.setattr(model_client, "simple_completion", fake_simple_completion)
+    monkeypatch.setattr(model_client, "stream_complete", fake_stream_complete)
     runtime = Runtime(tools=FakeTools())
 
     envelopes = _collect_stream(runtime, TurnRequest(message="Research current AI governance trends."))

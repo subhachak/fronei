@@ -195,6 +195,7 @@ from app.services.agent.research_evidence import (  # noqa: F401, E402
 # Answer synthesis, ranking, and source utilities live in research_synthesis.py (TD-01 extraction).
 from app.services.agent.research_synthesis import (  # noqa: F401, E402
     build_gap_followup_workers,
+    build_synthesis_prompt,
     extract_deep_link_candidates,
     is_public_source_url,
     judge_research,

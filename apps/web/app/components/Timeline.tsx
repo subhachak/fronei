@@ -159,7 +159,6 @@ function LiveTurn({
 }) {
   const commentary = plainCommentary(events)
   const latestMessage = commentary.at(-1) || 'I’m getting oriented and deciding the best way to handle this.'
-  const liveCopy = commentary.join('\n') || latestMessage
 
   return (
     <div className="flex flex-col gap-2.5">
@@ -180,7 +179,7 @@ function LiveTurn({
             <p className="text-sm font-bold text-neutral-900 dark:text-neutral-50">Fronei</p>
             <p className="mt-0.5 text-sm leading-relaxed text-neutral-500 dark:text-neutral-400">{latestMessage}</p>
           </div>
-          <CopyButton copied={copiedKey === 'live:assistant'} label="Copy current commentary" onClick={() => onCopyText(liveCopy, 'live:assistant')} />
+          <CopyButton copied={copiedKey === 'live:assistant'} label="Copy current status" onClick={() => onCopyText(latestMessage, 'live:assistant')} />
         </div>
 
         <div aria-label="Fronei is actively working" className="av3-pulse-bars relative mb-4 ml-12 grid max-w-[180px] grid-cols-3 gap-1.5">
@@ -188,37 +187,7 @@ function LiveTurn({
           <span className="h-1 rounded-full bg-emerald-500/70" />
           <span className="h-1 rounded-full bg-emerald-500/70" />
         </div>
-
-        <RollingCommentary events={events} />
       </div>
-    </div>
-  )
-}
-
-function RollingCommentary({ events }: { events: ProgressEvent[] }) {
-  const visibleEvents = plainCommentary(events).slice(-6)
-  const items = visibleEvents.length === 0 ? ['I’m getting oriented and deciding the best way to handle this.'] : visibleEvents
-
-  return (
-    <div className="ml-[17px] grid gap-3 border-l-2 border-neutral-200 pl-[18px] dark:border-neutral-700">
-      {items.map((text, index) => {
-        const isActive = index === items.length - 1
-        return (
-          <div key={`${text}-${index}`} className="grid grid-cols-[auto_minmax(0,1fr)] gap-2.5">
-            <span className={`mt-[7px] h-[9px] w-[9px] rounded-full bg-emerald-500 ${isActive ? 'av3-pulse-dot' : ''}`} />
-            <div>
-              <p className="text-sm leading-relaxed text-neutral-600 dark:text-neutral-400">{text}</p>
-              {isActive && (
-                <span className="av3-ellipsis mt-1.5 inline-flex gap-1" aria-hidden="true">
-                  <span className="h-1 w-1 rounded-full bg-emerald-500 opacity-40" />
-                  <span className="h-1 w-1 rounded-full bg-emerald-500 opacity-40" />
-                  <span className="h-1 w-1 rounded-full bg-emerald-500 opacity-40" />
-                </span>
-              )}
-            </div>
-          </div>
-        )
-      })}
     </div>
   )
 }

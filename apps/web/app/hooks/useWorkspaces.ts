@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { readErrorBody } from '../lib/api'
 import { draftConversationId, draftWorkspaceId, titleFromMessage, uniqueWorkspaceName } from '../lib/format'
 import { mapConversation, mapTurn, mapWorkspace } from '../lib/mappers'
@@ -27,17 +27,28 @@ type WorkspaceOptions = {
 }
 
 export const INITIAL_VISIBLE_TURNS = 6
+const WORKSPACE_CACHE_KEY = 'fronei.workspaceShell.v1'
+
+type WorkspaceCache = {
+  workspaces: Workspace[]
+  activeWorkspaceId: string | null
+  activeConversationId: string | null
+  expandedWorkspaceIds: Record<string, boolean>
+}
 
 export function useWorkspaces(options: WorkspaceOptions) {
   const { authorizedFetch, isRunning, setMessage, onTurnState, onResetTurn, onError } = options
-  const [workspaces, setWorkspaces] = useState<Workspace[]>([])
+  const [cachedWorkspaceState] = useState<WorkspaceCache | null>(() => readWorkspaceCache())
+  const [workspaces, setWorkspaces] = useState<Workspace[]>(cachedWorkspaceState?.workspaces || [])
   const [workspacesLoading, setWorkspacesLoading] = useState(true)
   const [workspaceAction, setWorkspaceAction] = useState('')
   const [loadingConversationId, setLoadingConversationId] = useState<string | null>(null)
-  const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(null)
-  const [activeConversationId, setActiveConversationId] = useState<string | null>(null)
+  const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(cachedWorkspaceState?.activeWorkspaceId || null)
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(cachedWorkspaceState?.activeConversationId || null)
   const [visibleTurnCount, setVisibleTurnCount] = useState(INITIAL_VISIBLE_TURNS)
-  const [expandedWorkspaceIds, setExpandedWorkspaceIds] = useState<Record<string, boolean>>({})
+  const [expandedWorkspaceIds, setExpandedWorkspaceIds] = useState<Record<string, boolean>>(
+    cachedWorkspaceState?.expandedWorkspaceIds || {},
+  )
   const [editingWorkspaceId, setEditingWorkspaceId] = useState<string | null>(null)
   const [editingWorkspaceName, setEditingWorkspaceName] = useState('')
   const [pendingDelete, setPendingDelete] = useState<PendingDelete>(null)
@@ -60,6 +71,11 @@ export function useWorkspaces(options: WorkspaceOptions) {
   const visibleTurns = activeTurns.slice(Math.max(0, activeTurns.length - visibleTurnCount))
   const canLoadOlder = Boolean(activeConversation && (activeConversation.turnCount || activeTurns.length) > activeTurns.length)
   const latestTurn = activeTurns.at(-1) || null
+
+  useEffect(() => {
+    if (workspaces.length === 0 && workspacesLoading) return
+    writeWorkspaceCache({ workspaces, activeWorkspaceId, activeConversationId, expandedWorkspaceIds })
+  }, [activeConversationId, activeWorkspaceId, expandedWorkspaceIds, workspaces, workspacesLoading])
 
   async function loadConversationTurns(conversationId: string, limit = visibleTurnCount) {
     const showInitialPlaceholder = limit <= INITIAL_VISIBLE_TURNS
@@ -92,11 +108,12 @@ export function useWorkspaces(options: WorkspaceOptions) {
       const payload = await response.json() as { workspaces: ApiWorkspace[] }
       const next = payload.workspaces.map(mapWorkspace)
       setWorkspaces(next)
+      const preferredConversationId = selectConversationId || activeConversationId
       const selectedWorkspace = next.find(
-        workspace => workspace.conversations.some(conversation => conversation.id === selectConversationId),
+        workspace => workspace.conversations.some(conversation => conversation.id === preferredConversationId),
       ) || next[0] || null
       const selectedConversation = selectedWorkspace?.conversations.find(
-        conversation => conversation.id === selectConversationId,
+        conversation => conversation.id === preferredConversationId,
       ) || selectedWorkspace?.conversations[0] || null
       setExpandedWorkspaceIds(prev => {
         const nextExpanded = { ...prev }
@@ -411,6 +428,50 @@ export function useWorkspaces(options: WorkspaceOptions) {
     startEditingWorkspace,
     saveWorkspaceName,
     loadOlderTurns,
+  }
+}
+
+function readWorkspaceCache(): WorkspaceCache | null {
+  if (typeof window === 'undefined') return null
+  try {
+    const raw = window.localStorage.getItem(WORKSPACE_CACHE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as WorkspaceCache
+    if (!Array.isArray(parsed.workspaces)) return null
+    return {
+      workspaces: parsed.workspaces.map(workspace => ({
+        ...workspace,
+        conversations: (workspace.conversations || []).map(conversation => ({ ...conversation, turns: [] })),
+      })),
+      activeWorkspaceId: parsed.activeWorkspaceId || null,
+      activeConversationId: parsed.activeConversationId || null,
+      expandedWorkspaceIds: parsed.expandedWorkspaceIds || {},
+    }
+  } catch {
+    return null
+  }
+}
+
+function writeWorkspaceCache(cache: WorkspaceCache) {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(
+      WORKSPACE_CACHE_KEY,
+      JSON.stringify({
+        ...cache,
+        workspaces: cache.workspaces.map(workspace => ({
+          ...workspace,
+          isDraft: undefined,
+          conversations: workspace.conversations.map(conversation => ({
+            ...conversation,
+            isDraft: undefined,
+            turns: [],
+          })),
+        })),
+      }),
+    )
+  } catch {
+    // Best-effort UI cache only.
   }
 }
 

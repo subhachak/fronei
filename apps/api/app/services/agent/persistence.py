@@ -7,37 +7,41 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, func, or_
 
 from app.db.models import (
     Artifact as ArtifactRow,
+)
+from app.db.models import (
     Conversation,
     Event,
-    ToolCall as ToolCallRow,
-    Turn,
-    Workspace,
     SessionLocal,
+    Turn,
     User,
+    Workspace,
+)
+from app.db.models import (
+    ToolCall as ToolCallRow,
 )
 from app.services.agent import routing_policy
+from app.services.agent.models import (
+    Artifact,
+    ConversationSummary,
+    Goal,
+    ProgressEvent,
+    Source,
+    StreamEnvelope,
+    ToolCall,
+    TurnRequest,
+    TurnResult,
+    WorkspaceSummary,
+    new_id,
+)
 from app.services.blob_store import (
     delete_blob_location,
     get_blob_store,
     read_legacy_local_path,
     store_for_location,
-)
-from app.services.agent.models import (
-    ConversationSummary,
-    TurnResult,
-    WorkspaceSummary,
-    Artifact,
-    Goal,
-    ProgressEvent,
-    Source,
-    StreamEnvelope,
-    TurnRequest,
-    ToolCall,
-    new_id,
 )
 
 logger = logging.getLogger(__name__)
@@ -523,8 +527,78 @@ def _conversation_stats(db, conversation_id: str) -> tuple[int, int, int, int, f
     return len(turns), int(artifact_count), source_count, total_latency_ms, total_cost_usd
 
 
+def _conversation_stats_bulk(db, conversation_ids: list[str]) -> dict[str, tuple[int, int, int, int, float]]:
+    if not conversation_ids:
+        return {}
+
+    stats: dict[str, tuple[int, int, int, int, float]] = {}
+    turn_ids_by_conversation: dict[str, list[str]] = {}
+    for conversation_id, turn_id, sources_json, latency_ms, cost_usd in (
+        db.query(Turn.conversation_id, Turn.id, Turn.sources_json, Turn.latency_ms, Turn.cost_usd)
+        .filter(Turn.conversation_id.in_(conversation_ids))
+        .all()
+    ):
+        current = stats.get(conversation_id, (0, 0, 0, 0, 0.0))
+        turn_count, artifact_count, source_count, total_latency_ms, total_cost_usd = current
+        stats[conversation_id] = (
+            turn_count + 1,
+            artifact_count,
+            source_count + len(_loads(sources_json, [])),
+            total_latency_ms + int(latency_ms or 0),
+            total_cost_usd + float(cost_usd or 0.0),
+        )
+        turn_ids_by_conversation.setdefault(conversation_id, []).append(turn_id)
+
+    turn_ids = [turn_id for ids in turn_ids_by_conversation.values() for turn_id in ids]
+    if turn_ids:
+        turn_to_conversation = {
+            turn_id: conversation_id
+            for conversation_id, ids in turn_ids_by_conversation.items()
+            for turn_id in ids
+        }
+        artifact_counts = (
+            db.query(ArtifactRow.turn_id, func.count(ArtifactRow.id))
+            .filter(ArtifactRow.turn_id.in_(turn_ids))
+            .group_by(ArtifactRow.turn_id)
+            .all()
+        )
+        for turn_id, count in artifact_counts:
+            conversation_id = turn_to_conversation.get(turn_id)
+            if conversation_id is None:
+                continue
+            turn_count, artifact_count, source_count, total_latency_ms, total_cost_usd = stats.get(
+                conversation_id,
+                (0, 0, 0, 0, 0.0),
+            )
+            stats[conversation_id] = (
+                turn_count,
+                artifact_count + int(count or 0),
+                source_count,
+                total_latency_ms,
+                total_cost_usd,
+            )
+
+    return {conversation_id: stats.get(conversation_id, (0, 0, 0, 0, 0.0)) for conversation_id in conversation_ids}
+
+
 def _conversation_summary(db, row: Conversation) -> ConversationSummary:
     turn_count, artifact_count, source_count, total_latency_ms, total_cost_usd = _conversation_stats(db, row.id)
+    return ConversationSummary(
+        id=row.id,
+        workspace_id=row.workspace_id,
+        title=row.title,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+        turn_count=turn_count,
+        artifact_count=artifact_count,
+        source_count=source_count,
+        total_latency_ms=total_latency_ms,
+        total_cost_usd=total_cost_usd,
+    )
+
+
+def _conversation_summary_from_stats(row: Conversation, stats: tuple[int, int, int, int, float]) -> ConversationSummary:
+    turn_count, artifact_count, source_count, total_latency_ms, total_cost_usd = stats
     return ConversationSummary(
         id=row.id,
         workspace_id=row.workspace_id,
@@ -596,24 +670,35 @@ def list_workspaces(user_id: str, *, ensure_default: bool = True) -> list[Worksp
             .order_by(Workspace.updated_at.desc(), Workspace.created_at.desc())
             .all()
         )
-        result: list[WorkspaceSummary] = []
-        for workspace in workspaces:
+        workspace_ids = [workspace.id for workspace in workspaces]
+        conversations_by_workspace: dict[str, list[Conversation]] = {workspace_id: [] for workspace_id in workspace_ids}
+        conversations: list[Conversation] = []
+        if workspace_ids:
             conversations = (
                 db.query(Conversation)
                 .filter(
-                    Conversation.workspace_id == workspace.id,
+                    Conversation.workspace_id.in_(workspace_ids),
                     Conversation.user_id == user_id,
                 )
                 .order_by(Conversation.updated_at.desc(), Conversation.created_at.desc())
                 .all()
             )
+            for conversation in conversations:
+                conversations_by_workspace.setdefault(conversation.workspace_id, []).append(conversation)
+        stats_by_conversation = _conversation_stats_bulk(db, [conversation.id for conversation in conversations])
+        result: list[WorkspaceSummary] = []
+        for workspace in workspaces:
+            workspace_conversations = conversations_by_workspace.get(workspace.id, [])
             result.append(
                 WorkspaceSummary(
                     id=workspace.id,
                     name=workspace.name,
                     created_at=workspace.created_at,
                     updated_at=workspace.updated_at,
-                    conversations=[_conversation_summary(db, row) for row in conversations],
+                    conversations=[
+                        _conversation_summary_from_stats(row, stats_by_conversation.get(row.id, (0, 0, 0, 0, 0.0)))
+                        for row in workspace_conversations
+                    ],
                 )
             )
         return result
@@ -1308,67 +1393,76 @@ def load_turn(turn_id: str, user_id: str) -> TurnResult | None:
             .order_by(ArtifactRow.created_at.asc())
             .all()
         )
-        goal = Goal(
-            id=f"goal_for_{turn.id}",
-            user_id=turn.user_id,
-            conversation_id=turn.conversation_id,
-            objective=turn.objective,
-            route=turn.route,  # type: ignore[arg-type]
-            quality_mode=turn.quality_mode,
-            created_at=turn.created_at,
-        )
-        progress_events = [
-            ProgressEvent(
-                event_id=row.id,
-                turn_id=row.turn_id,
-                stage=row.stage,
-                message=row.message,
-                data=_loads(row.data_json, {}),
-                created_at=row.created_at,
-            )
-            for row in events
-        ]
-        research_plan_preview = _research_plan_preview_from_events(progress_events)
-        return TurnResult(
-            turn_id=turn.id,
-            goal=goal,
-            answer=turn.answer,
-            route=turn.route,  # type: ignore[arg-type]
-            model_used=turn.model_used,
-            sources=[Source.model_validate(item) for item in _loads(turn.sources_json, [])],
-            tool_calls=[
-                ToolCall(
-                    id=row.id,
-                    name=row.name,
-                    input=_loads(row.input_json, {}),
-                    output=_loads(row.output_json, {}),
-                    ok=row.ok,
-                    error=row.error,
-                    latency_ms=row.latency_ms,
-                )
-                for row in tool_rows
-            ],
-            artifacts=[
-                Artifact(
-                    id=row.id,
-                    kind=row.kind,  # type: ignore[arg-type]
-                    filename=row.filename,
-                    mime_type=row.mime_type,
-                    base64_data=_artifact_base64(row),
-                    download_url=_artifact_download_url(row.id),
-                    size_bytes=int(row.size_bytes or 0),
-                )
-                for row in artifact_rows
-            ],
-            events=progress_events,
-            latency_ms=turn.latency_ms,
-            cost_usd=turn.cost_usd,
-            follow_up_options=_deep_research_followups(turn.objective, turn.route, research_plan_preview),
-            research_plan_preview=research_plan_preview,
-            created_at=turn.created_at,
-        )
+        return _turn_result_from_rows(turn, events, tool_rows, artifact_rows)
     finally:
         db.close()
+
+
+def _turn_result_from_rows(
+    turn: Turn,
+    events: list[Event],
+    tool_rows: list[ToolCallRow],
+    artifact_rows: list[ArtifactRow],
+) -> TurnResult:
+    goal = Goal(
+        id=f"goal_for_{turn.id}",
+        user_id=turn.user_id,
+        conversation_id=turn.conversation_id,
+        objective=turn.objective,
+        route=turn.route,  # type: ignore[arg-type]
+        quality_mode=turn.quality_mode,
+        created_at=turn.created_at,
+    )
+    progress_events = [
+        ProgressEvent(
+            event_id=row.id,
+            turn_id=row.turn_id,
+            stage=row.stage,
+            message=row.message,
+            data=_loads(row.data_json, {}),
+            created_at=row.created_at,
+        )
+        for row in events
+    ]
+    research_plan_preview = _research_plan_preview_from_events(progress_events)
+    return TurnResult(
+        turn_id=turn.id,
+        goal=goal,
+        answer=turn.answer,
+        route=turn.route,  # type: ignore[arg-type]
+        model_used=turn.model_used,
+        sources=[Source.model_validate(item) for item in _loads(turn.sources_json, [])],
+        tool_calls=[
+            ToolCall(
+                id=row.id,
+                name=row.name,
+                input=_loads(row.input_json, {}),
+                output=_loads(row.output_json, {}),
+                ok=row.ok,
+                error=row.error,
+                latency_ms=row.latency_ms,
+            )
+            for row in tool_rows
+        ],
+        artifacts=[
+            Artifact(
+                id=row.id,
+                kind=row.kind,  # type: ignore[arg-type]
+                filename=row.filename,
+                mime_type=row.mime_type,
+                base64_data=_artifact_base64(row),
+                download_url=_artifact_download_url(row.id),
+                size_bytes=int(row.size_bytes or 0),
+            )
+            for row in artifact_rows
+        ],
+        events=progress_events,
+        latency_ms=turn.latency_ms,
+        cost_usd=turn.cost_usd,
+        follow_up_options=_deep_research_followups(turn.objective, turn.route, research_plan_preview),
+        research_plan_preview=research_plan_preview,
+        created_at=turn.created_at,
+    )
 
 
 def _research_plan_preview_from_events(events: list[ProgressEvent]) -> dict | None:
@@ -1428,11 +1522,45 @@ def list_conversation_turns(user_id: str, conversation_id: str, *, limit: int = 
             if before_turn and before_turn.user_id == user_id:
                 query = query.filter(Turn.created_at < before_turn.created_at)
         rows = query.order_by(Turn.created_at.desc()).limit(max(1, min(limit, 50))).all()
-        ids = [row.id for row in reversed(rows)]
+        rows = list(reversed(rows))
+        ids = [row.id for row in rows]
+        if not ids:
+            return []
+        events_by_turn: dict[str, list[Event]] = {turn_id: [] for turn_id in ids}
+        for event in (
+            db.query(Event)
+            .filter(Event.turn_id.in_(ids))
+            .order_by(Event.created_at.asc())
+            .all()
+        ):
+            events_by_turn.setdefault(event.turn_id, []).append(event)
+        tools_by_turn: dict[str, list[ToolCallRow]] = {turn_id: [] for turn_id in ids}
+        for tool in (
+            db.query(ToolCallRow)
+            .filter(ToolCallRow.turn_id.in_(ids))
+            .order_by(ToolCallRow.created_at.asc())
+            .all()
+        ):
+            tools_by_turn.setdefault(tool.turn_id, []).append(tool)
+        artifacts_by_turn: dict[str, list[ArtifactRow]] = {turn_id: [] for turn_id in ids}
+        for artifact in (
+            db.query(ArtifactRow)
+            .filter(ArtifactRow.turn_id.in_(ids))
+            .order_by(ArtifactRow.created_at.asc())
+            .all()
+        ):
+            artifacts_by_turn.setdefault(artifact.turn_id, []).append(artifact)
+        return [
+            _turn_result_from_rows(
+                row,
+                events_by_turn.get(row.id, []),
+                tools_by_turn.get(row.id, []),
+                artifacts_by_turn.get(row.id, []),
+            )
+            for row in rows
+        ]
     finally:
         db.close()
-    loaded = [load_turn(turn_id, user_id) for turn_id in ids]
-    return [turn for turn in loaded if turn is not None]
 
 
 def get_artifact_for_user(artifact_id: str, user_id: str) -> tuple[ArtifactRow, bytes | None, str | None] | None:

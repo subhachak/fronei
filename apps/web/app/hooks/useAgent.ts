@@ -127,10 +127,18 @@ export function useAgent() {
 
   async function downloadArtifact(artifact: Artifact) {
     if (artifact.download_url) {
-      const response = await authorizedFetch(artifact.download_url)
+      const response = await authorizedFetch(withQueryParam(artifact.download_url, 'redirect', 'false'))
       if (!response.ok) {
         turnRunner.setError(await readErrorBody(response, 'Could not download artifact'))
         return
+      }
+      const contentType = response.headers.get('Content-Type') || ''
+      if (contentType.includes('application/json')) {
+        const payload = await response.json().catch(() => null) as { download_url?: string } | null
+        if (payload?.download_url) {
+          triggerUrlDownload(payload.download_url, artifact.filename)
+          return
+        }
       }
       triggerDownload(await response.blob(), artifact.filename)
       return
@@ -144,11 +152,23 @@ export function useAgent() {
 
   function triggerDownload(blob: Blob, filename: string) {
     const url = URL.createObjectURL(blob)
+    triggerUrlDownload(url, filename)
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+  }
+
+  function triggerUrlDownload(url: string, filename: string) {
     const link = document.createElement('a')
     link.href = url
     link.download = filename
+    link.rel = 'noopener'
+    document.body.appendChild(link)
     link.click()
-    URL.revokeObjectURL(url)
+    link.remove()
+  }
+
+  function withQueryParam(url: string, key: string, value: string) {
+    const separator = url.includes('?') ? '&' : '?'
+    return `${url}${separator}${encodeURIComponent(key)}=${encodeURIComponent(value)}`
   }
 
   async function copyText(value: string, key: string) {

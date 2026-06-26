@@ -7,7 +7,7 @@ from queue import Empty, Queue
 from threading import Thread
 
 from fastapi import APIRouter, Header, HTTPException
-from fastapi.responses import RedirectResponse, Response, StreamingResponse
+from fastapi.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
 
 from app.auth import CurrentActiveUser, CurrentUserIsAdmin
 from app.config import get_settings
@@ -366,12 +366,18 @@ def list_conversation_turns(
 
 
 @router.get("/artifacts/{artifact_id}/download")
-def download_artifact(artifact_id: str, user_id: str = CurrentActiveUser) -> Response:
+def download_artifact(
+    artifact_id: str,
+    redirect: bool = True,
+    user_id: str = CurrentActiveUser,
+) -> Response:
     artifact_payload = persistence.get_artifact_for_user(artifact_id, user_id)
     if artifact_payload is None:
         raise HTTPException(status_code=404, detail="Artifact not found")
     artifact, content, signed_url = artifact_payload
     if signed_url:
+        if not redirect:
+            return JSONResponse({"download_url": signed_url})
         return RedirectResponse(signed_url, status_code=307)
     if content is None:
         raise HTTPException(status_code=404, detail="Artifact content is unavailable")

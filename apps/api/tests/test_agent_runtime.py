@@ -1194,6 +1194,25 @@ def test_agent_stream_persists_turn_events_tools_and_artifacts(monkeypatch, tmp_
         app.dependency_overrides.clear()
 
 
+def test_artifact_download_can_return_signed_url_json(monkeypatch):
+    from app.routers import agent as agent_router
+
+    artifact = SimpleNamespace(id="artifact_1", filename="report.docx", mime_type="application/test")
+    monkeypatch.setattr(
+        agent_router.persistence,
+        "get_artifact_for_user",
+        lambda artifact_id, user_id: (artifact, None, "https://objects.example/signed-url"),
+    )
+    app.dependency_overrides[get_current_user_id] = lambda: "u1"
+    try:
+        with TestClient(app) as client:
+            response = client.get("/artifacts/artifact_1/download?redirect=false")
+        assert response.status_code == 200
+        assert response.json() == {"download_url": "https://objects.example/signed-url"}
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_agent_workspace_api_is_user_isolated(monkeypatch):
     from app.services.agent import persistence
 

@@ -395,6 +395,8 @@ class ResearchPlan(BaseModel):
     latency_ms: int = 0
     cost_usd: float = 0.0
     fallback_reason: str | None = None
+    # Phase 4 — retrieval diversity hint, set from query heuristics at plan-creation time
+    expected_primary_role: str | None = None
 
 
 class EvidenceItem(BaseModel):
@@ -411,6 +413,11 @@ class EvidenceItem(BaseModel):
     quoted_text: str = ""
     query: str = ""
     provider: str = ""
+    # Phase 3 — source metadata for independence proxy and freshness tracking
+    date_confidence: Literal["known", "unknown", "inferred"] = "unknown"
+    published_date: str | None = None
+    source_family: str = ""        # registrable domain, e.g. "reddit.com" not "old.reddit.com/r/x"
+    content_fingerprint: str = ""  # normalized-title hash for repost detection
 
 
 class EvidenceClaim(BaseModel):
@@ -455,6 +462,8 @@ class EvidencePack(BaseModel):
     coverage: float = 0.0
     gaps: list[str] = Field(default_factory=list)
     contradictions: list[str] = Field(default_factory=list)
+    # Phase 3 — count of items with unique (source_family, content_fingerprint) pairs
+    independent_source_count: int = 0
 
 
 class ArchitectureExtractionCard(BaseModel):
@@ -613,6 +622,8 @@ class ResearchStateStore(BaseModel):
     worker_reports: list[SearchWorkerReport] = Field(default_factory=list)
     iteration: int = 0
     budget_ledger: ResearchBudgetLedger = Field(default_factory=lambda: ResearchBudgetLedger(budget=ResearchBudget()))
+    # Phase 5 — last citation verification result, consumed by judge_research_final
+    last_citation_verification: CitationVerification | None = None
 
     def add_sources(self, sources: list[Source]) -> list[Source]:
         new_sources: list[Source] = []
@@ -671,6 +682,9 @@ class CitationVerification(BaseModel):
     latency_ms: int = 0
     cost_usd: float = 0.0
     source: str = "llm"
+    # Phase 5 — role-appropriateness and conflict signals from the verifier
+    role_mismatch_issues: list[str] = Field(default_factory=list)
+    unresolved_conflicts: list[str] = Field(default_factory=list)
 
 
 __all__ = [

@@ -1229,9 +1229,16 @@ class LeadResearchAgent:
         )
         answer = model_response.text
 
-        citation_result = verify_citations_semantically(answer, state.evidence, overrides=self.request.model_overrides)
+        citation_result = verify_citations_semantically(
+            answer,
+            state.evidence,
+            overrides=self.request.model_overrides,
+            expected_primary_role=state.plan.expected_primary_role if state.plan else None,
+        )
         if citation_result.model_used:
             self.ledger.record_model_call(cost_usd=citation_result.cost_usd, latency_ms=citation_result.latency_ms)
+        # Phase 5 — store for judge_research_final to consume.
+        state.last_citation_verification = citation_result
         self._progress(
             "citation_verification",
             "Verified answer citations against source text.",
@@ -1248,7 +1255,13 @@ class LeadResearchAgent:
         )
         repaired = False
         repair_attempts = 0
-        if citation_result.repair_needed and self.ledger.can_start_model("repair_agent"):
+        # Phase 5 — role_mismatch_issues and unresolved_conflicts also trigger repair.
+        needs_repair = (
+            citation_result.repair_needed
+            or bool(citation_result.role_mismatch_issues)
+            or bool(citation_result.unresolved_conflicts)
+        )
+        if needs_repair and self.ledger.can_start_model("repair_agent"):
             model_response = self._repair_answer(state, answer, citation_result.repair_instruction)
             answer = model_response.text
             repaired = True
@@ -1339,6 +1352,8 @@ class LeadResearchAgent:
             plan=state.plan,
             max_items=self.budget.max_sources + self.budget.max_deep_links,
             contract=state.contract,
+            overrides=self.request.model_overrides,
+            ledger=self.ledger,
         )
         update_contract_from_evidence(state)
 

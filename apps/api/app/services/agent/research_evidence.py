@@ -4,6 +4,8 @@ Responsibilities:
   - bind_evidence: wraps raw sources into a typed EvidencePack
   - extract_evidence_claims: typed claim extraction with scoring
   - extract_architecture_cards: AgentDeck card extraction from evidence
+  - classify_claims_llm: LLM-based claim_type/claim_role classification (Phase 1)
+  - Source metadata helpers: _source_family, _content_fingerprint, _extract_published_date (Phase 3)
   - Passage selection and scoring helpers
   - detect_contradictions: simple contradiction signal
 
@@ -11,18 +13,23 @@ Extracted from research_subtree.py (TD-01).
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import re
-from typing import Literal
+from typing import Any, Literal
 from urllib.parse import urlparse
 
+from app.services.agent import model_client
 from app.services.agent.models import Source
+from app.services.agent.prompt_library import resolve_prompt
 from app.services.agent.research_models import (
     ArchitectureExtractionCard,
     CoverageContract,
     EvidenceClaim,
     EvidenceItem,
     EvidencePack,
+    ResearchBudgetLedger,
     ResearchPlan,
 )
 from app.services.agent.research_planner import (
@@ -40,20 +47,329 @@ from app.services.agent.research_utils import (
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Phase 1 — LLM claim classifier
+# ---------------------------------------------------------------------------
+
+CLAIM_CLASSIFIER_PROMPT = """You are a research evidence classifier.
+
+For each sentence extracted from a research source, classify three attributes:
+
+1. claim_type — the structural type of claim:
+   policy: States a formal rule, regulation, requirement, or specification.
+   timeline: States a duration, schedule, deadline, or processing time.
+   price: States a cost, fee, or pricing structure.
+   statistic: States a quantitative measurement, rate, or study result.
+   capability: States what something supports, enables, or can do.
+   anecdote: Reports a first-person or individual-case real-world experience.
+   interpretation: Analyzes, interprets, or synthesizes evidence.
+   architecture: Describes a system architecture, component topology, or design pattern.
+   implementation: Describes specific code, API, schema, or implementation detail.
+   tradeoff: Describes a performance, cost, or quality trade-off.
+   failure: Describes an error, failure mode, limitation, or risk.
+   unknown: Does not fit any above category.
+
+2. claim_role — the epistemic role of the claim in answering the research question:
+   official_policy: What a rule, regulation, policy, requirement, or specification formally states; authoritative by design.
+   operational_reality: What is actually happening in practice — real-world timelines, outcomes, backlogs, delays, actual costs; describes outcomes rather than targets.
+   expert_interpretation: Analysis, interpretation, or synthesis of evidence by a qualified party (attorney, analyst, researcher).
+   anecdotal_case: A first-person account or individual-case report of a real-world experience or outcome.
+   statistical_data: Quantitative data, measurements, metrics, or study results.
+   technical_design: A claim about architecture, system design decisions, or technical component relationships.
+   implementation_detail: A claim about specific code, APIs, schemas, or concrete implementation.
+   background_context: General background, definitions, or context that does not fit the other categories.
+
+3. freshness_risk — how likely this claim is to become stale over time:
+   low: Claim is recent or the topic is stable.
+   medium: Claim may have changed within the past 1-2 years.
+   high: Claim is likely to change frequently (prices, processing times, current events).
+   unknown: Insufficient information to assess.
+
+Use source_type and url as context signals:
+- A web/forum/social source with first-person timing or outcome content → likely anecdotal_case or operational_reality.
+- A .gov or official documentation source stating a rule → likely official_policy.
+- An expert blog/law firm post interpreting policy → likely expert_interpretation.
+- A source that gives processing times or wait times → likely operational_reality (not official_policy unless it is an official SLA page).
+
+Return JSON only:
+{
+  "classifications": [
+    {"claim_type": "...", "claim_role": "...", "freshness_risk": "..."},
+    ...
+  ]
+}
+Return exactly one classification object per input sentence, in the same order as the input.
+"""
+
+
+# ---------------------------------------------------------------------------
+# Phase 1 — classify_claims_llm
+# ---------------------------------------------------------------------------
+
+def classify_claims_llm(
+    sentences: list[str],
+    item: EvidenceItem,
+    *,
+    overrides: dict[str, Any] | None = None,
+    ledger: ResearchBudgetLedger | None = None,
+) -> list[dict[str, str]]:
+    """Classify a batch of sentences (all from one source) using an LLM call.
+
+    Returns a list of dicts with keys: claim_type, claim_role, freshness_risk.
+    Falls back to the regex heuristics on any failure, so a model outage cannot
+    break the research pipeline.
+
+    Batched per source (not per sentence) to avoid multiplying LLM calls.
+    """
+    if not sentences:
+        return []
+
+    def _regex_fallback() -> list[dict[str, str]]:
+        return [
+            {
+                "claim_type": _claim_type_for_text(s),
+                "claim_role": _claim_role_for_text(s, item),
+                "freshness_risk": _freshness_risk_for_text(s),
+            }
+            for s in sentences
+        ]
+
+    if ledger is not None and not ledger.can_start_model("claim_classifier"):
+        return _regex_fallback()
+
+    try:
+        prompt = resolve_prompt(
+            "agent.research.claim_classifier.default",
+            agent_id="claim_classifier",
+            fallback_system_prompt=CLAIM_CLASSIFIER_PROMPT,
+            variables=["sentences", "source_type", "source_url", "source_title"],
+        )
+        response = model_client.complete(
+            [
+                {"role": "system", "content": prompt.system_prompt},
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "source_type": item.source_type,
+                            "source_url": item.url,
+                            "source_title": item.title,
+                            "sentences": sentences,
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            ],
+            role="claim_classifier",
+            quality_mode="standard",
+            overrides=overrides,
+            max_tokens=max(256, len(sentences) * 80),
+            timeout_s=18,
+        )
+        if ledger is not None:
+            ledger.record_model_call(cost_usd=response.cost_usd, latency_ms=response.latency_ms)
+
+        raw = response.text.strip()
+        if raw.startswith("```"):
+            raw = re.sub(r"^```(?:json)?", "", raw).strip()
+            raw = re.sub(r"```$", "", raw).strip()
+        payload = json.loads(raw)
+        classifications: list[dict[str, str]] = payload.get("classifications", [])
+
+        valid_roles = {
+            "official_policy", "operational_reality", "expert_interpretation",
+            "anecdotal_case", "statistical_data", "technical_design",
+            "implementation_detail", "background_context",
+        }
+        valid_types = {
+            "policy", "timeline", "price", "statistic", "capability", "anecdote",
+            "interpretation", "architecture", "implementation", "tradeoff", "failure", "unknown",
+        }
+        valid_freshness = {"low", "medium", "high", "unknown"}
+
+        result: list[dict[str, str]] = []
+        for i, sentence in enumerate(sentences):
+            llm = classifications[i] if i < len(classifications) else {}
+            role = llm.get("claim_role") if llm.get("claim_role") in valid_roles else _claim_role_for_text(sentence, item)
+            ctype = llm.get("claim_type") if llm.get("claim_type") in valid_types else _claim_type_for_text(sentence)
+            fresh = llm.get("freshness_risk") if llm.get("freshness_risk") in valid_freshness else _freshness_risk_for_text(sentence)
+            result.append({"claim_type": ctype, "claim_role": role, "freshness_risk": fresh})
+        return result
+
+    except Exception as exc:
+        logger.debug("claim classifier LLM call failed; using regex fallback: %s", exc)
+        return _regex_fallback()
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 — source metadata helpers
+# ---------------------------------------------------------------------------
+
+def _source_family(url: str) -> str:
+    """Return the registrable domain (e.g. 'reddit.com', not 'old.reddit.com/r/xyz')."""
+    try:
+        host = (urlparse(url or "").hostname or "").lower()
+        parts = host.split(".")
+        # Handle common two-part TLDs: .co.uk, .gov.au, .com.au, etc.
+        if len(parts) >= 3 and parts[-2] in {"co", "com", "gov", "net", "org", "edu", "ac"}:
+            return ".".join(parts[-3:])
+        if len(parts) >= 2:
+            return ".".join(parts[-2:])
+        return host
+    except Exception:
+        return ""
+
+
+def _content_fingerprint(title: str) -> str:
+    """Return a short hash of the normalized title for repost detection."""
+    normalized = re.sub(r"[^a-z0-9]+", "", (title or "").lower())
+    if not normalized:
+        return ""
+    return hashlib.md5(normalized.encode()).hexdigest()[:16]
+
+
+def _extract_published_date(source: Source) -> tuple[str | None, Literal["known", "unknown", "inferred"]]:
+    """Extract a publication date from URL patterns and content signals.
+
+    Returns (date_string_or_None, confidence).
+    Unknown date is NOT stale — do not penalise it downstream. Only known-old +
+    current-operational is penalised.
+    """
+    url = source.url or ""
+
+    # 1. URL path: /YYYY/MM/DD/
+    m = re.search(r"/(\d{4})/(\d{2})/(\d{2})/", url)
+    if m:
+        return f"{m.group(1)}-{m.group(2)}-{m.group(3)}", "known"
+
+    # 2. URL path: /YYYY/MM/
+    m = re.search(r"/(\d{4})/(\d{2})/", url)
+    if m:
+        return f"{m.group(1)}-{m.group(2)}", "inferred"
+
+    text = f"{source.snippet or ''} {(source.content or '')[:3000]}".strip()
+
+    # 3. ISO date in content
+    m = re.search(r"\b(20\d{2})-(\d{2})-(\d{2})\b", text)
+    if m:
+        return m.group(0), "known"
+
+    # 4. "Published/Updated Month DD, YYYY"
+    m = re.search(
+        r"(?:published|updated|posted|date)[:\s]+([A-Za-z]+ \d{1,2},?\s+\d{4})",
+        text,
+        re.IGNORECASE,
+    )
+    if m:
+        return m.group(1).strip(), "known"
+
+    # 5. Year only in URL path
+    m = re.search(r"/(\d{4})/", url)
+    if m:
+        year = int(m.group(1))
+        if 2010 <= year <= 2030:
+            return m.group(1), "inferred"
+
+    return None, "unknown"
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 — retrieval diversity backfill
+# ---------------------------------------------------------------------------
+
+_PRACTITIONER_SOURCE_TYPES = frozenset({"web", "news"})
+_MIN_PRACTITIONER_SOURCES = 3
+
+
+def _apply_diversity_backfill(
+    sources: list[Source],
+    max_items: int,
+    expected_primary_role: str | None,
+) -> list[Source]:
+    """Ensure a minimum of practitioner (web/news) sources reach the evidence pack
+    when the query calls for operational_reality or anecdotal_case content.
+
+    Selects top-N by existing order (already authority-sorted), then backfills from
+    the remainder pool, displacing the last non-practitioner slot if full.
+    """
+    if expected_primary_role not in ("operational_reality", "anecdotal_case"):
+        return sources[:max_items]
+    if not sources:
+        return []
+
+    top_n = sources[:max_items]
+    practitioner_in_top = [
+        s for s in top_n if classify_source_type(s.url or "") in _PRACTITIONER_SOURCE_TYPES
+    ]
+
+    if len(practitioner_in_top) >= _MIN_PRACTITIONER_SOURCES:
+        return top_n
+
+    top_urls = {s.url for s in top_n}
+    backfill = [
+        s for s in sources[max_items:]
+        if classify_source_type(s.url or "") in _PRACTITIONER_SOURCE_TYPES
+        and s.url not in top_urls
+    ][: _MIN_PRACTITIONER_SOURCES - len(practitioner_in_top)]
+
+    if not backfill:
+        return top_n
+
+    result = list(top_n)
+    for source in backfill:
+        if len(result) < max_items:
+            result.append(source)
+        else:
+            # Displace last non-practitioner slot.
+            displaced = False
+            for i in range(len(result) - 1, -1, -1):
+                if classify_source_type(result[i].url or "") not in _PRACTITIONER_SOURCE_TYPES:
+                    result[i] = source
+                    displaced = True
+                    break
+            if not displaced:
+                break  # All slots already practitioner — nothing to displace.
+
+    return result
+
+
 def bind_evidence(
     sources: list[Source],
     plan: ResearchPlan | None = None,
     max_items: int = 8,
     contract: CoverageContract | None = None,
+    overrides: dict[str, Any] | None = None,
+    ledger: ResearchBudgetLedger | None = None,
 ) -> EvidencePack:
-    seen: set[str] = set()
+    # Phase 4 — diversity backfill before the main loop so the reordered list
+    # drives all subsequent EvidenceItem creation and dedup.
+    expected_primary_role = plan.expected_primary_role if plan else None
+    sources = _apply_diversity_backfill(sources, max_items * 3, expected_primary_role)
+
+    # Phase 3 — independence-proxy dedup: track (source_family, content_fingerprint)
+    # pairs so syndicated reposts don't inflate the evidence pack.
+    seen_urls: set[str] = set()
+    seen_independence: set[tuple[str, str]] = set()
+
     items: list[EvidenceItem] = []
     questions = plan.questions if plan else []
     profile = plan.research_profile if plan else "general"
+
     for source in sources:
-        if not source.url or source.url in seen:
+        if not source.url or source.url in seen_urls:
             continue
-        seen.add(source.url)
+
+        # Phase 3 dedup: skip if (source_family, content_fingerprint) already seen.
+        sfam = _source_family(source.url)
+        cfp = _content_fingerprint(source.title or "")
+        if sfam and cfp and (sfam, cfp) in seen_independence:
+            logger.debug("Skipping duplicate content: %s (%s)", source.url, sfam)
+            continue
+
+        seen_urls.add(source.url)
+        if sfam and cfp:
+            seen_independence.add((sfam, cfp))
+
         body = (source.content or source.snippet or "").strip()
         if not body:
             continue
@@ -81,6 +397,10 @@ def bind_evidence(
             body_cap=body_cap,
             max_passages=3 if profile == "technical_architecture" else 1,
         )
+
+        # Phase 3 — extract date metadata once per source.
+        published_date, date_confidence = _extract_published_date(source)
+
         for passage in passages:
             source_id = f"S{len(items) + 1}"
             items.append(
@@ -98,18 +418,34 @@ def bind_evidence(
                     quoted_text=str(passage["text"])[:500],
                     query=source.query,
                     provider=source.provider,
+                    # Phase 3 fields
+                    published_date=published_date,
+                    date_confidence=date_confidence,
+                    source_family=sfam,
+                    content_fingerprint=cfp,
                 )
             )
             if len(items) >= max_items:
                 break
         if len(items) >= max_items:
             break
+
     min_items = plan.min_evidence_items if plan else 1
     coverage = min(1.0, len(items) / max(1, min_items))
     gaps = [] if len(items) >= min_items else [f"Only {len(items)} usable evidence item(s); target is {min_items}."]
     contradictions = detect_contradictions(items)
-    pack = EvidencePack(items=items, coverage=coverage, gaps=gaps, contradictions=contradictions)
-    pack.claims = extract_evidence_claims(pack, plan=plan)
+
+    # Phase 3 — count independent sources (unique source_family values).
+    independent_source_count = len({item.source_family for item in items if item.source_family})
+
+    pack = EvidencePack(
+        items=items,
+        coverage=coverage,
+        gaps=gaps,
+        contradictions=contradictions,
+        independent_source_count=independent_source_count,
+    )
+    pack.claims = extract_evidence_claims(pack, plan=plan, overrides=overrides, ledger=ledger)
     pack.architecture_cards = extract_architecture_cards(pack, plan=plan)
     return pack
 
@@ -119,6 +455,8 @@ def extract_evidence_claims(
     *,
     plan: ResearchPlan | None = None,
     max_claims_per_item: int = 3,
+    overrides: dict[str, Any] | None = None,
+    ledger: ResearchBudgetLedger | None = None,
 ) -> list[EvidenceClaim]:
     claims: list[EvidenceClaim] = []
     query_terms = _claim_query_terms(plan)
@@ -131,15 +469,21 @@ def extract_evidence_claims(
                 continue
             candidates.append((score, sentence))
         candidates.sort(key=lambda pair: pair[0], reverse=True)
-        for score, sentence in candidates[:item_claim_limit]:
+        top_sentences = [s for _, s in candidates[:item_claim_limit]]
+
+        # Phase 1 — LLM classification batched per source; regex fallback on failure.
+        llm_results = classify_claims_llm(top_sentences, item, overrides=overrides, ledger=ledger)
+
+        for i, (score, sentence) in enumerate(candidates[:item_claim_limit]):
+            llm = llm_results[i] if i < len(llm_results) else {}
             claims.append(
                 EvidenceClaim(
                     source_id=item.source_id,
                     text=sentence[:650],
                     quote=sentence[:500],
-                    claim_type=_claim_type_for_text(sentence),
-                    claim_role=_claim_role_for_text(sentence, item),
-                    freshness_risk=_freshness_risk_for_text(sentence),
+                    claim_type=llm.get("claim_type") or _claim_type_for_text(sentence),
+                    claim_role=llm.get("claim_role") or _claim_role_for_text(sentence, item),
+                    freshness_risk=llm.get("freshness_risk") or _freshness_risk_for_text(sentence),
                     confidence=max(0.35, min(0.94, item.confidence + min(0.20, score * 0.05))),
                     source_title=item.title,
                     source_url=item.url,

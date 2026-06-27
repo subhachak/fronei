@@ -70,6 +70,33 @@ def is_public_source_url(url: str) -> bool:
     except ValueError:
         return True
 
+# Phase 2 — claim_role paragraph injected into every synthesis prompt.
+# Instructs the model to treat claim_role as the primary epistemic filter and
+# never silence operational_reality / anecdotal_case evidence solely because its
+# source authority score is lower than official sources.
+CLAIM_ROLE_SYNTHESIS_PARAGRAPH = """
+--- CLAIM ROLE GUIDANCE ---
+Each typed evidence claim carries a claim_role. Use it as the primary epistemic lens:
+
+- official_policy: Describes what a rule or regulation formally requires. Cite as authoritative
+  for policy questions. Do NOT treat it as a description of real-world outcomes.
+- operational_reality: Describes actual outcomes, wait times, or backlogs in practice.
+  This role MUST be used as the primary signal when the question asks "how long does it
+  actually take" or "what is really happening". Do not suppress it for having lower authority.
+- anecdotal_case: A first-person or individual-case real-world report. When multiple
+  independent anecdotal_case claims agree, treat their consensus as operational evidence.
+  Do not refuse to answer simply because only anecdotal sources are available.
+- expert_interpretation: Analysis or synthesis by a qualified party. Use to frame nuance,
+  not to override operational_reality when the question is about real-world outcomes.
+- statistical_data: Quantitative measurements. Cite directly; note sample size if known.
+
+When official_policy and operational_reality CONFLICT (e.g. USCIS SLA says 3 months,
+practitioners report 8 months), you MUST state BOTH positions explicitly and name the
+disagreement. Never silently blend them into a single hedged claim.
+--- END CLAIM ROLE GUIDANCE ---
+"""
+
+
 def build_synthesis_prompt(request: TurnRequest, plan: ResearchPlan, evidence: EvidencePack) -> tuple[str, str]:
     architecture_context = _architecture_cards_context(evidence)
     claim_context = "\n".join(
@@ -91,6 +118,7 @@ def build_synthesis_prompt(request: TurnRequest, plan: ResearchPlan, evidence: E
     if not evidence_context:
         evidence_context = "No source evidence was available. Be transparent about that."
     report_contract = _synthesis_report_contract(plan.research_profile, request)
+    # Phase 2 — append claim_role guidance to the resolved system prompt.
     prompt = resolve_prompt(
         "agent.research.synthesis.default",
         agent_id="synthesis",
@@ -98,6 +126,8 @@ def build_synthesis_prompt(request: TurnRequest, plan: ResearchPlan, evidence: E
         variables=["message", "evidence_pack", "profile"],
         profile=plan.research_profile,
     )
+    import dataclasses
+    prompt = dataclasses.replace(prompt, system_prompt=prompt.system_prompt + CLAIM_ROLE_SYNTHESIS_PARAGRAPH)
     user_prompt = (
         f"{request.conversation_context}\n\n" if request.conversation_context else ""
     ) + (
@@ -236,7 +266,11 @@ def rank_sources(sources: list[Source], plan: ResearchPlan) -> list[RankedSource
         else:
             policy = PROFILE_POLICIES.get(plan.research_profile, PROFILE_POLICIES["general"])
             type_bonus = policy.type_weights.get(source_type, 0.0)
-            score = max(0.0, min(1.0, (authority * 0.38) + (relevance * 0.46) + type_bonus + content_bonus))
+            raw = (authority * 0.38) + (relevance * 0.46) + type_bonus + content_bonus
+            # Phase 2 floor: prevent low-authority sources (web/news/anecdotal) from
+            # being entirely excluded by rank_sources. They still rank lower than
+            # official sources but remain eligible for bind_evidence selection.
+            score = max(0.05, min(1.0, raw))
         ranked.append(
             RankedSource(
                 source=source,

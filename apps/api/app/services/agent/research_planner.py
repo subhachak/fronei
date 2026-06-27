@@ -687,7 +687,46 @@ def _framework_comparison_completion_issues(state: ResearchStateStore, answer: s
         issues.append("Framework comparison answer lacks a closing recommendation section near the end.")
     if re.search(r"(?m)(?:^|\n)\s*[-*]\s*$|(?:\bcomponents|\bagents|\bpipelines|\bcoordination)\s*$", text.strip(), flags=re.IGNORECASE):
         issues.append("Framework comparison answer appears to end mid-section or mid-sentence.")
+    empty_subjects = _framework_subjects_with_empty_sections(state, text)
+    if empty_subjects:
+        issues.append(
+            "Framework comparison substitutes validation notes for requested framework detail: "
+            + ", ".join(empty_subjects[:5])
+        )
     return issues
+
+
+def _framework_subjects_with_empty_sections(state: ResearchStateStore, answer: str) -> list[str]:
+    if not state.contract.source.endswith("framework_comparison"):
+        return []
+    empty_subjects: list[str] = []
+    empty_patterns = (
+        r"\bnot\s+(?:directly\s+)?described in evidence\b",
+        r"\bnot documented in evidence\b",
+        r"\bnot specified in evidence\b",
+        r"\bnot evidenced\b",
+        r"\bno substantive evidence\b",
+        r"\bno evidence in (?:this )?pack\b",
+        r"\brequires? dedicated research\b",
+        r"\bvalidation note\b",
+    )
+    dimensions = ["architecture", "coordination", "production", "failure"]
+    for subject in state.contract.subjects:
+        subject_pattern = re.escape(subject)
+        heading_match = re.search(rf"(?mi)^#{1,3}\s+{subject_pattern}\b", answer)
+        if heading_match:
+            following = answer[heading_match.end() : heading_match.end() + 1200]
+            next_heading = re.search(r"(?m)^#{1,3}\s+", following)
+            section = following[: next_heading.start()] if next_heading else following
+        else:
+            row_match = re.search(rf"(?mi)^\|\s*\*?\*?{subject_pattern}\*?\*?\s*\|(.+)$", answer)
+            section = row_match.group(0) if row_match else ""
+        section_lower = section.lower()
+        empty_hits = sum(1 for pattern in empty_patterns if re.search(pattern, section_lower))
+        dimension_hits = sum(1 for term in dimensions if term in section_lower)
+        if empty_hits >= 2 or (empty_hits >= 1 and dimension_hits < 2):
+            empty_subjects.append(subject)
+    return empty_subjects
 
 
 def _evidence_disclaimer_issues(state: ResearchStateStore, answer: str) -> list[str]:
@@ -707,9 +746,14 @@ def _evidence_disclaimer_issues(state: ResearchStateStore, answer: str) -> list[
         "no architecture extraction cards",
         "single-source-anchored",
         "thin on the specific technical detail",
+        "thin and uneven",
         "decision-shaped but evidence",
         "additional retrieval is needed",
         "requesting deeper research",
+        "no substantive evidence in this pack",
+        "requires dedicated research",
+        "validation-required",
+        "no evidence in pack",
     )
     soft_disclaimer_terms = (
         "evidence pack retrieved",
@@ -720,6 +764,8 @@ def _evidence_disclaimer_issues(state: ResearchStateStore, answer: str) -> list[
         "validation note",
         "provisional recommendation",
         "cannot be responsibly specified from this evidence",
+        "not specified in evidence",
+        "not evidenced",
     )
     soft_hits = sum(1 for term in soft_disclaimer_terms if term in lower)
     if disclaimer_heading or any(term in lower for term in hard_disclaimer_terms) or soft_hits >= 3:
@@ -730,7 +776,8 @@ def _evidence_disclaimer_issues(state: ResearchStateStore, answer: str) -> list[
         re.findall(
             r"\bnot in evidence\b|\bnot supported by this evidence pack\b|\bno usable evidence\b|"
             r"\bnot directly described in evidence\b|\bnot described in evidence\b|\bnot documented in evidence\b|"
-            r"\bunverified from this evidence pack\b",
+            r"\bunverified from this evidence pack\b|\bnot specified in evidence\b|\bnot evidenced\b|"
+            r"\bno substantive evidence in this pack\b|\bno evidence in pack\b|\brequires? dedicated research\b",
             lower,
         )
     )

@@ -83,24 +83,22 @@ export function useTurnRunner(options: TurnRunnerOptions) {
   const [running, setRunning] = useState(false)
   const eventsRef = useRef<ProgressEvent[]>([])
   const activeRunMessageRef = useRef<string | null>(null)
-  // Token smoothing queue: SSE tokens land in tokenQueueRef (a string buffer) without
-  // touching React state. A setTimeout loop drains the queue at a controlled rate so
-  // bursts from reader.read() delivering multiple frames at once appear as smooth,
-  // small chunks rather than large jumps.
-  const liveAnswerRef = useRef('')         // committed answer shown to React
-  const tokenQueueRef = useRef('')         // pending tokens not yet released to state
-  const streamRafRef = useRef<number | null>(null)
-  // Two-threshold drain model:
-  //   COLD  (streamStartedRef=false): wait for STREAM_BUFFER_CHARS before starting.
-  //         Gives ~1s of runway so the first burst of text flows smoothly.
-  //   WARM  (streamStartedRef=true):  drain on every token arrival (threshold=1).
-  //         Once we've caught up to the live stream, drain each SSE batch immediately
-  //         instead of re-accumulating 200 chars — which would create 1s pauses.
+  // Token smoothing queue: SSE tokens land here without touching React state.
+  // A small timer drains the queue at a steady cadence so bursty network/model
+  // chunks appear as a continuous rolling response.
+  const liveAnswerRef = useRef('')
+  const tokenQueueRef = useRef('')
+  const streamTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const streamPrimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const streamStartedRef = useRef(false)
-  const STREAM_BUFFER_CHARS = 200          // ~1s pre-roll at typical LLM rates
-  const STREAM_CHARS_PER_FRAME = 8         // ≈480 chars/sec at 60fps
-  const STREAM_CATCHUP_THRESHOLD = 300     // burst backlog → drain faster
-  const STREAM_CATCHUP_CHARS = 32
+  const STREAM_INITIAL_BUFFER_CHARS = 80
+  const STREAM_INITIAL_BUFFER_MS = 220
+  const STREAM_TICK_MS = 34
+  const STREAM_CHARS_PER_TICK = 4
+  const STREAM_CATCHUP_THRESHOLD = 240
+  const STREAM_CATCHUP_CHARS = 12
+  const STREAM_SURGE_THRESHOLD = 800
+  const STREAM_SURGE_CHARS = 28
 
   const activeEvents = useMemo(
     () => events.filter(event => !['tool_selection', 'tool_result', 'answer_delta', 'answer_complete'].includes(event.stage)),
@@ -112,33 +110,55 @@ export function useTurnRunner(options: TurnRunnerOptions) {
     eventsRef.current = nextEvents
     setEvents(nextEvents)
     setResult(nextResult)
-    setLiveAnswer(nextResult?.answer || '')
+    const nextAnswer = nextResult?.answer || ''
+    liveAnswerRef.current = nextAnswer
+    setLiveAnswer(nextAnswer)
     setError(null)
   }
 
   function drainTokens() {
-    streamRafRef.current = null
+    streamTimerRef.current = null
     const pending = tokenQueueRef.current
     if (!pending) return
     const chars = Math.min(
       pending.length,
-      pending.length > STREAM_CATCHUP_THRESHOLD ? STREAM_CATCHUP_CHARS : STREAM_CHARS_PER_FRAME,
+      pending.length > STREAM_SURGE_THRESHOLD
+        ? STREAM_SURGE_CHARS
+        : pending.length > STREAM_CATCHUP_THRESHOLD
+          ? STREAM_CATCHUP_CHARS
+          : STREAM_CHARS_PER_TICK,
     )
     liveAnswerRef.current += pending.slice(0, chars)
     tokenQueueRef.current = pending.slice(chars)
     setLiveAnswer(liveAnswerRef.current)
-    if (tokenQueueRef.current) {
-      streamRafRef.current = requestAnimationFrame(drainTokens)
+    if (tokenQueueRef.current) scheduleTokenDrain()
+  }
+
+  function scheduleTokenDrain(delayMs = STREAM_TICK_MS) {
+    if (streamTimerRef.current !== null) return
+    streamTimerRef.current = setTimeout(drainTokens, delayMs)
+  }
+
+  function startTokenDrain() {
+    if (streamPrimerRef.current !== null) {
+      clearTimeout(streamPrimerRef.current)
+      streamPrimerRef.current = null
     }
+    streamStartedRef.current = true
+    scheduleTokenDrain(0)
   }
 
   function clearStreamState() {
     tokenQueueRef.current = ''
     liveAnswerRef.current = ''
     streamStartedRef.current = false
-    if (streamRafRef.current !== null) {
-      cancelAnimationFrame(streamRafRef.current)
-      streamRafRef.current = null
+    if (streamTimerRef.current !== null) {
+      clearTimeout(streamTimerRef.current)
+      streamTimerRef.current = null
+    }
+    if (streamPrimerRef.current !== null) {
+      clearTimeout(streamPrimerRef.current)
+      streamPrimerRef.current = null
     }
   }
 
@@ -272,7 +292,9 @@ export function useTurnRunner(options: TurnRunnerOptions) {
         setError(null)
         eventsRef.current = nextEvents
         setEvents(nextEvents)
-        setLiveAnswer(payload.turn.answer || answerFromEvents(nextEvents))
+        const polledAnswer = payload.turn.answer || answerFromEvents(nextEvents)
+        liveAnswerRef.current = polledAnswer
+        setLiveAnswer(polledAnswer)
         if (applyTerminalStatus(payload, conversationId, turnMessage, option)) return
       } catch {
         transientFailures += 1
@@ -358,22 +380,24 @@ export function useTurnRunner(options: TurnRunnerOptions) {
   }
 
   function applyAnswerProgress(event: ProgressEvent) {
+    if (event.stage === 'answer_complete') {
+      if (tokenQueueRef.current) startTokenDrain()
+      return
+    }
     if (event.stage !== 'answer_delta') return
     const delta = typeof event.data?.delta === 'string' ? event.data.delta : ''
     if (!delta) return
-    // Push into the smoothing queue. The drain timer releases chars at a controlled
-    // rate so bursts from reader.read() never produce large single-frame jumps.
     tokenQueueRef.current += delta
-    if (streamRafRef.current !== null) return  // drain already running
-    // COLD: wait for initial buffer to fill before showing anything (smooth start).
-    // WARM: drain immediately — we've already caught up to live LLM output, so each
-    //       new SSE batch should appear right away without re-accumulating a full buffer.
-    const ready = streamStartedRef.current
-      ? true
-      : tokenQueueRef.current.length >= STREAM_BUFFER_CHARS
-    if (ready) {
-      streamStartedRef.current = true
-      streamRafRef.current = requestAnimationFrame(drainTokens)
+    if (streamStartedRef.current) {
+      scheduleTokenDrain()
+      return
+    }
+    if (tokenQueueRef.current.length >= STREAM_INITIAL_BUFFER_CHARS) {
+      startTokenDrain()
+      return
+    }
+    if (streamPrimerRef.current === null) {
+      streamPrimerRef.current = setTimeout(startTokenDrain, STREAM_INITIAL_BUFFER_MS)
     }
   }
 

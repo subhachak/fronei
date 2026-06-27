@@ -254,12 +254,41 @@ def _frameworks_with_official_evidence(request: TurnRequest, state: ResearchStat
     return hits
 
 
+def _generic_evidence_quality_issues(request: TurnRequest, state: ResearchStateStore) -> list[str]:
+    issues: list[str] = []
+    min_items = max(1, int(state.plan.min_evidence_items or state.budget_ledger.budget.min_evidence_items or 1))
+    item_count = len(state.evidence.items)
+    if item_count < min_items:
+        issues.append(f"too few bound evidence items ({item_count}/{min_items})")
+
+    coverage_ratio = state.contract.coverage_ratio()
+    if state.contract.cells and coverage_ratio < 0.4:
+        issues.append(f"coverage is too low for synthesis ({coverage_ratio:.0%})")
+
+    evidence_texts = [
+        _evidence_item_text(state, item.url, item.evidence, item.quoted_text)
+        for item in state.evidence.items
+    ]
+    thin_or_chrome = [
+        text
+        for text in evidence_texts
+        if len(text) < 160 or _looks_like_navigation_chrome(text)
+    ]
+    if evidence_texts and len(thin_or_chrome) / max(1, len(evidence_texts)) >= 0.6:
+        issues.append("most bound evidence is thin or page-chrome-heavy")
+
+    if request.research_level == "deep" and item_count >= 2 and not state.evidence.claims:
+        issues.append("deep research evidence has no typed claims")
+
+    return issues
+
+
 def _evidence_quality_issues(request: TurnRequest, state: ResearchStateStore) -> list[str]:
+    issues = _generic_evidence_quality_issues(request, state)
     frameworks = _extract_named_framework_subjects(request.message)
     if len(frameworks) < 3:
-        return []
+        return issues[:8]
 
-    issues: list[str] = []
     if len(state.evidence.items) < max(6, len(frameworks)):
         issues.append("too few bound evidence items for a framework-by-framework comparison")
 
@@ -281,6 +310,23 @@ def _evidence_quality_issues(request: TurnRequest, state: ResearchStateStore) ->
             issues.append(f"no bound evidence text mentions {framework}")
 
     return issues[:8]
+
+
+def _generic_remediation_queries(state: ResearchStateStore) -> list[str]:
+    cells = state.contract.open_cells()[:4] or state.contract.partial_cells()[:4] or state.contract.cells[:4]
+    queries: list[str] = []
+    for cell in cells:
+        queries.append(_targeted_query(cell.subject, [cell.dimension], state.brief.objective))
+    if not queries:
+        queries.extend(state.plan.search_queries[:3])
+    if not queries and state.plan.questions:
+        queries.extend(state.plan.questions[:3])
+    cleaned: list[str] = []
+    for query in queries:
+        normalized = " ".join(str(query or "").split())
+        if normalized and normalized not in cleaned:
+            cleaned.append(normalized)
+    return cleaned[:4]
 
 
 def _assigned_cell_for_worker(worker: SearchWorkerPlan, contract: CoverageContract) -> CoverageCell | None:
@@ -1179,11 +1225,7 @@ class LeadResearchAgent:
         remediation_sources = _framework_remediation_sources(self.request, state)
         urls = [source.url for source in remediation_sources if source.url and is_public_source_url(source.url)]
         if not urls:
-            self._progress(
-                "evidence_remediation_skipped",
-                "Evidence looked weak, but no primary-source remediation URLs were available.",
-                {"issues": issues},
-            )
+            self._remediate_with_targeted_research(state, issues)
             return
 
         remaining_reads = self.ledger.remaining_source_reads()
@@ -1236,6 +1278,58 @@ class LeadResearchAgent:
             {
                 "ok": call.ok,
                 "error": call.error,
+                "remaining_issues": remaining_issues,
+                "coverage_contract_ratio": state.contract.coverage_ratio(),
+                "evidence_item_count": len(state.evidence.items),
+                "source_inventory": _source_inventory_summary(state.all_sources),
+                "budget_ledger": self.ledger.model_dump(mode="json"),
+            },
+        )
+
+    def _remediate_with_targeted_research(self, state: ResearchStateStore, issues: list[str]) -> None:
+        if self.ledger.remaining_tool_calls() <= 0 or self.ledger.remaining_source_reads() <= 0:
+            self._progress(
+                "evidence_remediation_skipped",
+                "Evidence looked weak, but the research budget had no remaining capacity for targeted follow-up.",
+                {
+                    "issues": issues,
+                    "budget_ledger": self.ledger.model_dump(mode="json"),
+                },
+            )
+            return
+        queries = _generic_remediation_queries(state)
+        if not queries:
+            self._progress(
+                "evidence_remediation_skipped",
+                "Evidence looked weak, but no targeted follow-up queries could be derived.",
+                {"issues": issues},
+            )
+            return
+        self._progress(
+            "evidence_remediation",
+            f"Evidence looked weak; running {len(queries)} targeted follow-up search(es) before synthesis.",
+            {"issues": issues, "queries": queries},
+        )
+        previous_plan = state.plan
+        try:
+            state.plan = plan_from_targeted_queries(queries, state)
+            self._mark_attempts_for_open_cells(state)
+            self._dispatch_worker_wave(state)
+            state.evidence = bind_evidence(
+                state.all_sources,
+                plan=state.plan,
+                max_items=self.budget.max_sources + self.budget.max_deep_links,
+                contract=state.contract,
+            )
+            update_contract_from_evidence(state)
+        finally:
+            if not state.plan.workers and previous_plan.workers:
+                state.plan = previous_plan
+        remaining_issues = _evidence_quality_issues(self.request, state)
+        self._progress(
+            "evidence_remediation_result",
+            "Targeted follow-up research refreshed the evidence pack.",
+            {
                 "remaining_issues": remaining_issues,
                 "coverage_contract_ratio": state.contract.coverage_ratio(),
                 "evidence_item_count": len(state.evidence.items),

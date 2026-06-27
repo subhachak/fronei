@@ -525,7 +525,7 @@ def _synthesis_token_budget(request: TurnRequest, plan: ResearchPlan) -> int:
     if request.output_format == "chat" and _requests_brief_answer(request):
         return 1800 if is_exec else 1200
     if request.output_format == "chat" and _requires_decision_grade_comparison(request, profile):
-        return (7000 if is_deep else 5200) if is_exec else (5600 if is_deep else 4200)
+        return (11000 if is_deep else 9500) if is_exec else (9500 if is_deep else 8000)
     if profile == "technical_architecture" and is_deep:
         # Deep technical report: needs room for 10 detailed sections with citations,
         # diagrams, trade-off tables, and implementation specifics.

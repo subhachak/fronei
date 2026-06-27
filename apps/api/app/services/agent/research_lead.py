@@ -40,6 +40,7 @@ from app.services.agent.research_models import (
 )
 from app.services.agent.research_planner import (
     _cell_terms,
+    _extract_named_framework_subjects,
     _max_iterations_for,
     _targeted_query,
     _tech_arch_grounding_term,
@@ -83,6 +84,34 @@ MAX_PARALLEL_READ_BATCHES = 4
 MAX_PARALLEL_READ_BATCHES_DEEP = 6
 MAX_URLS_PER_READ_BATCH = 6
 
+FRAMEWORK_CANONICAL_DOCS: dict[str, list[tuple[str, str]]] = {
+    "LangGraph": [
+        ("LangGraph overview", "https://langchain-ai.github.io/langgraph/"),
+        ("LangGraph concepts", "https://langchain-ai.github.io/langgraph/concepts/"),
+        ("LangGraph agents", "https://langchain-ai.github.io/langgraph/agents/agents/"),
+    ],
+    "CrewAI": [
+        ("CrewAI introduction", "https://docs.crewai.com/introduction"),
+        ("CrewAI crews", "https://docs.crewai.com/concepts/crews"),
+        ("CrewAI flows", "https://docs.crewai.com/concepts/flows"),
+    ],
+    "AutoGen": [
+        ("AutoGen documentation", "https://microsoft.github.io/autogen/stable/"),
+        ("AutoGen AgentChat", "https://microsoft.github.io/autogen/stable/user-guide/agentchat-user-guide/index.html"),
+        ("Microsoft Agent Framework", "https://learn.microsoft.com/en-us/agent-framework/"),
+    ],
+    "Haystack": [
+        ("Haystack documentation", "https://docs.haystack.deepset.ai/docs/intro"),
+        ("Haystack pipelines", "https://docs.haystack.deepset.ai/docs/pipelines"),
+        ("Haystack agents", "https://docs.haystack.deepset.ai/docs/agents"),
+    ],
+    "LlamaIndex Workflows": [
+        ("LlamaIndex Workflows", "https://docs.llamaindex.ai/en/stable/module_guides/workflow/"),
+        ("LlamaIndex agents", "https://docs.llamaindex.ai/en/stable/module_guides/deploying/agents/"),
+        ("LlamaIndex multi-agent workflows", "https://docs.llamaindex.ai/en/stable/understanding/agent/multi_agent/"),
+    ],
+}
+
 def _chunk_urls(urls: list[str], *, size: int) -> list[list[str]]:
     chunks: list[list[str]] = []
     for index in range(0, len(urls), max(1, size)):
@@ -106,6 +135,30 @@ def _read_cap_for_batch(urls: list[str], plan: ResearchPlan | None) -> int:
     if any(classify_source_type(url) in {"academic", "pdf", "documentation"} for url in urls):
         return 7000
     return 3500
+
+
+def _canonical_framework_sources(request: TurnRequest, plan: ResearchPlan) -> list[Source]:
+    if plan.research_profile != "technical_architecture":
+        return []
+    frameworks = _extract_named_framework_subjects(request.message)
+    if len(frameworks) < 3:
+        return []
+    sources: list[Source] = []
+    for framework in frameworks:
+        for title, url in FRAMEWORK_CANONICAL_DOCS.get(framework, [])[:2]:
+            sources.append(
+                Source(
+                    title=title,
+                    url=url,
+                    snippet=(
+                        f"Canonical official documentation source for {framework}; read this page for "
+                        "architecture, coordination, production, lifecycle, and limitations evidence."
+                    ),
+                    query=f"{framework} official documentation",
+                    provider="canonical_docs",
+                )
+            )
+    return sources
 
 
 def _assigned_cell_for_worker(worker: SearchWorkerPlan, contract: CoverageContract) -> CoverageCell | None:
@@ -622,6 +675,18 @@ class LeadResearchAgent:
                             "budget_ledger": self.ledger.model_dump(mode="json"),
                         },
                     )
+
+        canonical_sources = state.add_sources(_canonical_framework_sources(self.request, state.plan))
+        if canonical_sources:
+            wave_sources.extend(canonical_sources)
+            self._progress(
+                "canonical_source_seed",
+                f"Seeded {len(canonical_sources)} official documentation source(s).",
+                {
+                    "source_count": len(canonical_sources),
+                    "urls": [source.url for source in canonical_sources if source.url],
+                },
+            )
 
         ranked = rank_sources(wave_sources, state.plan)
         selected = _select_diverse_ranked_sources(

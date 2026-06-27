@@ -92,4 +92,4 @@ def test_framework_comparison_chat_gets_room_to_answer():
     )
     plan = ResearchPlan(research_profile="technical_architecture", questions=["Compare frameworks"])
 
-    assert _synthesis_token_budget(request, plan) >= 4000
+    assert _synthesis_token_budget(request, plan) >= 8000

@@ -1176,11 +1176,30 @@ class LeadResearchAgent:
             f"Research judge recommends {verdict.next_action}.",
             {"agent_id": "research_judge", "verdict": verdict.model_dump(mode="json")},
         )
-        if verdict.next_action == "research_more" and not self.ledger.stopped:
+        judge_followups = 0
+        while (
+            verdict.next_action == "research_more"
+            and not self.ledger.stopped
+            and judge_followups < 2
+            and self.ledger.remaining_tool_calls() > 0
+            and self.ledger.remaining_source_reads() > 0
+        ):
             targeted_queries = [
                 _targeted_query(cell.subject, [cell.dimension], state.brief.objective)
                 for cell in state.contract.open_cells()[:4]
             ] or _generic_remediation_queries(state)
+            if not targeted_queries:
+                break
+            judge_followups += 1
+            self._progress(
+                "research_judge_followup",
+                f"Research judge requested more evidence; running follow-up pass {judge_followups}.",
+                {
+                    "targeted_queries": targeted_queries,
+                    "issues": verdict.issues,
+                    "budget_ledger": self.ledger.model_dump(mode="json"),
+                },
+            )
             state.plan = plan_from_targeted_queries(
                 targeted_queries,
                 state,
@@ -1198,6 +1217,11 @@ class LeadResearchAgent:
             self.ledger.record_model_call(cost_usd=model_response.cost_usd, latency_ms=model_response.latency_ms)
             answer = model_response.text
             verdict = judge_research_final(self.request, state, answer)
+            self._progress(
+                "research_judge_result",
+                f"Research judge recommends {verdict.next_action}.",
+                {"agent_id": "research_judge", "verdict": verdict.model_dump(mode="json"), "followup_pass": judge_followups},
+            )
         if verdict.repair_needed and state.plan.repair_iterations > repair_attempts and self.ledger.can_start_model("repair_agent"):
             model_response = self._repair_answer(state, answer, verdict.repair_instruction)
             repaired = True

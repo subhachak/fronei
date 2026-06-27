@@ -695,22 +695,50 @@ def _evidence_disclaimer_issues(state: ResearchStateStore, answer: str) -> list[
     lower = text.lower()
     issues: list[str] = []
     disclaimer_heading = re.search(r"(?mi)^#{1,3}\s*(?:⚠️\s*)?evidence quality disclaimer\b", text)
-    disclaimer_terms = (
+    hard_disclaimer_terms = (
         "evidence-thin",
         "evidence thin",
+        "evidence-light",
+        "evidence light",
         "retrieved sources are dominated by index/navigation",
         "retrieved sources are dominated by",
         "listicle titles",
         "marketing scaffolding",
         "no architecture extraction cards",
         "single-source-anchored",
+        "thin on the specific technical detail",
+        "decision-shaped but evidence",
+        "additional retrieval is needed",
+        "requesting deeper research",
     )
-    if disclaimer_heading or any(term in lower for term in disclaimer_terms):
+    soft_disclaimer_terms = (
+        "evidence pack retrieved",
+        "not directly described in evidence",
+        "not described in evidence",
+        "not documented in evidence",
+        "unverified from this evidence pack",
+        "validation note",
+        "provisional recommendation",
+        "cannot be responsibly specified from this evidence",
+    )
+    soft_hits = sum(1 for term in soft_disclaimer_terms if term in lower)
+    if disclaimer_heading or any(term in lower for term in hard_disclaimer_terms) or soft_hits >= 3:
         issues.append("Answer publishes an evidence-quality disclaimer instead of completing the research.")
-    not_in_evidence_count = len(re.findall(r"\bnot in evidence\b|\bnot supported by this evidence pack\b|\bno usable evidence\b", lower))
+    if "research judge" in lower and any(term in lower for term in ("deeper research", "deeper retrieval", "treat as a trigger")):
+        issues.append("Answer exposes internal research-judge instructions instead of completing the research.")
+    not_in_evidence_count = len(
+        re.findall(
+            r"\bnot in evidence\b|\bnot supported by this evidence pack\b|\bno usable evidence\b|"
+            r"\bnot directly described in evidence\b|\bnot described in evidence\b|\bnot documented in evidence\b|"
+            r"\bunverified from this evidence pack\b",
+            lower,
+        )
+    )
     if state.contract.source.endswith("framework_comparison") and not_in_evidence_count >= 4:
         issues.append("Framework comparison leaves too many requested cells as 'not in evidence'.")
-    if state.contract.source.endswith("framework_comparison") and "provisional, single-source" in lower:
+    if state.contract.source.endswith("framework_comparison") and (
+        "provisional, single-source" in lower or "provisional recommendation" in lower
+    ):
         issues.append("Framework recommendation is explicitly single-source/provisional rather than decision-grade.")
     return issues
 

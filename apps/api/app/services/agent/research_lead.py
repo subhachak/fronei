@@ -1177,8 +1177,12 @@ class LeadResearchAgent:
             {"agent_id": "research_judge", "verdict": verdict.model_dump(mode="json")},
         )
         if verdict.next_action == "research_more" and not self.ledger.stopped:
+            targeted_queries = [
+                _targeted_query(cell.subject, [cell.dimension], state.brief.objective)
+                for cell in state.contract.open_cells()[:4]
+            ] or _generic_remediation_queries(state)
             state.plan = plan_from_targeted_queries(
-                [_targeted_query(cell.subject, [cell.dimension], state.brief.objective) for cell in state.contract.open_cells()[:4]],
+                targeted_queries,
                 state,
             )
             self._mark_attempts_for_open_cells(state)

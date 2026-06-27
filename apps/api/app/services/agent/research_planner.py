@@ -637,6 +637,10 @@ def judge_research_final(request: TurnRequest, state: ResearchStateStore, answer
     if completion_issues:
         score -= min(0.35, 0.12 * len(completion_issues))
         issues.extend(completion_issues)
+    disclaimer_issues = _evidence_disclaimer_issues(state, answer)
+    if disclaimer_issues:
+        score -= min(0.42, 0.16 * len(disclaimer_issues))
+        issues.extend(disclaimer_issues)
     open_cells = state.contract.open_cells()
     if open_cells:
         score -= min(0.18, 0.025 * len(open_cells))
@@ -646,6 +650,15 @@ def judge_research_final(request: TurnRequest, state: ResearchStateStore, answer
         issues.append("Contradictions in evidence should be surfaced.")
     score = max(0.0, min(1.0, score))
     threshold = state.plan.judge_threshold or 0.78
+    if disclaimer_issues and not state.budget_ledger.stopped and state.budget_ledger.remaining_tool_calls() > 0 and state.budget_ledger.remaining_source_reads() > 0:
+        return JudgeVerdict(
+            can_publish=False,
+            repair_needed=False,
+            score=score,
+            issues=issues,
+            specific_gaps=[f"{cell.subject}/{cell.dimension}" for cell in open_cells[:8]],
+            next_action="research_more",
+        )
     if score >= threshold and not open_cells:
         return JudgeVerdict(can_publish=True, repair_needed=False, score=score, issues=issues, next_action="publish")
     if open_cells and not state.budget_ledger.stopped and state.iteration < _max_iterations_for(request):
@@ -674,6 +687,31 @@ def _framework_comparison_completion_issues(state: ResearchStateStore, answer: s
         issues.append("Framework comparison answer lacks a closing recommendation section near the end.")
     if re.search(r"(?m)(?:^|\n)\s*[-*]\s*$|(?:\bcomponents|\bagents|\bpipelines|\bcoordination)\s*$", text.strip(), flags=re.IGNORECASE):
         issues.append("Framework comparison answer appears to end mid-section or mid-sentence.")
+    return issues
+
+
+def _evidence_disclaimer_issues(state: ResearchStateStore, answer: str) -> list[str]:
+    text = answer or ""
+    lower = text.lower()
+    issues: list[str] = []
+    disclaimer_heading = re.search(r"(?mi)^#{1,3}\s*(?:⚠️\s*)?evidence quality disclaimer\b", text)
+    disclaimer_terms = (
+        "evidence-thin",
+        "evidence thin",
+        "retrieved sources are dominated by index/navigation",
+        "retrieved sources are dominated by",
+        "listicle titles",
+        "marketing scaffolding",
+        "no architecture extraction cards",
+        "single-source-anchored",
+    )
+    if disclaimer_heading or any(term in lower for term in disclaimer_terms):
+        issues.append("Answer publishes an evidence-quality disclaimer instead of completing the research.")
+    not_in_evidence_count = len(re.findall(r"\bnot in evidence\b|\bnot supported by this evidence pack\b|\bno usable evidence\b", lower))
+    if state.contract.source.endswith("framework_comparison") and not_in_evidence_count >= 4:
+        issues.append("Framework comparison leaves too many requested cells as 'not in evidence'.")
+    if state.contract.source.endswith("framework_comparison") and "provisional, single-source" in lower:
+        issues.append("Framework recommendation is explicitly single-source/provisional rather than decision-grade.")
     return issues
 
 

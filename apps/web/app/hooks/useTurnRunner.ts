@@ -94,12 +94,18 @@ export function useTurnRunner(options: TurnRunnerOptions) {
   // synchronized with actual paints so chunks always appear in the same frame they render.
   const streamRafRef = useRef<number | null>(null)
 
-  // Drain 8 chars per RAF frame (≈480 chars/sec at 60fps — well above typical LLM rates).
-  // When a large burst backlogs >150 chars (network buffered many SSE frames at once),
-  // switch to 48 chars/frame to catch up without lagging more than ~500ms.
+  // Buffer threshold: don't start draining until this many chars are queued.
+  // Rationale: a typical LLM generates ~200 chars/sec. 400 chars ≈ 2 seconds of output.
+  // Starting with 400 chars queued ensures the drain (480 chars/sec) has ≈0.9 seconds
+  // of runway before it catches up to the live stream — enough to absorb jitter and
+  // produce smooth, uninterrupted display. Short responses (< 400 chars total) never
+  // trigger streaming; they appear instantly when the turn completes via TurnPair.
+  const STREAM_BUFFER_CHARS = 400
+  // Drain 8 chars per RAF frame (≈480 chars/sec at 60fps).
+  // When a large burst backlogs >300 chars beyond the buffer, drain faster to catch up.
   const STREAM_CHARS_PER_FRAME = 8
-  const STREAM_CATCHUP_THRESHOLD = 150
-  const STREAM_CATCHUP_CHARS = 48
+  const STREAM_CATCHUP_THRESHOLD = 300
+  const STREAM_CATCHUP_CHARS = 32
 
   const activeEvents = useMemo(
     () => events.filter(event => !['tool_selection', 'tool_result', 'answer_delta', 'answer_complete'].includes(event.stage)),
@@ -362,7 +368,8 @@ export function useTurnRunner(options: TurnRunnerOptions) {
     // Push into the smoothing queue. The drain timer releases chars at a controlled
     // rate so bursts from reader.read() never produce large single-frame jumps.
     tokenQueueRef.current += delta
-    if (streamRafRef.current === null) {
+    // Don't start until the buffer is deep enough to guarantee uninterrupted display.
+    if (streamRafRef.current === null && tokenQueueRef.current.length >= STREAM_BUFFER_CHARS) {
       streamRafRef.current = requestAnimationFrame(drainTokens)
     }
   }

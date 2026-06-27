@@ -89,14 +89,17 @@ export function useTurnRunner(options: TurnRunnerOptions) {
   // small chunks rather than large jumps.
   const liveAnswerRef = useRef('')         // committed answer shown to React
   const tokenQueueRef = useRef('')         // pending tokens not yet released to state
-  const streamTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Using requestAnimationFrame instead of setTimeout for vsync-aligned drains.
+  // RAF fires exactly once per display refresh (16.67ms at 60fps, 8.33ms at 120fps),
+  // synchronized with actual paints so chunks always appear in the same frame they render.
+  const streamRafRef = useRef<number | null>(null)
 
-  const STREAM_TICK_MS = 16              // drain interval (~60fps)
-  const STREAM_CHARS_PER_TICK = 16       // normal: 16 chars/tick ≈ 1000 chars/sec visual rate
-  // If the backlog grows large (many SSE frames in one reader.read()), switch to
-  // catch-up mode at 4× speed to avoid lagging more than ~500ms behind the LLM.
-  const STREAM_CATCHUP_THRESHOLD = 400   // chars in queue → trigger catch-up
-  const STREAM_CATCHUP_CHARS = 64        // chars/tick in catch-up mode
+  // Drain 8 chars per RAF frame (≈480 chars/sec at 60fps — well above typical LLM rates).
+  // When a large burst backlogs >150 chars (network buffered many SSE frames at once),
+  // switch to 48 chars/frame to catch up without lagging more than ~500ms.
+  const STREAM_CHARS_PER_FRAME = 8
+  const STREAM_CATCHUP_THRESHOLD = 150
+  const STREAM_CATCHUP_CHARS = 48
 
   const activeEvents = useMemo(
     () => events.filter(event => !['tool_selection', 'tool_result', 'answer_delta', 'answer_complete'].includes(event.stage)),
@@ -113,29 +116,27 @@ export function useTurnRunner(options: TurnRunnerOptions) {
   }
 
   function drainTokens() {
-    streamTimerRef.current = null
+    streamRafRef.current = null
     const pending = tokenQueueRef.current
     if (!pending) return
-    // Switch to catch-up mode when a large burst has backlogged > CATCHUP_THRESHOLD chars.
-    // This prevents the display from lagging more than ~500ms behind the LLM.
-    const charsThisTick = Math.min(
+    const chars = Math.min(
       pending.length,
-      pending.length > STREAM_CATCHUP_THRESHOLD ? STREAM_CATCHUP_CHARS : STREAM_CHARS_PER_TICK,
+      pending.length > STREAM_CATCHUP_THRESHOLD ? STREAM_CATCHUP_CHARS : STREAM_CHARS_PER_FRAME,
     )
-    liveAnswerRef.current += pending.slice(0, charsThisTick)
-    tokenQueueRef.current = pending.slice(charsThisTick)
+    liveAnswerRef.current += pending.slice(0, chars)
+    tokenQueueRef.current = pending.slice(chars)
     setLiveAnswer(liveAnswerRef.current)
     if (tokenQueueRef.current) {
-      streamTimerRef.current = setTimeout(drainTokens, STREAM_TICK_MS)
+      streamRafRef.current = requestAnimationFrame(drainTokens)
     }
   }
 
   function clearStreamState() {
     tokenQueueRef.current = ''
     liveAnswerRef.current = ''
-    if (streamTimerRef.current !== null) {
-      clearTimeout(streamTimerRef.current)
-      streamTimerRef.current = null
+    if (streamRafRef.current !== null) {
+      cancelAnimationFrame(streamRafRef.current)
+      streamRafRef.current = null
     }
   }
 
@@ -361,9 +362,8 @@ export function useTurnRunner(options: TurnRunnerOptions) {
     // Push into the smoothing queue. The drain timer releases chars at a controlled
     // rate so bursts from reader.read() never produce large single-frame jumps.
     tokenQueueRef.current += delta
-    if (streamTimerRef.current === null) {
-      // Start draining immediately (setTimeout(0) yields to the event loop first).
-      streamTimerRef.current = setTimeout(drainTokens, 0)
+    if (streamRafRef.current === null) {
+      streamRafRef.current = requestAnimationFrame(drainTokens)
     }
   }
 

@@ -11,9 +11,8 @@ import { MarkdownResult } from './MarkdownResult'
 import { ResearchPlanCard } from './ResearchPlanCard'
 
 // Simple streaming text: committed prefix renders as plain text nodes (no re-animation),
-// the incoming tail gets a single fade-in span. Because we only start draining after
-// a 400-char buffer has accumulated, the queue is always ahead of the display —
-// chunks arrive predictably and the animation has something to hand off to immediately.
+// while the newly revealed tail gets a short fade-in. The queue drains adaptively in
+// useTurnRunner, so small bursts linger instead of emptying into visible pauses.
 function StreamingText({ text }: { text: string }) {
   const prevLengthRef = useRef(0)
   const committed = text.slice(0, prevLengthRef.current)

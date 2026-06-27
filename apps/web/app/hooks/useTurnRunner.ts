@@ -89,22 +89,17 @@ export function useTurnRunner(options: TurnRunnerOptions) {
   // small chunks rather than large jumps.
   const liveAnswerRef = useRef('')         // committed answer shown to React
   const tokenQueueRef = useRef('')         // pending tokens not yet released to state
-  // Using requestAnimationFrame instead of setTimeout for vsync-aligned drains.
-  // RAF fires exactly once per display refresh (16.67ms at 60fps, 8.33ms at 120fps),
-  // synchronized with actual paints so chunks always appear in the same frame they render.
   const streamRafRef = useRef<number | null>(null)
-
-  // Buffer threshold: don't start draining until this many chars are queued.
-  // Rationale: a typical LLM generates ~200 chars/sec. 400 chars ≈ 2 seconds of output.
-  // Starting with 400 chars queued ensures the drain (480 chars/sec) has ≈0.9 seconds
-  // of runway before it catches up to the live stream — enough to absorb jitter and
-  // produce smooth, uninterrupted display. Short responses (< 400 chars total) never
-  // trigger streaming; they appear instantly when the turn completes via TurnPair.
-  const STREAM_BUFFER_CHARS = 400
-  // Drain 8 chars per RAF frame (≈480 chars/sec at 60fps).
-  // When a large burst backlogs >300 chars beyond the buffer, drain faster to catch up.
-  const STREAM_CHARS_PER_FRAME = 8
-  const STREAM_CATCHUP_THRESHOLD = 300
+  // Two-threshold drain model:
+  //   COLD  (streamStartedRef=false): wait for STREAM_BUFFER_CHARS before starting.
+  //         Gives ~1s of runway so the first burst of text flows smoothly.
+  //   WARM  (streamStartedRef=true):  drain on every token arrival (threshold=1).
+  //         Once we've caught up to the live stream, drain each SSE batch immediately
+  //         instead of re-accumulating 200 chars — which would create 1s pauses.
+  const streamStartedRef = useRef(false)
+  const STREAM_BUFFER_CHARS = 200          // ~1s pre-roll at typical LLM rates
+  const STREAM_CHARS_PER_FRAME = 8         // ≈480 chars/sec at 60fps
+  const STREAM_CATCHUP_THRESHOLD = 300     // burst backlog → drain faster
   const STREAM_CATCHUP_CHARS = 32
 
   const activeEvents = useMemo(
@@ -140,6 +135,7 @@ export function useTurnRunner(options: TurnRunnerOptions) {
   function clearStreamState() {
     tokenQueueRef.current = ''
     liveAnswerRef.current = ''
+    streamStartedRef.current = false
     if (streamRafRef.current !== null) {
       cancelAnimationFrame(streamRafRef.current)
       streamRafRef.current = null
@@ -368,8 +364,15 @@ export function useTurnRunner(options: TurnRunnerOptions) {
     // Push into the smoothing queue. The drain timer releases chars at a controlled
     // rate so bursts from reader.read() never produce large single-frame jumps.
     tokenQueueRef.current += delta
-    // Don't start until the buffer is deep enough to guarantee uninterrupted display.
-    if (streamRafRef.current === null && tokenQueueRef.current.length >= STREAM_BUFFER_CHARS) {
+    if (streamRafRef.current !== null) return  // drain already running
+    // COLD: wait for initial buffer to fill before showing anything (smooth start).
+    // WARM: drain immediately — we've already caught up to live LLM output, so each
+    //       new SSE batch should appear right away without re-accumulating a full buffer.
+    const ready = streamStartedRef.current
+      ? true
+      : tokenQueueRef.current.length >= STREAM_BUFFER_CHARS
+    if (ready) {
+      streamStartedRef.current = true
       streamRafRef.current = requestAnimationFrame(drainTokens)
     }
   }

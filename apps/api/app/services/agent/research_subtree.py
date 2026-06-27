@@ -221,6 +221,8 @@ from app.services.agent.research_lead import (  # noqa: F401, E402
     _assigned_cell_for_worker,
     _chunk_urls,
     _ensure_source_provenance,
+    _evidence_quality_issues,
+    _framework_remediation_sources,
     _max_parallel_read_batches_for,
     _read_cap_for_batch,
     _retry_query_for_worker,

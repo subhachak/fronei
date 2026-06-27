@@ -1,7 +1,7 @@
 'use client'
 
 import { BookOpen, CheckCircle2, ChevronsLeft, ChevronsRight, Clock3, FileText, Folder, Library, Loader2, Moon, PanelRight, Settings2, Shield, Sliders, Sparkles, Sun, UserCog, type LucideIcon } from 'lucide-react'
-import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { useAgent } from '../hooks/useAgent'
 import { useTheme } from '../hooks/useTheme'
 import { AdminShell } from '../admin/components/AdminShell'
@@ -52,8 +52,8 @@ export function AgentShell() {
   const [leftRailWidth, setLeftRailWidth] = useState(280)
   const [rightRailWidth, setRightRailWidth] = useState(340)
   const [composerHeight, setComposerHeight] = useState(168)
-  const [leftRailCollapsed, setLeftRailCollapsed] = useState(() => readStoredCollapsedState(LEFT_RAIL_COLLAPSED_KEY))
-  const [rightRailCollapsed, setRightRailCollapsed] = useState(() => readStoredCollapsedState(RIGHT_RAIL_COLLAPSED_KEY))
+  const [leftRailCollapsed, setLeftRailCollapsed] = useState(false)
+  const [rightRailCollapsed, setRightRailCollapsed] = useState(false)
   const [uploadSource, setUploadSource] = useState<'composer' | 'profile'>('profile')
   const [view, setView] = useState<'chat' | 'profile' | 'admin'>('chat')
   const templateUploadRef = useRef<HTMLInputElement | null>(null)
@@ -63,6 +63,16 @@ export function AgentShell() {
   useEffect(() => {
     chatScrollRef.current?.scrollTo({ top: chatScrollRef.current.scrollHeight, behavior: 'smooth' })
   }, [agent.visibleTurns.length, agent.running, agent.result?.turn_id, agent.events.length])
+
+  // useLayoutEffect fires synchronously before the browser paints, correcting the
+  // collapsed state from localStorage without a visible flash. useState(false) keeps
+  // the SSR-rendered HTML consistent (server has no window → returns false), so
+  // React hydrates without a mismatch warning. The layout correction happens before
+  // the first painted frame, so the user never sees the expanded→collapsed shift.
+  useLayoutEffect(() => {
+    setLeftRailCollapsed(readStoredCollapsedState(LEFT_RAIL_COLLAPSED_KEY))
+    setRightRailCollapsed(readStoredCollapsedState(RIGHT_RAIL_COLLAPSED_KEY))
+  }, [])
 
   useEffect(() => {
     writeStoredCollapsedState(LEFT_RAIL_COLLAPSED_KEY, leftRailCollapsed)

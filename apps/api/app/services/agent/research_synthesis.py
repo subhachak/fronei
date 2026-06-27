@@ -437,36 +437,58 @@ def build_gap_followup_workers(request: TurnRequest, plan: ResearchPlan, evidenc
         )
     ]
 
+# Phase 7 — Behavioral guardrails extracted as a single constant, appended to every
+# branch of _synthesis_report_contract so ALL queries receive them — not just those
+# that trip _requires_decision_grade_comparison().
+#
+# Previously these three instructions existed only inside the decision-grade-comparison
+# branch, leaving single-subject operational-reality queries (e.g. H-4 EAD) with no
+# best-effort/no-disclaimer/lifecycle-flagging guidance at all.
+SYNTHESIS_SUBSTANCE_REQUIREMENTS = """
+--- BEHAVIORAL REQUIREMENTS (apply to every answer regardless of profile or format) ---
+1. CITATIONS: Cite every factual claim with [S#] using the source IDs in the evidence pack. Do not make claims without citations.
+2. LIFECYCLE FLAGS: Explicitly flag lifecycle, maintenance-mode, successor-framework, or ecosystem/status shifts (deprecation, rename, end-of-life, successor GA) whenever evidence shows them. Place this in the main body next to the relevant subject — not a footnote, not a validation note block at the end.
+3. NO LEADING DISCLAIMER: Do not open with an evidence-quality disclaimer or caveat block. If evidence is thin for a specific subject or dimension, disclose that gap inline — next to the relevant claim, section header, or named entity — not as a dominant opening block titled "Evidence quality" or similar.
+4. BEST EFFORT OVER REFUSAL: A best-effort answer with inline gap disclosures is always preferable to withholding the answer, refusing to publish, or leading with "I cannot provide a complete answer because...". Publish what the evidence supports and flag what it doesn't.
+--- END BEHAVIORAL REQUIREMENTS ---
+"""
+
+
 def _synthesis_report_contract(profile: ResearchProfile, request: TurnRequest) -> str:
+    # Phase 7 — SYNTHESIS_SUBSTANCE_REQUIREMENTS is appended to every branch below.
+    # Each branch's return is constructed as: structural_guidance + SYNTHESIS_SUBSTANCE_REQUIREMENTS
+    S = SYNTHESIS_SUBSTANCE_REQUIREMENTS  # local alias for brevity
+
     if request.output_format == "chat" and "report" not in request.message.lower() and _requires_decision_grade_comparison(request, profile):
+        # Phase 7 — replaced rigid structural mandate (matrix → per-option fields → ranked rec)
+        # with a flexible instruction that lets evidence density determine structure.
+        # _requires_decision_grade_comparison() still gates depth ("decision-grade") but no
+        # longer prescribes exact section shape, preventing placeholder cells for thin-evidence subjects.
         return (
             "Produce a decision-grade research answer in chat, not a terse summary. "
-            "Open with an executive recommendation that names the winner, the decision rule, and the main decision constraint. "
-            "Do not open with an evidence-quality disclaimer; if the evidence is too weak for a decision-grade answer, "
-            "the research judge should request more research rather than publishing a disclaimer-heavy answer. "
-            "Then include a compact comparison matrix using the user's requested dimensions. "
-            "For each named option, provide: architecture model, coordination approach, production readiness, known failure modes, "
-            "and best-fit / avoid-when guidance. Use concrete mechanisms and named product/lifecycle signals from evidence; "
+            "Choose whatever structure best serves this request given the evidence actually retrieved — "
+            "matrix, prose, decision tree, grouped by theme, or something else. "
+            "Let evidence density per subject guide section depth; don't force identical sub-sections onto "
+            "every named option if the evidence doesn't support it for all of them. "
+            "Include an executive recommendation that names the recommended option, the decision rule, and "
+            "the main decision constraint. "
+            "Use concrete mechanisms and named product/lifecycle signals from evidence; "
             "do not substitute generic pros and cons. "
-            "Include a cross-cutting failure taxonomy or governance lens when the question asks about production, enterprise, "
-            "or orchestration. Explicitly flag lifecycle, maintenance, successor-framework, or ecosystem shifts when evidence shows them. "
-            "Close with a ranked recommendation and conditional overrides, e.g. default choice, cloud/vendor-lock override, "
-            "RAG/search override, prototyping override. "
-            "Cite factual claims with [S#]. If narrow benchmark, adoption, failure-rate, or production-use details remain missing, "
-            "capture them as short validation notes near the relevant row or recommendation, not as a dominant disclaimer. "
-            "For any named framework where a specific dimension (e.g. failure modes, production readiness) lacks evidence, "
-            "write the best-effort content from what IS available and add a single inline note such as "
-            "'*(no public failure-mode evidence found in retrieved sources)*' — do not substitute an entire section with "
-            "a validation note, and never produce a meta-commentary block titled 'Honest status' or 'Evidence quality disclaimer'. "
-            "A best-effort answer with disclosed gaps is always preferable to a refusal to publish."
-        )
+            "Include a cross-cutting failure taxonomy or governance lens when the question asks about "
+            "production, enterprise, or orchestration. "
+            "Close with a ranked recommendation and conditional overrides when the evidence supports them "
+            "(e.g. default choice, cloud/vendor-lock override, RAG/search override, prototyping override). "
+            "If narrow benchmark, adoption, failure-rate, or production-use details are missing for a specific "
+            "subject, write best-effort content from what IS available and add a single inline note such as "
+            "'*(no public failure-mode evidence retrieved)*' — not an entire section of meta-commentary."
+        ) + S
     if request.output_format == "chat" and "report" not in request.message.lower() and _requests_brief_answer(request):
         return (
             "Produce a concise chat answer, not a report or artifact. "
             "Follow the user's requested shape exactly. Prefer a short ranked list or compact bullets over large tables. "
-            "For comparisons, include only the fields the user asked for, cite factual claims with [S#], "
+            "For comparisons, include only the fields the user asked for, "
             "name the most promising option, and keep caveats brief."
-        )
+        ) + S
     if request.output_format == "chat" and "report" not in request.message.lower():
         return (
             "Produce an elaborative, source-grounded chat answer by default, not a terse summary. "
@@ -476,9 +498,9 @@ def _synthesis_report_contract(profile: ResearchProfile, request: TurnRequest) -
             "For comparisons, use a readable matrix or consistent per-option sections, then synthesize the practical takeaway. "
             "For recommendation questions, state the decision rule, the top recommendation, why it wins, where it does not fit, "
             "and what validation the user should run next. "
-            "Cite factual claims with [S#]. If evidence is missing or uneven, disclose that instead of smoothing over the gap. "
+            "If evidence is missing or uneven for a specific dimension or subject, disclose that inline rather than smoothing over the gap. "
             "Only be brief when the user explicitly asks for brevity."
-        )
+        ) + S
     if profile == "technical_architecture":
         return (
             "Produce a detailed architectural report. "
@@ -486,7 +508,7 @@ def _synthesis_report_contract(profile: ResearchProfile, request: TurnRequest) -
             "and architectural patterns that actually appear in the sources, not a generic template. "
             "Use the architecture extraction cards as the primary spine: compare named systems, their state objects, "
             "agent roles, renderers/tools, validation loops, metrics, and failure modes. "
-            "Every section must be grounded in specific evidence with [S#] citations. "
+            "Every section must be grounded in specific evidence. "
             "Include concrete implementation details: data models, control flow, state transitions, "
             "failure handling, trade-offs, and design decisions. "
             "Add a compact ASCII or text diagram where it clarifies a component relationship or data flow. "
@@ -495,7 +517,7 @@ def _synthesis_report_contract(profile: ResearchProfile, request: TurnRequest) -
             "For deep research, target 10-14 substantive sections and enough detail to stand alone as a technical "
             "architecture brief: concrete mechanisms, named systems, implementation patterns, trade-offs, failure "
             "modes, and source-backed examples. Do not compress the report into a short summary."
-        )
+        ) + S
     if profile == "vendor_comparison":
         return (
             "Produce a structured vendor comparison report. "
@@ -503,10 +525,10 @@ def _synthesis_report_contract(profile: ResearchProfile, request: TurnRequest) -
             "Then evaluate each vendor or option against: pricing and licensing, API capabilities, security and compliance, "
             "SLAs and reliability, use-case fit, vendor risk, and switching costs. "
             "Use a consistent evaluation framework across all vendors so the reader can compare directly. "
-            "Every claim must be [S#] cited — do not fill in gaps with generic vendor marketing language. "
+            "Do not fill in gaps with generic vendor marketing language. "
             "Close with a scored or ranked recommendation matrix and a clear rationale for the top pick. "
-            "Where data is missing or unverifiable, flag it explicitly as a gap rather than omitting it."
-        )
+            "Where data is missing or unverifiable, flag it explicitly as an inline gap rather than omitting it."
+        ) + S
     if profile == "market_landscape":
         return (
             "Produce a market landscape analysis. "
@@ -514,22 +536,22 @@ def _synthesis_report_contract(profile: ResearchProfile, request: TurnRequest) -
             "Then cover: market segmentation and categories, key players with positioning, "
             "quantitative metrics (market size, growth rate, adoption), technology trends, "
             "business model patterns, buyer behavior, and competitive dynamics. "
-            "Ground every claim in [S#] cited evidence — prefer analyst reports, earnings calls, and primary sources. "
+            "Ground every claim in cited evidence — prefer analyst reports, earnings calls, and primary sources. "
             "Where metrics conflict across sources, present both and note the discrepancy. "
             "Close with business implications: what the trends mean for a buyer, investor, or competitive entrant."
-        )
+        ) + S
     if profile == "policy_regulatory":
         return (
             "Produce a regulatory analysis. "
             "Lead with a plain-language summary of the primary obligation and who it applies to. "
             "For each regulation: name the authoritative source, the enforcement body, the jurisdiction, "
             "the effective date, and the specific compliance requirements. "
-            "Cover penalties and enforcement history with [S#] citations to enforcement actions. "
+            "Cover penalties and enforcement history with cited enforcement actions. "
             "Distinguish between binding requirements and guidance/safe-harbor interpretations. "
             "Flag pending regulatory changes or open consultations that could shift requirements. "
             "Do not conflate jurisdictions — keep requirements for each jurisdiction clearly separated. "
             "Close with a compliance action checklist: what an organization must do, by when."
-        )
+        ) + S
     if profile == "strategy_brief":
         return (
             "Produce an executive strategy brief. "
@@ -538,9 +560,8 @@ def _synthesis_report_contract(profile: ResearchProfile, request: TurnRequest) -
             "with trade-offs; state the recommended option with clear rationale and risk acknowledgment; "
             "identify the top 3-5 risks with mitigations; quantify resource, cost, and timeline implications; "
             "define success metrics. Close with a concrete next-steps section: owner, action, deadline. "
-            "Use crisp, decision-grade language — avoid hedging. "
-            "Every factual claim must be [S#] cited."
-        )
+            "Use crisp, decision-grade language — avoid hedging."
+        ) + S
     if profile == "implementation_plan":
         return (
             "Produce a structured implementation plan. "
@@ -551,12 +572,12 @@ def _synthesis_report_contract(profile: ResearchProfile, request: TurnRequest) -
             "describe governance, communication cadence, and change management approach; "
             "include rollback and contingency scenarios. "
             "Use tables or structured lists for the workstream breakdown, milestone timeline, and risk register. "
-            "Ground planning assumptions in [S#] cited evidence where relevant. "
+            "Ground planning assumptions in cited evidence where relevant. "
             "Close with a go/no-go decision checklist for the first milestone gate."
-        )
+        ) + S
     if request.output_format in {"docx", "markdown", "pptx"} or "report" in request.message.lower():
-        return "Produce a structured report with clear headings, evidence-backed findings, gaps, and recommendations."
-    return "Produce a source-grounded answer with clear headings and cited findings."
+        return "Produce a structured report with clear headings, evidence-backed findings, gaps, and recommendations." + S
+    return "Produce a source-grounded answer with clear headings and cited findings." + S
 
 
 def _synthesis_token_budget(request: TurnRequest, plan: ResearchPlan) -> int:
@@ -721,6 +742,7 @@ def _architecture_cards_context(evidence: EvidencePack) -> str:
 
 
 __all__ = [
+    "SYNTHESIS_SUBSTANCE_REQUIREMENTS",
     "build_gap_followup_workers",
     "extract_deep_link_candidates",
     "is_public_source_url",

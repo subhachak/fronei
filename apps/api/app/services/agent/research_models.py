@@ -685,6 +685,10 @@ class CitationVerification(BaseModel):
     # Phase 5 — role-appropriateness and conflict signals from the verifier
     role_mismatch_issues: list[str] = Field(default_factory=list)
     unresolved_conflicts: list[str] = Field(default_factory=list)
+    # Phase 8 — LLM judgment replaces the keyword-phrase disclaimer blocklist.
+    # True when the answer leads with an evidence-quality caveat/disclaimer block
+    # before delivering substance, regardless of exact wording used.
+    leads_with_disclaimer: bool = False
 
 
 __all__ = [

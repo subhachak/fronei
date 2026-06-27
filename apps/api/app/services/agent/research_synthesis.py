@@ -420,9 +420,11 @@ def _synthesis_report_contract(profile: ResearchProfile, request: TurnRequest) -
             "RAG/search override, prototyping override. "
             "Cite factual claims with [S#]. If narrow benchmark, adoption, failure-rate, or production-use details remain missing, "
             "capture them as short validation notes near the relevant row or recommendation, not as a dominant disclaimer. "
-            "Do not use validation notes, 'not described in evidence', or 'requires dedicated research' as substitutes for an "
-            "entire requested framework section; if a named framework lacks architecture/coordination/production evidence, "
-            "the answer is not ready for publication."
+            "For any named framework where a specific dimension (e.g. failure modes, production readiness) lacks evidence, "
+            "write the best-effort content from what IS available and add a single inline note such as "
+            "'*(no public failure-mode evidence found in retrieved sources)*' — do not substitute an entire section with "
+            "a validation note, and never produce a meta-commentary block titled 'Honest status' or 'Evidence quality disclaimer'. "
+            "A best-effort answer with disclosed gaps is always preferable to a refusal to publish."
         )
     if request.output_format == "chat" and "report" not in request.message.lower() and _requests_brief_answer(request):
         return (

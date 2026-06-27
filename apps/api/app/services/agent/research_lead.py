@@ -367,6 +367,62 @@ def _frameworks_missing_bound_evidence(state: ResearchStateStore, frameworks: li
     return missing
 
 
+def _framework_gap_queries(request: TurnRequest, state: ResearchStateStore) -> list[str]:
+    """Return targeted search queries for framework-comparison subjects that are absent or sparse
+    in the current evidence pack.  Called before the generic cell-based fallback so the
+    follow-up wave retrieves real documentation rather than re-hitting the same noisy sources.
+
+    Strategy: for each subject named in the contract that has open cells, emit two queries —
+    one hitting the official docs / GitHub and one hitting curated review/comparison articles.
+    We cap at 4 total to stay within the judge-followup slot budget.
+    """
+    if not state.contract.source.endswith("framework_comparison"):
+        return []
+    # Collect subjects that still have open cells (i.e. dimensions with no evidence)
+    open_subjects: set[str] = {cell.subject for cell in state.contract.open_cells()}
+    if not open_subjects:
+        return []
+
+    # Per-framework canonical doc query templates
+    _FRAMEWORK_DOC_QUERIES: dict[str, list[str]] = {
+        "langgraph": [
+            "LangGraph architecture state machine agent graph official docs 2025",
+            "LangGraph production deployment multi-agent failure modes site:langchain.com OR site:github.com",
+        ],
+        "crewai": [
+            "CrewAI architecture role-based crew agent coordination official docs 2025",
+            "CrewAI production readiness enterprise HIPAA failure modes site:docs.crewai.com OR site:github.com",
+        ],
+        "autogen": [
+            "AutoGen AG2 Microsoft multi-agent conversation architecture official docs 2025",
+            "AutoGen AG2 production readiness failure modes observability site:microsoft.com OR site:github.com",
+        ],
+        "haystack": [
+            "Haystack deepset pipeline architecture components agent RAG official docs 2025",
+            "Haystack production readiness failure modes enterprise site:docs.haystack.deepset.ai OR site:github.com",
+        ],
+        "llamaindex": [
+            "LlamaIndex Workflows event-driven agent architecture official docs 2025",
+            "LlamaIndex Workflows production readiness failure modes multi-agent site:docs.llamaindex.ai OR site:github.com",
+        ],
+    }
+
+    queries: list[str] = []
+    for subject in sorted(open_subjects):
+        key = subject.lower().replace(" ", "").replace("-", "")
+        # Fuzzy match against known framework keys
+        matched_key = next((k for k in _FRAMEWORK_DOC_QUERIES if k in key or key in k), None)
+        if matched_key:
+            queries.extend(_FRAMEWORK_DOC_QUERIES[matched_key])
+        else:
+            # Generic fallback for an unknown subject
+            queries.append(f"{subject} architecture coordination production readiness failure modes 2025")
+        if len(queries) >= 4:
+            break
+
+    return queries[:4]
+
+
 def _generic_remediation_queries(state: ResearchStateStore) -> list[str]:
     cells = state.contract.open_cells()[:4] or state.contract.partial_cells()[:4] or state.contract.cells[:4]
     queries: list[str] = []
@@ -1233,7 +1289,7 @@ class LeadResearchAgent:
             and self.ledger.remaining_tool_calls() > 0
             and self.ledger.remaining_source_reads() > 0
         ):
-            targeted_queries = [
+            targeted_queries = _framework_gap_queries(self.request, state) or [
                 _targeted_query(cell.subject, [cell.dimension], state.brief.objective)
                 for cell in state.contract.open_cells()[:4]
             ] or _generic_remediation_queries(state)

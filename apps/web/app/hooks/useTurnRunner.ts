@@ -91,10 +91,10 @@ export function useTurnRunner(options: TurnRunnerOptions) {
   const streamTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const streamPrimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const streamStartedRef = useRef(false)
-  const STREAM_INITIAL_BUFFER_CHARS = 48
-  const STREAM_INITIAL_BUFFER_MS = 160
-  const STREAM_TICK_MS = 30
-  const STREAM_LOW_WATER_THRESHOLD = 36
+  const STREAM_INITIAL_BUFFER_CHARS = 24
+  const STREAM_INITIAL_BUFFER_MS = 80
+  const STREAM_TICK_MS = 32
+  const STREAM_LOW_WATER_THRESHOLD = 30
   const STREAM_LOW_WATER_CHARS = 1
   const STREAM_CHARS_PER_TICK = 2
   const STREAM_CATCHUP_THRESHOLD = 180

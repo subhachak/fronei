@@ -232,6 +232,90 @@ Agent components"""
     assert any("mid-section" in issue for issue in verdict.issues)
 
 
+def test_framework_comparison_judge_rejects_evidence_disclaimer_answer():
+    from app.services.agent.research_subtree import (
+        CoverageCell,
+        CoverageContract,
+        EvidenceItem,
+        EvidencePack,
+        ResearchBudget,
+        ResearchBudgetLedger,
+        ResearchBrief,
+        ResearchPlan,
+        ResearchStateStore,
+        judge_research_final,
+    )
+
+    subjects = ["LangGraph", "CrewAI", "AutoGen", "Haystack", "LlamaIndex Workflows"]
+    contract = CoverageContract(
+        cells=[
+            CoverageCell(subject=subject, dimension=dimension, status="filled", confidence=0.9)
+            for subject in subjects
+            for dimension in ["architecture model", "production readiness and deployment model"]
+        ],
+        subjects=subjects,
+        dimensions=["architecture model", "production readiness and deployment model"],
+        source="profile:technical_architecture:framework_comparison",
+    )
+    state = ResearchStateStore(
+        brief=ResearchBrief(objective="Compare frameworks", research_profile="technical_architecture", source="heuristic"),
+        contract=contract,
+        plan=ResearchPlan(research_profile="technical_architecture", judge_threshold=0.76),
+        evidence=EvidencePack(
+            items=[
+                EvidenceItem(
+                    source_id="S1",
+                    title="LangGraph docs",
+                    url="https://langchain-ai.github.io/langgraph/",
+                    evidence="LangGraph architecture, orchestration, production, persistence, coordination, and failure handling evidence.",
+                )
+            ],
+            coverage=1.0,
+        ),
+        budget_ledger=ResearchBudgetLedger(
+            budget=ResearchBudget(max_sources=16, max_deep_links=0, max_tool_calls=4, max_model_calls=4),
+            sources_read=4,
+            tool_calls=1,
+        ),
+    )
+    answer = """# Agentic AI Frameworks 2025
+
+## Evidence Quality Disclaimer
+
+This brief is decision-shaped but evidence-thin. The retrieved sources are dominated by index/navigation fragments, listicle titles, and marketing scaffolding.
+
+## Executive Recommendation
+
+Winner provisional: LangGraph [S1].
+
+## LangGraph
+Architecture model: graph orchestration [S1].
+
+## CrewAI
+Architecture model: not in evidence.
+
+## AutoGen
+Architecture model: not in evidence.
+
+## Haystack
+Architecture model: not in evidence.
+
+## LlamaIndex Workflows
+Architecture model: not in evidence.
+
+## Ranked Recommendation
+
+This is a provisional, single-source-anchored recommendation.
+"""
+
+    verdict = judge_research_final(TurnRequest(message="Compare agentic AI frameworks.", research_level="regular"), state, answer)
+
+    assert verdict.next_action == "research_more"
+    assert verdict.can_publish is False
+    assert any("evidence-quality disclaimer" in issue for issue in verdict.issues)
+    assert any("not in evidence" in issue for issue in verdict.issues)
+
+
 def test_framework_comparison_detects_thin_evidence_and_remediation_urls():
     from app.services.agent.research_subtree import (
         CoverageCell,

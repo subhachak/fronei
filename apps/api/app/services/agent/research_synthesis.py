@@ -407,7 +407,9 @@ def _synthesis_report_contract(profile: ResearchProfile, request: TurnRequest) -
     if request.output_format == "chat" and "report" not in request.message.lower() and _requires_decision_grade_comparison(request, profile):
         return (
             "Produce a decision-grade research answer in chat, not a terse summary. "
-            "Open with an executive recommendation that names the winner, the decision rule, and the most important caveat. "
+            "Open with an executive recommendation that names the winner, the decision rule, and the main decision constraint. "
+            "Do not open with an evidence-quality disclaimer; if the evidence is too weak for a decision-grade answer, "
+            "the research judge should request more research rather than publishing a disclaimer-heavy answer. "
             "Then include a compact comparison matrix using the user's requested dimensions. "
             "For each named option, provide: architecture model, coordination approach, production readiness, known failure modes, "
             "and best-fit / avoid-when guidance. Use concrete mechanisms and named product/lifecycle signals from evidence; "
@@ -416,8 +418,8 @@ def _synthesis_report_contract(profile: ResearchProfile, request: TurnRequest) -
             "or orchestration. Explicitly flag lifecycle, maintenance, successor-framework, or ecosystem shifts when evidence shows them. "
             "Close with a ranked recommendation and conditional overrides, e.g. default choice, cloud/vendor-lock override, "
             "RAG/search override, prototyping override. "
-            "Cite factual claims with [S#]. If evidence is missing for benchmarks, adoption, failure rates, or production use, "
-            "say that plainly and recommend workload-specific validation."
+            "Cite factual claims with [S#]. If narrow benchmark, adoption, failure-rate, or production-use details remain missing, "
+            "capture them as short validation notes near the relevant row or recommendation, not as a dominant disclaimer."
         )
     if request.output_format == "chat" and "report" not in request.message.lower() and _requests_brief_answer(request):
         return (

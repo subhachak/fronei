@@ -252,6 +252,65 @@ describe('useTurnRunner', () => {
       vi.useRealTimers()
     }
   })
+
+  it('flushes buffered answer text when generation completes before the terminal turn event', async () => {
+    vi.useFakeTimers()
+    try {
+      const fullAnswer = 'The server has finished this answer, so the client should stop smoothing.'
+      const authorizedFetch = vi.fn()
+        .mockResolvedValueOnce(response({ turn_id: 'turn_1', conversation_id: 'conv_1', status: 'running' }))
+        .mockResolvedValueOnce(streamingResponse([
+          {
+            at: 0,
+            text: [
+              'id: answer_1',
+              'event: progress',
+              `data: ${JSON.stringify({ event_id: 'answer_1', stage: 'answer_delta', message: 'Streaming', data: { delta: fullAnswer } })}`,
+              '',
+              '',
+            ].join('\n'),
+          },
+          {
+            at: 120,
+            text: [
+              'id: answer_done',
+              'event: progress',
+              `data: ${JSON.stringify({ event_id: 'answer_done', stage: 'answer_complete', message: 'Answer stream complete.', data: { char_count: fullAnswer.length } })}`,
+              '',
+              '',
+            ].join('\n'),
+          },
+          {
+            at: 1800,
+            text: [
+              'event: turn',
+              `data: ${JSON.stringify({ turn_id: 'turn_1', status: 'completed', turn: { turn_id: 'turn_1', answer: fullAnswer, route: 'direct', sources: [], artifacts: [] } })}`,
+              '',
+              '',
+            ].join('\n'),
+          },
+        ]))
+      const { result } = renderHook(() => useTurnRunner(baseOptions(authorizedFetch)))
+
+      let runPromise: Promise<void>
+      await act(async () => {
+        runPromise = result.current.run()
+        await vi.advanceTimersByTimeAsync(250)
+      })
+
+      expect(result.current.liveAnswer).toBe(fullAnswer)
+      expect(result.current.result).toBeNull()
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1800)
+        await runPromise
+      })
+
+      expect(result.current.result?.answer).toBe(fullAnswer)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
 
 function baseOptions(authorizedFetch: (path: string, init?: RequestInit) => Promise<Response>) {

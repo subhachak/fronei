@@ -150,6 +150,23 @@ export function useTurnRunner(options: TurnRunnerOptions) {
     scheduleTokenDrain(0)
   }
 
+  function flushTokenQueue() {
+    if (streamTimerRef.current !== null) {
+      clearTimeout(streamTimerRef.current)
+      streamTimerRef.current = null
+    }
+    if (streamPrimerRef.current !== null) {
+      clearTimeout(streamPrimerRef.current)
+      streamPrimerRef.current = null
+    }
+    const pending = tokenQueueRef.current
+    if (!pending) return
+    liveAnswerRef.current += pending
+    tokenQueueRef.current = ''
+    streamStartedRef.current = true
+    setLiveAnswer(liveAnswerRef.current)
+  }
+
   function clearStreamState() {
     tokenQueueRef.current = ''
     liveAnswerRef.current = ''
@@ -383,7 +400,7 @@ export function useTurnRunner(options: TurnRunnerOptions) {
 
   function applyAnswerProgress(event: ProgressEvent) {
     if (event.stage === 'answer_complete') {
-      if (tokenQueueRef.current) startTokenDrain()
+      flushTokenQueue()
       return
     }
     if (event.stage !== 'answer_delta') return

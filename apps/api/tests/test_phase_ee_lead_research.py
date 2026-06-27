@@ -316,6 +316,83 @@ This is a provisional, single-source-anchored recommendation.
     assert any("not in evidence" in issue for issue in verdict.issues)
 
 
+def test_framework_comparison_judge_rejects_subtle_evidence_light_answer():
+    from app.services.agent.research_subtree import (
+        CoverageCell,
+        CoverageContract,
+        EvidenceItem,
+        EvidencePack,
+        ResearchBudget,
+        ResearchBudgetLedger,
+        ResearchBrief,
+        ResearchPlan,
+        ResearchStateStore,
+        judge_research_final,
+    )
+
+    subjects = ["LangGraph", "CrewAI", "AutoGen", "Haystack", "LlamaIndex Workflows"]
+    contract = CoverageContract(
+        cells=[
+            CoverageCell(subject=subject, dimension=dimension, status="filled", confidence=0.9)
+            for subject in subjects
+            for dimension in ["architecture model", "production readiness and deployment model"]
+        ],
+        subjects=subjects,
+        dimensions=["architecture model", "production readiness and deployment model"],
+        source="profile:technical_architecture:framework_comparison",
+    )
+    state = ResearchStateStore(
+        brief=ResearchBrief(objective="Compare frameworks", research_profile="technical_architecture", source="heuristic"),
+        contract=contract,
+        plan=ResearchPlan(research_profile="technical_architecture", judge_threshold=0.76),
+        evidence=EvidencePack(
+            items=[
+                EvidenceItem(
+                    source_id="S1",
+                    title="Framework overview",
+                    url="https://example.com/frameworks",
+                    evidence="Framework overview with sparse details.",
+                )
+            ],
+            coverage=1.0,
+        ),
+        budget_ledger=ResearchBudgetLedger(
+            budget=ResearchBudget(max_sources=16, max_deep_links=0, max_tool_calls=4, max_model_calls=4),
+            sources_read=4,
+            tool_calls=1,
+        ),
+    )
+    answer = """# Executive Recommendation
+
+Winner: LangGraph, but I want to flag upfront that the evidence pack retrieved for this question is thin on the specific technical detail your request demands [S1].
+
+LangGraph is the provisional recommendation, pending direct evidence on LangGraph internals.
+
+| Framework | Architecture Model | Production Readiness |
+|---|---|---|
+| LangGraph | Graph/state-machine orchestration, not directly described in evidence | no benchmark data in pack |
+| CrewAI | Role-based teamwork | prod-grade claims unverified |
+| AutoGen | Event-driven async architecture | not documented in evidence |
+| Haystack | Not described in evidence | Not described in evidence |
+| LlamaIndex Workflows | Not described in evidence | Not described in evidence |
+
+## Validation Notes (for the research judge)
+
+This answer is evidence-light on the core technical claims. I recommend requesting deeper research rather than treating the LangGraph recommendation as confirmed.
+
+## Ranked Recommendation
+
+LangGraph remains the provisional recommendation [S1].
+"""
+
+    verdict = judge_research_final(TurnRequest(message="Compare agentic AI frameworks.", research_level="regular"), state, answer)
+
+    assert verdict.next_action == "research_more"
+    assert verdict.can_publish is False
+    assert any("evidence-quality disclaimer" in issue for issue in verdict.issues)
+    assert any("research-judge instructions" in issue for issue in verdict.issues)
+
+
 def test_framework_comparison_detects_thin_evidence_and_remediation_urls():
     from app.services.agent.research_subtree import (
         CoverageCell,

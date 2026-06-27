@@ -298,5 +298,65 @@
       "min_independent_sources": 3,
       "notes": "The planner must run a status-check query for each named entity (Phase 6.4). A hit on AutoGen maintenance/deprecation must surface in the recommendation as a primary signal, not a footnote — the Phase 2 synthesis instruction + claim_role=official_policy should ensure this."
     }
+  },
+  {
+    "id": "multi_subject_recommendation_classified_as_deep",
+    "category": "research_level_classification",
+    "description": "Phase 9 anchor case: a request naming ≥3 subjects with a synthesized recommendation must be classified as research_level='deep' via structural signal, not just keyword list. This is the recurring test query that fell through to 'regular' through Phases 6-8 because it contains no literal keyword like 'comprehensive' or 'thorough'.",
+    "request": {
+      "message": "Research the top 5 agentic AI frameworks in 2025: LangGraph, CrewAI, AutoGen, Haystack, and LlamaIndex Workflows. Provide for each: architecture model, multi-agent coordination approach, production readiness, and known failure modes. Then synthesize a recommendation for the best framework for an enterprise orchestration layer and explain why."
+    },
+    "expected": {
+      "primary_evidence_role": "technical_design",
+      "research_level": "deep",
+      "unacceptable_failure_modes": [
+        "research_level classified as 'regular' despite naming 5 subjects and requesting a synthesized recommendation",
+        "effective budget equals or is lower than plain 1-subject deep budget on any dimension",
+        "answer ends with 'let me know if you'd like a deeper pass' or any variant soliciting permission to do more research",
+        "answer leads with an evidence-quality caveat block before any substantive content"
+      ],
+      "min_independent_sources": 8,
+      "notes": "Phase 9 fixes: (1) choose_research_level() must upgrade this to 'deep' via structural signal (≥3 named subjects + recommendation/synthesis intent); (2) budget must exceed plain deep-tier defaults given 5 named subjects; (3) answer must not ask permission to continue. All three must pass. Verify (a) and (b) via logged state, (c) via asks_permission_to_continue LLM judgment field."
+    }
+  },
+  {
+    "id": "cloud_storage_three_subject_sentence_boundary",
+    "category": "subject_extraction",
+    "description": "Phase 10 anchor case: a 3-subject cloud storage comparison where the sentence structure 'on durability, performance, pricing' after the last subject name was causing the extractor to merge the last subject with dimension words into an oversized fragment that the >3 words filter rejected, leaving only 2 subjects and missing the ≥3 gate entirely.",
+    "request": {
+      "message": "Compare AWS S3, Azure Blob Storage, and Google Cloud Storage on durability, performance, pricing, and compliance for a globally distributed SaaS product."
+    },
+    "expected": {
+      "primary_evidence_role": "technical_design",
+      "unacceptable_failure_modes": [
+        "fewer than 3 named subjects extracted (e.g. 'Azure Blob Storage on durability' merged into one fragment and discarded)",
+        "multi-subject comparison gate fails to fire, so per-(subject, dimension) coverage cells are not created",
+        "dimension words like 'durability' or 'compliance' appear as subject names in the coverage contract",
+        "AWS S3 pricing and Azure published per-GB rates are absent from the evidence pack"
+      ],
+      "min_sources_per_named_subject": 1,
+      "min_independent_sources": 3,
+      "notes": "Phase 10 fix: 'on' followed by dimension list must truncate the subject region. All 3 cloud providers must be correctly extracted via _extract_named_comparison_subjects(), triggering _is_multi_subject_comparison() and the full Phase 6/8 protection stack. Verify extractor output directly — not just the final answer."
+    }
+  },
+  {
+    "id": "ehr_lowercase_vendor_extraction",
+    "category": "subject_extraction",
+    "description": "Phase 10 anchor case: a 5-vendor EHR comparison where 'athenahealth' (intentionally all-lowercase product name) was rejected by the capital-letter requirement and 'eClinicalWorks as EHR platforms' was rejected as an oversized fragment, leaving only 3 of 5 vendors and causing per-vendor coverage cells to be incomplete.",
+    "request": {
+      "message": "Compare Epic, Oracle Cerner, Meditech Expanse, athenahealth, and eClinicalWorks as EHR platforms for enterprise hospital deployment in 2025. For each: clinical workflow integration, interoperability standards (HL7 FHIR support), cloud deployment model, pricing model, and known implementation failure modes."
+    },
+    "expected": {
+      "primary_evidence_role": "technical_design",
+      "unacceptable_failure_modes": [
+        "'athenahealth' is not extracted as a named subject because it has no capital letter",
+        "'eClinicalWorks' is lost because 'eClinicalWorks as EHR platforms' forms an oversized >3-word fragment before the 'as EHR platforms' suffix is truncated",
+        "fewer than 5 EHR vendors extracted, so some get no per-vendor coverage cells",
+        "multi-subject comparison gate fails to fire because <3 subjects extracted"
+      ],
+      "min_sources_per_named_subject": 1,
+      "min_independent_sources": 5,
+      "notes": "Phase 10 fix: (1) 'as EHR platforms' must be truncated by the new 'as <Category> platforms/tools/systems/...' stop pattern; (2) athenahealth must be accepted via the proper-noun list-context inference (≥2 siblings have capitals → the whole list is treated as proper nouns). Verify extractor output directly."
+    }
   }
 ]

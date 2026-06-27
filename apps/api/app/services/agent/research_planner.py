@@ -107,6 +107,18 @@ For each factual claim with a [S#] citation, verify:
    Set leads_with_disclaimer: true ONLY if the answer's dominant opening content is a disclaimer block
    rather than a direct response to the question. If the answer leads with substance and discloses
    gaps inline, set to false even if disclaimers appear later.
+6. Phase 9 — PERMISSION-SEEKING CHECK (judgment, not phrase matching):
+   Does this answer end by asking the user to authorize, approve, or proceed with further research,
+   a deeper dive, a second pass, or additional detail — regardless of exact wording? Examples of
+   prohibited endings:
+   - "Let me know if you'd like me to research X further"
+   - "Would you like a deeper dive into..."
+   - "I can do a second pass on... if you'd like"
+   - "Should I look into... in more detail?"
+   - "If you want, I could explore... further"
+   If the answer states remaining gaps plainly and moves on without soliciting permission, set
+   asks_permission_to_continue: false. Only set true if the closing explicitly invites the user
+   to authorize continuation as if their approval is needed.
 
 Return only JSON:
 {
@@ -116,6 +128,7 @@ Return only JSON:
   "role_mismatch_issues": ["description of any official_policy vs operational_reality conflicts not named in the answer"],
   "unresolved_conflicts": ["description of any evidence conflicts silently blended rather than explicitly named"],
   "leads_with_disclaimer": false,
+  "asks_permission_to_continue": false,
   "repair_needed": true|false,
   "repair_instruction": "specific repair instruction if needed"
 }
@@ -634,6 +647,7 @@ def verify_citations_semantically(
         result.hallucinated_citations = sorted(set(result.hallucinated_citations) | set(hallucinated))
         # Phase 5 — role_mismatch_issues and unresolved_conflicts trigger repair.
         # Phase 8 — leads_with_disclaimer triggers repair (LLM judgment, not phrase list).
+        # Phase 9 — asks_permission_to_continue triggers repair.
         result.repair_needed = bool(
             result.repair_needed
             or result.unsupported_claims
@@ -641,6 +655,7 @@ def verify_citations_semantically(
             or result.role_mismatch_issues
             or result.unresolved_conflicts
             or result.leads_with_disclaimer
+            or result.asks_permission_to_continue
         )
         if result.repair_needed and not result.repair_instruction:
             result.repair_instruction = _citation_repair_instruction(result)
@@ -727,6 +742,10 @@ def judge_research_final(request: TurnRequest, state: ResearchStateStore, answer
         if citation_result.leads_with_disclaimer:
             score -= 0.20
             issues.append("Answer leads with a disclaimer/caveat block before delivering substance (LLM judgment). Repair to lead with substance and disclose gaps inline.")
+        # Phase 9 — consume asks_permission_to_continue LLM judgment field.
+        if citation_result.asks_permission_to_continue:
+            score -= 0.15
+            issues.append("Answer ends by soliciting user permission to do more research (LLM judgment). Repair: state remaining gaps plainly and do not ask for authorization to continue.")
     score = max(0.0, min(1.0, score))
     threshold = state.plan.judge_threshold or 0.78
     if disclaimer_issues and not state.budget_ledger.stopped and state.budget_ledger.remaining_tool_calls() > 0 and state.budget_ledger.remaining_source_reads() > 0:

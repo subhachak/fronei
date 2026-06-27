@@ -1283,10 +1283,12 @@ class LeadResearchAgent:
         repaired = False
         repair_attempts = 0
         # Phase 5 — role_mismatch_issues and unresolved_conflicts also trigger repair.
+        # Phase 9 — asks_permission_to_continue also triggers repair.
         needs_repair = (
             citation_result.repair_needed
             or bool(citation_result.role_mismatch_issues)
             or bool(citation_result.unresolved_conflicts)
+            or citation_result.asks_permission_to_continue
         )
         if needs_repair and self.ledger.can_start_model("repair_agent"):
             model_response = self._repair_answer(state, answer, citation_result.repair_instruction)

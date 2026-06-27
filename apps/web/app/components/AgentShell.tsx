@@ -60,9 +60,18 @@ export function AgentShell() {
   const attachFileRef = useRef<HTMLInputElement | null>(null)
   const chatScrollRef = useRef<HTMLDivElement | null>(null)
 
+  // Smooth scroll for structural events: new turn, run start/stop, completion.
   useEffect(() => {
     chatScrollRef.current?.scrollTo({ top: chatScrollRef.current.scrollHeight, behavior: 'smooth' })
   }, [agent.visibleTurns.length, agent.running, agent.result?.turn_id])
+
+  // Instant scroll while streaming — follows content at RAF cadence (60fps max).
+  // Uses scrollTop assignment (no smooth easing) so it never fights the smooth-scroll
+  // above and gives no perceived lag between text appearing and the view following.
+  useEffect(() => {
+    if (!agent.running || !chatScrollRef.current) return
+    chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight
+  }, [agent.liveAnswer, agent.running])
 
   // useLayoutEffect fires synchronously before the browser paints, correcting the
   // collapsed state from localStorage without a visible flash. useState(false) keeps

@@ -204,6 +204,32 @@ def _source_text_for_url(state: ResearchStateStore, url: str) -> str:
     return ""
 
 
+def _canonical_url_framework(url: str) -> str:
+    normalized = _normalized_url(url)
+    for framework, docs in FRAMEWORK_CANONICAL_DOCS.items():
+        for _title, canonical_url in docs:
+            canonical = _normalized_url(canonical_url)
+            if normalized == canonical or normalized.startswith(canonical + "/"):
+                return framework
+    return ""
+
+
+def _prioritized_sources_for_binding(request: TurnRequest, state: ResearchStateStore) -> list[Source]:
+    frameworks = _extract_named_framework_subjects(request.message)
+    if len(frameworks) < 3:
+        return state.all_sources
+    framework_index = {framework: index for index, framework in enumerate(frameworks)}
+
+    def priority(source: Source) -> tuple[int, int, int]:
+        framework = _canonical_url_framework(source.url)
+        if framework:
+            has_content = 0 if len((source.content or "").strip()) >= 300 else 1
+            return (0, framework_index.get(framework, 99), has_content)
+        return (1, 99, 0)
+
+    return sorted(state.all_sources, key=priority)
+
+
 def _framework_remediation_sources(request: TurnRequest, state: ResearchStateStore) -> list[Source]:
     sources = _canonical_framework_sources(request, state.plan)
     remediation: list[Source] = []
@@ -242,13 +268,18 @@ def _substantive_framework_evidence_count(state: ResearchStateStore, frameworks:
 
 def _frameworks_with_official_evidence(request: TurnRequest, state: ResearchStateStore) -> set[str]:
     hits: set[str] = set()
-    source_urls = {_normalized_url(source.url) for source in state.all_sources if source.url}
-    evidence_urls = {_normalized_url(item.url) for item in state.evidence.items if item.url}
-    urls = source_urls | evidence_urls
+    evidence_by_url = {
+        _normalized_url(item.url): _evidence_item_text(state, item.url, item.evidence, item.quoted_text)
+        for item in state.evidence.items
+        if item.url
+    }
     for framework in _extract_named_framework_subjects(request.message):
         for _title, canonical_url in FRAMEWORK_CANONICAL_DOCS.get(framework, []):
             normalized = _normalized_url(canonical_url)
-            if any(url == normalized or url.startswith(normalized + "/") for url in urls):
+            if any(
+                (url == normalized or url.startswith(normalized + "/")) and len(text.strip()) >= 220
+                for url, text in evidence_by_url.items()
+            ):
                 hits.add(framework)
                 break
     return hits
@@ -300,6 +331,9 @@ def _evidence_quality_issues(request: TurnRequest, state: ResearchStateStore) ->
     substantive_count = _substantive_framework_evidence_count(state, frameworks)
     if substantive_count < max(4, len(frameworks)):
         issues.append("bound evidence is too thin or page-chrome-heavy for decision-grade synthesis")
+    framework_evidence_gaps = _frameworks_missing_bound_evidence(state, frameworks)
+    if framework_evidence_gaps:
+        issues.append("missing bound substantive evidence for " + ", ".join(framework_evidence_gaps[:5]))
 
     item_blob = "\n".join(
         _evidence_item_text(state, item.url, item.evidence, item.quoted_text)
@@ -310,6 +344,27 @@ def _evidence_quality_issues(request: TurnRequest, state: ResearchStateStore) ->
             issues.append(f"no bound evidence text mentions {framework}")
 
     return issues[:8]
+
+
+def _frameworks_missing_bound_evidence(state: ResearchStateStore, frameworks: list[str]) -> list[str]:
+    missing: list[str] = []
+    for framework in frameworks:
+        framework_lower = framework.lower()
+        items = [
+            item for item in state.evidence.items
+            if framework_lower in _evidence_item_text(state, item.url, item.evidence, item.quoted_text).lower()
+        ]
+        if not items:
+            missing.append(framework)
+            continue
+        substantive = [
+            item for item in items
+            if len(_evidence_item_text(state, item.url, item.evidence, item.quoted_text)) >= 220
+            and not _looks_like_navigation_chrome(_evidence_item_text(state, item.url, item.evidence, item.quoted_text))
+        ]
+        if not substantive:
+            missing.append(framework)
+    return missing
 
 
 def _generic_remediation_queries(state: ResearchStateStore) -> list[str]:
@@ -611,13 +666,7 @@ class LeadResearchAgent:
                 break
             state.iteration = iteration
             self._dispatch_worker_wave(state)
-            state.evidence = bind_evidence(
-                state.all_sources,
-                plan=state.plan,
-                max_items=self.budget.max_sources + self.budget.max_deep_links,
-                contract=state.contract,
-            )
-            update_contract_from_evidence(state)
+            self._bind_state_evidence(state)
             self._progress(
                 "coverage_check",
                 f"Coverage is {state.contract.coverage_ratio():.0%}; {len(state.contract.open_cells())} cell(s) remain open.",
@@ -1206,13 +1255,7 @@ class LeadResearchAgent:
             )
             self._mark_attempts_for_open_cells(state)
             self._dispatch_worker_wave(state)
-            state.evidence = bind_evidence(
-                state.all_sources,
-                plan=state.plan,
-                max_items=self.budget.max_sources + self.budget.max_deep_links,
-                contract=state.contract,
-            )
-            update_contract_from_evidence(state)
+            self._bind_state_evidence(state)
             model_response = synthesize_answer(self.request, state.plan, state.evidence)
             self.ledger.record_model_call(cost_usd=model_response.cost_usd, latency_ms=model_response.latency_ms)
             answer = model_response.text
@@ -1233,6 +1276,15 @@ class LeadResearchAgent:
             "repaired": repaired,
             "repair_attempts": repair_attempts,
         }
+
+    def _bind_state_evidence(self, state: ResearchStateStore) -> None:
+        state.evidence = bind_evidence(
+            _prioritized_sources_for_binding(self.request, state),
+            plan=state.plan,
+            max_items=self.budget.max_sources + self.budget.max_deep_links,
+            contract=state.contract,
+        )
+        update_contract_from_evidence(state)
 
     def _remediate_weak_evidence_if_needed(self, state: ResearchStateStore) -> None:
         issues = _evidence_quality_issues(self.request, state)
@@ -1292,13 +1344,7 @@ class LeadResearchAgent:
         self.ledger.record_tool_call(latency_ms=call.latency_ms, sources_read=len(urls))
         state.all_tool_calls.append(call)
         state.add_sources(extracted)
-        state.evidence = bind_evidence(
-            state.all_sources,
-            plan=state.plan,
-            max_items=self.budget.max_sources + self.budget.max_deep_links,
-            contract=state.contract,
-        )
-        update_contract_from_evidence(state)
+        self._bind_state_evidence(state)
         remaining_issues = _evidence_quality_issues(self.request, state)
         self._progress(
             "evidence_remediation_result",
@@ -1343,13 +1389,7 @@ class LeadResearchAgent:
             state.plan = plan_from_targeted_queries(queries, state)
             self._mark_attempts_for_open_cells(state)
             self._dispatch_worker_wave(state)
-            state.evidence = bind_evidence(
-                state.all_sources,
-                plan=state.plan,
-                max_items=self.budget.max_sources + self.budget.max_deep_links,
-                contract=state.contract,
-            )
-            update_contract_from_evidence(state)
+            self._bind_state_evidence(state)
         finally:
             if not state.plan.workers and previous_plan.workers:
                 state.plan = previous_plan

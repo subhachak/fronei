@@ -289,9 +289,9 @@ def _is_framework_comparison_request(message: str) -> bool:
 # ---------------------------------------------------------------------------
 
 def generate_coverage_contract(request: TurnRequest, brief: ResearchBrief) -> CoverageContract:
+    if _is_framework_comparison_request(request.message):
+        return _framework_comparison_contract(request.message)
     if brief.research_profile == "technical_architecture":
-        if _is_framework_comparison_request(request.message):
-            return _framework_comparison_contract(request.message)
         return _technical_architecture_contract()
     if brief.research_profile == "vendor_comparison":
         return _vendor_comparison_contract()

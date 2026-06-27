@@ -196,7 +196,7 @@ def plan_from_brief_contract(
 def _profile_from_contract(contract: CoverageContract) -> ResearchProfile | None:
     if not contract.source.startswith("profile:"):
         return None
-    candidate = contract.source.split(":", 1)[1]
+    candidate = contract.source.split(":", 1)[1].split(":", 1)[0]
     return candidate if candidate in _RESEARCH_PROFILES else None  # type: ignore[return-value]
 
 

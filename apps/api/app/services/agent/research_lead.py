@@ -112,6 +112,39 @@ FRAMEWORK_CANONICAL_DOCS: dict[str, list[tuple[str, str]]] = {
     ],
 }
 
+_NAV_CHROME_MARKERS = (
+    "skip to content",
+    "navigation menu",
+    "table of contents",
+    "sign in",
+    "subscribe",
+    "cookie",
+    "previous",
+    "next",
+    "edit this page",
+)
+
+_FRAMEWORK_EVIDENCE_TERMS = (
+    "architecture",
+    "workflow",
+    "agent",
+    "multi-agent",
+    "orchestration",
+    "state",
+    "checkpoint",
+    "persistence",
+    "deployment",
+    "production",
+    "failure",
+    "limitation",
+    "coordination",
+    "runtime",
+    "graph",
+    "pipeline",
+    "event",
+)
+
+
 def _chunk_urls(urls: list[str], *, size: int) -> list[list[str]]:
     chunks: list[list[str]] = []
     for index in range(0, len(urls), max(1, size)):
@@ -138,8 +171,6 @@ def _read_cap_for_batch(urls: list[str], plan: ResearchPlan | None) -> int:
 
 
 def _canonical_framework_sources(request: TurnRequest, plan: ResearchPlan) -> list[Source]:
-    if plan.research_profile != "technical_architecture":
-        return []
     frameworks = _extract_named_framework_subjects(request.message)
     if len(frameworks) < 3:
         return []
@@ -159,6 +190,97 @@ def _canonical_framework_sources(request: TurnRequest, plan: ResearchPlan) -> li
                 )
             )
     return sources
+
+
+def _normalized_url(url: str) -> str:
+    return str(url or "").strip().lower().rstrip("/")
+
+
+def _source_text_for_url(state: ResearchStateStore, url: str) -> str:
+    normalized = _normalized_url(url)
+    for source in state.all_sources:
+        if _normalized_url(source.url) == normalized:
+            return " ".join(part for part in [source.title, source.snippet, source.content] if part)
+    return ""
+
+
+def _framework_remediation_sources(request: TurnRequest, state: ResearchStateStore) -> list[Source]:
+    sources = _canonical_framework_sources(request, state.plan)
+    remediation: list[Source] = []
+    for source in sources:
+        existing_text = _source_text_for_url(state, source.url)
+        if len(existing_text) < 700 or _looks_like_navigation_chrome(existing_text):
+            remediation.append(source)
+    return remediation
+
+
+def _looks_like_navigation_chrome(text: str) -> bool:
+    cleaned = " ".join(str(text or "").lower().split())
+    if not cleaned:
+        return True
+    marker_hits = sum(1 for marker in _NAV_CHROME_MARKERS if marker in cleaned)
+    word_count = len(cleaned.split())
+    technical_hits = sum(1 for term in _FRAMEWORK_EVIDENCE_TERMS if term in cleaned)
+    return marker_hits >= 3 and (word_count < 450 or technical_hits < 3)
+
+
+def _evidence_item_text(state: ResearchStateStore, url: str, evidence: str, quoted_text: str = "") -> str:
+    return " ".join(part for part in [evidence, quoted_text, _source_text_for_url(state, url)] if part)
+
+
+def _substantive_framework_evidence_count(state: ResearchStateStore, frameworks: list[str]) -> int:
+    count = 0
+    for item in state.evidence.items:
+        text = _evidence_item_text(state, item.url, item.evidence, item.quoted_text)
+        lower = text.lower()
+        framework_hit = any(framework.lower() in lower for framework in frameworks)
+        technical_hits = sum(1 for term in _FRAMEWORK_EVIDENCE_TERMS if term in lower)
+        if framework_hit and len(text) >= 220 and technical_hits >= 3 and not _looks_like_navigation_chrome(text):
+            count += 1
+    return count
+
+
+def _frameworks_with_official_evidence(request: TurnRequest, state: ResearchStateStore) -> set[str]:
+    hits: set[str] = set()
+    source_urls = {_normalized_url(source.url) for source in state.all_sources if source.url}
+    evidence_urls = {_normalized_url(item.url) for item in state.evidence.items if item.url}
+    urls = source_urls | evidence_urls
+    for framework in _extract_named_framework_subjects(request.message):
+        for _title, canonical_url in FRAMEWORK_CANONICAL_DOCS.get(framework, []):
+            normalized = _normalized_url(canonical_url)
+            if any(url == normalized or url.startswith(normalized + "/") for url in urls):
+                hits.add(framework)
+                break
+    return hits
+
+
+def _evidence_quality_issues(request: TurnRequest, state: ResearchStateStore) -> list[str]:
+    frameworks = _extract_named_framework_subjects(request.message)
+    if len(frameworks) < 3:
+        return []
+
+    issues: list[str] = []
+    if len(state.evidence.items) < max(6, len(frameworks)):
+        issues.append("too few bound evidence items for a framework-by-framework comparison")
+
+    official_hits = _frameworks_with_official_evidence(request, state)
+    missing_official = [framework for framework in frameworks if framework not in official_hits]
+    if missing_official:
+        issues.append("missing official documentation evidence for " + ", ".join(missing_official[:5]))
+
+    substantive_count = _substantive_framework_evidence_count(state, frameworks)
+    if substantive_count < max(4, len(frameworks)):
+        issues.append("bound evidence is too thin or page-chrome-heavy for decision-grade synthesis")
+
+    item_blob = "\n".join(
+        _evidence_item_text(state, item.url, item.evidence, item.quoted_text)
+        for item in state.evidence.items[:12]
+    )
+    for framework in frameworks:
+        if framework.lower() not in item_blob.lower():
+            issues.append(f"no bound evidence text mentions {framework}")
+
+    return issues[:8]
 
 
 def _assigned_cell_for_worker(worker: SearchWorkerPlan, contract: CoverageContract) -> CoverageCell | None:
@@ -904,6 +1026,7 @@ class LeadResearchAgent:
             )
 
     def _synthesize_verify_and_judge(self, state: ResearchStateStore) -> dict[str, Any]:
+        self._remediate_weak_evidence_if_needed(state)
         self._progress(
             "evidence_binder",
             f"Bound {len(state.evidence.items)} evidence item(s).",
@@ -1037,6 +1160,90 @@ class LeadResearchAgent:
             "repair_attempts": repair_attempts,
         }
 
+    def _remediate_weak_evidence_if_needed(self, state: ResearchStateStore) -> None:
+        issues = _evidence_quality_issues(self.request, state)
+        self._progress(
+            "evidence_quality_check",
+            "Checked whether the evidence pack is strong enough for synthesis.",
+            {
+                "needs_remediation": bool(issues),
+                "issues": issues,
+                "coverage_contract_ratio": state.contract.coverage_ratio(),
+                "evidence_item_count": len(state.evidence.items),
+                "source_inventory": _source_inventory_summary(state.all_sources),
+            },
+        )
+        if not issues:
+            return
+
+        remediation_sources = _framework_remediation_sources(self.request, state)
+        urls = [source.url for source in remediation_sources if source.url and is_public_source_url(source.url)]
+        if not urls:
+            self._progress(
+                "evidence_remediation_skipped",
+                "Evidence looked weak, but no primary-source remediation URLs were available.",
+                {"issues": issues},
+            )
+            return
+
+        remaining_reads = self.ledger.remaining_source_reads()
+        if remaining_reads <= 0 or self.ledger.remaining_tool_calls() <= 0:
+            self._progress(
+                "evidence_remediation_skipped",
+                "Evidence looked weak, but the research budget had no remaining source-read capacity.",
+                {
+                    "issues": issues,
+                    "budget_ledger": self.ledger.model_dump(mode="json"),
+                },
+            )
+            return
+        if not self.ledger.can_start_tool("read_url"):
+            return
+
+        urls = urls[:remaining_reads]
+        provenance_by_url = {
+            source.url: {"query": source.query or "canonical framework documentation", "provider": source.provider or "canonical_docs"}
+            for source in remediation_sources
+            if source.url in urls
+        }
+        self._progress(
+            "evidence_remediation",
+            f"Evidence looked weak; reading {len(urls)} primary documentation page(s) before synthesis.",
+            {"issues": issues, "urls": urls},
+        )
+        try:
+            extracted, call = self.tools.extract_urls(urls, max_chars_per_source=_read_cap_for_batch(urls, state.plan))
+        except Exception as exc:
+            logger.warning("evidence remediation source reader failed for %d url(s): %s", len(urls), exc)
+            extracted = []
+            call = ToolCall(name="read_url", input={"urls": urls}, output={}, ok=False, error=str(exc))
+
+        _apply_source_provenance(extracted, provenance_by_url)
+        self.ledger.record_tool_call(latency_ms=call.latency_ms, sources_read=len(urls))
+        state.all_tool_calls.append(call)
+        state.add_sources(extracted)
+        state.evidence = bind_evidence(
+            state.all_sources,
+            plan=state.plan,
+            max_items=self.budget.max_sources + self.budget.max_deep_links,
+            contract=state.contract,
+        )
+        update_contract_from_evidence(state)
+        remaining_issues = _evidence_quality_issues(self.request, state)
+        self._progress(
+            "evidence_remediation_result",
+            f"Primary-source remediation added {len(extracted)} readable source(s).",
+            {
+                "ok": call.ok,
+                "error": call.error,
+                "remaining_issues": remaining_issues,
+                "coverage_contract_ratio": state.contract.coverage_ratio(),
+                "evidence_item_count": len(state.evidence.items),
+                "source_inventory": _source_inventory_summary(state.all_sources),
+                "budget_ledger": self.ledger.model_dump(mode="json"),
+            },
+        )
+
     def _repair_answer(self, state: ResearchStateStore, answer: str, instruction: str):
         self._progress(
             "research_repair",
@@ -1128,6 +1335,8 @@ __all__ = [
     "_assigned_cell_for_worker",
     "_chunk_urls",
     "_ensure_source_provenance",
+    "_evidence_quality_issues",
+    "_framework_remediation_sources",
     "_max_parallel_read_batches_for",
     "_read_cap_for_batch",
     "_retry_query_for_worker",

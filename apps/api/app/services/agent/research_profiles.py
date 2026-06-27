@@ -295,6 +295,26 @@ def research_budget_for(request: TurnRequest) -> ResearchBudget:
             max_elapsed_ms=600_000,
             max_deep_links=28,
         )
+    message_lower = request.message.lower()
+    framework_hits = sum(
+        1
+        for term in ("langgraph", "crewai", "autogen", "haystack", "llamaindex")
+        if term in message_lower
+    )
+    if "framework" in message_lower and framework_hits >= 3:
+        return ResearchBudget(
+            max_search_workers=8,
+            max_results_per_worker=8,
+            max_sources=18,
+            min_evidence_items=10,
+            repair_iterations=2,
+            judge_threshold=0.76,
+            max_tool_calls=28,
+            max_model_calls=10,
+            max_cost_usd=0.45,
+            max_elapsed_ms=240_000,
+            max_deep_links=10,
+        )
     return ResearchBudget(
         max_search_workers=3,
         max_results_per_worker=6,

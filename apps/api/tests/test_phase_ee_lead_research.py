@@ -67,6 +67,40 @@ def test_framework_comparison_gets_entity_dimension_contract():
     assert "Lead agent and orchestration" not in contract.subjects
 
 
+def test_framework_comparison_overrides_strategy_brief_profile():
+    from app.services.agent.research_subtree import (
+        ResearchBrief,
+        generate_coverage_contract,
+        plan_from_contract,
+        research_budget_for,
+    )
+
+    request = TurnRequest(
+        message=(
+            "Research the top 5 agentic AI frameworks in 2025: LangGraph, CrewAI, "
+            "AutoGen, Haystack, and LlamaIndex Workflows. Provide for each: architecture model, "
+            "multi-agent coordination approach, production readiness, and known failure modes. "
+            "Then synthesize a recommendation for the best framework for an enterprise orchestration layer."
+        ),
+        research_level="regular",
+    )
+    brief = ResearchBrief(
+        objective="Recommend the best framework for enterprise orchestration.",
+        research_profile="strategy_brief",
+        source="llm",
+    )
+
+    budget = research_budget_for(request)
+    contract = generate_coverage_contract(request, brief)
+    plan = plan_from_contract(request, contract, budget)
+
+    assert contract.source.endswith("framework_comparison")
+    assert contract.subjects == ["LangGraph", "CrewAI", "AutoGen", "Haystack", "LlamaIndex Workflows"]
+    assert plan.research_profile == "technical_architecture"
+    assert budget.max_sources >= 18
+    assert any("LangGraph official docs" in worker.query for worker in plan.workers)
+
+
 def test_framework_comparison_queries_prioritize_primary_docs_and_lifecycle():
     from app.services.agent.research_subtree import (
         CoverageCell,
@@ -126,7 +160,7 @@ def test_framework_comparison_seeds_canonical_docs():
         ),
         research_level="regular",
     )
-    plan = ResearchPlan(research_profile="technical_architecture")
+    plan = ResearchPlan(research_profile="strategy_brief")
 
     sources = _canonical_framework_sources(request, plan)
     urls = [source.url for source in sources]
@@ -196,6 +230,162 @@ Agent components"""
     assert any("missing detailed sections" in issue for issue in verdict.issues)
     assert any("closing recommendation" in issue for issue in verdict.issues)
     assert any("mid-section" in issue for issue in verdict.issues)
+
+
+def test_framework_comparison_detects_thin_evidence_and_remediation_urls():
+    from app.services.agent.research_subtree import (
+        CoverageCell,
+        CoverageContract,
+        EvidenceItem,
+        EvidencePack,
+        ResearchBrief,
+        ResearchPlan,
+        ResearchStateStore,
+        _evidence_quality_issues,
+        _framework_remediation_sources,
+    )
+
+    request = TurnRequest(
+        message=(
+            "Research the top 5 agentic AI frameworks in 2025: LangGraph, CrewAI, "
+            "AutoGen, Haystack, and LlamaIndex Workflows. Provide for each: architecture model, "
+            "multi-agent coordination approach, production readiness, and known failure modes."
+        ),
+        research_level="deep",
+    )
+    state = ResearchStateStore(
+        brief=ResearchBrief(objective="Compare frameworks", research_profile="technical_architecture", source="heuristic"),
+        contract=CoverageContract(
+            cells=[CoverageCell(subject="LangGraph", dimension="architecture model")],
+            subjects=["LangGraph", "CrewAI", "AutoGen", "Haystack", "LlamaIndex Workflows"],
+            dimensions=["architecture model"],
+            source="profile:technical_architecture:framework_comparison",
+        ),
+        plan=ResearchPlan(research_profile="technical_architecture", max_sources=8),
+        evidence=EvidencePack(
+            items=[
+                EvidenceItem(
+                    source_id="S1",
+                    title="Best agent frameworks",
+                    url="https://example.com/listicle",
+                    evidence="Skip to content Navigation menu Subscribe Previous Next LangGraph is popular.",
+                )
+            ]
+        ),
+        all_sources=[
+            Source(
+                title="Best agent frameworks",
+                url="https://example.com/listicle",
+                content="Skip to content Navigation menu Subscribe Previous Next Sign in Cookie settings.",
+            )
+        ],
+    )
+
+    issues = _evidence_quality_issues(request, state)
+    remediation_sources = _framework_remediation_sources(request, state)
+    urls = [source.url for source in remediation_sources]
+
+    assert any("missing official documentation" in issue for issue in issues)
+    assert any("thin or page-chrome-heavy" in issue for issue in issues)
+    assert len(remediation_sources) >= 8
+    assert any("langgraph" in url.lower() for url in urls)
+    assert any("docs.crewai.com" in url.lower() for url in urls)
+    assert any("microsoft.github.io/autogen" in url.lower() for url in urls)
+
+
+def test_framework_comparison_remediation_reads_primary_docs_before_synthesis():
+    from app.services.agent.research_subtree import (
+        CoverageCell,
+        CoverageContract,
+        EvidenceItem,
+        EvidencePack,
+        LeadResearchAgent,
+        ResearchBrief,
+        ResearchBudget,
+        ResearchBudgetLedger,
+        ResearchPlan,
+        ResearchStateStore,
+    )
+
+    request = TurnRequest(
+        message=(
+            "Research the top 5 agentic AI frameworks in 2025: LangGraph, CrewAI, "
+            "AutoGen, Haystack, and LlamaIndex Workflows. Provide for each: architecture model, "
+            "multi-agent coordination approach, production readiness, and known failure modes."
+        ),
+        research_level="deep",
+    )
+
+    class PrimaryDocTools:
+        def __init__(self):
+            self.read_urls = []
+
+        def extract_urls(self, urls, max_chars_per_source=2500):
+            self.read_urls.extend(urls)
+            extracted = []
+            for url in urls:
+                if "langgraph" in url:
+                    title = "LangGraph docs"
+                    text = "LangGraph architecture uses state graphs with nodes, edges, checkpoints, persistence, runtime orchestration, multi-agent coordination, deployment, production observability, and failure recovery. " * 2
+                elif "crewai" in url:
+                    title = "CrewAI docs"
+                    text = "CrewAI architecture uses crews, agents, tasks, flows, process coordination, manager delegation, production deployment, runtime limitations, and failure modes. " * 2
+                elif "autogen" in url or "agent-framework" in url:
+                    title = "AutoGen docs"
+                    text = "AutoGen architecture uses conversational agents, group chat coordination, runtime messages, production migration guidance, orchestration limitations, and failure modes. " * 2
+                elif "haystack" in url:
+                    title = "Haystack docs"
+                    text = "Haystack architecture uses pipeline components, agents, graph execution, document AI production deployment, orchestration limits, and failure modes. " * 2
+                else:
+                    title = "LlamaIndex docs"
+                    text = "LlamaIndex Workflows architecture uses typed events, workflow steps, async runtime, agent orchestration, production deployment, and failure modes. " * 2
+                extracted.append(Source(title=title, url=url, content=text))
+            return extracted, ToolCall(name="read_url", input={"urls": urls}, output={"provider": "FakeExtract"}, ok=True)
+
+    state = ResearchStateStore(
+        brief=ResearchBrief(objective="Compare frameworks", research_profile="technical_architecture", source="heuristic"),
+        contract=CoverageContract(
+            cells=[
+                CoverageCell(subject=subject, dimension="architecture model")
+                for subject in ["LangGraph", "CrewAI", "AutoGen", "Haystack", "LlamaIndex Workflows"]
+            ],
+            subjects=["LangGraph", "CrewAI", "AutoGen", "Haystack", "LlamaIndex Workflows"],
+            dimensions=["architecture model"],
+            source="profile:technical_architecture:framework_comparison",
+        ),
+        plan=ResearchPlan(research_profile="technical_architecture", max_sources=12),
+        evidence=EvidencePack(
+            items=[
+                EvidenceItem(
+                    source_id="S1",
+                    title="Thin framework list",
+                    url="https://example.com/listicle",
+                    evidence="Skip to content Navigation menu Subscribe Previous Next list of AI frameworks.",
+                )
+            ]
+        ),
+        all_sources=[
+            Source(
+                title="Thin framework list",
+                url="https://example.com/listicle",
+                content="Skip to content Navigation menu Subscribe Previous Next Sign in Cookie settings.",
+            )
+        ],
+        budget_ledger=ResearchBudgetLedger(
+            budget=ResearchBudget(max_sources=16, max_deep_links=0, max_tool_calls=3, max_model_calls=3)
+        ),
+    )
+    tools = PrimaryDocTools()
+    agent = LeadResearchAgent(request, tools)
+    agent.ledger = state.budget_ledger
+    agent.budget = state.budget_ledger.budget
+
+    agent._remediate_weak_evidence_if_needed(state)
+
+    assert len(tools.read_urls) >= 8
+    assert any("langgraph" in source.url.lower() and source.content for source in state.all_sources)
+    assert any("docs.crewai.com" in source.url.lower() and source.content for source in state.all_sources)
+    assert len(state.evidence.items) > 1
 
 
 def test_technical_architecture_queries_are_provider_friendly():

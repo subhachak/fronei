@@ -83,11 +83,18 @@ export function useTurnRunner(options: TurnRunnerOptions) {
   const [running, setRunning] = useState(false)
   const eventsRef = useRef<ProgressEvent[]>([])
   const activeRunMessageRef = useRef<string | null>(null)
-  // Answer accumulation: tokens land in a ref so we don't call setState per token.
-  // A single requestAnimationFrame flushes the ref to state at most once per frame
-  // (~60fps), keeping re-renders and markdown parsing off the hot SSE path.
-  const liveAnswerRef = useRef('')
-  const answerRafRef = useRef<number | null>(null)
+  // Token smoothing queue: SSE tokens land in tokenQueueRef (a string buffer) without
+  // touching React state. A setTimeout loop drains the queue at a controlled rate so
+  // bursts from reader.read() delivering multiple frames at once appear as smooth,
+  // small chunks rather than large jumps.
+  const liveAnswerRef = useRef('')         // committed answer shown to React
+  const tokenQueueRef = useRef('')         // pending tokens not yet released to state
+  const streamTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const STREAM_TICK_MS = 16               // drain interval (~60fps)
+  const STREAM_MIN_CHARS = 3             // minimum chars per tick (keeps animation fluid)
+  const STREAM_MAX_CHARS = 80            // maximum chars per tick (caps visual jump size)
+  const STREAM_TARGET_DRAIN_MS = 400     // target: clear any backlog within 400ms
 
   const activeEvents = useMemo(
     () => events.filter(event => !['tool_selection', 'tool_result', 'answer_delta', 'answer_complete'].includes(event.stage)),
@@ -103,12 +110,33 @@ export function useTurnRunner(options: TurnRunnerOptions) {
     setError(null)
   }
 
-  function resetTurnState() {
-    liveAnswerRef.current = ''
-    if (answerRafRef.current !== null) {
-      cancelAnimationFrame(answerRafRef.current)
-      answerRafRef.current = null
+  function drainTokens() {
+    streamTimerRef.current = null
+    const pending = tokenQueueRef.current
+    if (!pending) return
+    // Adaptive chunk size: aim to clear the current backlog within STREAM_TARGET_DRAIN_MS.
+    // Clamped so small queues stay smooth and large bursts don't produce giant jumps.
+    const ticksToTarget = Math.round(STREAM_TARGET_DRAIN_MS / STREAM_TICK_MS)
+    const charsThisTick = Math.max(STREAM_MIN_CHARS, Math.min(Math.ceil(pending.length / ticksToTarget), STREAM_MAX_CHARS))
+    liveAnswerRef.current += pending.slice(0, charsThisTick)
+    tokenQueueRef.current = pending.slice(charsThisTick)
+    setLiveAnswer(liveAnswerRef.current)
+    if (tokenQueueRef.current) {
+      streamTimerRef.current = setTimeout(drainTokens, STREAM_TICK_MS)
     }
+  }
+
+  function clearStreamState() {
+    tokenQueueRef.current = ''
+    liveAnswerRef.current = ''
+    if (streamTimerRef.current !== null) {
+      clearTimeout(streamTimerRef.current)
+      streamTimerRef.current = null
+    }
+  }
+
+  function resetTurnState() {
+    clearStreamState()
     setTurnState(null, [])
   }
 
@@ -118,12 +146,8 @@ export function useTurnRunner(options: TurnRunnerOptions) {
     turnMessage: string,
     option?: FollowUpOption,
   ) {
-    // Cancel any in-flight RAF so it doesn't overwrite the completed answer.
-    if (answerRafRef.current !== null) {
-      cancelAnimationFrame(answerRafRef.current)
-      answerRafRef.current = null
-    }
-    liveAnswerRef.current = ''
+    // Discard any pending tokens — the completed turn's full answer takes precedence.
+    clearStreamState()
     const nextEvents = next.events || eventsRef.current
     setTurnState(next, nextEvents)
     appendTurn({
@@ -330,14 +354,12 @@ export function useTurnRunner(options: TurnRunnerOptions) {
     if (event.stage !== 'answer_delta') return
     const delta = typeof event.data?.delta === 'string' ? event.data.delta : ''
     if (!delta) return
-    // Accumulate in ref — zero React overhead per token.
-    liveAnswerRef.current += delta
-    // Schedule at most one state flush per animation frame.
-    if (answerRafRef.current === null) {
-      answerRafRef.current = requestAnimationFrame(() => {
-        answerRafRef.current = null
-        setLiveAnswer(liveAnswerRef.current)
-      })
+    // Push into the smoothing queue. The drain timer releases chars at a controlled
+    // rate so bursts from reader.read() never produce large single-frame jumps.
+    tokenQueueRef.current += delta
+    if (streamTimerRef.current === null) {
+      // Start draining immediately (setTimeout(0) yields to the event loop first).
+      streamTimerRef.current = setTimeout(drainTokens, 0)
     }
   }
 

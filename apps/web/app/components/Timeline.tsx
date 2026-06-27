@@ -1,31 +1,61 @@
 'use client'
 
+import DOMPurify from 'dompurify'
+import { marked } from 'marked'
 import { CheckCircle2, Download, Sparkles } from 'lucide-react'
-import { useEffect, useRef } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { assistantTurnCopyText, buildConfidenceCues, plainCommentary } from '../lib/commentary'
 import type { Artifact, FollowUpOption, ProgressEvent, WorkItem } from '../types'
 import { CopyButton } from './ui/CopyButton'
 import { MarkdownResult } from './MarkdownResult'
 import { ResearchPlanCard } from './ResearchPlanCard'
 
-// Renders streaming text with a per-chunk fade-in animation.
-// Each RAF-batched update produces one incoming span that fades in, while previously
-// committed text renders as plain text nodes (no re-animation, no DOM churn).
+// Fades in each newly-arrived chunk. Committed text renders as plain text nodes so
+// there is no re-animation or DOM churn on previously-rendered content.
 function StreamingText({ text }: { text: string }) {
   const prevLengthRef = useRef(0)
   const committed = text.slice(0, prevLengthRef.current)
   const incoming = text.slice(prevLengthRef.current)
-  // Update after render so the next render knows where the boundary is.
   useEffect(() => { prevLengthRef.current = text.length })
   return (
-    <p className="whitespace-pre-wrap text-[15px] leading-relaxed text-neutral-700 [overflow-wrap:anywhere] dark:text-neutral-300">
+    <>
       {committed}
-      {incoming && (
-        // key=text.length ensures a new DOM element (and thus a fresh animation)
-        // for every incoming chunk, even if the previous chunk hasn't fully faded in.
-        <span key={text.length} className="av3-stream-in">{incoming}</span>
+      {incoming && <span key={text.length} className="av3-stream-in">{incoming}</span>}
+    </>
+  )
+}
+
+// Paragraph-split streaming markdown renderer.
+//
+// Strategy: split the accumulated answer at blank lines (\n\n).
+//   • Completed paragraphs  → parsed as full markdown via marked + DOMPurify.
+//     useMemo only re-runs when a NEW paragraph boundary arrives, so marked.parse
+//     is not called on every tick — only at paragraph transitions.
+//   • Active paragraph (last, still streaming) → plain StreamingText with fade-in.
+//     Partial markdown syntax (**bold, # header) never flickers because it stays
+//     as plain text until the paragraph is complete.
+//
+// Result: formatted output for everything the user has read, smooth animated text
+// for what's currently arriving, and no raw markdown characters visible.
+function StreamingMarkdown({ text }: { text: string }) {
+  const parts = text.split(/\n\n/)
+  const completedText = parts.slice(0, -1).join('\n\n')
+  const activeText = parts.at(-1) ?? ''
+
+  const completedHtml = useMemo(
+    () => completedText ? DOMPurify.sanitize(marked.parse(completedText) as string) : '',
+    [completedText],
+  )
+
+  return (
+    <div className="av3-markdown">
+      {completedHtml && <div dangerouslySetInnerHTML={{ __html: completedHtml }} />}
+      {activeText && (
+        <p className="whitespace-pre-wrap text-[15px] leading-relaxed [overflow-wrap:anywhere]">
+          <StreamingText text={activeText} />
+        </p>
       )}
-    </p>
+    </div>
   )
 }
 
@@ -208,9 +238,10 @@ function LiveTurn({
             </div>
             <CopyButton copied={copiedKey === 'live:assistant'} label="Copy current response" onClick={() => onCopyText(answer, 'live:assistant')} />
           </div>
-          {/* StreamingText fades in each RAF-batched chunk; no markdown parse overhead.
-              Full markdown renders in TurnPair via MarkdownResult once the turn completes. */}
-          <StreamingText text={answer} />
+          {/* StreamingMarkdown: completed paragraphs render as formatted markdown
+              (marked.parse only re-runs at \\n\\n boundaries, not per-tick).
+              Active paragraph streams as plain text with fade-in to avoid raw syntax flicker. */}
+          <StreamingMarkdown text={answer} />
         </div>
       ) : (
       <div className="w-full max-w-[860px] rounded-2xl rounded-bl-md border border-neutral-200 bg-white p-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">

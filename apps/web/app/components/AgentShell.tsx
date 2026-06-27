@@ -62,7 +62,7 @@ export function AgentShell() {
 
   useEffect(() => {
     chatScrollRef.current?.scrollTo({ top: chatScrollRef.current.scrollHeight, behavior: 'smooth' })
-  }, [agent.visibleTurns.length, agent.running, agent.result?.turn_id, agent.events.length])
+  }, [agent.visibleTurns.length, agent.running, agent.result?.turn_id])
 
   // useLayoutEffect fires synchronously before the browser paints, correcting the
   // collapsed state from localStorage without a visible flash. useState(false) keeps

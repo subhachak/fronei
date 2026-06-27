@@ -186,7 +186,9 @@ function LiveTurn({
             </div>
             <CopyButton copied={copiedKey === 'live:assistant'} label="Copy current response" onClick={() => onCopyText(answer, 'live:assistant')} />
           </div>
-          <MarkdownResult content={answer} />
+          {/* Plain pre-wrap text during streaming — avoids marked.parse + DOMPurify
+              on every animation frame. Full markdown renders in TurnPair once complete. */}
+          <p className="whitespace-pre-wrap text-[15px] leading-relaxed text-neutral-700 dark:text-neutral-300 [overflow-wrap:anywhere]">{answer}</p>
         </div>
       ) : (
       <div className="w-full max-w-[860px] rounded-2xl rounded-bl-md border border-neutral-200 bg-white p-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">

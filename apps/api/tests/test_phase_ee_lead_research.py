@@ -39,6 +39,82 @@ def test_technical_architecture_profile_gets_specific_contract(monkeypatch):
     assert len(contract.cells) >= 50
 
 
+def test_framework_comparison_gets_entity_dimension_contract():
+    from app.services.agent.research_subtree import ResearchBrief, generate_coverage_contract
+
+    request = TurnRequest(
+        message=(
+            "Research the top 5 agentic AI frameworks in 2025: LangGraph, CrewAI, "
+            "AutoGen, Haystack, and LlamaIndex Workflows. Provide for each: architecture model, "
+            "multi-agent coordination approach, production readiness, and known failure modes. "
+            "Then synthesize a recommendation for the best framework for an enterprise orchestration layer."
+        ),
+        research_level="regular",
+    )
+    brief = ResearchBrief(
+        objective="Compare agentic AI frameworks for enterprise orchestration.",
+        research_profile="technical_architecture",
+        source="heuristic",
+    )
+
+    contract = generate_coverage_contract(request, brief)
+
+    assert contract.source.endswith("framework_comparison")
+    assert contract.subjects == ["LangGraph", "CrewAI", "AutoGen", "Haystack", "LlamaIndex Workflows"]
+    assert "architecture model" in contract.dimensions
+    assert "production readiness and deployment model" in contract.dimensions
+    assert "lifecycle status and ecosystem trajectory" in contract.dimensions
+    assert "Lead agent and orchestration" not in contract.subjects
+
+
+def test_framework_comparison_queries_prioritize_primary_docs_and_lifecycle():
+    from app.services.agent.research_subtree import (
+        CoverageCell,
+        CoverageContract,
+        _domain_discovery_workers,
+        _targeted_query,
+        _tech_arch_anchor_queries,
+        plan_from_contract,
+        research_budget_for,
+    )
+
+    message = (
+        "Research the top 5 agentic AI frameworks in 2025: LangGraph, CrewAI, "
+        "AutoGen, Haystack, and LlamaIndex Workflows. Provide for each: architecture model, "
+        "multi-agent coordination approach, production readiness, and known failure modes. "
+        "Then synthesize a recommendation for the best framework for an enterprise orchestration layer."
+    )
+    request = TurnRequest(message=message, research_level="deep")
+
+    anchors = _tech_arch_anchor_queries(message)
+    assert any("official documentation" in query for query in anchors)
+    assert any("Microsoft Agent Framework" in query for query in anchors)
+    assert any("failure modes benchmark taxonomy" in query for query in anchors)
+
+    lifecycle_query = _targeted_query("AutoGen", ["lifecycle status and ecosystem trajectory"], message)
+    assert "Microsoft Agent Framework" in lifecycle_query
+    assert "migration" in lifecycle_query
+
+    workers = _domain_discovery_workers(request, "technical_architecture", research_budget_for(request))
+    assert workers
+    assert all(worker.discovery_domain == "documentation" for worker in workers)
+    assert any("LangGraph official docs" in worker.query for worker in workers)
+    assert any("AutoGen Microsoft Agent Framework official" in worker.query for worker in workers)
+
+    contract = CoverageContract(
+        cells=[
+            CoverageCell(subject="LangGraph", dimension="architecture model"),
+            CoverageCell(subject="AutoGen", dimension="lifecycle status and ecosystem trajectory"),
+        ],
+        subjects=["LangGraph", "AutoGen"],
+        dimensions=["architecture model", "lifecycle status and ecosystem trajectory"],
+        source="profile:technical_architecture:framework_comparison",
+    )
+    plan = plan_from_contract(request, contract)
+    assert any("official docs" in worker.query for worker in plan.workers)
+    assert any("Microsoft Agent Framework" in worker.query for worker in plan.workers)
+
+
 def test_technical_architecture_queries_are_provider_friendly():
     from app.services.agent.research_subtree import (
         CoverageCell,

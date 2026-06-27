@@ -80,6 +80,29 @@ def _technical_architecture_contract() -> CoverageContract:
     )
 
 
+def _framework_comparison_contract(message: str) -> CoverageContract:
+    subjects = _extract_named_framework_subjects(message)
+    dimensions = [
+        "architecture model",
+        "multi-agent coordination approach",
+        "production readiness and deployment model",
+        "known failure modes and limitations",
+        "lifecycle status and ecosystem trajectory",
+        "enterprise fit and recommendation rationale",
+    ]
+    cells = [
+        CoverageCell(subject=subject, dimension=dimension, required=True)
+        for subject in subjects
+        for dimension in dimensions
+    ]
+    return CoverageContract(
+        cells=cells,
+        subjects=subjects,
+        dimensions=dimensions,
+        source="profile:technical_architecture:framework_comparison",
+    )
+
+
 def _vendor_comparison_contract() -> CoverageContract:
     subjects = [
         "Pricing and licensing models",
@@ -195,6 +218,9 @@ def _implementation_plan_contract() -> CoverageContract:
 # ---------------------------------------------------------------------------
 
 def _derive_fallback_subjects(message: str, brief: ResearchBrief) -> list[str]:
+    framework_subjects = _extract_named_framework_subjects(message)
+    if framework_subjects:
+        return framework_subjects
     scoped = [item for item in brief.scope_in if len(item.strip()) > 1]
     if scoped:
         return _dedupe(scoped)[:4]
@@ -216,12 +242,56 @@ def _derive_fallback_dimensions(criteria: list[str]) -> list[str]:
     return ["capabilities", "evidence", "risks"]
 
 
+def _extract_named_framework_subjects(message: str) -> list[str]:
+    text = message or ""
+    lower = text.lower()
+    if not any(term in lower for term in ("framework", "frameworks", "agentic", "multi-agent", "multi agent", "orchestration")):
+        return []
+    region = text
+    if ":" in region:
+        region = region.split(":", 1)[1]
+    stop_match = re.search(r"\bprovide for each\b|\bthen synthesize\b|\bexplain why\b|\brecommend", region, flags=re.IGNORECASE)
+    if stop_match:
+        region = region[:stop_match.start()]
+    raw_candidates = re.split(r",|;|\band\b", region)
+    subjects: list[str] = []
+    for raw in raw_candidates:
+        value = raw.strip(" .:-()[]")
+        value = re.sub(r"^(?:and|or|the|a|an)\s+", "", value, flags=re.IGNORECASE).strip()
+        if not value or len(value) > 60:
+            continue
+        if re.search(r"[A-Z][A-Za-z0-9]*(?:[A-Z][A-Za-z0-9]*)?", value):
+            subjects.append(value)
+    known = [
+        ("LangGraph", r"\blanggraph\b"),
+        ("CrewAI", r"\bcrewai\b"),
+        ("AutoGen", r"\bautogen\b"),
+        ("Haystack", r"\bhaystack\b"),
+        ("LlamaIndex Workflows", r"\bllamaindex(?:\s+workflows)?\b"),
+        ("Microsoft Agent Framework", r"\bmicrosoft agent framework\b"),
+    ]
+    for label, pattern in known:
+        if re.search(pattern, lower) and label not in subjects:
+            subjects.append(label)
+    return _dedupe(subjects)[:6]
+
+
+def _is_framework_comparison_request(message: str) -> bool:
+    subjects = _extract_named_framework_subjects(message)
+    if len(subjects) < 3:
+        return False
+    lower = (message or "").lower()
+    return any(term in lower for term in ("compare", "top ", "for each", "recommend", "best", "enterprise", "production"))
+
+
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
 def generate_coverage_contract(request: TurnRequest, brief: ResearchBrief) -> CoverageContract:
     if brief.research_profile == "technical_architecture":
+        if _is_framework_comparison_request(request.message):
+            return _framework_comparison_contract(request.message)
         return _technical_architecture_contract()
     if brief.research_profile == "vendor_comparison":
         return _vendor_comparison_contract()

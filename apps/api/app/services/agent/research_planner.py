@@ -658,6 +658,13 @@ def judge_research_final(request: TurnRequest, state: ResearchStateStore, answer
 
 def _tech_arch_anchor_queries(original_message: str) -> list[str]:
     msg_lower = (original_message or "").lower()
+    if _is_framework_comparison_request(original_message):
+        return [
+            "LangGraph CrewAI AutoGen Haystack LlamaIndex Workflows official documentation architecture agents workflow",
+            "LangGraph CrewAI AutoGen Haystack LlamaIndex production deployment observability checkpointing",
+            "AutoGen Microsoft Agent Framework migration maintenance successor official",
+            "multi-agent framework failure modes benchmark taxonomy MAST agentic AI",
+        ]
     if "deep research" in msg_lower or "deep_research" in msg_lower:
         return ["agentic deep research multi-agent architecture implementation", "LLM research agent planning loop evidence retrieval site:arxiv.org", "LLM research agent planning loop evidence retrieval site:github.com", "autonomous research agent orchestration evidence synthesis 2024"]
     if "multi-agent" in msg_lower or "multi agent" in msg_lower:
@@ -696,6 +703,22 @@ def _implementation_plan_anchor_queries(original_message: str) -> list[str]:
 
 def _domain_discovery_workers(request: TurnRequest, profile: ResearchProfile, budget: ResearchBudget) -> list[SearchWorkerPlan]:
     subject = _compact_search_subject(request.message)
+    if profile == "technical_architecture" and _is_framework_comparison_request(request.message):
+        workers: list[SearchWorkerPlan] = []
+        for framework in _extract_named_framework_subjects(request.message)[:4]:
+            query = f"{framework} official docs architecture workflow agents production deployment"
+            if framework.lower() == "autogen":
+                query = "AutoGen Microsoft Agent Framework official migration maintenance agentchat core group chat"
+            workers.append(
+                SearchWorkerPlan(
+                    question=f"Domain lane: official architecture and production evidence for {framework}",
+                    query=query,
+                    rationale="Prioritize primary documentation and lifecycle evidence for framework comparison.",
+                    max_results=budget.max_results_per_worker,
+                    discovery_domain="documentation",
+                )
+            )
+        return workers[: max(0, min(4, budget.max_search_workers))]
     if profile == "vendor_comparison" and _llm_vendor_comparison_subject(request.message):
         return [
             SearchWorkerPlan(question="Domain lane: OpenAI official model and pricing evidence", query="site:platform.openai.com/docs/models OR site:openai.com/api/pricing OpenAI GPT API models pricing chatbot", rationale="Find OpenAI-owned model catalog and pricing evidence.", max_results=budget.max_results_per_worker, discovery_domain="primary"),
@@ -780,6 +803,8 @@ def _domain_for_query(query: str) -> Literal["general", "academic", "repository"
 
 def _targeted_query(subject: str, dimensions: list[str], original: str) -> str:
     raw_subject = " ".join(str(subject or "").split())
+    if _is_framework_comparison_request(original):
+        return _framework_comparison_query(raw_subject, dimensions)
     subject = _public_technical_subject(raw_subject) if infer_research_profile(original) == "technical_architecture" else raw_subject
     primary_dim = " ".join(str(dimensions[0] if dimensions else "").split())
     if infer_research_profile(original) == "technical_architecture":
@@ -794,6 +819,69 @@ def _targeted_query(subject: str, dimensions: list[str], original: str) -> str:
         return f"{vendor_subject} {subject} {primary_dim} official docs pricing security API".strip()[:220]
     base = f"{subject} {primary_dim}".strip()
     return f"{base} {original}".strip()[:220]
+
+
+def _framework_comparison_query(subject: str, dimensions: list[str]) -> str:
+    dimension_text = " ".join(dimensions).lower()
+    if "lifecycle" in dimension_text or "ecosystem" in dimension_text:
+        focus = "release notes roadmap maintenance migration successor ecosystem"
+    elif "production" in dimension_text or "deployment" in dimension_text:
+        focus = "production deployment observability persistence checkpointing enterprise"
+    elif "failure" in dimension_text or "limitation" in dimension_text:
+        focus = "failure modes limitations issues troubleshooting production"
+    elif "coordination" in dimension_text or "multi-agent" in dimension_text:
+        focus = "multi-agent coordination supervisor handoff group chat workflow"
+    else:
+        focus = "official docs architecture workflow agents state"
+    if subject.lower() == "autogen":
+        return f"AutoGen Microsoft Agent Framework official docs {focus}".strip()[:220]
+    if subject.lower() == "haystack":
+        return f"Haystack deepset official docs agents pipelines {focus}".strip()[:220]
+    if subject.lower() == "llamaindex workflows":
+        return f"LlamaIndex Workflows official docs agents event workflow {focus}".strip()[:220]
+    return f"{subject} official docs {focus}".strip()[:220]
+
+
+def _extract_named_framework_subjects(message: str) -> list[str]:
+    text = message or ""
+    lower = text.lower()
+    if not any(term in lower for term in ("framework", "frameworks", "agentic", "multi-agent", "multi agent", "orchestration")):
+        return []
+    region = text
+    if ":" in region:
+        region = region.split(":", 1)[1]
+    stop_match = re.search(r"\bprovide for each\b|\bthen synthesize\b|\bexplain why\b|\brecommend", region, flags=re.IGNORECASE)
+    if stop_match:
+        region = region[:stop_match.start()]
+    raw_candidates = re.split(r",|;|\band\b", region)
+    subjects: list[str] = []
+    for raw in raw_candidates:
+        value = raw.strip(" .:-()[]")
+        value = re.sub(r"^(?:and|or|the|a|an)\s+", "", value, flags=re.IGNORECASE).strip()
+        if not value or len(value) > 60:
+            continue
+        if re.search(r"[A-Z][A-Za-z0-9]*(?:[A-Z][A-Za-z0-9]*)?", value):
+            subjects.append(value)
+    known = [
+        ("LangGraph", r"\blanggraph\b"),
+        ("CrewAI", r"\bcrewai\b"),
+        ("AutoGen", r"\bautogen\b"),
+        ("Haystack", r"\bhaystack\b"),
+        ("LlamaIndex Workflows", r"\bllamaindex(?:\s+workflows)?\b"),
+        ("Microsoft Agent Framework", r"\bmicrosoft agent framework\b"),
+    ]
+    for label, pattern in known:
+        if re.search(pattern, lower) and label not in subjects:
+            subjects.append(label)
+    return _dedupe(subjects)[:6]
+
+
+def _is_framework_comparison_request(message: str) -> bool:
+    subjects = _extract_named_framework_subjects(message)
+    if len(subjects) < 3:
+        return False
+    lower = (message or "").lower()
+    return any(term in lower for term in ("compare", "top ", "for each", "recommend", "best", "enterprise", "production"))
 
 
 def _llm_vendor_comparison_subject(message: str) -> bool:

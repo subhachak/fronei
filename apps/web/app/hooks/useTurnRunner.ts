@@ -83,6 +83,11 @@ export function useTurnRunner(options: TurnRunnerOptions) {
   const [running, setRunning] = useState(false)
   const eventsRef = useRef<ProgressEvent[]>([])
   const activeRunMessageRef = useRef<string | null>(null)
+  // Answer accumulation: tokens land in a ref so we don't call setState per token.
+  // A single requestAnimationFrame flushes the ref to state at most once per frame
+  // (~60fps), keeping re-renders and markdown parsing off the hot SSE path.
+  const liveAnswerRef = useRef('')
+  const answerRafRef = useRef<number | null>(null)
 
   const activeEvents = useMemo(
     () => events.filter(event => !['tool_selection', 'tool_result', 'answer_delta', 'answer_complete'].includes(event.stage)),
@@ -99,6 +104,11 @@ export function useTurnRunner(options: TurnRunnerOptions) {
   }
 
   function resetTurnState() {
+    liveAnswerRef.current = ''
+    if (answerRafRef.current !== null) {
+      cancelAnimationFrame(answerRafRef.current)
+      answerRafRef.current = null
+    }
     setTurnState(null, [])
   }
 
@@ -108,6 +118,12 @@ export function useTurnRunner(options: TurnRunnerOptions) {
     turnMessage: string,
     option?: FollowUpOption,
   ) {
+    // Cancel any in-flight RAF so it doesn't overwrite the completed answer.
+    if (answerRafRef.current !== null) {
+      cancelAnimationFrame(answerRafRef.current)
+      answerRafRef.current = null
+    }
+    liveAnswerRef.current = ''
     const nextEvents = next.events || eventsRef.current
     setTurnState(next, nextEvents)
     appendTurn({
@@ -171,10 +187,19 @@ export function useTurnRunner(options: TurnRunnerOptions) {
             if (eventId && seenEventIds.has(eventId)) continue
             if (eventId) seenEventIds.add(eventId)
             const nextEvent = eventId ? { ...progress, event_id: eventId } : progress
+            setError(null)
+            // answer_delta / answer_complete only update liveAnswer via applyAnswerProgress.
+            // They are already excluded from activeEvents and never displayed in the
+            // progress log, so there is no reason to store them in eventsRef or call
+            // setEvents — doing so would increment events.length on every token and
+            // trigger unrelated effects (e.g. the scroll handler) for every token.
+            if (nextEvent.stage === 'answer_delta' || nextEvent.stage === 'answer_complete') {
+              applyAnswerProgress(nextEvent)
+              continue
+            }
             eventsRef.current = [...eventsRef.current, nextEvent]
             setEvents(eventsRef.current)
             applyAnswerProgress(nextEvent)
-            setError(null)
           }
           if (streamMessage.event === 'turn') {
             const payload = JSON.parse(streamMessage.data) as AgentTurnStatus
@@ -305,7 +330,15 @@ export function useTurnRunner(options: TurnRunnerOptions) {
     if (event.stage !== 'answer_delta') return
     const delta = typeof event.data?.delta === 'string' ? event.data.delta : ''
     if (!delta) return
-    setLiveAnswer(current => `${current}${delta}`)
+    // Accumulate in ref — zero React overhead per token.
+    liveAnswerRef.current += delta
+    // Schedule at most one state flush per animation frame.
+    if (answerRafRef.current === null) {
+      answerRafRef.current = requestAnimationFrame(() => {
+        answerRafRef.current = null
+        setLiveAnswer(liveAnswerRef.current)
+      })
+    }
   }
 
   function answerFromEvents(sourceEvents: ProgressEvent[]) {

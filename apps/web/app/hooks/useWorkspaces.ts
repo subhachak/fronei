@@ -102,12 +102,36 @@ export function useWorkspaces(options: WorkspaceOptions) {
 
   async function loadWorkspaces(selectConversationId?: string) {
     setWorkspacesLoading(true)
+
+    // If we already know the target conversation (from cache or a caller hint), start
+    // fetching its turns immediately in parallel with the workspace list request.
+    // This cuts the serial waterfall (GET /workspaces → GET /turns) to a single round-trip.
+    const preloadConversationId = selectConversationId || activeConversationId
+    const turnsPreload = preloadConversationId
+      ? loadConversationTurns(preloadConversationId, INITIAL_VISIBLE_TURNS).catch(() => {})
+      : null
+
     try {
       const response = await authorizedFetch('/workspaces')
       if (!response.ok) throw new Error(await readErrorBody(response, 'Could not load workspaces'))
       const payload = await response.json() as { workspaces: ApiWorkspace[] }
       const next = payload.workspaces.map(mapWorkspace)
-      setWorkspaces(next)
+
+      // Merge workspace list into state while preserving any turns already loaded
+      // (either from the parallel prefetch above or from the localStorage cache).
+      setWorkspaces(prev => {
+        const cachedTurns = new Map(
+          prev.flatMap(workspace => workspace.conversations.map(conversation => [conversation.id, conversation.turns]))
+        )
+        return next.map(workspace => ({
+          ...workspace,
+          conversations: workspace.conversations.map(conversation => ({
+            ...conversation,
+            turns: cachedTurns.get(conversation.id) || [],
+          })),
+        }))
+      })
+
       const preferredConversationId = selectConversationId || activeConversationId
       const selectedWorkspace = next.find(
         workspace => workspace.conversations.some(conversation => conversation.id === preferredConversationId),
@@ -115,15 +139,25 @@ export function useWorkspaces(options: WorkspaceOptions) {
       const selectedConversation = selectedWorkspace?.conversations.find(
         conversation => conversation.id === preferredConversationId,
       ) || selectedWorkspace?.conversations[0] || null
+
       setExpandedWorkspaceIds(prev => {
         const nextExpanded = { ...prev }
         if (selectedWorkspace && nextExpanded[selectedWorkspace.id] === undefined) nextExpanded[selectedWorkspace.id] = true
         return nextExpanded
       })
-      if (selectedConversation) setLoadingConversationId(selectedConversation.id)
       setActiveWorkspaceId(selectedWorkspace?.id || null)
       setActiveConversationId(selectedConversation?.id || null)
-      if (selectedConversation) await loadConversationTurns(selectedConversation.id, INITIAL_VISIBLE_TURNS)
+
+      if (selectedConversation) {
+        if (selectedConversation.id === preloadConversationId) {
+          // Turns already in flight — just await completion; no second request needed.
+          await turnsPreload
+        } else {
+          // Selected conversation differs from what we preloaded (e.g. the cached ID was
+          // stale). Load turns for the correct conversation now.
+          await loadConversationTurns(selectedConversation.id, INITIAL_VISIBLE_TURNS)
+        }
+      }
     } finally {
       setWorkspacesLoading(false)
     }
@@ -465,7 +499,12 @@ function writeWorkspaceCache(cache: WorkspaceCache) {
           conversations: workspace.conversations.map(conversation => ({
             ...conversation,
             isDraft: undefined,
-            turns: [],
+            // Persist the last INITIAL_VISIBLE_TURNS for the active conversation so it
+            // renders immediately on next load (stale-while-revalidate). All other
+            // conversations are cached as shells only (turns: []) to keep the payload small.
+            turns: conversation.id === cache.activeConversationId
+              ? conversation.turns.slice(-INITIAL_VISIBLE_TURNS)
+              : [],
           })),
         })),
       }),

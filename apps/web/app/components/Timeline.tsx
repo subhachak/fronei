@@ -10,9 +10,7 @@ import { CopyButton } from './ui/CopyButton'
 import { MarkdownResult } from './MarkdownResult'
 import { ResearchPlanCard } from './ResearchPlanCard'
 
-// Simple streaming text: committed prefix renders as plain text nodes (no re-animation),
-// while the newly revealed tail gets a short fade-in. The queue drains adaptively in
-// useTurnRunner, so small bursts linger instead of emptying into visible pauses.
+// Simple streaming text for code blocks, where raw text is the intended display.
 function StreamingText({ text }: { text: string }) {
   const prevLengthRef = useRef(0)
   const committed = text.slice(0, prevLengthRef.current)
@@ -26,20 +24,27 @@ function StreamingText({ text }: { text: string }) {
   )
 }
 
+function InlineMarkdown({ text }: { text: string }) {
+  const html = useMemo(
+    () => DOMPurify.sanitize(marked.parseInline(text) as string),
+    [text],
+  )
+  return <span dangerouslySetInnerHTML={{ __html: html }} />
+}
+
+function StreamCursor() {
+  return <span className="av3-stream-cursor" aria-hidden="true" />
+}
+
 // Block-aware live paragraph renderer.
 //
 // Markdown has two categories of formatting:
 //   • Block-level (headers, lists, code fences, blockquotes) — detectable from the
 //     FIRST characters of a line. Rendering them immediately prevents the jarring
 //     "raw text → formatted HTML" flip that happens when a paragraph completes.
-//   • Inline-level (bold, italic, code spans, links) — only resolvable when the
-//     closing delimiter arrives. These show as raw chars for ~50-100ms at our drain
-//     rate (5 chars/16ms tick), which is imperceptible. We accept that tradeoff.
-//
-// When this paragraph transitions to the settled zone and goes through marked.parse,
-// the block structure is IDENTICAL (already <h2>, already <ul>), so there is no
-// visible flip. Only inline formatting refines quietly.
-function LiveParagraph({ text }: { text: string }) {
+//   • Inline-level (bold, italic, code spans, links) — parsed on the live text too,
+//     so completed inline markup does not wait for the paragraph to settle.
+function LiveParagraph({ text, live }: { text: string; live: boolean }) {
   const lines = text.split('\n')
   const firstLine = lines[0]
 
@@ -49,7 +54,7 @@ function LiveParagraph({ text }: { text: string }) {
     const body = lines.slice(1).join('\n').replace(/```\s*$/, '')
     return (
       <pre className="max-w-full overflow-x-auto rounded-lg bg-neutral-950 p-4 text-neutral-50 text-sm leading-relaxed font-mono [overflow-wrap:anywhere]">
-        <code><StreamingText text={body} /></code>
+        <code><StreamingText text={body} />{live && <StreamCursor />}</code>
       </pre>
     )
   }
@@ -59,9 +64,9 @@ function LiveParagraph({ text }: { text: string }) {
     const items = lines.map(l => l.replace(/^[-*+] /, ''))
     return (
       <ul className="grid gap-1.5 pl-5 list-disc text-[15px] leading-relaxed [overflow-wrap:anywhere]">
-        {items.slice(0, -1).map((item, i) => <li key={i}>{item}</li>)}
+        {items.slice(0, -1).map((item, i) => <li key={i}><InlineMarkdown text={item} /></li>)}
         {items.at(-1) !== undefined && (
-          <li><StreamingText text={items.at(-1)!} /></li>
+          <li><InlineMarkdown text={items.at(-1)!} />{live && <StreamCursor />}</li>
         )}
       </ul>
     )
@@ -72,9 +77,9 @@ function LiveParagraph({ text }: { text: string }) {
     const items = lines.map(l => l.replace(/^\d+\. /, ''))
     return (
       <ol className="grid gap-1.5 pl-5 list-decimal text-[15px] leading-relaxed [overflow-wrap:anywhere]">
-        {items.slice(0, -1).map((item, i) => <li key={i}>{item}</li>)}
+        {items.slice(0, -1).map((item, i) => <li key={i}><InlineMarkdown text={item} /></li>)}
         {items.at(-1) !== undefined && (
-          <li><StreamingText text={items.at(-1)!} /></li>
+          <li><InlineMarkdown text={items.at(-1)!} />{live && <StreamCursor />}</li>
         )}
       </ol>
     )
@@ -85,7 +90,7 @@ function LiveParagraph({ text }: { text: string }) {
     const content = lines.map(l => l.replace(/^> ?/, '')).join('\n')
     return (
       <blockquote className="border-l-[3px] border-neutral-300 pl-3 text-neutral-500 text-[15px] leading-relaxed dark:border-neutral-600 dark:text-neutral-400">
-        <StreamingText text={content} />
+        <InlineMarkdown text={content} />{live && <StreamCursor />}
       </blockquote>
     )
   }
@@ -107,35 +112,33 @@ function LiveParagraph({ text }: { text: string }) {
     const tail = lines.slice(1).join('\n')
     return (
       <>
-        {level === 1 && <h1 className={cls}><StreamingText text={hMatch[2]} /></h1>}
-        {level === 2 && <h2 className={cls}><StreamingText text={hMatch[2]} /></h2>}
-        {level === 3 && <h3 className={cls}><StreamingText text={hMatch[2]} /></h3>}
-        {level === 4 && <h4 className={cls}><StreamingText text={hMatch[2]} /></h4>}
-        {level === 5 && <h5 className={cls}><StreamingText text={hMatch[2]} /></h5>}
-        {level === 6 && <h6 className={cls}><StreamingText text={hMatch[2]} /></h6>}
+        {level === 1 && <h1 className={cls}><InlineMarkdown text={hMatch[2]} />{live && !tail && <StreamCursor />}</h1>}
+        {level === 2 && <h2 className={cls}><InlineMarkdown text={hMatch[2]} />{live && !tail && <StreamCursor />}</h2>}
+        {level === 3 && <h3 className={cls}><InlineMarkdown text={hMatch[2]} />{live && !tail && <StreamCursor />}</h3>}
+        {level === 4 && <h4 className={cls}><InlineMarkdown text={hMatch[2]} />{live && !tail && <StreamCursor />}</h4>}
+        {level === 5 && <h5 className={cls}><InlineMarkdown text={hMatch[2]} />{live && !tail && <StreamCursor />}</h5>}
+        {level === 6 && <h6 className={cls}><InlineMarkdown text={hMatch[2]} />{live && !tail && <StreamCursor />}</h6>}
         {tail && (
           <p className="whitespace-pre-wrap text-[15px] leading-relaxed [overflow-wrap:anywhere]">
-            <StreamingText text={tail} />
+            <InlineMarkdown text={tail} />{live && <StreamCursor />}
           </p>
         )}
       </>
     )
   }
 
-  // ── Default: plain paragraph ─────────────────────────────────────────────
-  // Inline formatting (** * ` [link]) will be briefly raw then formats on completion.
+  // ── Default paragraph ────────────────────────────────────────────────────
   return (
     <p className="whitespace-pre-wrap text-[15px] leading-relaxed [overflow-wrap:anywhere]">
-      <StreamingText text={text} />
+      <InlineMarkdown text={text} />{live && <StreamCursor />}
     </p>
   )
 }
 
 // Two-zone streaming renderer:
 //   SETTLED zone — full marked.parse, memoized at paragraph boundaries (not per-tick).
-//   LIVE zone    — LiveParagraph with structural block detection; no raw # or - visible.
-// On paragraph completion the block structure is already correct, so no visible flip.
-function StreamingMarkdown({ text }: { text: string }) {
+//   LIVE zone    — LiveParagraph with structural block detection and inline markdown.
+function StreamingMarkdown({ text, live = false }: { text: string; live?: boolean }) {
   const parts = text.split(/\n\n/)
   const completedText = parts.slice(0, -1).join('\n\n')
   const activeText = parts.at(-1) ?? ''
@@ -148,7 +151,8 @@ function StreamingMarkdown({ text }: { text: string }) {
   return (
     <div className="av3-markdown">
       {completedHtml && <div dangerouslySetInnerHTML={{ __html: completedHtml }} />}
-      {activeText && <LiveParagraph text={activeText} />}
+      {activeText && <LiveParagraph text={activeText} live={live} />}
+      {live && !activeText && <p className="whitespace-pre-wrap text-[15px] leading-relaxed"><StreamCursor /></p>}
     </div>
   )
 }
@@ -332,10 +336,7 @@ function LiveTurn({
             </div>
             <CopyButton copied={copiedKey === 'live:assistant'} label="Copy current response" onClick={() => onCopyText(answer, 'live:assistant')} />
           </div>
-          {/* StreamingMarkdown: completed paragraphs render as formatted markdown
-              (marked.parse only re-runs at \\n\\n boundaries, not per-tick).
-              Active paragraph streams as plain text with fade-in to avoid raw syntax flicker. */}
-          <StreamingMarkdown text={answer} />
+          <StreamingMarkdown text={answer} live />
         </div>
       ) : (
       <div className="w-full max-w-[860px] rounded-2xl rounded-bl-md border border-neutral-200 bg-white p-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">

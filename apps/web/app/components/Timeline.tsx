@@ -1,11 +1,33 @@
 'use client'
 
 import { CheckCircle2, Download, Sparkles } from 'lucide-react'
+import { useEffect, useRef } from 'react'
 import { assistantTurnCopyText, buildConfidenceCues, plainCommentary } from '../lib/commentary'
 import type { Artifact, FollowUpOption, ProgressEvent, WorkItem } from '../types'
 import { CopyButton } from './ui/CopyButton'
 import { MarkdownResult } from './MarkdownResult'
 import { ResearchPlanCard } from './ResearchPlanCard'
+
+// Renders streaming text with a per-chunk fade-in animation.
+// Each RAF-batched update produces one incoming span that fades in, while previously
+// committed text renders as plain text nodes (no re-animation, no DOM churn).
+function StreamingText({ text }: { text: string }) {
+  const prevLengthRef = useRef(0)
+  const committed = text.slice(0, prevLengthRef.current)
+  const incoming = text.slice(prevLengthRef.current)
+  // Update after render so the next render knows where the boundary is.
+  useEffect(() => { prevLengthRef.current = text.length })
+  return (
+    <p className="whitespace-pre-wrap text-[15px] leading-relaxed text-neutral-700 [overflow-wrap:anywhere] dark:text-neutral-300">
+      {committed}
+      {incoming && (
+        // key=text.length ensures a new DOM element (and thus a fresh animation)
+        // for every incoming chunk, even if the previous chunk hasn't fully faded in.
+        <span key={text.length} className="av3-stream-in">{incoming}</span>
+      )}
+    </p>
+  )
+}
 
 export function Timeline({
   draftMessage,
@@ -186,9 +208,9 @@ function LiveTurn({
             </div>
             <CopyButton copied={copiedKey === 'live:assistant'} label="Copy current response" onClick={() => onCopyText(answer, 'live:assistant')} />
           </div>
-          {/* Plain pre-wrap text during streaming — avoids marked.parse + DOMPurify
-              on every animation frame. Full markdown renders in TurnPair once complete. */}
-          <p className="whitespace-pre-wrap text-[15px] leading-relaxed text-neutral-700 dark:text-neutral-300 [overflow-wrap:anywhere]">{answer}</p>
+          {/* StreamingText fades in each RAF-batched chunk; no markdown parse overhead.
+              Full markdown renders in TurnPair via MarkdownResult once the turn completes. */}
+          <StreamingText text={answer} />
         </div>
       ) : (
       <div className="w-full max-w-[860px] rounded-2xl rounded-bl-md border border-neutral-200 bg-white p-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">

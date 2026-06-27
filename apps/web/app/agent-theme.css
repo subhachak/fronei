@@ -59,11 +59,25 @@
   50% { opacity: 1; transform: translateY(-2px); }
 }
 
+/* Streaming text fade-in — applied to each incoming RAF-batched chunk by StreamingText.
+   Short duration (180ms) so text reads immediately; ease-out front-loads opacity. */
+@layer utilities {
+  .av3-stream-in {
+    animation: av3StreamIn 0.18s ease-out both;
+  }
+}
+
+@keyframes av3StreamIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .av3-pulse-dot,
   .av3-pulse-ring,
   .av3-pulse-bars span,
-  .av3-ellipsis span {
+  .av3-ellipsis span,
+  .av3-stream-in {
     animation: none !important;
   }
 }

@@ -3,24 +3,62 @@
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
 import { CheckCircle2, Download, Sparkles } from 'lucide-react'
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { assistantTurnCopyText, buildConfidenceCues, plainCommentary } from '../lib/commentary'
 import type { Artifact, FollowUpOption, ProgressEvent, WorkItem } from '../types'
 import { CopyButton } from './ui/CopyButton'
 import { MarkdownResult } from './MarkdownResult'
 import { ResearchPlanCard } from './ResearchPlanCard'
 
-// Fades in each newly-arrived chunk. Committed text renders as plain text nodes so
-// there is no re-animation or DOM churn on previously-rendered content.
+// How continuous streaming works:
+//
+// Naive approach: "commit previous batch, animate new batch" creates discrete steps.
+// The moment a new batch arrives, the previous batch's span is replaced with a plain
+// text node at full opacity — so ease-out (which front-loads opacity to ~80% in 16ms)
+// completes visually before the next batch even starts, producing a visible pause.
+//
+// Overlapping-batch approach:
+//   Each drained batch gets its OWN span with the fade animation. The span persists for
+//   STREAMING_FADE_MS (120ms) before its text is committed to the plain prefix and the
+//   span is removed. Multiple spans therefore animate simultaneously — batch N is at 50%
+//   opacity while batch N+1 is at 10% — producing a continuous overlapping wave.
+//
+// With RAF draining 8 chars/frame and 120ms animation: up to 120/16 ≈ 7 overlapping
+// spans at once. Each is tiny (8 chars ≈ 1-2 words). The combined effect is a smooth,
+// word-by-word flow with no perceptible gap between chunks.
+const STREAMING_FADE_MS = 120
+
 function StreamingText({ text }: { text: string }) {
-  const prevLengthRef = useRef(0)
-  const committed = text.slice(0, prevLengthRef.current)
-  const incoming = text.slice(prevLengthRef.current)
-  useEffect(() => { prevLengthRef.current = text.length })
+  const [batches, setBatches] = useState<Array<{ id: number; text: string }>>([])
+  const committedRef = useRef('')
+  const processedLenRef = useRef(0)
+  const nextIdRef = useRef(0)
+
+  useEffect(() => {
+    const newChars = text.slice(processedLenRef.current)
+    if (!newChars) return
+    processedLenRef.current = text.length
+
+    const id = ++nextIdRef.current
+    setBatches(prev => [...prev, { id, text: newChars }])
+
+    // After the animation completes, absorb this batch into the plain-text prefix and
+    // remove its span. The span opacity is 1.0 at this point so there is no visible
+    // change — committed text is identical to what the span was showing.
+    const timer = setTimeout(() => {
+      committedRef.current += newChars
+      setBatches(prev => prev.filter(b => b.id !== id))
+    }, STREAMING_FADE_MS + 20)
+
+    return () => clearTimeout(timer)
+  }, [text])
+
   return (
     <>
-      {committed}
-      {incoming && <span key={text.length} className="av3-stream-in">{incoming}</span>}
+      {committedRef.current}
+      {batches.map(b => (
+        <span key={b.id} className="av3-stream-in">{b.text}</span>
+      ))}
     </>
   )
 }

@@ -239,5 +239,44 @@
       "min_independent_sources": 3,
       "notes": "The answer must distinguish: official clinical guidelines, academic RCT evidence, and real-world practitioner/biohacker reports — stating each as a distinct position."
     }
+  },
+  {
+    "id": "multi_subject_breadth_guarantee",
+    "category": "multi_subject_coverage",
+    "description": "Phase 6 anchor case: a 5-entity comparison request where the planner must guarantee per-entity dedicated evidence, not just broad overview queries that happen to name-check all five. Caught a real production failure where 2 of 5 frameworks got 'no evidence' placeholders.",
+    "request": {
+      "message": "Research the top 5 agentic AI frameworks in 2025: LangGraph, CrewAI, AutoGen, Haystack, and LlamaIndex Workflows. Provide for each: architecture model, multi-agent coordination approach, production readiness, and known failure modes. Then synthesize a recommendation for the best framework for an enterprise orchestration layer and explain why."
+    },
+    "expected": {
+      "primary_evidence_role": "technical_design",
+      "unacceptable_failure_modes": [
+        "2 or more of the 5 named frameworks receive 'no evidence found in retrieved sources' or 'not described in evidence' for every dimension",
+        "answer has a complete section for LangGraph and CrewAI but only a placeholder or single sentence for Haystack or LlamaIndex Workflows",
+        "evidence pack contains zero items with source_url matching haystack or llamaindex domains",
+        "recommendation section omits one or more of the 5 named frameworks entirely"
+      ],
+      "min_sources_per_named_subject": 2,
+      "min_independent_sources": 8,
+      "notes": "The planner must emit at least one per-entity dedicated query for each named framework (Phase 6.1). The coverage contract must have per-(framework, dimension) cells so open_cells() reflects per-framework gaps (Phase 6.2). Breadth-first follow-up must fill all 5 frameworks before deepening any (Phase 6.3)."
+    }
+  },
+  {
+    "id": "named_entity_status_volatility",
+    "category": "entity_status_check",
+    "description": "Phase 6 anchor case: a comparison request where one named entity (AutoGen) has had a significant status change (moved to maintenance mode, Microsoft Agent Framework announced as GA successor). The system must surface this in the main recommendation, not as a footnote. Caught a real production failure.",
+    "request": {
+      "message": "Compare AutoGen, LangGraph, and CrewAI as multi-agent orchestration frameworks for enterprise production use in 2025. Which would you recommend and why?"
+    },
+    "expected": {
+      "primary_evidence_role": "technical_design",
+      "unacceptable_failure_modes": [
+        "evaluates AutoGen as an actively developed framework without surfacing that Microsoft moved it to maintenance mode",
+        "recommends AutoGen without noting the Microsoft Agent Framework (AG2/0.4) transition",
+        "recommendation section treats all three frameworks as equivalently current without surfacing the AutoGen lifecycle status",
+        "buries the AutoGen deprecation/successor information in a footnote or validation note rather than in the main recommendation"
+      ],
+      "min_independent_sources": 3,
+      "notes": "The planner must run a status-check query for each named entity (Phase 6.4). A hit on AutoGen maintenance/deprecation must surface in the recommendation as a primary signal, not a footnote — the Phase 2 synthesis instruction + claim_role=official_policy should ensure this."
+    }
   }
 ]

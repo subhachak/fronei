@@ -47,7 +47,12 @@ from app.services.agent.research_profiles import (
     infer_research_profile,
     research_budget_for,
 )
-from app.services.agent.research_contracts import generate_coverage_contract
+from app.services.agent.research_contracts import (
+    generate_coverage_contract,
+    _extract_named_comparison_subjects,
+    _is_multi_subject_comparison,
+    _is_tech_entity_comparison,
+)
 from app.services.agent.research_utils import (
     _dedupe,
     _parse_json,
@@ -166,15 +171,31 @@ def plan_from_contract(
             if worker.query not in existing_queries
         ]
 
+    # Phase 6 — per-entity anchor queries + status check queries for multi-subject comparisons.
+    # These are separate from profile anchor_workers so they fire across profiles.
+    phase6_workers: list[SearchWorkerPlan] = []
+    if _is_multi_subject_comparison(request.message):
+        existing_queries_all = {w.query for w in workers} | {w.query for w in anchor_workers} | {w.query for w in domain_workers}
+        phase6_workers = [
+            w for w in _per_entity_anchor_queries(request.message, budget)
+            if w.query not in existing_queries_all
+        ]
+        if _is_tech_entity_comparison(request.message):
+            status_workers = [
+                w for w in _status_check_queries(request.message, budget)
+                if w.query not in existing_queries_all
+            ]
+            phase6_workers.extend(status_workers)
+
     if request.research_level == "deep":
         workers = _compose_deep_worker_wave(
             contract_workers=workers,
-            anchor_workers=anchor_workers,
+            anchor_workers=anchor_workers + phase6_workers,
             domain_workers=domain_workers,
             max_workers=budget.max_search_workers,
         )
-    elif anchor_workers:
-        workers = _dedupe_workers(anchor_workers[:2] + workers)[:budget.max_search_workers]
+    elif anchor_workers or phase6_workers:
+        workers = _dedupe_workers((anchor_workers + phase6_workers)[:2] + workers)[:budget.max_search_workers]
 
     return ResearchPlan(
         research_profile=profile,
@@ -876,6 +897,80 @@ def _strategy_brief_anchor_queries(original_message: str) -> list[str]:
 def _implementation_plan_anchor_queries(original_message: str) -> list[str]:
     subject = _compact_search_subject(original_message)
     return [f"{subject} implementation guide best practices", f"{subject} rollout plan milestones lessons learned"]
+
+
+def _per_entity_anchor_queries(message: str, budget: ResearchBudget) -> list[SearchWorkerPlan]:
+    """Phase 6.1 — One targeted primary-source query per named entity in a multi-subject
+    comparison request.
+
+    Guarantees each named entity gets its own dedicated search, not just a slot in a broad
+    "top N frameworks" query that may only surface 2–3 of the N by name.
+    Added alongside (not replacing) the existing anchor queries.
+    """
+    entities = _extract_named_comparison_subjects(message)
+    if len(entities) < 3:
+        return []
+    workers: list[SearchWorkerPlan] = []
+    for entity in entities:
+        # For known tech entities, prefer official docs/GitHub
+        entity_lower = entity.lower().replace(" ", "")
+        if "autogen" in entity_lower:
+            query = "AutoGen Microsoft Agent Framework official docs architecture agentchat 2025"
+        elif "haystack" in entity_lower:
+            query = f"Haystack deepset official documentation architecture pipeline agents 2025"
+        elif "llamaindex" in entity_lower or "llama" in entity_lower:
+            query = f"LlamaIndex Workflows official docs event-driven agents 2025"
+        elif "langgraph" in entity_lower:
+            query = f"LangGraph official docs architecture state graph agents site:langchain.com"
+        elif "crewai" in entity_lower:
+            query = f"CrewAI official docs role-based crew agent coordination site:docs.crewai.com"
+        else:
+            query = f"{entity} official documentation architecture overview 2025"
+        workers.append(
+            SearchWorkerPlan(
+                question=f"Per-entity anchor: {entity} primary source",
+                query=query[:220],
+                rationale=f"Phase 6 breadth guarantee: one dedicated primary-source query for {entity}.",
+                max_results=budget.max_results_per_worker,
+                discovery_domain="documentation",
+            )
+        )
+    # Cap to avoid blowing the worker budget — one per entity up to 5
+    return workers[:5]
+
+
+def _status_check_queries(message: str, budget: ResearchBudget) -> list[SearchWorkerPlan]:
+    """Phase 6.4 — One deprecation/successor/maintenance-mode query per named tech entity.
+
+    Triggered only for software/product/framework comparisons. These queries surface
+    whether any named entity has been superseded, renamed, or moved to maintenance mode
+    — the failure mode that caused AutoGen to be evaluated as actively developed when
+    Microsoft had already announced the successor.
+    """
+    if not _is_tech_entity_comparison(message):
+        return []
+    entities = _extract_named_comparison_subjects(message)
+    if len(entities) < 2:
+        return []
+    workers: list[SearchWorkerPlan] = []
+    for entity in entities[:6]:  # Cap at 6 to stay within budget
+        query = (
+            f"{entity} maintenance mode OR deprecated OR successor OR discontinued "
+            f"OR end-of-life OR EOL OR renamed OR archived 2024 2025"
+        )
+        workers.append(
+            SearchWorkerPlan(
+                question=f"Status check: {entity} deprecation / successor / lifecycle",
+                query=query[:220],
+                rationale=(
+                    f"Phase 6 status-volatility check: surface any deprecation, rename, "
+                    f"successor, or maintenance-mode event for {entity}."
+                ),
+                max_results=min(3, budget.max_results_per_worker),
+                discovery_domain="news",
+            )
+        )
+    return workers
 
 
 def _domain_discovery_workers(request: TurnRequest, profile: ResearchProfile, budget: ResearchBudget) -> list[SearchWorkerPlan]:

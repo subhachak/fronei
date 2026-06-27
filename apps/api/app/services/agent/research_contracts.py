@@ -285,12 +285,182 @@ def _is_framework_comparison_request(message: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Phase 6 — Generalized multi-subject comparison detection
+# ---------------------------------------------------------------------------
+
+# Keywords that signal a software/product/tool entity (triggers status check queries)
+_TECH_ENTITY_SIGNALS = frozenset({
+    "framework", "library", "platform", "tool", "sdk", "api", "product",
+    "service", "software", "database", "runtime", "engine", "protocol",
+})
+
+
+_COMPARISON_LEAD_VERBS = frozenset({
+    "compare", "comparing", "evaluate", "evaluating", "assess", "assessing",
+    "research", "review", "benchmark", "rank", "ranking", "contrast",
+    "analyze", "analyse", "study", "pick", "choose", "select",
+})
+
+# Words that indicate a candidate is a sentence fragment rather than a name
+_FRAGMENT_SIGNALS = re.compile(
+    r"\b(?:for|with|as|at|in|on|from|to|by|of|that|which|who|how|when|where|"
+    r"the|a|an|this|these|those|globally|distributed|production|enterprise)\b",
+    re.IGNORECASE,
+)
+
+
+def _extract_named_comparison_subjects(message: str) -> list[str]:
+    """Extract N≥3 named entities in any multi-subject comparison request.
+
+    Generalizes _extract_named_framework_subjects() to cover any domain —
+    tech products, medical treatments, companies, etc. Falls back to the
+    framework-specific extractor for AI framework comparisons.
+    """
+    # Try framework-specific path first (it has hand-tuned known-entity list)
+    framework_subjects = _extract_named_framework_subjects(message)
+    if len(framework_subjects) >= 3:
+        return framework_subjects
+
+    text = message or ""
+
+    # Look for explicit list structure: "top N X: A, B, C, D, E"
+    top_match = re.search(r"\btop\s+\d+\s+\w[\w\s]*?:\s*(.+?)(?:\.|$)", text, re.IGNORECASE)
+    region = top_match.group(1) if top_match else text
+
+    # Strip a leading comparison verb from the region
+    region = re.sub(
+        r"^\s*(?:" + "|".join(_COMPARISON_LEAD_VERBS) + r")\s+",
+        "",
+        region,
+        flags=re.IGNORECASE,
+    )
+
+    # Truncate at clause boundary: "for a", "as a", "for use", "provide for each", etc.
+    stop_match = re.search(
+        r"\bprovide for each\b|\bthen synthesize\b|\bexplain why\b|\brecommend\b"
+        r"|\bincluding\b|\bfor (?:a|an|the|use|each|globally|enterprise|production)\b"
+        r"|\bas (?:a|an|the)\b|\bto (?:determine|decide|select|choose)\b",
+        region,
+        flags=re.IGNORECASE,
+    )
+    if stop_match:
+        region = region[: stop_match.start()]
+
+    # Split on list delimiters
+    raw_candidates = re.split(r",|;|\bvs\.?\b|\bversus\b|\band\b", region)
+
+    subjects: list[str] = []
+    for raw in raw_candidates:
+        value = raw.strip(" .:-()[]\"'")
+        value = re.sub(r"^(?:and|or|the|a|an|also)\s+", "", value, flags=re.IGNORECASE).strip()
+        # Reject tokens that are empty, too short, or look like sentence fragments
+        if not value or len(value) < 2:
+            continue
+        # Reject if too long (proper names are rarely > 40 chars)
+        if len(value) > 40:
+            continue
+        # Reject multi-word phrases containing common sentence-structure words
+        words = value.split()
+        if len(words) > 3:
+            continue
+        if len(words) > 1 and _FRAGMENT_SIGNALS.search(value):
+            continue
+        # Reject if the first token is a plain comparison verb with no proper noun following
+        if words[0].lower() in _COMPARISON_LEAD_VERBS and len(words) == 1:
+            continue
+        # Accept proper nouns (contain at least one capital letter)
+        if re.search(r"[A-Z]", value):
+            subjects.append(value)
+
+    return _dedupe(subjects)[:8]
+
+
+def _is_multi_subject_comparison(message: str) -> bool:
+    """True when the request names N≥3 comparable entities in a comparison context."""
+    subjects = _extract_named_comparison_subjects(message)
+    if len(subjects) < 3:
+        return False
+    lower = (message or "").lower()
+    comparison_signals = (
+        "compare", "comparison", "top ", "for each", "recommend", "best",
+        "vs", "versus", "evaluate", "assessment", "side by side", "which",
+        "review", "rank", "ranking",
+    )
+    return any(term in lower for term in comparison_signals)
+
+
+def _is_tech_entity_comparison(message: str) -> bool:
+    """True when _is_multi_subject_comparison() fires AND the entities are software/tools.
+
+    Used to gate named-entity status check queries (Phase 6.4) — we only want to
+    run deprecation/successor queries for software products, not medical treatments
+    or financial instruments.
+    """
+    if not _is_multi_subject_comparison(message):
+        return False
+    lower = (message or "").lower()
+    # Has explicit tech-entity signals OR is already detected as framework comparison
+    return (
+        _is_framework_comparison_request(message)
+        or any(term in lower for term in _TECH_ENTITY_SIGNALS)
+    )
+
+
+def _multi_subject_comparison_contract(message: str) -> CoverageContract:
+    """Generic comparison contract: one CoverageCell per (named_subject, dimension).
+
+    Used when _is_multi_subject_comparison() fires but _is_framework_comparison_request()
+    does not — i.e. any non-AI-framework comparison with N≥3 named entities.
+    """
+    subjects = _extract_named_comparison_subjects(message)
+    lower = (message or "").lower()
+
+    # Derive dimensions from the query's explicit "for each" / "across" clauses
+    for_each_match = re.search(
+        r"\bfor each[^:]*?:\s*(.+?)(?:\.|then|$)", lower, re.IGNORECASE
+    )
+    if for_each_match:
+        dim_text = for_each_match.group(1)
+        raw_dims = [d.strip(" .,;") for d in re.split(r",|;", dim_text)]
+        dimensions = [d for d in raw_dims if 3 <= len(d) <= 60][:6]
+    else:
+        dimensions = []
+
+    if not dimensions:
+        # Generic cross-domain comparison dimensions
+        dimensions = [
+            "overview and core capability",
+            "current status and maturity",
+            "key strengths",
+            "known limitations and risks",
+            "best-fit use cases",
+        ]
+
+    cells = [
+        CoverageCell(subject=subject, dimension=dimension, required=True)
+        for subject in subjects
+        for dimension in dimensions
+    ]
+    return CoverageContract(
+        cells=cells,
+        subjects=subjects,
+        dimensions=dimensions,
+        source="profile:multi_subject_comparison",
+    )
+
+
+# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
 def generate_coverage_contract(request: TurnRequest, brief: ResearchBrief) -> CoverageContract:
     if _is_framework_comparison_request(request.message):
         return _framework_comparison_contract(request.message)
+    # Phase 6 — general multi-subject comparison: create per-(entity, dimension) cells
+    if _is_multi_subject_comparison(request.message) and brief.research_profile not in (
+        "technical_architecture", "vendor_comparison",
+    ):
+        return _multi_subject_comparison_contract(request.message)
     if brief.research_profile == "technical_architecture":
         return _technical_architecture_contract()
     if brief.research_profile == "vendor_comparison":
@@ -379,8 +549,13 @@ __all__ = [
     "COVERAGE_CONTRACT_PROMPT",
     "_derive_fallback_dimensions",
     "_derive_fallback_subjects",
+    "_extract_named_comparison_subjects",
+    "_framework_comparison_contract",
     "_implementation_plan_contract",
+    "_is_multi_subject_comparison",
+    "_is_tech_entity_comparison",
     "_market_landscape_contract",
+    "_multi_subject_comparison_contract",
     "_policy_regulatory_contract",
     "_strategy_brief_contract",
     "_technical_architecture_contract",

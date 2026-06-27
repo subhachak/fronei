@@ -367,6 +367,30 @@ def _frameworks_missing_bound_evidence(state: ResearchStateStore, frameworks: li
     return missing
 
 
+def _breadth_first_open_cells(state: ResearchStateStore) -> list:
+    """Phase 6.3 — Return open cells sorted breadth-first across named subjects.
+
+    Within a multi-subject comparison contract, a subject with ZERO filled cells is
+    "uncovered" — it should receive follow-up budget before we deepen subjects that
+    already have some coverage.  Within each tier, cells are returned in their
+    natural contract order.
+    """
+    open_cells = state.contract.open_cells()
+    if not open_cells:
+        return []
+    # Identify which subjects already have at least one filled cell
+    filled_subjects: set[str] = {
+        cell.subject
+        for cell in state.contract.cells
+        if cell.status in {"filled", "partial"}
+    }
+    # Tier 0: subjects with NO filled cells yet (completely uncovered)
+    tier0 = [c for c in open_cells if c.subject not in filled_subjects]
+    # Tier 1: subjects with some filled cells but still have gaps
+    tier1 = [c for c in open_cells if c.subject in filled_subjects]
+    return tier0 + tier1
+
+
 def _framework_gap_queries(request: TurnRequest, state: ResearchStateStore) -> list[str]:
     """Return targeted search queries for framework-comparison subjects that are absent or sparse
     in the current evidence pack.  Called before the generic cell-based fallback so the
@@ -378,8 +402,8 @@ def _framework_gap_queries(request: TurnRequest, state: ResearchStateStore) -> l
     """
     if not state.contract.source.endswith("framework_comparison"):
         return []
-    # Collect subjects that still have open cells (i.e. dimensions with no evidence)
-    open_subjects: set[str] = {cell.subject for cell in state.contract.open_cells()}
+    # Phase 6.3 — breadth-first: uncovered subjects take priority over deepening covered ones
+    open_subjects: set[str] = {cell.subject for cell in _breadth_first_open_cells(state)}
     if not open_subjects:
         return []
 
@@ -424,7 +448,8 @@ def _framework_gap_queries(request: TurnRequest, state: ResearchStateStore) -> l
 
 
 def _generic_remediation_queries(state: ResearchStateStore) -> list[str]:
-    cells = state.contract.open_cells()[:4] or state.contract.partial_cells()[:4] or state.contract.cells[:4]
+    # Phase 6.3 — breadth-first ordering within open cells
+    cells = _breadth_first_open_cells(state)[:4] or state.contract.partial_cells()[:4] or state.contract.cells[:4]
     queries: list[str] = []
     for cell in cells:
         queries.append(_targeted_query(cell.subject, [cell.dimension], state.brief.objective))
@@ -1302,9 +1327,10 @@ class LeadResearchAgent:
             and self.ledger.remaining_tool_calls() > 0
             and self.ledger.remaining_source_reads() > 0
         ):
+            # Phase 6.3 — breadth-first: prioritize uncovered named subjects before deepening
             targeted_queries = _framework_gap_queries(self.request, state) or [
                 _targeted_query(cell.subject, [cell.dimension], state.brief.objective)
-                for cell in state.contract.open_cells()[:4]
+                for cell in _breadth_first_open_cells(state)[:4]
             ] or _generic_remediation_queries(state)
             if not targeted_queries:
                 break

@@ -388,6 +388,103 @@ def test_framework_comparison_remediation_reads_primary_docs_before_synthesis():
     assert len(state.evidence.items) > 1
 
 
+def test_generic_research_remediation_runs_targeted_followup_before_synthesis():
+    from app.services.agent.research_subtree import (
+        CoverageCell,
+        CoverageContract,
+        EvidenceItem,
+        EvidencePack,
+        LeadResearchAgent,
+        ResearchBrief,
+        ResearchBudget,
+        ResearchBudgetLedger,
+        ResearchPlan,
+        ResearchStateStore,
+        SearchWorkerPlan,
+        _evidence_quality_issues,
+    )
+
+    request = TurnRequest(
+        message="Research Tavily and Exa search API pricing and production tradeoffs.",
+        research_level="regular",
+    )
+
+    class TargetedTools:
+        def __init__(self):
+            self.search_queries = []
+
+        def search_web(self, query, max_results=4):
+            self.search_queries.append(query)
+            return [
+                Source(title="Tavily pricing", url="https://tavily.com/pricing", snippet="Tavily pricing production API"),
+                Source(title="Exa pricing", url="https://exa.ai/pricing", snippet="Exa pricing search API"),
+            ], ToolCall(name="web_search", input={"query": query}, output={"provider": "FakeSearch"}, ok=True)
+
+        def extract_urls(self, urls, max_chars_per_source=3500):
+            return [
+                Source(
+                    title=url,
+                    url=url,
+                    content=(
+                        f"{url} pricing tiers, API limits, production deployment, reliability tradeoffs, "
+                        "known limitations, operational constraints, and enterprise support details."
+                    ),
+                )
+                for url in urls
+            ], ToolCall(name="read_url", input={"urls": urls}, output={"provider": "FakeExtract"}, ok=True)
+
+    state = ResearchStateStore(
+        brief=ResearchBrief(objective="Compare search API pricing and production tradeoffs", research_profile="vendor_comparison", source="heuristic"),
+        contract=CoverageContract(
+            cells=[
+                CoverageCell(subject="Tavily", dimension="pricing"),
+                CoverageCell(subject="Exa", dimension="pricing"),
+            ],
+            subjects=["Tavily", "Exa"],
+            dimensions=["pricing"],
+            source="test",
+        ),
+        plan=ResearchPlan(
+            research_profile="vendor_comparison",
+            workers=[SearchWorkerPlan(question="Compare Tavily and Exa pricing", query="Tavily Exa pricing API production")],
+            max_sources=6,
+            min_evidence_items=3,
+        ),
+        evidence=EvidencePack(
+            items=[
+                EvidenceItem(
+                    source_id="S1",
+                    title="Search API notes",
+                    url="https://example.com/nav",
+                    evidence="Skip to content Navigation menu Subscribe Previous Next.",
+                )
+            ]
+        ),
+        all_sources=[
+            Source(
+                title="Search API notes",
+                url="https://example.com/nav",
+                content="Skip to content Navigation menu Subscribe Previous Next.",
+            )
+        ],
+        budget_ledger=ResearchBudgetLedger(
+            budget=ResearchBudget(max_sources=8, max_deep_links=0, max_tool_calls=5, max_model_calls=3)
+        ),
+    )
+    tools = TargetedTools()
+    agent = LeadResearchAgent(request, tools)
+    agent.ledger = state.budget_ledger
+    agent.budget = state.budget_ledger.budget
+
+    assert _evidence_quality_issues(request, state)
+
+    agent._remediate_weak_evidence_if_needed(state)
+
+    assert tools.search_queries
+    assert len(state.evidence.items) >= 2
+    assert any("pricing" in item.evidence.lower() for item in state.evidence.items)
+
+
 def test_technical_architecture_queries_are_provider_friendly():
     from app.services.agent.research_subtree import (
         CoverageCell,

@@ -261,6 +261,26 @@
     }
   },
   {
+    "id": "ehr_vendor_comparison_generalization",
+    "category": "multi_subject_generalization",
+    "description": "Phase 8 stop condition: a non-AI-framework multi-subject comparison (EHR vendors) that should trigger the same per-subject budget scaling, per-(subject, dimension) coverage cells, and breadth-first gap filling as the AI framework case — using Phase 6 generic detection, NOT the hardcoded framework allowlist.",
+    "request": {
+      "message": "Compare Epic, Oracle Cerner, Meditech Expanse, athenahealth, and eClinicalWorks as EHR platforms for enterprise hospital deployment in 2025. For each: clinical workflow integration, interoperability standards (HL7 FHIR support), cloud deployment model, pricing model, and known implementation failure modes."
+    },
+    "expected": {
+      "primary_evidence_role": "technical_design",
+      "unacceptable_failure_modes": [
+        "2 or more of the 5 named EHR vendors receive 'no evidence found' for every dimension",
+        "multi-subject comparison contract not created (coverage cells not per-vendor)",
+        "budget does not scale beyond the plain regular budget for a 5-subject request",
+        "answer leads with a disclaimer block about missing evidence instead of delivering best-effort content per vendor"
+      ],
+      "min_sources_per_named_subject": 1,
+      "min_independent_sources": 5,
+      "notes": "This case specifically tests Phase 8.3 generalization — the generic _is_multi_subject_comparison() gate must fire for EHR vendors, not just AI frameworks. Phase 8.1 budget scaling must give this request more tool calls than a 1-subject request. Phase 8.2 disclaimer check must detect any up-front caveat block."
+    }
+  },
+  {
     "id": "named_entity_status_volatility",
     "category": "entity_status_check",
     "description": "Phase 6 anchor case: a comparison request where one named entity (AutoGen) has had a significant status change (moved to maintenance mode, Microsoft Agent Framework announced as GA successor). The system must surface this in the main recommendation, not as a footnote. Caught a real production failure.",

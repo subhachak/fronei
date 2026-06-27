@@ -30,6 +30,7 @@ from app.services.agent.research_models import (
     ResearchProfile,
     ResearchPromptTemplate,
 )
+from app.services.agent.research_contracts import _extract_named_comparison_subjects
 from app.services.agent.research_utils import _dedupe, _parse_json
 
 logger = logging.getLogger(__name__)
@@ -295,27 +296,11 @@ def research_budget_for(request: TurnRequest) -> ResearchBudget:
             max_elapsed_ms=600_000,
             max_deep_links=28,
         )
-    message_lower = request.message.lower()
-    framework_hits = sum(
-        1
-        for term in ("langgraph", "crewai", "autogen", "haystack", "llamaindex")
-        if term in message_lower
-    )
-    if "framework" in message_lower and framework_hits >= 3:
-        return ResearchBudget(
-            max_search_workers=8,
-            max_results_per_worker=8,
-            max_sources=18,
-            min_evidence_items=10,
-            repair_iterations=2,
-            judge_threshold=0.76,
-            max_tool_calls=28,
-            max_model_calls=10,
-            max_cost_usd=0.45,
-            max_elapsed_ms=240_000,
-            max_deep_links=10,
-        )
-    return ResearchBudget(
+    # Phase 8 — delete the hardcoded framework-specific budget branch (it was smaller than
+    # the plain "deep" budget — exactly the wrong direction for 5-subject comparisons).
+    # Instead, start from the standard "regular" budget and scale per named subject
+    # beyond the first 2, so a 5-subject comparison gets strictly more room.
+    base = ResearchBudget(
         max_search_workers=3,
         max_results_per_worker=6,
         max_sources=6,
@@ -328,6 +313,25 @@ def research_budget_for(request: TurnRequest) -> ResearchBudget:
         max_elapsed_ms=90_000,
         max_deep_links=2,
     )
+    named_subjects = _extract_named_comparison_subjects(request.message)
+    extra_subjects = max(0, len(named_subjects) - 2)
+    if extra_subjects > 0:
+        # +6 max_tool_calls, +4 max_deep_links, +0.20 max_cost_usd per subject beyond the first 2.
+        # Also scale workers and sources proportionally so each extra subject gets dedicated search room.
+        return ResearchBudget(
+            max_search_workers=min(10, base.max_search_workers + extra_subjects * 2),
+            max_results_per_worker=base.max_results_per_worker + 2,
+            max_sources=min(32, base.max_sources + extra_subjects * 4),
+            min_evidence_items=base.min_evidence_items + extra_subjects * 2,
+            repair_iterations=min(2, base.repair_iterations + 1),
+            judge_threshold=base.judge_threshold,
+            max_tool_calls=min(72, base.max_tool_calls + extra_subjects * 6),
+            max_model_calls=min(24, base.max_model_calls + extra_subjects * 2),
+            max_cost_usd=base.max_cost_usd + extra_subjects * 0.20,
+            max_elapsed_ms=min(600_000, base.max_elapsed_ms + extra_subjects * 30_000),
+            max_deep_links=min(28, base.max_deep_links + extra_subjects * 4),
+        )
+    return base
 
 
 def create_research_goal(request: TurnRequest) -> ResearchGoal:

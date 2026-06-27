@@ -99,7 +99,7 @@ def _framework_comparison_contract(message: str) -> CoverageContract:
         cells=cells,
         subjects=subjects,
         dimensions=dimensions,
-        source="profile:technical_architecture:framework_comparison",
+        source="profile:technical_architecture:multi_subject_comparison",
     )
 
 

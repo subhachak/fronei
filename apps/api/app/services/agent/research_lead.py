@@ -400,7 +400,9 @@ def _framework_gap_queries(request: TurnRequest, state: ResearchStateStore) -> l
     one hitting the official docs / GitHub and one hitting curated review/comparison articles.
     We cap at 4 total to stay within the judge-followup slot budget.
     """
-    if not state.contract.source.endswith("framework_comparison"):
+    # Phase 8 — check for the generalized multi_subject_comparison contract source name
+    # (renamed from framework_comparison to cover any N≥3-entity comparison domain).
+    if not state.contract.source.endswith("multi_subject_comparison"):
         return []
     # Phase 6.3 — breadth-first: uncovered subjects take priority over deepening covered ones
     open_subjects: set[str] = {cell.subject for cell in _breadth_first_open_cells(state)}

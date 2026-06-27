@@ -95,6 +95,18 @@ For each factual claim with a [S#] citation, verify:
    positions explicitly — not blend them silently.
 4. Whether the answer suppresses relevant operational_reality or anecdotal_case evidence solely
    because its source authority is lower than official sources.
+5. Phase 8 — DISCLAIMER CHECK (judgment, not phrase matching):
+   Does this answer open with an evidence-quality caveat or disclaimer block BEFORE delivering
+   substance? Examples of prohibited patterns (regardless of exact wording):
+   - Opening with a multi-paragraph block explaining what evidence is missing before the answer starts
+   - Leading with "⚠️ Critical Evidence Constraint" or "Evidence Quality Disclaimer" or any heading
+     whose purpose is to front-load doubt rather than answer the question
+   - Front-loading "There is no retrieved evidence containing..." before any substantive response
+   - Opening with "I cannot provide a complete answer because..." and then hedging
+   Allowed: brief inline disclosures WITHIN the answer ("no evidence was found for X [see coverage note]")
+   Set leads_with_disclaimer: true ONLY if the answer's dominant opening content is a disclaimer block
+   rather than a direct response to the question. If the answer leads with substance and discloses
+   gaps inline, set to false even if disclaimers appear later.
 
 Return only JSON:
 {
@@ -103,6 +115,7 @@ Return only JSON:
   "hallucinated_citations": ["S# references that appear in the answer but are not in the evidence pack"],
   "role_mismatch_issues": ["description of any official_policy vs operational_reality conflicts not named in the answer"],
   "unresolved_conflicts": ["description of any evidence conflicts silently blended rather than explicitly named"],
+  "leads_with_disclaimer": false,
   "repair_needed": true|false,
   "repair_instruction": "specific repair instruction if needed"
 }
@@ -620,12 +633,14 @@ def verify_citations_semantically(
         result = CitationVerification.model_validate(payload)
         result.hallucinated_citations = sorted(set(result.hallucinated_citations) | set(hallucinated))
         # Phase 5 — role_mismatch_issues and unresolved_conflicts trigger repair.
+        # Phase 8 — leads_with_disclaimer triggers repair (LLM judgment, not phrase list).
         result.repair_needed = bool(
             result.repair_needed
             or result.unsupported_claims
             or result.hallucinated_citations
             or result.role_mismatch_issues
             or result.unresolved_conflicts
+            or result.leads_with_disclaimer
         )
         if result.repair_needed and not result.repair_instruction:
             result.repair_instruction = _citation_repair_instruction(result)
@@ -700,6 +715,7 @@ def judge_research_final(request: TurnRequest, state: ResearchStateStore, answer
         score -= 0.05
         issues.append("Contradictions in evidence should be surfaced.")
     # Phase 5 — consume last citation verification's role/conflict signals.
+    # Phase 8 — consume leads_with_disclaimer LLM judgment field.
     citation_result = getattr(state, "last_citation_verification", None)
     if citation_result is not None:
         if citation_result.role_mismatch_issues:
@@ -708,6 +724,9 @@ def judge_research_final(request: TurnRequest, state: ResearchStateStore, answer
         if citation_result.unresolved_conflicts:
             score -= min(0.10, 0.05 * len(citation_result.unresolved_conflicts))
             issues.extend(citation_result.unresolved_conflicts)
+        if citation_result.leads_with_disclaimer:
+            score -= 0.20
+            issues.append("Answer leads with a disclaimer/caveat block before delivering substance (LLM judgment). Repair to lead with substance and disclose gaps inline.")
     score = max(0.0, min(1.0, score))
     threshold = state.plan.judge_threshold or 0.78
     if disclaimer_issues and not state.budget_ledger.stopped and state.budget_ledger.remaining_tool_calls() > 0 and state.budget_ledger.remaining_source_reads() > 0:
@@ -730,7 +749,9 @@ def judge_research_final(request: TurnRequest, state: ResearchStateStore, answer
 
 
 def _framework_comparison_completion_issues(state: ResearchStateStore, answer: str) -> list[str]:
-    if not state.contract.source.endswith("framework_comparison"):
+    # Phase 8 — renamed source suffix: framework_comparison → multi_subject_comparison.
+    # This function now covers any multi-subject comparison, not just AI frameworks.
+    if not state.contract.source.endswith("multi_subject_comparison"):
         return []
     text = answer or ""
     lower = text.lower()
@@ -741,23 +762,24 @@ def _framework_comparison_completion_issues(state: ResearchStateStore, answer: s
         if not re.search(rf"(?mi)^#+\s+(?:section\s+\d+[:.\s-]+)?{subject_pattern}\b", text):
             missing_sections.append(subject)
     if missing_sections:
-        issues.append("Framework comparison answer is incomplete; missing detailed sections for: " + ", ".join(missing_sections[:5]))
+        issues.append("Multi-subject comparison answer is incomplete; missing detailed sections for: " + ", ".join(missing_sections[:5]))
     tail = lower[-1800:]
     if not any(term in tail for term in ("final recommendation", "ranked recommendation", "recommendation matrix", "bottom line", "decision logic")):
-        issues.append("Framework comparison answer lacks a closing recommendation section near the end.")
+        issues.append("Multi-subject comparison answer lacks a closing recommendation section near the end.")
     if re.search(r"(?m)(?:^|\n)\s*[-*]\s*$|(?:\bcomponents|\bagents|\bpipelines|\bcoordination)\s*$", text.strip(), flags=re.IGNORECASE):
-        issues.append("Framework comparison answer appears to end mid-section or mid-sentence.")
+        issues.append("Multi-subject comparison answer appears to end mid-section or mid-sentence.")
     empty_subjects = _framework_subjects_with_empty_sections(state, text)
     if empty_subjects:
         issues.append(
-            "Framework comparison substitutes validation notes for requested framework detail: "
+            "Multi-subject comparison substitutes validation notes for requested detail: "
             + ", ".join(empty_subjects[:5])
         )
     return issues
 
 
 def _framework_subjects_with_empty_sections(state: ResearchStateStore, answer: str) -> list[str]:
-    if not state.contract.source.endswith("framework_comparison"):
+    # Phase 8 — now covers any multi_subject_comparison contract, not just AI frameworks.
+    if not state.contract.source.endswith("multi_subject_comparison"):
         return []
     empty_subjects: list[str] = []
     empty_patterns = (
@@ -790,48 +812,28 @@ def _framework_subjects_with_empty_sections(state: ResearchStateStore, answer: s
 
 
 def _evidence_disclaimer_issues(state: ResearchStateStore, answer: str) -> list[str]:
+    """Phase 8 — keyword phrase list REMOVED; disclaimer detection now delegated to LLM judgment
+    in verify_citations_semantically() via CitationVerification.leads_with_disclaimer.
+
+    This function retains only the structural/multi-subject checks that can be computed
+    deterministically from the answer text and contract state — specifically:
+    1. The model exposing internal research-judge instructions in the output (a different bug).
+    2. Multi-subject comparison contracts leaving too many cells as 'not in evidence'.
+    3. Provisional-recommendation signal in multi-subject comparison context.
+
+    The original phrase list (hard_disclaimer_terms + soft_disclaimer_terms) is deleted because
+    it is a keyword blocklist that doesn't generalize — the model can paraphrase around any term.
+    The LLM judgment call (leads_with_disclaimer) handles this correctly for any phrasing.
+    """
     text = answer or ""
     lower = text.lower()
     issues: list[str] = []
-    disclaimer_heading = re.search(r"(?mi)^#{1,3}\s*(?:⚠️\s*)?evidence quality disclaimer\b", text)
-    hard_disclaimer_terms = (
-        "evidence-thin",
-        "evidence thin",
-        "evidence-light",
-        "evidence light",
-        "retrieved sources are dominated by index/navigation",
-        "retrieved sources are dominated by",
-        "listicle titles",
-        "marketing scaffolding",
-        "no architecture extraction cards",
-        "single-source-anchored",
-        "thin on the specific technical detail",
-        "thin and uneven",
-        "decision-shaped but evidence",
-        "additional retrieval is needed",
-        "requesting deeper research",
-        "no substantive evidence in this pack",
-        "requires dedicated research",
-        "validation-required",
-        "no evidence in pack",
-    )
-    soft_disclaimer_terms = (
-        "evidence pack retrieved",
-        "not directly described in evidence",
-        "not described in evidence",
-        "not documented in evidence",
-        "unverified from this evidence pack",
-        "validation note",
-        "provisional recommendation",
-        "cannot be responsibly specified from this evidence",
-        "not specified in evidence",
-        "not evidenced",
-    )
-    soft_hits = sum(1 for term in soft_disclaimer_terms if term in lower)
-    if disclaimer_heading or any(term in lower for term in hard_disclaimer_terms) or soft_hits >= 3:
-        issues.append("Answer publishes an evidence-quality disclaimer instead of completing the research.")
+
+    # Structural check: model exposing internal judge instructions
     if "research judge" in lower and any(term in lower for term in ("deeper research", "deeper retrieval", "treat as a trigger")):
         issues.append("Answer exposes internal research-judge instructions instead of completing the research.")
+
+    # Structural check: multi-subject comparison contract with too many cells left empty
     not_in_evidence_count = len(
         re.findall(
             r"\bnot in evidence\b|\bnot supported by this evidence pack\b|\bno usable evidence\b|"
@@ -841,12 +843,12 @@ def _evidence_disclaimer_issues(state: ResearchStateStore, answer: str) -> list[
             lower,
         )
     )
-    if state.contract.source.endswith("framework_comparison") and not_in_evidence_count >= 4:
-        issues.append("Framework comparison leaves too many requested cells as 'not in evidence'.")
-    if state.contract.source.endswith("framework_comparison") and (
+    if state.contract.source.endswith("multi_subject_comparison") and not_in_evidence_count >= 4:
+        issues.append("Multi-subject comparison leaves too many requested cells as 'not in evidence'.")
+    if state.contract.source.endswith("multi_subject_comparison") and (
         "provisional, single-source" in lower or "provisional recommendation" in lower
     ):
-        issues.append("Framework recommendation is explicitly single-source/provisional rather than decision-grade.")
+        issues.append("Multi-subject recommendation is explicitly single-source/provisional rather than decision-grade.")
     return issues
 
 
@@ -975,22 +977,28 @@ def _status_check_queries(message: str, budget: ResearchBudget) -> list[SearchWo
 
 def _domain_discovery_workers(request: TurnRequest, profile: ResearchProfile, budget: ResearchBudget) -> list[SearchWorkerPlan]:
     subject = _compact_search_subject(request.message)
-    if profile == "technical_architecture" and _is_framework_comparison_request(request.message):
+    # Phase 8 — generalized: use _is_multi_subject_comparison() (via _is_framework_comparison_request alias)
+    # so this path fires for any N≥3 named-entity comparison in technical_architecture context,
+    # not just the hardcoded AI framework list.
+    if profile == "technical_architecture" and _is_multi_subject_comparison(request.message):
         workers: list[SearchWorkerPlan] = []
-        for framework in _extract_named_framework_subjects(request.message)[:4]:
-            query = f"{framework} official docs architecture workflow agents production deployment"
-            if framework.lower() == "autogen":
+        # Use generic subject extraction first; fall back to framework-specific extractor if that yields more
+        subjects = _extract_named_comparison_subjects(request.message)
+        for framework in subjects[:5]:
+            query = f"{framework} official docs architecture workflow production deployment 2025"
+            # Retain the AutoGen-specific query since it's high-signal for the status-volatility case
+            if framework.lower() in ("autogen", "ag2"):
                 query = "AutoGen Microsoft Agent Framework official migration maintenance agentchat core group chat"
             workers.append(
                 SearchWorkerPlan(
                     question=f"Domain lane: official architecture and production evidence for {framework}",
                     query=query,
-                    rationale="Prioritize primary documentation and lifecycle evidence for framework comparison.",
+                    rationale="Prioritize primary documentation and lifecycle evidence for multi-subject comparison.",
                     max_results=budget.max_results_per_worker,
                     discovery_domain="documentation",
                 )
             )
-        return workers[: max(0, min(4, budget.max_search_workers))]
+        return workers[: max(0, min(5, budget.max_search_workers))]
     if profile == "vendor_comparison" and _llm_vendor_comparison_subject(request.message):
         return [
             SearchWorkerPlan(question="Domain lane: OpenAI official model and pricing evidence", query="site:platform.openai.com/docs/models OR site:openai.com/api/pricing OpenAI GPT API models pricing chatbot", rationale="Find OpenAI-owned model catalog and pricing evidence.", max_results=budget.max_results_per_worker, discovery_domain="primary"),
@@ -1149,11 +1157,12 @@ def _extract_named_framework_subjects(message: str) -> list[str]:
 
 
 def _is_framework_comparison_request(message: str) -> bool:
-    subjects = _extract_named_framework_subjects(message)
-    if len(subjects) < 3:
-        return False
-    lower = (message or "").lower()
-    return any(term in lower for term in ("compare", "top ", "for each", "recommend", "best", "enterprise", "production"))
+    """Phase 8 — now delegates to the generic _is_multi_subject_comparison() from Phase 6.
+    The framework-name allowlist is no longer the primary gate; it's one optional input
+    to subject extraction. This function is kept as an alias so call sites throughout
+    the planner continue to work without renaming every caller.
+    """
+    return _is_multi_subject_comparison(message)
 
 
 def _llm_vendor_comparison_subject(message: str) -> bool:

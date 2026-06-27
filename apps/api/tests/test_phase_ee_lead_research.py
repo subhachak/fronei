@@ -59,7 +59,8 @@ def test_framework_comparison_gets_entity_dimension_contract():
 
     contract = generate_coverage_contract(request, brief)
 
-    assert contract.source.endswith("framework_comparison")
+    # Phase 8 — source renamed from framework_comparison to multi_subject_comparison
+    assert contract.source.endswith("multi_subject_comparison")
     assert contract.subjects == ["LangGraph", "CrewAI", "AutoGen", "Haystack", "LlamaIndex Workflows"]
     assert "architecture model" in contract.dimensions
     assert "production readiness and deployment model" in contract.dimensions
@@ -94,7 +95,8 @@ def test_framework_comparison_overrides_strategy_brief_profile():
     contract = generate_coverage_contract(request, brief)
     plan = plan_from_contract(request, contract, budget)
 
-    assert contract.source.endswith("framework_comparison")
+    # Phase 8 — source renamed; budget now scales per named subject (5 subjects → extra_subjects=3 → +12 sources)
+    assert contract.source.endswith("multi_subject_comparison")
     assert contract.subjects == ["LangGraph", "CrewAI", "AutoGen", "Haystack", "LlamaIndex Workflows"]
     assert plan.research_profile == "technical_architecture"
     assert budget.max_sources >= 18
@@ -194,7 +196,8 @@ def test_framework_comparison_judge_rejects_truncated_answer():
         ],
         subjects=["LangGraph", "CrewAI", "AutoGen", "Haystack", "LlamaIndex Workflows"],
         dimensions=["architecture model"],
-        source="profile:technical_architecture:framework_comparison",
+        # Phase 8 — source renamed from framework_comparison to multi_subject_comparison
+        source="profile:technical_architecture:multi_subject_comparison",
     )
     evidence = EvidencePack(
         items=[
@@ -255,7 +258,8 @@ def test_framework_comparison_judge_rejects_evidence_disclaimer_answer():
         ],
         subjects=subjects,
         dimensions=["architecture model", "production readiness and deployment model"],
-        source="profile:technical_architecture:framework_comparison",
+        # Phase 8 — source renamed from framework_comparison to multi_subject_comparison
+        source="profile:technical_architecture:multi_subject_comparison",
     )
     state = ResearchStateStore(
         brief=ResearchBrief(objective="Compare frameworks", research_profile="technical_architecture", source="heuristic"),
@@ -312,8 +316,10 @@ This is a provisional, single-source-anchored recommendation.
 
     assert verdict.next_action == "research_more"
     assert verdict.can_publish is False
-    assert any("evidence-quality disclaimer" in issue for issue in verdict.issues)
+    # Phase 8 — disclaimer detection now uses 'not in evidence' count check (deterministic)
+    # rather than the old phrase blocklist. The issue message now mentions "Multi-subject comparison".
     assert any("not in evidence" in issue for issue in verdict.issues)
+    assert any("Multi-subject" in issue or "not in evidence" in issue for issue in verdict.issues)
 
 
 def test_framework_comparison_judge_rejects_subtle_evidence_light_answer():
@@ -339,7 +345,8 @@ def test_framework_comparison_judge_rejects_subtle_evidence_light_answer():
         ],
         subjects=subjects,
         dimensions=["architecture model", "production readiness and deployment model"],
-        source="profile:technical_architecture:framework_comparison",
+        # Phase 8 — source renamed from framework_comparison to multi_subject_comparison
+        source="profile:technical_architecture:multi_subject_comparison",
     )
     state = ResearchStateStore(
         brief=ResearchBrief(objective="Compare frameworks", research_profile="technical_architecture", source="heuristic"),
@@ -389,8 +396,10 @@ LangGraph remains the provisional recommendation [S1].
 
     assert verdict.next_action == "research_more"
     assert verdict.can_publish is False
-    assert any("evidence-quality disclaimer" in issue for issue in verdict.issues)
+    # Phase 8 — "evidence-quality disclaimer" phrase removed from issue messages;
+    # deterministic checks now surface "not in evidence" count and "research-judge instructions" instead.
     assert any("research-judge instructions" in issue for issue in verdict.issues)
+    assert any("not in evidence" in issue or "Multi-subject" in issue for issue in verdict.issues)
 
 
 def test_framework_comparison_judge_rejects_empty_framework_rows_with_validation_notes():
@@ -416,7 +425,8 @@ def test_framework_comparison_judge_rejects_empty_framework_rows_with_validation
         ],
         subjects=subjects,
         dimensions=["architecture model", "multi-agent coordination approach", "production readiness", "known failure modes"],
-        source="profile:technical_architecture:framework_comparison",
+        # Phase 8 — source renamed from framework_comparison to multi_subject_comparison
+        source="profile:technical_architecture:multi_subject_comparison",
     )
     state = ResearchStateStore(
         brief=ResearchBrief(objective="Compare frameworks", research_profile="technical_architecture", source="heuristic"),
@@ -468,7 +478,8 @@ Default choice: LangGraph [S1].
 
     assert verdict.next_action == "research_more"
     assert verdict.can_publish is False
-    assert any("validation notes for requested framework detail" in issue for issue in verdict.issues)
+    # Phase 8 — "framework detail" renamed to "requested detail" in issue message (now covers all domains)
+    assert any("validation notes for requested detail" in issue for issue in verdict.issues)
 
 
 def test_framework_comparison_detects_thin_evidence_and_remediation_urls():

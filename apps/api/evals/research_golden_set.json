@@ -1,0 +1,243 @@
+[
+  {
+    "id": "h4_ead_operational_anchor",
+    "category": "immigration_operational",
+    "description": "Anchor case: H-4 EAD timing is an operational-reality claim. Official USCIS SLA describes the target, not the outcome. Practitioner/anecdotal evidence should be primary.",
+    "request": {
+      "message": "How long is H-4 and H-4 EAD currently taking when filed with H-1B renewal on premium processing?"
+    },
+    "expected": {
+      "primary_evidence_role": "operational_reality",
+      "unacceptable_failure_modes": [
+        "cites only official USCIS SLA as the answer to how long it takes",
+        "presents USCIS 15-day premium SLA as the H-4 EAD processing time",
+        "no practitioner or forum evidence in the final answer"
+      ],
+      "min_independent_sources": 2,
+      "notes": "The correct answer cites recent practitioner reports (e.g., 4-8 months) as the primary figure, with the official SLA given as context only."
+    }
+  },
+  {
+    "id": "h1b_cap_policy",
+    "category": "immigration_policy",
+    "description": "Pure policy claim: H-1B cap and lottery rules are official policy. Anecdotes about lottery outcomes should not override official rules as the primary answer.",
+    "request": {
+      "message": "What is the annual H-1B visa cap and how does the lottery selection work?"
+    },
+    "expected": {
+      "primary_evidence_role": "official_policy",
+      "unacceptable_failure_modes": [
+        "presents individual lottery anecdotes as the primary explanation of the cap rules",
+        "does not cite official USCIS source for the cap number",
+        "cites only forum discussion instead of official policy"
+      ],
+      "min_independent_sources": 1
+    }
+  },
+  {
+    "id": "anecdote_noisy_outlier",
+    "category": "operational_noisy",
+    "description": "Anecdotal evidence exists but is noisy/outlier — one extreme case. System should hedge, cite consensus, and not adopt a single outlier as the primary answer.",
+    "request": {
+      "message": "How long does PERM labor certification typically take right now?"
+    },
+    "expected": {
+      "primary_evidence_role": "operational_reality",
+      "unacceptable_failure_modes": [
+        "adopts a single anecdote (e.g. approved in 3 months) as the definitive answer without disclosing that it is an outlier",
+        "presents a single forum post as consensus",
+        "no hedging or range when variance is known to be high"
+      ],
+      "min_independent_sources": 3,
+      "notes": "The answer should give a range reflecting practitioner consensus, not elevate one data point."
+    }
+  },
+  {
+    "id": "anecdote_only_available_signal",
+    "category": "operational_primary",
+    "description": "Anecdotal evidence is the only available signal (no official timeline data exists). It should become primary by necessity, not be suppressed for lacking an official source.",
+    "request": {
+      "message": "What is the real-world experience of getting an I-485 interview waived at a USCIS field office in 2025?"
+    },
+    "expected": {
+      "primary_evidence_role": "anecdotal_case",
+      "unacceptable_failure_modes": [
+        "refuses to answer or heavily disclaims because only anecdotal evidence is available",
+        "surfaces no practitioner experience because official data is absent",
+        "labels the answer unusable because it lacks official sources"
+      ],
+      "min_independent_sources": 2,
+      "notes": "Anecdotal evidence from multiple independent sources IS the best available signal here."
+    }
+  },
+  {
+    "id": "conflicting_sources_official_vs_practitioner",
+    "category": "conflict",
+    "description": "Official source says X (SLA / target), recent practitioner reports say Y (actual outcome). Both must appear in the answer, not silently blended.",
+    "request": {
+      "message": "How long does a National Interest Waiver (NIW) I-140 take to get approved after filing?"
+    },
+    "expected": {
+      "primary_evidence_role": "operational_reality",
+      "unacceptable_failure_modes": [
+        "blends official processing time estimate and practitioner wait times into one hedged claim without naming the disagreement",
+        "cites only USCIS published processing times without noting whether practitioners report different outcomes",
+        "presents official estimate as the definitive answer"
+      ],
+      "notes": "Both the official estimate and practitioner reports should be stated explicitly as distinct positions."
+    }
+  },
+  {
+    "id": "stale_high_ranking_source",
+    "category": "freshness",
+    "description": "A high-authority source (e.g. law firm site) has a 2021 processing time for a volatile immigration queue. It should be downweighted or flagged as potentially stale for an operational claim.",
+    "request": {
+      "message": "What is the current processing time for a green card through marriage to a US citizen?"
+    },
+    "expected": {
+      "primary_evidence_role": "operational_reality",
+      "unacceptable_failure_modes": [
+        "cites a 2021 or 2022 processing time as current without flagging staleness",
+        "presents outdated practitioner data from 2+ years ago as the current state",
+        "does not note that USCIS processing times change frequently"
+      ],
+      "notes": "Fresh evidence (2024-2025) should be preferred; stale evidence should be flagged as historical or downweighted."
+    }
+  },
+  {
+    "id": "official_source_unknown_date_admissible",
+    "category": "freshness",
+    "description": "Official USCIS policy page with no visible 'last updated' date. Topic is policy (not operational timing). Unknown date must NOT cause it to be downranked as stale — policy from an authoritative source without a date is still admissible.",
+    "request": {
+      "message": "What are the eligibility requirements for H-4 EAD authorization?"
+    },
+    "expected": {
+      "primary_evidence_role": "official_policy",
+      "unacceptable_failure_modes": [
+        "refuses to use or heavily discounts an official USCIS page because it lacks a visible publication date",
+        "treats unknown date as equivalent to stale date for a policy claim",
+        "omits official policy details because the official source has no timestamp"
+      ],
+      "notes": "Unknown date + official domain = admissible for policy claims. Only known-old + current-operational = penalized."
+    }
+  },
+  {
+    "id": "simple_current_fact_low_stakes",
+    "category": "simple_fact",
+    "description": "Simple, low-stakes current fact: the current USCIS filing fee for an I-765. Expect a quick, cited answer from an official source.",
+    "request": {
+      "message": "What is the current USCIS filing fee for Form I-765?"
+    },
+    "expected": {
+      "primary_evidence_role": "official_policy",
+      "unacceptable_failure_modes": [
+        "gives a fee from an outdated fee schedule without noting it may have changed",
+        "no citation to USCIS official source"
+      ],
+      "min_independent_sources": 1,
+      "notes": "This is a quick-path, low-depth case. Over-engineering is not expected."
+    }
+  },
+  {
+    "id": "duplicate_source_independence_check",
+    "category": "independence",
+    "description": "The same article content about a processing time is reposted/syndicated on two different domains. The system must not count them as 2 independent corroborating sources.",
+    "request": {
+      "message": "What are practitioners currently reporting about O-1A visa processing times in 2025?"
+    },
+    "expected": {
+      "primary_evidence_role": "operational_reality",
+      "unacceptable_failure_modes": [
+        "counts two copies of the same syndicated article on different domains as two independent data points",
+        "claims '3 independent sources confirm X' when two are from the same original content"
+      ],
+      "notes": "The independence proxy (source_family + content_fingerprint) should detect same-content reposts and prevent double-counting."
+    }
+  },
+  {
+    "id": "medical_drug_side_effects_current",
+    "category": "medical",
+    "description": "Current reported side effects of a recently approved drug. Both FDA labeling (official_policy) and post-market patient reports (operational_reality/anecdotal_case) are valid. Neither should be silenced.",
+    "request": {
+      "message": "What side effects are patients currently reporting for tirzepatide (Zepbound/Mounjaro) in real-world use?"
+    },
+    "expected": {
+      "primary_evidence_role": "anecdotal_case",
+      "unacceptable_failure_modes": [
+        "cites only the FDA label as the answer to real-world patient experience",
+        "suppresses patient forums/reports because they are anecdotal",
+        "does not distinguish between label side effects and post-market reports"
+      ],
+      "min_independent_sources": 2
+    }
+  },
+  {
+    "id": "financial_earnings_timing",
+    "category": "financial",
+    "description": "Current earnings timeline for a public company. Official filings are official_policy; analyst commentary is expert_interpretation. Investor community reports of forward guidance reactions are operational_reality.",
+    "request": {
+      "message": "When is Tesla expected to report Q2 2025 earnings and what are analysts currently expecting?"
+    },
+    "expected": {
+      "primary_evidence_role": "expert_interpretation",
+      "unacceptable_failure_modes": [
+        "conflates official filing schedule with analyst consensus estimates without distinguishing them",
+        "presents a single analyst estimate as consensus without noting range"
+      ],
+      "min_independent_sources": 2
+    }
+  },
+  {
+    "id": "tech_product_feature_current",
+    "category": "tech_product",
+    "description": "Current capability claim for a software product that ships frequently. Official docs may lag latest release. User reports / changelogs are operational_reality.",
+    "request": {
+      "message": "Does Claude claude-opus-4 currently support tool use / function calling via the API?"
+    },
+    "expected": {
+      "primary_evidence_role": "official_policy",
+      "unacceptable_failure_modes": [
+        "contradicts official Anthropic documentation by relying solely on third-party blog post",
+        "does not cite official API docs at all",
+        "presents stale API capability info (from 2023) as current"
+      ],
+      "min_independent_sources": 1,
+      "notes": "Official docs are the right primary source for product capabilities."
+    }
+  },
+  {
+    "id": "tech_product_runtime_experience",
+    "category": "tech_product_operational",
+    "description": "Operational experience with a tech product at scale — latency, reliability, real-world cost. Official benchmarks (official_policy) are targets; practitioner reports are operational_reality.",
+    "request": {
+      "message": "What latency and reliability are developers actually experiencing with the OpenAI GPT-4o API in production in 2025?"
+    },
+    "expected": {
+      "primary_evidence_role": "operational_reality",
+      "unacceptable_failure_modes": [
+        "cites only OpenAI SLA or benchmark as the answer to real-world latency",
+        "presents no practitioner/developer reports",
+        "treats all latency claims as equally reliable regardless of source"
+      ],
+      "min_independent_sources": 2
+    }
+  },
+  {
+    "id": "conflicting_medical_guidance",
+    "category": "medical_conflict",
+    "description": "Medical guidance where official guidelines differ from emerging research or recent practitioner experience. Both must be stated explicitly.",
+    "request": {
+      "message": "What does current evidence say about the effectiveness of continuous glucose monitors for non-diabetic people trying to optimize metabolism?"
+    },
+    "expected": {
+      "primary_evidence_role": "expert_interpretation",
+      "unacceptable_failure_modes": [
+        "presents only official clinical guidelines without noting the emerging practitioner/research landscape",
+        "presents only anecdotal wellness influencer reports without noting the lack of RCT evidence",
+        "blends official guidance and emerging research into one hedged statement without labeling the source of each"
+      ],
+      "min_independent_sources": 3,
+      "notes": "The answer must distinguish: official clinical guidelines, academic RCT evidence, and real-world practitioner/biohacker reports — stating each as a distinct position."
+    }
+  }
+]

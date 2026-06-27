@@ -80,15 +80,24 @@ If a cell has repeated targeted attempts and still has no public evidence, stop 
 
 CITATION_VERIFICATION_PROMPT = """You are the Fronei citation verification agent.
 
-You will be given a synthesized answer and an evidence pack. For each factual claim with a [S#] citation, verify:
+You will be given a synthesized answer, an evidence pack, and optionally the expected primary claim role.
+
+For each factual claim with a [S#] citation, verify:
 1. The source [S#] exists in the evidence pack.
 2. The quoted source text supports the specific claim.
+3. Whether the answer correctly handles role conflicts: if official_policy and operational_reality
+   sources disagree (e.g. official SLA vs. practitioner wait times), the answer MUST name both
+   positions explicitly — not blend them silently.
+4. Whether the answer suppresses relevant operational_reality or anecdotal_case evidence solely
+   because its source authority is lower than official sources.
 
 Return only JSON:
 {
   "verified_claims": 0,
   "unsupported_claims": ["claims where citation does not support the claim"],
   "hallucinated_citations": ["S# references that appear in the answer but are not in the evidence pack"],
+  "role_mismatch_issues": ["description of any official_policy vs operational_reality conflicts not named in the answer"],
+  "unresolved_conflicts": ["description of any evidence conflicts silently blended rather than explicitly named"],
   "repair_needed": true|false,
   "repair_instruction": "specific repair instruction if needed"
 }
@@ -180,6 +189,7 @@ def plan_from_contract(
         repair_iterations=budget.repair_iterations,
         guardrails=create_research_goal(request).guardrails,
         source="contract",
+        expected_primary_role=_infer_primary_role_hint(request.message),
     )
 
 
@@ -543,6 +553,7 @@ def verify_citations_semantically(
     evidence,
     *,
     overrides: dict[str, str] | None = None,
+    expected_primary_role: str | None = None,
 ) -> CitationVerification:
     if not answer or not evidence.items:
         return CitationVerification(source="skipped")
@@ -561,21 +572,40 @@ def verify_citations_semantically(
             fallback_system_prompt=CITATION_VERIFICATION_PROMPT,
             variables=["answer", "evidence_pack"],
         )
+        user_payload: dict = {
+            "answer": answer[:10000],
+            "evidence_pack": list(evidence_index.values()),
+            "hallucinated_citations_detected": hallucinated,
+        }
+        # Phase 5 — pass role context so the verifier can check role conflicts.
+        if expected_primary_role:
+            user_payload["expected_primary_role"] = expected_primary_role
+        # Include a summary of claim roles present to help the verifier spot conflicts.
+        claim_roles = sorted({c.claim_role for c in (evidence.claims or [])})
+        if claim_roles:
+            user_payload["claim_roles_in_evidence"] = claim_roles
         response = model_client.complete(
             [
                 {"role": "system", "content": prompt.system_prompt},
-                {"role": "user", "content": json.dumps({"answer": answer[:10000], "evidence_pack": list(evidence_index.values()), "hallucinated_citations_detected": hallucinated}, ensure_ascii=False)},
+                {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
             ],
             role="citation_verifier",
             quality_mode="standard",
             overrides=overrides,
-            max_tokens=700,
+            max_tokens=900,
             timeout_s=20,
         )
         payload = _parse_json(response.text)
         result = CitationVerification.model_validate(payload)
         result.hallucinated_citations = sorted(set(result.hallucinated_citations) | set(hallucinated))
-        result.repair_needed = bool(result.repair_needed or result.unsupported_claims or result.hallucinated_citations)
+        # Phase 5 — role_mismatch_issues and unresolved_conflicts trigger repair.
+        result.repair_needed = bool(
+            result.repair_needed
+            or result.unsupported_claims
+            or result.hallucinated_citations
+            or result.role_mismatch_issues
+            or result.unresolved_conflicts
+        )
         if result.repair_needed and not result.repair_instruction:
             result.repair_instruction = _citation_repair_instruction(result)
         result.model_used = response.model_used
@@ -648,6 +678,15 @@ def judge_research_final(request: TurnRequest, state: ResearchStateStore, answer
     if state.evidence.contradictions:
         score -= 0.05
         issues.append("Contradictions in evidence should be surfaced.")
+    # Phase 5 — consume last citation verification's role/conflict signals.
+    citation_result = getattr(state, "last_citation_verification", None)
+    if citation_result is not None:
+        if citation_result.role_mismatch_issues:
+            score -= min(0.12, 0.06 * len(citation_result.role_mismatch_issues))
+            issues.extend(citation_result.role_mismatch_issues)
+        if citation_result.unresolved_conflicts:
+            score -= min(0.10, 0.05 * len(citation_result.unresolved_conflicts))
+            issues.extend(citation_result.unresolved_conflicts)
     score = max(0.0, min(1.0, score))
     threshold = state.plan.judge_threshold or 0.78
     if disclaimer_issues and not state.budget_ledger.stopped and state.budget_ledger.remaining_tool_calls() > 0 and state.budget_ledger.remaining_source_reads() > 0:
@@ -1152,6 +1191,62 @@ def _citation_repair_instruction(result: CitationVerification) -> str:
 # Plan construction helpers
 # ---------------------------------------------------------------------------
 
+def _infer_primary_role_hint(message: str) -> str | None:
+    """Heuristic: return the expected dominant claim role for this query.
+
+    Used by Phase 4 (diversity backfill) and Phase 5 (citation verifier context).
+    Returns None when no strong signal is present — callers must treat None as
+    "no preference", not as background_context.
+    """
+    lower = message.lower()
+
+    # Operational/experiential signals: "how long", "actually", "in practice", etc.
+    operational_patterns = [
+        r"\bhow long\b", r"\bactual(ly)?\b", r"\bin practice\b",
+        r"\breal.world\b", r"\bexperience\b", r"\bprocessing time\b",
+        r"\bwait time\b", r"\bbacklog\b", r"\bcurrently taking\b",
+        r"\bpeople (are|have been) reporting\b",
+        r"\bpractitioner\b",
+    ]
+    anecdotal_patterns = [
+        r"\bforum\b", r"\breddit\b", r"\bcommunity (reports?|experience)\b",
+        r"\breal.world experience\b", r"\bpeople (report|say|claim)\b",
+        r"\bwhat (do|are) (people|users|developers|applicants)\b",
+        r"\breally happening\b",
+    ]
+    policy_patterns = [
+        r"\beligibilit(y|ies)\b", r"\brequirement\b", r"\bpolic(y|ies)\b",
+        r"\bregulat(ion|ory)\b", r"\bofficial\b", r"\bUSCIS\b", r"\blaw\b",
+        r"\bstatut(e|ory)\b", r"\bfiling fee\b", r"\bform [A-Z0-9\-]+\b",
+    ]
+    expert_patterns = [
+        r"\banalyst\b", r"\bexpect(ation|ed)?\b", r"\bconsensus\b",
+        r"\bforecast\b", r"\bprediction\b",
+    ]
+
+    op_hits = sum(1 for p in operational_patterns if re.search(p, lower))
+    anec_hits = sum(1 for p in anecdotal_patterns if re.search(p, lower))
+    policy_hits = sum(1 for p in policy_patterns if re.search(p, lower))
+    expert_hits = sum(1 for p in expert_patterns if re.search(p, lower))
+
+    # Anecdotal wins if explicit forum/community signals present and no strong policy signal.
+    if anec_hits >= 2 and policy_hits == 0:
+        return "anecdotal_case"
+    # Operational wins if timing/practice signals dominate.
+    if op_hits >= 2:
+        return "operational_reality"
+    if op_hits >= 1 and policy_hits == 0:
+        return "operational_reality"
+    # Policy wins if eligibility/requirements language dominates.
+    if policy_hits >= 2 and op_hits == 0:
+        return "official_policy"
+    # Expert interpretation.
+    if expert_hits >= 2 and op_hits <= 1:
+        return "expert_interpretation"
+
+    return None
+
+
 def _fallback_plan(request: TurnRequest, goal: ResearchGoal | None = None) -> ResearchPlan:
     goal = goal or create_research_goal(request)
     profile = infer_research_profile(request.message)
@@ -1171,6 +1266,7 @@ def _fallback_plan(request: TurnRequest, goal: ResearchGoal | None = None) -> Re
         repair_iterations=goal.budget.repair_iterations,
         guardrails=goal.guardrails,
         source="heuristic",
+        expected_primary_role=_infer_primary_role_hint(request.message),
     )
 
 
@@ -1202,6 +1298,9 @@ def _normalize_plan(plan: ResearchPlan, request: TurnRequest, goal: ResearchGoal
     plan.repair_iterations = max(0, min(goal.budget.repair_iterations, int(plan.repair_iterations or 0)))
     plan.guardrails = plan.guardrails or goal.guardrails
     plan.goal_id = plan.goal_id or goal.id
+    # Phase 4 — preserve an LLM-assigned role if present; fall back to heuristic.
+    if not plan.expected_primary_role:
+        plan.expected_primary_role = _infer_primary_role_hint(request.message)
     for worker in plan.workers:
         worker.max_results = max(1, min(goal.budget.max_results_per_worker, int(worker.max_results or goal.budget.max_results_per_worker)))
     return plan

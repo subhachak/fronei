@@ -335,11 +335,20 @@ def _extract_named_comparison_subjects(message: str) -> list[str]:
         flags=re.IGNORECASE,
     )
 
-    # Truncate at clause boundary: "for a", "as a", "for use", "provide for each", etc.
+    # Phase 10 — extended sentence-boundary truncation.
+    # Added: "covering", "across", "spanning" (dimension-list lead-ins);
+    #        "as <Category> platforms/tools/systems/..." (role/class descriptors);
+    #        "on" followed by what looks like a dimension list ("on durability, performance...").
+    # These patterns dominate real comparison queries and were causing candidates like
+    # "eClinicalWorks as EHR platforms" and "Azure Blob Storage on durability" to
+    # survive as oversized 4-word fragments that the > 3 words filter then discarded.
     stop_match = re.search(
         r"\bprovide for each\b|\bthen synthesize\b|\bexplain why\b|\brecommend\b"
         r"|\bincluding\b|\bfor (?:a|an|the|use|each|globally|enterprise|production)\b"
-        r"|\bas (?:a|an|the)\b|\bto (?:determine|decide|select|choose)\b",
+        r"|\bas (?:a|an|the)\b|\bto (?:determine|decide|select|choose)\b"
+        r"|\bcovering\b|\bacross\b|\bspanning\b"
+        r"|\bon\b(?=\s+\w+(?:,|\s+and\b))"
+        r"|\bas (?:[A-Z][A-Za-z]*\s+)?(?:platforms?|tools?|systems?|solutions?|vendors?|products?|providers?|frameworks?|services?|options?|databases?|stacks?)\b",
         region,
         flags=re.IGNORECASE,
     )
@@ -349,27 +358,37 @@ def _extract_named_comparison_subjects(message: str) -> list[str]:
     # Split on list delimiters
     raw_candidates = re.split(r",|;|\bvs\.?\b|\bversus\b|\band\b", region)
 
-    subjects: list[str] = []
+    # Phase 10 — first pass: collect all structurally valid candidates, note which have capitals.
+    # We use this to infer proper-noun-hood from list position for intentionally-lowercase
+    # product names like "athenahealth" or "eClinicalWorks" (which has an interior capital,
+    # but genuinely lowercase product names like "athenahealth" have none).
+    pre_subjects: list[str] = []
     for raw in raw_candidates:
         value = raw.strip(" .:-()[]\"'")
         value = re.sub(r"^(?:and|or|the|a|an|also)\s+", "", value, flags=re.IGNORECASE).strip()
-        # Reject tokens that are empty, too short, or look like sentence fragments
         if not value or len(value) < 2:
             continue
-        # Reject if too long (proper names are rarely > 40 chars)
         if len(value) > 40:
             continue
-        # Reject multi-word phrases containing common sentence-structure words
         words = value.split()
         if len(words) > 3:
             continue
         if len(words) > 1 and _FRAGMENT_SIGNALS.search(value):
             continue
-        # Reject if the first token is a plain comparison verb with no proper noun following
         if words[0].lower() in _COMPARISON_LEAD_VERBS and len(words) == 1:
             continue
-        # Accept proper nouns (contain at least one capital letter)
-        if re.search(r"[A-Z]", value):
+        pre_subjects.append(value)
+
+    # Phase 10 — if ≥2 siblings have a capital letter, this is a proper-noun list context.
+    # Accept all candidates that pass structural checks, not just those with a capital —
+    # intentionally-lowercase product names (e.g. athenahealth) appear in proper-noun lists.
+    capital_count = sum(1 for v in pre_subjects if re.search(r"[A-Z]", v))
+    list_is_proper_noun_context = capital_count >= 2
+
+    subjects: list[str] = []
+    for value in pre_subjects:
+        has_capital = bool(re.search(r"[A-Z]", value))
+        if has_capital or list_is_proper_noun_context:
             subjects.append(value)
 
     return _dedupe(subjects)[:8]

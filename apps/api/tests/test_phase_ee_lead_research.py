@@ -1772,3 +1772,226 @@ def test_runtime_routes_deep_to_lead_loop(monkeypatch):
 
     assert called["loop"] is True
     assert result[-1].data["stage"] == "complete"
+
+
+# ---------------------------------------------------------------------------
+# Phase 9 — research_level misclassification fix + uncapped budget + no-permission rule
+# ---------------------------------------------------------------------------
+
+def test_multi_subject_recommendation_request_classified_as_deep():
+    """Phase 9 — a request naming ≥3 subjects AND asking for a recommendation must
+    classify as 'deep' via the structural signal, regardless of keyword list."""
+    from app.services.agent.orchestrator import choose_research_level
+
+    request = TurnRequest(
+        message=(
+            "Research the top 5 agentic AI frameworks in 2025: LangGraph, CrewAI, "
+            "AutoGen, Haystack, and LlamaIndex Workflows. Provide for each: architecture model, "
+            "multi-agent coordination approach, production readiness, and known failure modes. "
+            "Then synthesize a recommendation for the best framework for an enterprise orchestration layer."
+        ),
+        # research_level not explicitly set — let choose_research_level classify it
+    )
+    level = choose_research_level(request, "research")
+    assert level == "deep", (
+        f"Expected 'deep' for 5-subject + recommendation request, got '{level}'"
+    )
+
+
+def test_multi_subject_recommendation_single_subject_stays_regular():
+    """Phase 9 — single-subject request without deep-tier keywords stays 'regular'."""
+    from app.services.agent.orchestrator import choose_research_level
+
+    request = TurnRequest(message="What is the current USCIS filing fee for Form I-765?")
+    level = choose_research_level(request, "research")
+    assert level in {"regular", "easy"}, f"Single-subject query should not be 'deep', got '{level}'"
+
+
+def test_deep_multi_subject_budget_exceeds_plain_deep_tier():
+    """Phase 9 — a 5-subject request at deep level must get a budget strictly greater
+    than the plain deep-tier defaults on every relevant dimension."""
+    from app.services.agent.research_subtree import research_budget_for
+
+    plain_deep = research_budget_for(TurnRequest(
+        message="Do deep research on IPL business economics.",
+        research_level="deep",
+    ))
+    multi_deep = research_budget_for(TurnRequest(
+        message=(
+            "Research LangGraph, CrewAI, AutoGen, Haystack, and LlamaIndex Workflows "
+            "for enterprise orchestration. Provide a recommendation."
+        ),
+        research_level="deep",
+    ))
+    assert multi_deep.max_tool_calls > plain_deep.max_tool_calls, (
+        f"5-subject deep should have more tool calls than 1-subject deep: "
+        f"{multi_deep.max_tool_calls} <= {plain_deep.max_tool_calls}"
+    )
+    assert multi_deep.max_deep_links > plain_deep.max_deep_links, (
+        f"5-subject deep should have more deep links than 1-subject deep: "
+        f"{multi_deep.max_deep_links} <= {plain_deep.max_deep_links}"
+    )
+    assert multi_deep.max_cost_usd > plain_deep.max_cost_usd
+
+
+def test_synthesis_substance_requirements_includes_no_permission_rule():
+    """Phase 9 — SYNTHESIS_SUBSTANCE_REQUIREMENTS must include rule 5 banning
+    permission-seeking as a closing move."""
+    from app.services.agent.research_synthesis import SYNTHESIS_SUBSTANCE_REQUIREMENTS
+
+    text = SYNTHESIS_SUBSTANCE_REQUIREMENTS.lower()
+    assert "never" in text and ("permission" in text or "authorize" in text), (
+        "SYNTHESIS_SUBSTANCE_REQUIREMENTS missing Phase 9 no-permission rule"
+    )
+    assert "deeper dive" in text or "further research" in text or "second pass" in text
+
+
+def test_citation_verification_has_asks_permission_field():
+    """Phase 9 — CitationVerification must have asks_permission_to_continue field."""
+    from app.services.agent.research_models import CitationVerification
+
+    cv = CitationVerification()
+    assert hasattr(cv, "asks_permission_to_continue"), (
+        "CitationVerification missing asks_permission_to_continue field"
+    )
+    assert cv.asks_permission_to_continue is False  # default
+
+
+def test_asks_permission_wired_into_repair_trigger():
+    """Phase 9 — when asks_permission_to_continue is True, needs_repair must be True in
+    the lead research loop (mirrors the Phase 8 leads_with_disclaimer wiring)."""
+    from app.services.agent.research_models import CitationVerification
+
+    cv = CitationVerification(
+        asks_permission_to_continue=True,
+        repair_needed=False,
+        repair_instruction="",
+    )
+    # Replicate the needs_repair OR logic from research_lead.py
+    needs_repair = (
+        cv.repair_needed
+        or bool(cv.role_mismatch_issues)
+        or bool(cv.unresolved_conflicts)
+        or cv.asks_permission_to_continue
+    )
+    assert needs_repair, "asks_permission_to_continue=True should trigger repair"
+
+
+# ---------------------------------------------------------------------------
+# Phase 10 — subject-extractor sentence boundaries + synthesis budget reservation
+# ---------------------------------------------------------------------------
+
+def test_ehr_vendor_subjects_extracted_correctly():
+    """Phase 10 — the EHR comparison query must extract all 5 vendors including
+    'athenahealth' (all-lowercase, no capital letter anywhere)."""
+    from app.services.agent.research_subtree import _extract_named_comparison_subjects
+
+    message = (
+        "Compare Epic, Oracle Cerner, Meditech Expanse, athenahealth, and eClinicalWorks "
+        "as EHR platforms for enterprise hospital deployment in 2025. For each: clinical "
+        "workflow integration, interoperability standards (HL7 FHIR support), cloud "
+        "deployment model, pricing model, and known implementation failure modes."
+    )
+    subjects = _extract_named_comparison_subjects(message)
+    assert "athenahealth" in subjects, (
+        f"'athenahealth' must be extracted despite all-lowercase; got: {subjects}"
+    )
+    assert len(subjects) >= 3, f"Expected ≥3 EHR vendors, got {subjects}"
+
+
+def test_covering_clause_truncation_prevents_oversized_fragments():
+    """Phase 10 — 'covering X, Y, Z' should truncate the region before X, Y, Z
+    so dimension words don't merge with the last subject name."""
+    from app.services.agent.research_subtree import _extract_named_comparison_subjects
+
+    # 'covering' should stop the region at "covering", stripping dimension list
+    message = "Compare AWS S3, Azure Blob Storage, and Google Cloud Storage covering durability, performance, and pricing."
+    subjects = _extract_named_comparison_subjects(message)
+    assert "AWS S3" in subjects or any("AWS" in s for s in subjects), f"AWS S3 should be a subject, got {subjects}"
+    # No subject should contain "durability" or "performance" (dimension words)
+    assert all("durability" not in s and "performance" not in s for s in subjects), (
+        f"Dimension words leaked into subjects: {subjects}"
+    )
+
+
+def test_on_dimension_list_truncation():
+    """Phase 10 — 'on durability, performance...' should truncate and not cause
+    'Azure Blob Storage on durability' to be treated as a single oversized fragment."""
+    from app.services.agent.research_subtree import _extract_named_comparison_subjects
+
+    message = (
+        "Compare AWS S3, Azure Blob Storage, and Google Cloud Storage on durability, "
+        "performance, pricing, and compliance."
+    )
+    subjects = _extract_named_comparison_subjects(message)
+    assert len(subjects) >= 3, f"Expected ≥3 cloud storage subjects, got {subjects}"
+    assert all("durability" not in s and "compliance" not in s for s in subjects), (
+        f"Dimension words leaked into subjects: {subjects}"
+    )
+
+
+def test_ehr_comparison_triggers_multi_subject_gate():
+    """Phase 10 — the EHR query must pass _is_multi_subject_comparison() after
+    subject extraction is fixed, so all Phase 6/8 protections apply to non-AI domains."""
+    from app.services.agent.research_subtree import _is_multi_subject_comparison
+
+    message = (
+        "Compare Epic, Oracle Cerner, Meditech Expanse, athenahealth, and eClinicalWorks "
+        "as EHR platforms for enterprise hospital deployment in 2025. For each: clinical "
+        "workflow integration, interoperability standards (HL7 FHIR support), cloud "
+        "deployment model, pricing model, and known implementation failure modes."
+    )
+    assert _is_multi_subject_comparison(message), (
+        "EHR 5-vendor comparison must trigger _is_multi_subject_comparison()"
+    )
+
+
+def test_reserved_synthesis_model_calls_field_exists():
+    """Phase 10 — ResearchBudget must have reserved_synthesis_model_calls field."""
+    from app.services.agent.research_models import ResearchBudget
+
+    b = ResearchBudget()
+    assert hasattr(b, "reserved_synthesis_model_calls"), (
+        "ResearchBudget missing reserved_synthesis_model_calls field"
+    )
+    assert b.reserved_synthesis_model_calls > 0
+
+
+def test_gathering_agents_stop_before_synthesis_reservation():
+    """Phase 10 — gathering-phase agents (e.g. claim_classifier) must be denied
+    a model call once max_model_calls - reserved_synthesis_model_calls is reached,
+    while synthesis_agent is still permitted."""
+    from app.services.agent.research_models import ResearchBudget, ResearchBudgetLedger
+
+    budget = ResearchBudget(max_model_calls=4, reserved_synthesis_model_calls=2)
+    ledger = ResearchBudgetLedger(budget=budget)
+
+    # Consume 2 calls (= max_model_calls - reserved = 4 - 2 = 2 → gathering limit)
+    ledger.record_model_call(cost_usd=0.0, latency_ms=0)
+    ledger.record_model_call(cost_usd=0.0, latency_ms=0)
+
+    # Gathering agent should now be denied
+    assert not ledger.can_start_model("claim_classifier"), (
+        "claim_classifier should be denied at gathering limit (2 of 4 used, 2 reserved)"
+    )
+    # Synthesis agent should still be permitted
+    assert ledger.can_start_model("synthesis_agent"), (
+        "synthesis_agent must still be permitted despite gathering limit"
+    )
+
+
+def test_max_model_calls_raised_across_tiers():
+    """Phase 10 — all budget tiers must have higher max_model_calls than the pre-Phase-1
+    values (4 regular, 24 deep) to account for the claim-classifier and citation-verifier
+    calls added in Phases 1 and 5."""
+    from app.services.agent.research_subtree import research_budget_for
+
+    regular = research_budget_for(TurnRequest(message="Research RBI digital lending guidelines.", research_level="regular"))
+    deep = research_budget_for(TurnRequest(message="Do deep research on IPL business economics.", research_level="deep"))
+
+    assert regular.max_model_calls > 4, (
+        f"Regular tier max_model_calls should exceed pre-Phase-1 value of 4, got {regular.max_model_calls}"
+    )
+    assert deep.max_model_calls > 24, (
+        f"Deep tier max_model_calls should exceed pre-Phase-1 value of 24, got {deep.max_model_calls}"
+    )

@@ -251,10 +251,17 @@ class ResearchBudget(BaseModel):
     repair_iterations: int = 1
     judge_threshold: float = 0.72
     max_tool_calls: int = 8
-    max_model_calls: int = 4
+    # Phase 10 — max_model_calls raised to account for Phase 1 (claim classifier, 1 call/source)
+    # and Phase 5 (citation verifier, 1 call/synthesis) added per-run model calls that were not
+    # budgeted in the pre-Phase-1 numbers. Regular tier: 4 → 12; Deep tier: 24 → 36.
+    max_model_calls: int = 12
     max_cost_usd: float = 0.08
     max_elapsed_ms: int = 90_000
     max_deep_links: int = 2
+    # Phase 10 — guaranteed synthesis slot: gathering-phase model calls stop consuming budget
+    # once max_model_calls - reserved_synthesis_model_calls is reached, ensuring synthesis
+    # always runs on whatever evidence exists ("best-effort beats withholding", Phase 7).
+    reserved_synthesis_model_calls: int = 2
 
 
 class ResearchBudgetLedger(BaseModel):
@@ -304,8 +311,19 @@ class ResearchBudgetLedger(BaseModel):
         return True
 
     def can_start_model(self, agent_id: str) -> bool:
-        if self.model_calls >= self.budget.max_model_calls:
-            self.stop(f"model budget exhausted before {agent_id}")
+        # Phase 10 — synthesis and repair agents get the full budget; gathering-phase
+        # agents (claim_classifier, citation_verifier, query/plan generators, etc.) stop
+        # consuming budget at max_model_calls - reserved_synthesis_model_calls so that
+        # synthesis always has guaranteed room to run, consistent with Phase 7's
+        # "best-effort beats withholding" rule.
+        _SYNTHESIS_AGENTS = frozenset({"synthesis_agent", "repair_agent"})
+        effective_limit = self.budget.max_model_calls
+        if agent_id not in _SYNTHESIS_AGENTS:
+            effective_limit = max(0, self.budget.max_model_calls - self.budget.reserved_synthesis_model_calls)
+        if self.model_calls >= effective_limit:
+            if agent_id in _SYNTHESIS_AGENTS:
+                self.stop(f"model budget exhausted before {agent_id}")
+            # For gathering agents, don't stop the entire run — just deny this call.
             return False
         if self.cost_usd >= self.budget.max_cost_usd:
             self.stop(f"cost budget exhausted before {agent_id}")
@@ -689,6 +707,9 @@ class CitationVerification(BaseModel):
     # True when the answer leads with an evidence-quality caveat/disclaimer block
     # before delivering substance, regardless of exact wording used.
     leads_with_disclaimer: bool = False
+    # Phase 9 — LLM judgment: True when the answer ends by asking the user to authorize
+    # or approve further research, a deeper dive, or a second pass — regardless of phrasing.
+    asks_permission_to_continue: bool = False
 
 
 __all__ = [

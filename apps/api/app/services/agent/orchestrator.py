@@ -10,6 +10,11 @@ from pydantic import BaseModel, Field
 from app.services.agent import model_client
 from app.services.agent.models import RouteName, TurnRequest
 
+# Imported lazily to avoid circular imports — only used inside choose_research_level().
+def _get_extract_named_comparison_subjects():  # type: ignore[misc]
+    from app.services.agent.research_contracts import _extract_named_comparison_subjects  # noqa: PLC0415
+    return _extract_named_comparison_subjects
+
 logger = logging.getLogger(__name__)
 
 
@@ -240,6 +245,19 @@ def choose_research_level(request: TurnRequest, route: RouteName) -> Literal["ea
     asks_doc = _asks_for_document_artifact(text)
     if any(term in text for term in deep_terms) or any(term in text for term in high_stakes_terms):
         return "deep"
+    # Phase 9 — structural signal: N≥3 named subjects + recommendation/synthesis intent
+    # → definitionally a deep research task, regardless of keyword list.
+    # "Research the top 5 X... Provide a synthesized recommendation" should never fall
+    # through to "regular" just because the user didn't say the word "comprehensive".
+    _synthesis_intent_terms = ("recommend", "recommendation", "which is best", "which would", "synthesiz", "best framework", "best option", "best choice", "best platform", "best tool")
+    if any(term in text for term in _synthesis_intent_terms):
+        try:
+            _extract = _get_extract_named_comparison_subjects()
+            named_subjects = _extract(request.message)
+            if len(named_subjects) >= 3:
+                return "deep"
+        except Exception:
+            pass
     explicit_research = "research" in text
     if asks_doc and route == "research_document":
         return "regular"

@@ -38,6 +38,22 @@ def test_direct_answer_defaults_to_mini_tier(policy_db):
     assert model_policy.DEFAULT_MODEL_POLICY["direct_answer"] == "gpt-4.1-mini"
 
 
+def test_research_roles_default_to_frontier_tier(policy_db):
+    research_roles = [
+        "research_brief",
+        "coverage_contract",
+        "research_planner",
+        "reflection",
+        "citation_verifier",
+        "repair",
+        "synthesis",
+        "synthesis_executive",
+    ]
+
+    assert all("mini" not in model_policy.DEFAULT_MODEL_POLICY[role] for role in research_roles)
+    assert model_policy.DEFAULT_MODEL_POLICY["synthesis"] == "claude-opus-4-8"
+
+
 def test_fallback_models_have_provider_prefix(policy_db):
     """Regression guard for the missing 'gemini/' prefix bug."""
     gemini_entries = [m for m in model_policy.DEFAULT_FALLBACK_MODELS if "gemini" in m]

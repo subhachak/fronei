@@ -10,6 +10,23 @@ function response(body: unknown, init?: ResponseInit) {
   })
 }
 
+function streamingResponse(chunks: Array<{ at: number; text: string }>) {
+  const encoder = new TextEncoder()
+  return new Response(new ReadableStream({
+    start(controller) {
+      for (const chunk of chunks) {
+        setTimeout(() => {
+          controller.enqueue(encoder.encode(chunk.text))
+          if (chunk === chunks[chunks.length - 1]) controller.close()
+        }, chunk.at)
+      }
+    },
+  }), {
+    status: 200,
+    headers: { 'Content-Type': 'text/event-stream' },
+  })
+}
+
 describe('useTurnRunner', () => {
   it('completes a turn from the authenticated SSE stream', async () => {
     const appendTurn = vi.fn()
@@ -112,6 +129,57 @@ describe('useTurnRunner', () => {
 
       expect(result.current.result?.answer).toBe('Recovered')
       expect(authorizedFetch).toHaveBeenCalledTimes(5)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('smoothly drains answer deltas before the final turn arrives', async () => {
+    vi.useFakeTimers()
+    try {
+      const appendTurn = vi.fn()
+      const authorizedFetch = vi.fn()
+        .mockResolvedValueOnce(response({ turn_id: 'turn_1', conversation_id: 'conv_1', status: 'running' }))
+        .mockResolvedValueOnce(streamingResponse([
+          {
+            at: 0,
+            text: [
+              'id: answer_1',
+              'event: progress',
+              'data: {"event_id":"answer_1","stage":"answer_delta","message":"Streaming","data":{"delta":"Smooth streamed answer text."}}',
+              '',
+              '',
+            ].join('\n'),
+          },
+          {
+            at: 1200,
+            text: [
+              'event: turn',
+              'data: {"turn_id":"turn_1","status":"completed","turn":{"turn_id":"turn_1","answer":"Smooth streamed answer text.","route":"direct","sources":[],"artifacts":[]}}',
+              '',
+              '',
+            ].join('\n'),
+          },
+        ]))
+      const { result } = renderHook(() => useTurnRunner({ ...baseOptions(authorizedFetch), appendTurn }))
+
+      let runPromise: Promise<void>
+      await act(async () => {
+        runPromise = result.current.run()
+        await vi.advanceTimersByTimeAsync(300)
+      })
+
+      expect(result.current.liveAnswer.length).toBeGreaterThan(0)
+      expect(result.current.liveAnswer.length).toBeLessThan('Smooth streamed answer text.'.length)
+      expect(result.current.events).toHaveLength(0)
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1500)
+        await runPromise
+      })
+
+      expect(result.current.result?.answer).toBe('Smooth streamed answer text.')
+      expect(appendTurn).toHaveBeenCalledOnce()
     } finally {
       vi.useRealTimers()
     }

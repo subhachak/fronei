@@ -393,6 +393,84 @@ LangGraph remains the provisional recommendation [S1].
     assert any("research-judge instructions" in issue for issue in verdict.issues)
 
 
+def test_framework_comparison_judge_rejects_empty_framework_rows_with_validation_notes():
+    from app.services.agent.research_subtree import (
+        CoverageCell,
+        CoverageContract,
+        EvidenceItem,
+        EvidencePack,
+        ResearchBudget,
+        ResearchBudgetLedger,
+        ResearchBrief,
+        ResearchPlan,
+        ResearchStateStore,
+        judge_research_final,
+    )
+
+    subjects = ["LangGraph", "CrewAI", "AutoGen", "Haystack", "LlamaIndex Workflows"]
+    contract = CoverageContract(
+        cells=[
+            CoverageCell(subject=subject, dimension=dimension, status="filled", confidence=0.9)
+            for subject in subjects
+            for dimension in ["architecture model", "multi-agent coordination approach", "production readiness", "known failure modes"]
+        ],
+        subjects=subjects,
+        dimensions=["architecture model", "multi-agent coordination approach", "production readiness", "known failure modes"],
+        source="profile:technical_architecture:framework_comparison",
+    )
+    state = ResearchStateStore(
+        brief=ResearchBrief(objective="Compare frameworks", research_profile="technical_architecture", source="heuristic"),
+        contract=contract,
+        plan=ResearchPlan(research_profile="technical_architecture", judge_threshold=0.76),
+        evidence=EvidencePack(
+            items=[
+                EvidenceItem(
+                    source_id="S1",
+                    title="LangGraph comparison",
+                    url="https://example.com/langgraph",
+                    evidence="LangGraph explicit control flow and production adoption.",
+                )
+            ],
+            coverage=1.0,
+        ),
+        budget_ledger=ResearchBudgetLedger(
+            budget=ResearchBudget(max_sources=18, max_deep_links=0, max_tool_calls=5, max_model_calls=4),
+            sources_read=6,
+            tool_calls=2,
+        ),
+    )
+    answer = """# Agentic AI Frameworks 2025: Enterprise Orchestration Decision Brief
+
+## Executive Recommendation
+Winner: LangGraph. The available evidence is thin and uneven across the five named frameworks [S1].
+
+## Comparison Matrix
+
+| Framework | Architecture Model | Coordination Approach | Production Readiness | Known Failure Modes |
+|---|---|---|---|---|
+| LangGraph | Graph-based control flow [S1] | State-machine orchestration [S1] | Strong adoption signal [S1] | Not specified in evidence |
+| CrewAI | Role-based crew abstraction [S1] | Role workflows [S1] | Growing adoption [S1] | Not specified in evidence |
+| AutoGen / AG2 | Conversation-centric [S1] | Multi-agent conversations [S1] | Not specified in evidence | Not specified in evidence |
+| Haystack | Not described in evidence | Not described in evidence | No evidence in pack — validation note: requires dedicated research | Not specified |
+| LlamaIndex Workflows | Not described in evidence | Not evidenced | Validation note: requires dedicated research | Not specified |
+
+## Haystack
+No substantive evidence in this pack. Validation note: this row requires a dedicated research pass before any enterprise recommendation.
+
+## LlamaIndex Workflows
+Not evidenced. Validation note: requires dedicated research.
+
+## Ranked Recommendation
+Default choice: LangGraph [S1].
+"""
+
+    verdict = judge_research_final(TurnRequest(message="Compare agentic AI frameworks.", research_level="regular"), state, answer)
+
+    assert verdict.next_action == "research_more"
+    assert verdict.can_publish is False
+    assert any("validation notes for requested framework detail" in issue for issue in verdict.issues)
+
+
 def test_framework_comparison_detects_thin_evidence_and_remediation_urls():
     from app.services.agent.research_subtree import (
         CoverageCell,

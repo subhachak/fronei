@@ -419,7 +419,10 @@ def _synthesis_report_contract(profile: ResearchProfile, request: TurnRequest) -
             "Close with a ranked recommendation and conditional overrides, e.g. default choice, cloud/vendor-lock override, "
             "RAG/search override, prototyping override. "
             "Cite factual claims with [S#]. If narrow benchmark, adoption, failure-rate, or production-use details remain missing, "
-            "capture them as short validation notes near the relevant row or recommendation, not as a dominant disclaimer."
+            "capture them as short validation notes near the relevant row or recommendation, not as a dominant disclaimer. "
+            "Do not use validation notes, 'not described in evidence', or 'requires dedicated research' as substitutes for an "
+            "entire requested framework section; if a named framework lacks architecture/coordination/production evidence, "
+            "the answer is not ready for publication."
         )
     if request.output_format == "chat" and "report" not in request.message.lower() and _requests_brief_answer(request):
         return (

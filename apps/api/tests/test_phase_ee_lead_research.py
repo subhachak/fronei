@@ -115,6 +115,89 @@ def test_framework_comparison_queries_prioritize_primary_docs_and_lifecycle():
     assert any("Microsoft Agent Framework" in worker.query for worker in plan.workers)
 
 
+def test_framework_comparison_seeds_canonical_docs():
+    from app.services.agent.research_lead import _canonical_framework_sources
+    from app.services.agent.research_subtree import ResearchPlan
+
+    request = TurnRequest(
+        message=(
+            "Research the top 5 agentic AI frameworks in 2025: LangGraph, CrewAI, "
+            "AutoGen, Haystack, and LlamaIndex Workflows."
+        ),
+        research_level="regular",
+    )
+    plan = ResearchPlan(research_profile="technical_architecture")
+
+    sources = _canonical_framework_sources(request, plan)
+    urls = [source.url for source in sources]
+
+    assert len(sources) >= 8
+    assert any("langgraph" in url.lower() for url in urls)
+    assert any("docs.crewai.com" in url.lower() for url in urls)
+    assert any("microsoft.github.io/autogen" in url.lower() for url in urls)
+    assert any("docs.haystack.deepset.ai" in url.lower() for url in urls)
+    assert any("docs.llamaindex.ai" in url.lower() for url in urls)
+
+
+def test_framework_comparison_judge_rejects_truncated_answer():
+    from app.services.agent.research_subtree import (
+        CoverageCell,
+        CoverageContract,
+        EvidenceItem,
+        EvidencePack,
+        ResearchBudget,
+        ResearchBudgetLedger,
+        ResearchBrief,
+        ResearchPlan,
+        ResearchStateStore,
+        judge_research_final,
+    )
+
+    contract = CoverageContract(
+        cells=[
+            CoverageCell(subject=subject, dimension="architecture model", status="filled", confidence=0.9)
+            for subject in ["LangGraph", "CrewAI", "AutoGen", "Haystack", "LlamaIndex Workflows"]
+        ],
+        subjects=["LangGraph", "CrewAI", "AutoGen", "Haystack", "LlamaIndex Workflows"],
+        dimensions=["architecture model"],
+        source="profile:technical_architecture:framework_comparison",
+    )
+    evidence = EvidencePack(
+        items=[
+            EvidenceItem(source_id="S1", title="LangGraph docs", url="https://langchain-ai.github.io/langgraph/", evidence="architecture workflow production"),
+            EvidenceItem(source_id="S2", title="CrewAI docs", url="https://docs.crewai.com/introduction", evidence="agents crews flows"),
+        ],
+        coverage=1.0,
+    )
+    state = ResearchStateStore(
+        brief=ResearchBrief(objective="Compare frameworks", research_profile="technical_architecture", source="heuristic"),
+        contract=contract,
+        plan=ResearchPlan(research_profile="technical_architecture"),
+        evidence=evidence,
+        budget_ledger=ResearchBudgetLedger(budget=ResearchBudget()),
+    )
+    answer = """# Agentic AI Frameworks
+
+## Section 1: LangGraph
+LangGraph details [S1].
+
+## Section 2: CrewAI
+CrewAI details [S2].
+
+## Section 3: AutoGen
+AutoGen details [S1].
+
+## Section 4: Haystack
+Agent components"""
+
+    verdict = judge_research_final(TurnRequest(message="Compare agentic AI frameworks."), state, answer)
+
+    assert verdict.repair_needed
+    assert any("missing detailed sections" in issue for issue in verdict.issues)
+    assert any("closing recommendation" in issue for issue in verdict.issues)
+    assert any("mid-section" in issue for issue in verdict.issues)
+
+
 def test_technical_architecture_queries_are_provider_friendly():
     from app.services.agent.research_subtree import (
         CoverageCell,

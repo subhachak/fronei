@@ -633,6 +633,10 @@ def judge_research_final(request: TurnRequest, state: ResearchStateStore, answer
         if len(technical_claims) < max(8, state.plan.min_evidence_items):
             score -= 0.12
             issues.append("Evidence pack has too few typed technical claims for a deep architecture report.")
+    completion_issues = _framework_comparison_completion_issues(state, answer)
+    if completion_issues:
+        score -= min(0.35, 0.12 * len(completion_issues))
+        issues.extend(completion_issues)
     open_cells = state.contract.open_cells()
     if open_cells:
         score -= min(0.18, 0.025 * len(open_cells))
@@ -650,6 +654,27 @@ def judge_research_final(request: TurnRequest, state: ResearchStateStore, answer
     if open_cells:
         repair_instruction += " Explicitly disclose unresolved public-evidence gaps: " + "; ".join(f"{cell.subject} {cell.dimension}" for cell in open_cells[:6])
     return JudgeVerdict(can_publish=score >= max(0.55, threshold - 0.20), repair_needed=True, repair_instruction=repair_instruction, specific_gaps=[f"{cell.subject}/{cell.dimension}" for cell in open_cells[:8]], score=score, issues=issues, next_action="repair_answer" if score >= 0.45 else "stop_with_gaps")
+
+
+def _framework_comparison_completion_issues(state: ResearchStateStore, answer: str) -> list[str]:
+    if not state.contract.source.endswith("framework_comparison"):
+        return []
+    text = answer or ""
+    lower = text.lower()
+    issues: list[str] = []
+    missing_sections: list[str] = []
+    for subject in state.contract.subjects:
+        subject_pattern = re.escape(subject)
+        if not re.search(rf"(?mi)^#+\s+(?:section\s+\d+[:.\s-]+)?{subject_pattern}\b", text):
+            missing_sections.append(subject)
+    if missing_sections:
+        issues.append("Framework comparison answer is incomplete; missing detailed sections for: " + ", ".join(missing_sections[:5]))
+    tail = lower[-1800:]
+    if not any(term in tail for term in ("final recommendation", "ranked recommendation", "recommendation matrix", "bottom line", "decision logic")):
+        issues.append("Framework comparison answer lacks a closing recommendation section near the end.")
+    if re.search(r"(?m)(?:^|\n)\s*[-*]\s*$|(?:\bcomponents|\bagents|\bpipelines|\bcoordination)\s*$", text.strip(), flags=re.IGNORECASE):
+        issues.append("Framework comparison answer appears to end mid-section or mid-sentence.")
+    return issues
 
 
 # ---------------------------------------------------------------------------

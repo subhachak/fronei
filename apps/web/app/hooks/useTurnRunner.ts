@@ -91,14 +91,16 @@ export function useTurnRunner(options: TurnRunnerOptions) {
   const streamTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const streamPrimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const streamStartedRef = useRef(false)
-  const STREAM_INITIAL_BUFFER_CHARS = 80
-  const STREAM_INITIAL_BUFFER_MS = 220
-  const STREAM_TICK_MS = 34
-  const STREAM_CHARS_PER_TICK = 4
-  const STREAM_CATCHUP_THRESHOLD = 240
-  const STREAM_CATCHUP_CHARS = 12
-  const STREAM_SURGE_THRESHOLD = 800
-  const STREAM_SURGE_CHARS = 28
+  const STREAM_INITIAL_BUFFER_CHARS = 48
+  const STREAM_INITIAL_BUFFER_MS = 160
+  const STREAM_TICK_MS = 30
+  const STREAM_LOW_WATER_THRESHOLD = 36
+  const STREAM_LOW_WATER_CHARS = 1
+  const STREAM_CHARS_PER_TICK = 2
+  const STREAM_CATCHUP_THRESHOLD = 180
+  const STREAM_CATCHUP_CHARS = 5
+  const STREAM_SURGE_THRESHOLD = 700
+  const STREAM_SURGE_CHARS = 14
 
   const activeEvents = useMemo(
     () => events.filter(event => !['tool_selection', 'tool_result', 'answer_delta', 'answer_complete'].includes(event.stage)),
@@ -120,14 +122,14 @@ export function useTurnRunner(options: TurnRunnerOptions) {
     streamTimerRef.current = null
     const pending = tokenQueueRef.current
     if (!pending) return
-    const chars = Math.min(
-      pending.length,
-      pending.length > STREAM_SURGE_THRESHOLD
-        ? STREAM_SURGE_CHARS
-        : pending.length > STREAM_CATCHUP_THRESHOLD
-          ? STREAM_CATCHUP_CHARS
-          : STREAM_CHARS_PER_TICK,
-    )
+    const charsPerTick = pending.length > STREAM_SURGE_THRESHOLD
+      ? STREAM_SURGE_CHARS
+      : pending.length > STREAM_CATCHUP_THRESHOLD
+        ? STREAM_CATCHUP_CHARS
+        : pending.length < STREAM_LOW_WATER_THRESHOLD
+          ? STREAM_LOW_WATER_CHARS
+          : STREAM_CHARS_PER_TICK
+    const chars = Math.min(pending.length, charsPerTick)
     liveAnswerRef.current += pending.slice(0, chars)
     tokenQueueRef.current = pending.slice(chars)
     setLiveAnswer(liveAnswerRef.current)

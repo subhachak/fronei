@@ -627,6 +627,110 @@ def test_framework_comparison_remediation_reads_primary_docs_before_synthesis():
     assert len(state.evidence.items) > 1
 
 
+def test_framework_comparison_binding_prioritizes_canonical_docs_over_noise():
+    from app.services.agent.research_subtree import (
+        CoverageCell,
+        CoverageContract,
+        LeadResearchAgent,
+        ResearchBrief,
+        ResearchPlan,
+        ResearchStateStore,
+    )
+
+    request = TurnRequest(
+        message=(
+            "Research the top 5 agentic AI frameworks in 2025: LangGraph, CrewAI, "
+            "AutoGen, Haystack, and LlamaIndex Workflows."
+        ),
+        research_level="regular",
+    )
+    state = ResearchStateStore(
+        brief=ResearchBrief(objective="Compare frameworks", research_profile="technical_architecture", source="heuristic"),
+        contract=CoverageContract(
+            cells=[
+                CoverageCell(subject="Haystack", dimension="architecture model"),
+                CoverageCell(subject="LlamaIndex Workflows", dimension="architecture model"),
+            ],
+            subjects=["LangGraph", "CrewAI", "AutoGen", "Haystack", "LlamaIndex Workflows"],
+            dimensions=["architecture model"],
+            source="profile:technical_architecture:framework_comparison",
+        ),
+        plan=ResearchPlan(research_profile="technical_architecture", max_sources=3, min_evidence_items=3),
+        all_sources=[
+            Source(title=f"Listicle {index}", url=f"https://example.com/listicle-{index}", content="AI framework list with generic marketing copy.")
+            for index in range(8)
+        ]
+        + [
+            Source(
+                title="Haystack pipelines",
+                url="https://docs.haystack.deepset.ai/docs/pipelines",
+                content=(
+                    "Haystack architecture uses pipeline components, document stores, retrievers, generators, "
+                    "agents, tools, orchestration, production deployment, tracing, and failure handling for RAG workflows."
+                ),
+            ),
+            Source(
+                title="LlamaIndex Workflows",
+                url="https://docs.llamaindex.ai/en/stable/module_guides/workflow/",
+                content=(
+                    "LlamaIndex Workflows architecture uses event-driven workflow steps, typed events, async execution, "
+                    "agent orchestration, state, deployment, production observability, and failure handling."
+                ),
+            ),
+        ],
+    )
+    agent = LeadResearchAgent(request, tools=object())
+    agent.budget.max_sources = 3
+    agent.budget.max_deep_links = 0
+
+    agent._bind_state_evidence(state)
+
+    evidence_urls = [item.url for item in state.evidence.items]
+    assert any("docs.haystack.deepset.ai" in url for url in evidence_urls)
+    assert any("docs.llamaindex.ai" in url for url in evidence_urls)
+
+
+def test_framework_quality_requires_bound_official_evidence_not_just_source_url():
+    from app.services.agent.research_subtree import (
+        CoverageContract,
+        EvidencePack,
+        ResearchBrief,
+        ResearchPlan,
+        ResearchStateStore,
+        _evidence_quality_issues,
+    )
+
+    request = TurnRequest(
+        message=(
+            "Research the top 5 agentic AI frameworks in 2025: LangGraph, CrewAI, "
+            "AutoGen, Haystack, and LlamaIndex Workflows."
+        ),
+        research_level="regular",
+    )
+    state = ResearchStateStore(
+        brief=ResearchBrief(objective="Compare frameworks", research_profile="technical_architecture", source="heuristic"),
+        contract=CoverageContract(
+            subjects=["LangGraph", "CrewAI", "AutoGen", "Haystack", "LlamaIndex Workflows"],
+            dimensions=["architecture model"],
+            source="profile:technical_architecture:framework_comparison",
+        ),
+        plan=ResearchPlan(research_profile="technical_architecture", min_evidence_items=5),
+        evidence=EvidencePack(items=[]),
+        all_sources=[
+            Source(
+                title="Haystack pipelines",
+                url="https://docs.haystack.deepset.ai/docs/pipelines",
+                snippet="Canonical official documentation source for Haystack.",
+            )
+        ],
+    )
+
+    issues = _evidence_quality_issues(request, state)
+
+    assert any("missing official documentation evidence" in issue for issue in issues)
+    assert any("missing bound substantive evidence" in issue for issue in issues)
+
+
 def test_generic_research_remediation_runs_targeted_followup_before_synthesis():
     from app.services.agent.research_subtree import (
         CoverageCell,

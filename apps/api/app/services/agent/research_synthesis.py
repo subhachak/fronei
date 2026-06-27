@@ -404,12 +404,39 @@ def build_gap_followup_workers(request: TurnRequest, plan: ResearchPlan, evidenc
     ]
 
 def _synthesis_report_contract(profile: ResearchProfile, request: TurnRequest) -> str:
-    if request.output_format == "chat" and "report" not in request.message.lower():
+    if request.output_format == "chat" and "report" not in request.message.lower() and _requires_decision_grade_comparison(request, profile):
+        return (
+            "Produce a decision-grade research answer in chat, not a terse summary. "
+            "Open with an executive recommendation that names the winner, the decision rule, and the most important caveat. "
+            "Then include a compact comparison matrix using the user's requested dimensions. "
+            "For each named option, provide: architecture model, coordination approach, production readiness, known failure modes, "
+            "and best-fit / avoid-when guidance. Use concrete mechanisms and named product/lifecycle signals from evidence; "
+            "do not substitute generic pros and cons. "
+            "Include a cross-cutting failure taxonomy or governance lens when the question asks about production, enterprise, "
+            "or orchestration. Explicitly flag lifecycle, maintenance, successor-framework, or ecosystem shifts when evidence shows them. "
+            "Close with a ranked recommendation and conditional overrides, e.g. default choice, cloud/vendor-lock override, "
+            "RAG/search override, prototyping override. "
+            "Cite factual claims with [S#]. If evidence is missing for benchmarks, adoption, failure rates, or production use, "
+            "say that plainly and recommend workload-specific validation."
+        )
+    if request.output_format == "chat" and "report" not in request.message.lower() and _requests_brief_answer(request):
         return (
             "Produce a concise chat answer, not a report or artifact. "
             "Follow the user's requested shape exactly. Prefer a short ranked list or compact bullets over large tables. "
             "For comparisons, include only the fields the user asked for, cite factual claims with [S#], "
             "name the most promising option, and keep caveats brief."
+        )
+    if request.output_format == "chat" and "report" not in request.message.lower():
+        return (
+            "Produce an elaborative, source-grounded chat answer by default, not a terse summary. "
+            "Use clear headings and enough detail that the answer can stand alone without the user needing to ask for a deeper version. "
+            "Follow the user's requested shape exactly, but expand each requested dimension with concrete findings, trade-offs, "
+            "failure modes, caveats, and implications where the evidence supports them. "
+            "For comparisons, use a readable matrix or consistent per-option sections, then synthesize the practical takeaway. "
+            "For recommendation questions, state the decision rule, the top recommendation, why it wins, where it does not fit, "
+            "and what validation the user should run next. "
+            "Cite factual claims with [S#]. If evidence is missing or uneven, disclose that instead of smoothing over the gap. "
+            "Only be brief when the user explicitly asks for brevity."
         )
     if profile == "technical_architecture":
         return (
@@ -495,6 +522,10 @@ def _synthesis_token_budget(request: TurnRequest, plan: ResearchPlan) -> int:
     profile = plan.research_profile
     is_deep = request.research_level == "deep"
     is_exec = request.quality_mode == "executive"
+    if request.output_format == "chat" and _requests_brief_answer(request):
+        return 1800 if is_exec else 1200
+    if request.output_format == "chat" and _requires_decision_grade_comparison(request, profile):
+        return (7000 if is_deep else 5200) if is_exec else (5600 if is_deep else 4200)
     if profile == "technical_architecture" and is_deep:
         # Deep technical report: needs room for 10 detailed sections with citations,
         # diagrams, trade-off tables, and implementation specifics.
@@ -516,7 +547,92 @@ def _synthesis_token_budget(request: TurnRequest, plan: ResearchPlan) -> int:
         return (9000 if is_deep else 6000) if is_exec else (7500 if is_deep else 5000)
     if request.output_format in {"docx", "markdown", "pptx"} or "report" in request.message.lower():
         return 6500 if is_exec else 5200
+    if request.output_format == "chat":
+        return (6200 if is_deep else 5200) if is_exec else (5000 if is_deep else 4200)
     return 1800 if is_exec else 1200
+
+
+def _requests_brief_answer(request: TurnRequest) -> bool:
+    text = f" {request.message or ''} ".lower()
+    brief_patterns = (
+        r"\bbriefly\b",
+        r"\bconcise(?:ly)?\b",
+        r"\bquick(?:ly)?\b",
+        r"\bshort answer\b",
+        r"\bshort version\b",
+        r"\bquick summary\b",
+        r"\bsummar(?:y|ize) briefly\b",
+        r"\btl;?dr\b",
+        r"\btldr\b",
+        r"\bkeep it short\b",
+        r"\bkeep this short\b",
+        r"\bbe brief\b",
+        r"\bin brief\b",
+        r"\bin \d+ (?:sentence|sentences|bullet|bullets|paragraph|paragraphs)\b",
+        r"\b(?:one|two|three|four|five) (?:sentence|sentences|bullet|bullets|paragraph|paragraphs)\b",
+        r"\bno more than \d+ (?:words|sentence|sentences|bullet|bullets|paragraph|paragraphs)\b",
+        r"\bunder \d+ words\b",
+    )
+    return any(re.search(pattern, text) for pattern in brief_patterns)
+
+
+def _requires_decision_grade_comparison(request: TurnRequest, profile: ResearchProfile) -> bool:
+    text = (request.message or "").lower()
+    if profile not in {"vendor_comparison", "technical_architecture", "strategy_brief"}:
+        return False
+    comparison_signal = bool(
+        re.search(r"\btop\s+\d+\b", text)
+        or any(term in text for term in (
+            "compare",
+            "comparison",
+            "versus",
+            " vs ",
+            "evaluate",
+            "evaluation",
+            "matrix",
+            "for each",
+            "best framework",
+            "best platform",
+            "best tool",
+            "recommendation",
+            "recommend ",
+        ))
+    )
+    decision_signal = any(term in text for term in (
+        "enterprise",
+        "production",
+        "orchestration",
+        "orchestration layer",
+        "production readiness",
+        "failure modes",
+        "known failure",
+        "coordination",
+        "multi-agent",
+        "multi agent",
+        "architecture model",
+    ))
+    named_options = _count_named_options(request.message or "")
+    return comparison_signal and decision_signal and named_options >= 3
+
+
+def _count_named_options(message: str) -> int:
+    # Count comma/semicolon/colon-delimited title-ish candidates in the request.
+    # This is intentionally heuristic; it decides answer depth, not facts.
+    candidate_region = message
+    if ":" in message:
+        candidate_region = message.split(":", 1)[1]
+    stop_match = re.search(r"\bprovide for each\b|\bthen synthesize\b|\bexplain why\b", candidate_region, flags=re.IGNORECASE)
+    if stop_match:
+        candidate_region = candidate_region[:stop_match.start()]
+    candidates = re.split(r",|;|\band\b", candidate_region)
+    count = 0
+    for raw in candidates:
+        value = raw.strip(" .:-()[]")
+        if not value:
+            continue
+        if re.search(r"\b[A-Z][A-Za-z0-9]*(?:[A-Z][A-Za-z0-9]*)?\b", value):
+            count += 1
+    return count
 
 
 def source_context_from_evidence(evidence: EvidencePack) -> str:

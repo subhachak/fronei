@@ -59,15 +59,13 @@
   50% { opacity: 1; transform: translateY(-2px); }
 }
 
-/* Streaming text fade-in — one span per drained batch, kept alive for STREAMING_FADE_MS.
-   Multiple spans overlap simultaneously (each batch starts before the previous finishes),
-   creating a continuous flowing appearance instead of discrete chunk steps.
-   Linear easing keeps opacity consistent across the overlap window — ease-out
-   would front-load opacity to ~80% in 16ms, leaving a visible pause before the
-   next batch. Linear distributes the fade evenly so overlapping spans blend smoothly. */
+/* Streaming text fade-in — applied to each 8-char drain chunk by StreamingText.
+   Duration is short (100ms) so text reads as fast-appearing rather than slow-fading.
+   The buffer threshold (400 chars pre-queued) ensures the next chunk is always ready
+   before this animation finishes, so display feels continuous rather than choppy. */
 @layer utilities {
   .av3-stream-in {
-    animation: av3StreamIn 0.12s linear both;
+    animation: av3StreamIn 0.1s ease-out both;
   }
 }
 

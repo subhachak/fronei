@@ -25,18 +25,115 @@ function StreamingText({ text }: { text: string }) {
   )
 }
 
-// Paragraph-split streaming markdown renderer.
+// Block-aware live paragraph renderer.
 //
-// Strategy: split the accumulated answer at blank lines (\n\n).
-//   • Completed paragraphs  → parsed as full markdown via marked + DOMPurify.
-//     useMemo only re-runs when a NEW paragraph boundary arrives, so marked.parse
-//     is not called on every tick — only at paragraph transitions.
-//   • Active paragraph (last, still streaming) → plain StreamingText with fade-in.
-//     Partial markdown syntax (**bold, # header) never flickers because it stays
-//     as plain text until the paragraph is complete.
+// Markdown has two categories of formatting:
+//   • Block-level (headers, lists, code fences, blockquotes) — detectable from the
+//     FIRST characters of a line. Rendering them immediately prevents the jarring
+//     "raw text → formatted HTML" flip that happens when a paragraph completes.
+//   • Inline-level (bold, italic, code spans, links) — only resolvable when the
+//     closing delimiter arrives. These show as raw chars for ~50-100ms at our drain
+//     rate (5 chars/16ms tick), which is imperceptible. We accept that tradeoff.
 //
-// Result: formatted output for everything the user has read, smooth animated text
-// for what's currently arriving, and no raw markdown characters visible.
+// When this paragraph transitions to the settled zone and goes through marked.parse,
+// the block structure is IDENTICAL (already <h2>, already <ul>), so there is no
+// visible flip. Only inline formatting refines quietly.
+function LiveParagraph({ text }: { text: string }) {
+  const lines = text.split('\n')
+  const firstLine = lines[0]
+
+  // ── Code fence ─────────────────────────────────────────────────────────────
+  if (/^```/.test(firstLine)) {
+    // Preserve everything after the opening fence; strip closing ``` if present.
+    const body = lines.slice(1).join('\n').replace(/```\s*$/, '')
+    return (
+      <pre className="max-w-full overflow-x-auto rounded-lg bg-neutral-950 p-4 text-neutral-50 text-sm leading-relaxed font-mono [overflow-wrap:anywhere]">
+        <code><StreamingText text={body} /></code>
+      </pre>
+    )
+  }
+
+  // ── Unordered list ──────────────────────────────────────────────────────────
+  if (/^[-*+] /.test(firstLine)) {
+    const items = lines.map(l => l.replace(/^[-*+] /, ''))
+    return (
+      <ul className="grid gap-1.5 pl-5 list-disc text-[15px] leading-relaxed [overflow-wrap:anywhere]">
+        {items.slice(0, -1).map((item, i) => <li key={i}>{item}</li>)}
+        {items.at(-1) !== undefined && (
+          <li><StreamingText text={items.at(-1)!} /></li>
+        )}
+      </ul>
+    )
+  }
+
+  // ── Ordered list ────────────────────────────────────────────────────────────
+  if (/^\d+\. /.test(firstLine)) {
+    const items = lines.map(l => l.replace(/^\d+\. /, ''))
+    return (
+      <ol className="grid gap-1.5 pl-5 list-decimal text-[15px] leading-relaxed [overflow-wrap:anywhere]">
+        {items.slice(0, -1).map((item, i) => <li key={i}>{item}</li>)}
+        {items.at(-1) !== undefined && (
+          <li><StreamingText text={items.at(-1)!} /></li>
+        )}
+      </ol>
+    )
+  }
+
+  // ── Blockquote ──────────────────────────────────────────────────────────────
+  if (/^> /.test(firstLine)) {
+    const content = lines.map(l => l.replace(/^> ?/, '')).join('\n')
+    return (
+      <blockquote className="border-l-[3px] border-neutral-300 pl-3 text-neutral-500 text-[15px] leading-relaxed dark:border-neutral-600 dark:text-neutral-400">
+        <StreamingText text={content} />
+      </blockquote>
+    )
+  }
+
+  // ── ATX headers (#, ##, …, ######) ─────────────────────────────────────────
+  const hMatch = firstLine.match(/^(#{1,6}) (.*)/)
+  if (hMatch) {
+    const level = hMatch[1].length
+    const headingClasses: Record<number, string> = {
+      1: 'text-2xl font-bold leading-tight [overflow-wrap:anywhere]',
+      2: 'text-xl font-bold leading-tight [overflow-wrap:anywhere]',
+      3: 'text-base font-bold leading-tight [overflow-wrap:anywhere]',
+      4: 'text-sm font-bold leading-tight [overflow-wrap:anywhere]',
+      5: 'text-sm font-semibold leading-tight [overflow-wrap:anywhere]',
+      6: 'text-sm font-medium leading-tight [overflow-wrap:anywhere]',
+    }
+    const cls = headingClasses[level]
+    // Trailing lines after the heading (rare but possible) stream as text beneath.
+    const tail = lines.slice(1).join('\n')
+    return (
+      <>
+        {level === 1 && <h1 className={cls}><StreamingText text={hMatch[2]} /></h1>}
+        {level === 2 && <h2 className={cls}><StreamingText text={hMatch[2]} /></h2>}
+        {level === 3 && <h3 className={cls}><StreamingText text={hMatch[2]} /></h3>}
+        {level === 4 && <h4 className={cls}><StreamingText text={hMatch[2]} /></h4>}
+        {level === 5 && <h5 className={cls}><StreamingText text={hMatch[2]} /></h5>}
+        {level === 6 && <h6 className={cls}><StreamingText text={hMatch[2]} /></h6>}
+        {tail && (
+          <p className="whitespace-pre-wrap text-[15px] leading-relaxed [overflow-wrap:anywhere]">
+            <StreamingText text={tail} />
+          </p>
+        )}
+      </>
+    )
+  }
+
+  // ── Default: plain paragraph ─────────────────────────────────────────────
+  // Inline formatting (** * ` [link]) will be briefly raw then formats on completion.
+  return (
+    <p className="whitespace-pre-wrap text-[15px] leading-relaxed [overflow-wrap:anywhere]">
+      <StreamingText text={text} />
+    </p>
+  )
+}
+
+// Two-zone streaming renderer:
+//   SETTLED zone — full marked.parse, memoized at paragraph boundaries (not per-tick).
+//   LIVE zone    — LiveParagraph with structural block detection; no raw # or - visible.
+// On paragraph completion the block structure is already correct, so no visible flip.
 function StreamingMarkdown({ text }: { text: string }) {
   const parts = text.split(/\n\n/)
   const completedText = parts.slice(0, -1).join('\n\n')
@@ -50,11 +147,7 @@ function StreamingMarkdown({ text }: { text: string }) {
   return (
     <div className="av3-markdown">
       {completedHtml && <div dangerouslySetInnerHTML={{ __html: completedHtml }} />}
-      {activeText && (
-        <p className="whitespace-pre-wrap text-[15px] leading-relaxed [overflow-wrap:anywhere]">
-          <StreamingText text={activeText} />
-        </p>
-      )}
+      {activeText && <LiveParagraph text={activeText} />}
     </div>
   )
 }

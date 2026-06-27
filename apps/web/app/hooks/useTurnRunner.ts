@@ -91,10 +91,12 @@ export function useTurnRunner(options: TurnRunnerOptions) {
   const tokenQueueRef = useRef('')         // pending tokens not yet released to state
   const streamTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  const STREAM_TICK_MS = 16               // drain interval (~60fps)
-  const STREAM_MIN_CHARS = 3             // minimum chars per tick (keeps animation fluid)
-  const STREAM_MAX_CHARS = 80            // maximum chars per tick (caps visual jump size)
-  const STREAM_TARGET_DRAIN_MS = 400     // target: clear any backlog within 400ms
+  const STREAM_TICK_MS = 16              // drain interval (~60fps)
+  const STREAM_CHARS_PER_TICK = 16       // normal: 16 chars/tick ≈ 1000 chars/sec visual rate
+  // If the backlog grows large (many SSE frames in one reader.read()), switch to
+  // catch-up mode at 4× speed to avoid lagging more than ~500ms behind the LLM.
+  const STREAM_CATCHUP_THRESHOLD = 400   // chars in queue → trigger catch-up
+  const STREAM_CATCHUP_CHARS = 64        // chars/tick in catch-up mode
 
   const activeEvents = useMemo(
     () => events.filter(event => !['tool_selection', 'tool_result', 'answer_delta', 'answer_complete'].includes(event.stage)),
@@ -114,10 +116,12 @@ export function useTurnRunner(options: TurnRunnerOptions) {
     streamTimerRef.current = null
     const pending = tokenQueueRef.current
     if (!pending) return
-    // Adaptive chunk size: aim to clear the current backlog within STREAM_TARGET_DRAIN_MS.
-    // Clamped so small queues stay smooth and large bursts don't produce giant jumps.
-    const ticksToTarget = Math.round(STREAM_TARGET_DRAIN_MS / STREAM_TICK_MS)
-    const charsThisTick = Math.max(STREAM_MIN_CHARS, Math.min(Math.ceil(pending.length / ticksToTarget), STREAM_MAX_CHARS))
+    // Switch to catch-up mode when a large burst has backlogged > CATCHUP_THRESHOLD chars.
+    // This prevents the display from lagging more than ~500ms behind the LLM.
+    const charsThisTick = Math.min(
+      pending.length,
+      pending.length > STREAM_CATCHUP_THRESHOLD ? STREAM_CATCHUP_CHARS : STREAM_CHARS_PER_TICK,
+    )
     liveAnswerRef.current += pending.slice(0, charsThisTick)
     tokenQueueRef.current = pending.slice(charsThisTick)
     setLiveAnswer(liveAnswerRef.current)

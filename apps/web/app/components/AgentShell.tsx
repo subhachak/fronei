@@ -52,7 +52,7 @@ export function AgentShell() {
   const [composerHeight, setComposerHeight] = useState(168)
   const [leftRailCollapsed, setLeftRailCollapsed] = useState(false)
   const [workModalOpen, setWorkModalOpen] = useState(false)
-  const [prefsModalOpen, setPrefsModalOpen] = useState(false)
+  const [prefsPopoverOpen, setPrefsPopoverOpen] = useState(false)
   const [uploadSource, setUploadSource] = useState<'composer' | 'profile'>('profile')
   const [view, setView] = useState<'chat' | 'profile' | 'admin'>('chat')
   const templateUploadRef = useRef<HTMLInputElement | null>(null)
@@ -280,14 +280,28 @@ export function AgentShell() {
                 >
                   <Sparkles size={15} />
                 </button>
-                <button
-                  type="button"
-                  onClick={() => setPrefsModalOpen(true)}
-                  aria-label="Quick preferences"
-                  className="grid h-8 w-8 place-items-center rounded-full border border-neutral-200 text-neutral-600 dark:border-neutral-800 dark:text-neutral-300"
-                >
-                  <Settings2 size={15} />
-                </button>
+                <div style={{ position: 'relative' }}>
+                  <button
+                    type="button"
+                    onClick={() => setPrefsPopoverOpen(v => !v)}
+                    aria-label="Quick preferences"
+                    className="grid h-8 w-8 place-items-center rounded-full border border-neutral-200 text-neutral-600 dark:border-neutral-800 dark:text-neutral-300"
+                  >
+                    <Settings2 size={15} />
+                  </button>
+                  {prefsPopoverOpen && (
+                    <>
+                      <button type="button" aria-label="Close" onClick={() => setPrefsPopoverOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 40 }} tabIndex={-1} />
+                      <div
+                        className="rounded-xl border border-neutral-200 bg-white shadow-xl dark:border-neutral-800 dark:bg-neutral-950"
+                        style={{ position: 'absolute', top: 'calc(100% + 8px)', right: 0, width: 260, zIndex: 50, padding: '16px' }}
+                      >
+                        <p className="mb-3 text-[11px] font-bold uppercase tracking-wider text-neutral-400">Quick Preferences</p>
+                        {prefsContent}
+                      </div>
+                    </>
+                  )}
+                </div>
               </>
             )}
           </div>
@@ -371,9 +385,23 @@ export function AgentShell() {
                     <Button variant="outline" size="icon-sm" onClick={() => setWorkModalOpen(true)} aria-label="Current work" title="Current work" className="rounded-full text-neutral-500">
                       <Sparkles size={14} />
                     </Button>
-                    <Button variant="outline" size="icon-sm" onClick={() => setPrefsModalOpen(true)} aria-label="Quick preferences" title="Quick preferences" className="rounded-full text-neutral-500">
-                      <Settings2 size={14} />
-                    </Button>
+                    <div style={{ position: 'relative' }}>
+                      <Button variant="outline" size="icon-sm" onClick={() => setPrefsPopoverOpen(v => !v)} aria-label="Quick preferences" title="Quick preferences" className="rounded-full text-neutral-500">
+                        <Settings2 size={14} />
+                      </Button>
+                      {prefsPopoverOpen && (
+                        <>
+                          <button type="button" aria-label="Close" onClick={() => setPrefsPopoverOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 40 }} tabIndex={-1} />
+                          <div
+                            className="rounded-xl border border-neutral-200 bg-white shadow-xl dark:border-neutral-800 dark:bg-neutral-950"
+                            style={{ position: 'absolute', top: 'calc(100% + 8px)', right: 0, width: 260, zIndex: 50, padding: '16px' }}
+                          >
+                            <p className="mb-3 text-[11px] font-bold uppercase tracking-wider text-neutral-400">Quick Preferences</p>
+                            {prefsContent}
+                          </div>
+                        </>
+                      )}
+                    </div>
                   </div>
                 </div>
               </header>
@@ -477,9 +505,6 @@ export function AgentShell() {
         }
       >
         {workContent}
-      </Modal>
-      <Modal open={prefsModalOpen} onClose={() => setPrefsModalOpen(false)} title="Quick Preferences">
-        {prefsContent}
       </Modal>
     </div>
   )

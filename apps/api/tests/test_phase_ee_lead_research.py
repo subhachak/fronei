@@ -938,6 +938,109 @@ Recommendation: MEDITECH [S1].
     assert any("requested dimensions as evidence gaps" in issue for issue in verdict.issues)
 
 
+def test_judge_rejects_all_subjects_claim_when_one_subject_has_no_evidence():
+    from app.services.agent.research_subtree import (
+        CoverageCell,
+        CoverageContract,
+        EvidenceItem,
+        EvidencePack,
+        ResearchBudget,
+        ResearchBudgetLedger,
+        ResearchBrief,
+        ResearchPlan,
+        ResearchStateStore,
+        judge_research_final,
+    )
+
+    request = TurnRequest(
+        message=(
+            "Compare Epic, Oracle Health, MEDITECH, athenahealth, and eClinicalWorks "
+            "including architecture, interoperability, deployment failures, and TCO."
+        ),
+        research_level="regular",
+    )
+    state = ResearchStateStore(
+        brief=ResearchBrief(objective=request.message, research_profile="vendor_comparison", source="heuristic"),
+        contract=CoverageContract(
+            cells=[CoverageCell(subject="Epic", dimension="architecture", status="filled", confidence=0.8)],
+            subjects=["Epic", "Oracle Health", "MEDITECH", "athenahealth", "eClinicalWorks"],
+            dimensions=["architecture", "interoperability", "deployment failures", "TCO"],
+            source="brief_anchored:multi_subject_comparison",
+        ),
+        plan=ResearchPlan(research_profile="vendor_comparison", min_evidence_items=2, judge_threshold=0.72),
+        evidence=EvidencePack(
+            items=[
+                EvidenceItem(source_id="S1", title="Epic architecture", url="https://example.com/epic", evidence="Epic architecture evidence."),
+                EvidenceItem(source_id="S2", title="MEDITECH regional", url="https://example.com/meditech", evidence="MEDITECH regional evidence."),
+            ],
+            coverage=1.0,
+        ),
+        budget_ledger=ResearchBudgetLedger(
+            budget=ResearchBudget(max_sources=10, max_deep_links=4, max_tool_calls=8, max_model_calls=8),
+            tool_calls=2,
+            sources_read=3,
+        ),
+    )
+    answer = """# EHR Platform Comparison
+
+This evidence pack contains vendor-specific architecture, interoperability, deployment-failure,
+and KLAS satisfaction sources for all five platforms.
+
+### Epic
+Epic architecture is documented [S1].
+
+### Oracle Health
+Oracle Health has deployment material [S2].
+
+### MEDITECH
+MEDITECH has regional evidence [S2].
+
+### athenahealth
+athenahealth has cloud evidence [S1].
+
+### eClinicalWorks
+The retrieved pack contains no eClinicalWorks-specific architecture, interoperability,
+implementation, pricing, or deployment-failure sources. On the available evidence I cannot
+responsibly compare eClinicalWorks against the other four.
+
+## Recommendation
+Recommend MEDITECH [S2].
+"""
+
+    verdict = judge_research_final(request, state, answer)
+
+    assert verdict.next_action == "research_more"
+    assert verdict.can_publish is False
+    assert any("overclaims evidence coverage" in issue for issue in verdict.issues)
+
+
+def test_published_sources_only_include_cited_evidence():
+    from app.services.agent.models import Source
+    from app.services.agent.research_lead import _published_sources_for_answer
+    from app.services.agent.research_subtree import CoverageContract, EvidenceItem, EvidencePack, ResearchBrief, ResearchPlan, ResearchStateStore
+
+    state = ResearchStateStore(
+        brief=ResearchBrief(objective="Compare vendors", research_profile="vendor_comparison", source="heuristic"),
+        contract=CoverageContract(source="test"),
+        plan=ResearchPlan(research_profile="vendor_comparison"),
+        evidence=EvidencePack(
+            items=[
+                EvidenceItem(source_id="S1", title="Used", url="https://example.com/used", evidence="Used evidence", query="q1", provider="Search"),
+                EvidenceItem(source_id="S2", title="Unused", url="https://example.com/unused", evidence="Unused evidence", query="q2", provider="Search"),
+            ]
+        ),
+        all_sources=[
+            Source(title="Used", url="https://example.com/used"),
+            Source(title="Unused", url="https://example.com/unused"),
+            Source(title="Discovery only", url="https://example.com/discovery-only"),
+        ],
+    )
+
+    sources = _published_sources_for_answer(state, "Only the used source is cited [S1].")
+
+    assert [source.url for source in sources] == ["https://example.com/used"]
+
+
 def test_technical_architecture_queries_are_provider_friendly():
     from app.services.agent.research_subtree import (
         CoverageCell,

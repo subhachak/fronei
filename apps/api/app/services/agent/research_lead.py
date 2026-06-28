@@ -812,7 +812,7 @@ class LeadResearchAgent:
             },
         )
         return {
-            "sources": state.all_sources,
+            "sources": _published_sources_for_answer(state, response["model_response"].text),
             "tool_calls": state.all_tool_calls,
             "evidence": state.evidence,
             "response": response["model_response"],
@@ -1569,6 +1569,31 @@ def lead_research_loop(
     progress: Callable[[str, str, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     return LeadResearchAgent(request, tools, progress).run()
+
+
+def _published_sources_for_answer(state: ResearchStateStore, answer: str) -> list[Source]:
+    """Return only the evidence-backed sources that support the final answer."""
+    cited_ids = set(re.findall(r"\[(S\d+)\]", answer or ""))
+    evidence_items = [
+        item for item in state.evidence.items
+        if not cited_ids or item.source_id in cited_ids
+    ]
+    if not evidence_items and state.evidence.items:
+        evidence_items = list(state.evidence.items)
+
+    by_url: dict[str, Source] = {}
+    for item in evidence_items:
+        if not item.url or item.url in by_url:
+            continue
+        by_url[item.url] = Source(
+            title=item.title,
+            url=item.url,
+            snippet=item.evidence[:500],
+            content="",
+            query=item.query,
+            provider=item.provider,
+        )
+    return list(by_url.values())
 
 
 def _ensure_source_provenance(sources: list[Source], *, query: str, provider: str) -> None:

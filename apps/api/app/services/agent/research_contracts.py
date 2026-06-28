@@ -507,10 +507,113 @@ def _multi_subject_comparison_contract(message: str) -> CoverageContract:
 
 
 # ---------------------------------------------------------------------------
+# Phase 12 — Brief-anchored contract: uses subjects from brief/message, not static template
+# ---------------------------------------------------------------------------
+
+def _brief_anchored_contract(
+    subjects: list[str],
+    message: str,
+    brief: "ResearchBrief",
+    *,
+    profile_source: str = "brief_anchored",
+) -> CoverageContract:
+    """Build a CoverageContract whose subjects come from the brief or message extraction.
+
+    Dimensions are derived from the query (explicit "for each" / "across" / "covering"
+    clauses, or scope_in terms, or a sensible generic fallback for the profile).
+    This contract is always preferred over a static profile template when real named
+    subjects are available, so every dispatched search query can be anchored to an
+    actual entity from the request rather than a generic SaaS evaluation dimension.
+    """
+    # Try to derive dimensions from the message's explicit dimension-list phrases.
+    dimensions: list[str] = []
+
+    # Check for "for each: dim1, dim2, ..." or "covering dim1, dim2, ..."
+    for pattern in (
+        r"\bfor each[^:]*?:\s*(.+?)(?:\.|then|$)",
+        r"\b(?:covering|across|spanning|in\s+terms\s+of|on)\b\s*(.+?)(?:\.|;|$)",
+    ):
+        m = re.search(pattern, message, re.IGNORECASE)
+        if m:
+            raw_dims = [d.strip(" .,;") for d in re.split(r",|\band\b", m.group(1), flags=re.IGNORECASE)]
+            candidate_dims = [d for d in raw_dims if 2 <= len(d) <= 80][:6]
+            if candidate_dims:
+                dimensions = candidate_dims
+                break
+
+    # Fall back to brief.scope_in terms as dimensions (they're often topic facets)
+    if not dimensions and brief.scope_in:
+        dimensions = [s for s in brief.scope_in if len(s.strip()) > 1][:6]
+
+    # Final fallback: profile-aware generic dimensions
+    if not dimensions:
+        _profile_dimensions: dict[str, list[str]] = {
+            "vendor_comparison": [
+                "capabilities and core features",
+                "pricing and licensing",
+                "integration and API",
+                "security and compliance",
+                "support and SLA",
+            ],
+            "market_landscape": [
+                "market position",
+                "product offering",
+                "strengths",
+                "limitations",
+                "ecosystem and partnerships",
+            ],
+            "strategy_brief": [
+                "current state",
+                "strategic fit",
+                "risks",
+                "recommendation rationale",
+            ],
+        }
+        dimensions = _profile_dimensions.get(
+            profile_source,
+            ["overview", "capabilities", "strengths", "limitations", "recommendation"],
+        )
+
+    cells = [
+        CoverageCell(subject=subject, dimension=dimension, required=True)
+        for subject in subjects
+        for dimension in dimensions
+    ]
+    return CoverageContract(
+        cells=cells,
+        subjects=subjects,
+        dimensions=dimensions,
+        source=f"brief_anchored:{profile_source}",
+    )
+
+
+# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
 def generate_coverage_contract(request: TurnRequest, brief: ResearchBrief) -> CoverageContract:
+    # Phase 12 — prefer subjects extracted from the brief / message over any static template.
+    # The brief is built by an LLM with full query context; static templates are domain-generic
+    # and silently override the brief's correctly-extracted scope_in list.
+    # Strategy: extract named subjects; if ≥3 are found, use the multi-subject path so
+    # cells are anchored to real entities.  Profile-specific static templates remain as the
+    # fallback for genuinely un-structured, single-subject queries.
+    named_subjects = _extract_named_comparison_subjects(request.message)
+    brief_subjects = [s for s in brief.scope_in if len(s.strip()) > 1] if brief.scope_in else []
+
+    # For comparison-flavoured profiles, try to build a subject-anchored contract rather than
+    # handing off to the generic static factory that carries no named-entity information.
+    _COMPARISON_PROFILES = frozenset({"vendor_comparison", "market_landscape", "strategy_brief"})
+    if brief.research_profile in _COMPARISON_PROFILES and (named_subjects or brief_subjects):
+        subjects_to_use = named_subjects if named_subjects else _dedupe(brief_subjects)[:6]
+        if subjects_to_use:
+            return _brief_anchored_contract(
+                subjects_to_use,
+                request.message,
+                brief,
+                profile_source=brief.research_profile,
+            )
+
     if _is_framework_comparison_request(request.message):
         return _framework_comparison_contract(request.message)
     # Phase 6 — general multi-subject comparison: create per-(entity, dimension) cells
@@ -604,6 +707,7 @@ def generate_coverage_contract(request: TurnRequest, brief: ResearchBrief) -> Co
 
 __all__ = [
     "COVERAGE_CONTRACT_PROMPT",
+    "_brief_anchored_contract",
     "_count_comparison_dimensions",
     "_derive_fallback_dimensions",
     "_derive_fallback_subjects",

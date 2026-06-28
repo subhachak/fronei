@@ -73,12 +73,13 @@ def test_framework_comparison_chat_gets_decision_grade_contract():
     )
 
     assert "Produce a decision-grade research answer in chat" in user_prompt
-    assert "architecture model, coordination approach, production readiness, known failure modes" in user_prompt
+    assert "Choose whatever structure best serves this request" in user_prompt
+    assert "Let evidence density per subject guide section depth" in user_prompt
     assert "cross-cutting failure taxonomy or governance lens" in user_prompt
-    assert "lifecycle, maintenance, successor-framework, or ecosystem shifts" in user_prompt
     assert "ranked recommendation and conditional overrides" in user_prompt
-    assert "Do not open with an evidence-quality disclaimer" in user_prompt
-    assert "Do not use validation notes" in user_prompt
+    assert "LIFECYCLE FLAGS" in user_prompt
+    assert "NO LEADING DISCLAIMER" in user_prompt
+    assert "BEST EFFORT OVER REFUSAL" in user_prompt
     assert "Produce a concise chat answer" not in user_prompt
 
 

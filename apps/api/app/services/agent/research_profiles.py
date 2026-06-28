@@ -278,11 +278,13 @@ def research_budget_for(request: TurnRequest) -> ResearchBudget:
             judge_threshold=0.60,
             max_tool_calls=2,
             # Phase 10 — easy tier: 6 (brief + claim_classifier + citation_verifier + synthesis + 2 spare)
+            # Phase 12 — no repair reserved slot on easy tier (repair_iterations=0)
             max_model_calls=6,
             max_cost_usd=0.01,
             max_elapsed_ms=15_000,
             max_deep_links=0,
             reserved_synthesis_model_calls=2,
+            reserved_repair_model_calls=0,
         )
     if request.research_level == "deep":
         # Phase 9 — deep-tier budget is the FLOOR for multi-subject comparisons, not the ceiling.
@@ -291,6 +293,8 @@ def research_budget_for(request: TurnRequest) -> ResearchBudget:
         # No min() caps on the per-subject scaling — a 5-subject comparison needs more room than
         # a 1-subject deep request; capping it at the single-subject deep value is exactly backwards.
         # Only max_elapsed_ms is capped (practical turn-length limit).
+        # Phase 12 — deep tier reserves 3 synthesis + 2 repair = 5 slots; raised max_model_calls
+        # by 2 to compensate for the added reservation without shrinking gathering capacity.
         deep_base = ResearchBudget(
             max_search_workers=10,
             max_results_per_worker=12,
@@ -301,11 +305,14 @@ def research_budget_for(request: TurnRequest) -> ResearchBudget:
             max_tool_calls=72,
             # Phase 10 — deep tier: 36 (brief + up to 32 per-source claim-classifiers
             # + citation-verifier + synthesis + 2 repair + spare). Pre-Phase-1 was 24.
-            max_model_calls=36,
+            # Phase 12 — raised to 38 to keep effective gathering capacity unchanged
+            # after adding reserved_repair_model_calls=2.
+            max_model_calls=38,
             max_cost_usd=1.25,
             max_elapsed_ms=600_000,
             max_deep_links=28,
             reserved_synthesis_model_calls=3,
+            reserved_repair_model_calls=2,
         )
         named_subjects = _extract_named_comparison_subjects(request.message)
         extra_subjects = max(0, len(named_subjects) - 2)
@@ -323,12 +330,15 @@ def research_budget_for(request: TurnRequest) -> ResearchBudget:
                 max_elapsed_ms=min(900_000, deep_base.max_elapsed_ms + extra_subjects * 60_000),
                 max_deep_links=deep_base.max_deep_links + extra_subjects * 8,
                 reserved_synthesis_model_calls=deep_base.reserved_synthesis_model_calls,
+                reserved_repair_model_calls=deep_base.reserved_repair_model_calls,
             )
         return deep_base
     # Phase 8 — delete the hardcoded framework-specific budget branch (it was smaller than
     # the plain "deep" budget — exactly the wrong direction for 5-subject comparisons).
     # Instead, start from the standard "regular" budget and scale per named subject
     # beyond the first 2, so a 5-subject comparison gets strictly more room.
+    # Phase 12 — regular tier reserves 2 synthesis + 2 repair = 4 slots; raised
+    # max_model_calls by 2 to keep gathering capacity unchanged.
     base = ResearchBudget(
         max_search_workers=3,
         max_results_per_worker=6,
@@ -339,11 +349,13 @@ def research_budget_for(request: TurnRequest) -> ResearchBudget:
         max_tool_calls=8,
         # Phase 10 — regular tier: 12 (brief + up to 6 per-source claim-classifiers
         # + citation-verifier + synthesis + 1 repair + spare). Pre-Phase-1 was 4.
-        max_model_calls=12,
+        # Phase 12 — raised to 14 to preserve gathering capacity after adding repair reservation.
+        max_model_calls=14,
         max_cost_usd=0.08,
         max_elapsed_ms=90_000,
         max_deep_links=2,
         reserved_synthesis_model_calls=2,
+        reserved_repair_model_calls=2,
     )
     named_subjects = _extract_named_comparison_subjects(request.message)
     extra_subjects = max(0, len(named_subjects) - 2)
@@ -363,6 +375,7 @@ def research_budget_for(request: TurnRequest) -> ResearchBudget:
             max_elapsed_ms=min(600_000, base.max_elapsed_ms + extra_subjects * 30_000),
             max_deep_links=min(28, base.max_deep_links + extra_subjects * 4),
             reserved_synthesis_model_calls=base.reserved_synthesis_model_calls,
+            reserved_repair_model_calls=base.reserved_repair_model_calls,
         )
     return base
 

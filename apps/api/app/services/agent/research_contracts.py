@@ -225,7 +225,8 @@ def _derive_fallback_subjects(message: str, brief: ResearchBrief) -> list[str]:
     if scoped:
         return _dedupe(scoped)[:4]
     candidates = re.split(r"\b(?:vs\.?|versus|and|,|/)\b", message, flags=re.IGNORECASE)
-    subjects = [candidate.strip(" .:-") for candidate in candidates if 2 <= len(candidate.strip()) <= 80]
+    subjects = [_clean_subject_name(candidate) for candidate in candidates if 2 <= len(candidate.strip()) <= 80]
+    subjects = [subject for subject in subjects if subject]
     if len(subjects) >= 2 and any(token in message.lower() for token in ("compare", " vs", "versus")):
         return _dedupe(subjects)[:4]
     return [brief.objective[:80] or message[:80]]
@@ -364,7 +365,7 @@ def _extract_named_comparison_subjects(message: str) -> list[str]:
     # but genuinely lowercase product names like "athenahealth" have none).
     pre_subjects: list[str] = []
     for raw in raw_candidates:
-        value = raw.strip(" .:-()[]\"'")
+        value = _clean_subject_name(raw)
         value = re.sub(r"^(?:and|or|the|a|an|also)\s+", "", value, flags=re.IGNORECASE).strip()
         if not value or len(value) < 2:
             continue
@@ -389,9 +390,15 @@ def _extract_named_comparison_subjects(message: str) -> list[str]:
     for value in pre_subjects:
         has_capital = bool(re.search(r"[A-Z]", value))
         if has_capital or list_is_proper_noun_context:
-            subjects.append(value)
+            subjects.append(_clean_subject_name(value))
 
     return _dedupe(subjects)[:8]
+
+
+def _clean_subject_name(value: str) -> str:
+    value = re.sub(r"[\u2010-\u2015]+$", "", (value or "").strip())
+    value = value.strip(" .:-()[]\"'\u2010\u2011\u2012\u2013\u2014\u2015")
+    return re.sub(r"\s+", " ", value).strip()
 
 
 def _count_comparison_dimensions(message: str) -> int:

@@ -1041,6 +1041,57 @@ def test_published_sources_only_include_cited_evidence():
     assert [source.url for source in sources] == ["https://example.com/used"]
 
 
+def test_ehr_subject_extraction_strips_trailing_dash():
+    from app.services.agent.research_contracts import _extract_named_comparison_subjects
+
+    message = (
+        "Compare Epic, Oracle Health, MEDITECH, athenahealth, and eClinicalWorks—across "
+        "interoperability architecture, implementation approach, total cost of ownership, "
+        "and known deployment failures."
+    )
+
+    assert _extract_named_comparison_subjects(message) == [
+        "Epic",
+        "Oracle Health",
+        "MEDITECH",
+        "athenahealth",
+        "eClinicalWorks",
+    ]
+
+
+def test_lead_evidence_binding_caps_to_curated_source_budget(monkeypatch):
+    from app.services.agent import research_lead
+    from app.services.agent.research_lead import LeadResearchAgent
+    from app.services.agent.research_subtree import (
+        CoverageContract,
+        EvidencePack,
+        ResearchBrief,
+        ResearchBudget,
+        ResearchPlan,
+        ResearchStateStore,
+    )
+
+    seen: dict[str, int] = {}
+
+    def fake_bind_evidence(*args, **kwargs):
+        seen["max_items"] = kwargs["max_items"]
+        return EvidencePack(items=[])
+
+    monkeypatch.setattr(research_lead, "bind_evidence", fake_bind_evidence)
+    agent = LeadResearchAgent(TurnRequest(message="Compare EHR vendors", research_level="deep"), tools=object())
+    agent.budget = ResearchBudget(max_sources=7, max_deep_links=13)
+    state = ResearchStateStore(
+        brief=ResearchBrief(objective="Compare EHR vendors", research_profile="vendor_comparison", source="heuristic"),
+        contract=CoverageContract(subjects=["Epic"], dimensions=["pricing"], source="test"),
+        plan=ResearchPlan(research_profile="vendor_comparison"),
+        all_sources=[Source(title=f"Source {idx}", url=f"https://example.com/{idx}") for idx in range(20)],
+    )
+
+    agent._bind_state_evidence(state)
+
+    assert seen["max_items"] == 7
+
+
 def test_technical_architecture_queries_are_provider_friendly():
     from app.services.agent.research_subtree import (
         CoverageCell,

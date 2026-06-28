@@ -260,10 +260,13 @@ def plan_from_brief_contract(
 
 
 def _profile_from_contract(contract: CoverageContract) -> ResearchProfile | None:
-    if not contract.source.startswith("profile:"):
-        return None
-    candidate = contract.source.split(":", 1)[1].split(":", 1)[0]
-    return candidate if candidate in _RESEARCH_PROFILES else None  # type: ignore[return-value]
+    # Phase 12 — also handle brief_anchored:{profile} sources produced by _brief_anchored_contract().
+    for prefix in ("profile:", "brief_anchored:"):
+        if contract.source.startswith(prefix):
+            candidate = contract.source[len(prefix):].split(":", 1)[0]
+            if candidate in _RESEARCH_PROFILES:
+                return candidate  # type: ignore[return-value]
+    return None
 
 
 def _dedupe_workers(workers: list[SearchWorkerPlan]) -> list[SearchWorkerPlan]:
@@ -530,11 +533,81 @@ def _plan_preview_source_strategy(profile: ResearchProfile, plan: ResearchPlan) 
 # Reflection and citation verification
 # ---------------------------------------------------------------------------
 
+def _topical_relevance_check(state: ResearchStateStore) -> str | None:
+    """Phase 12.2 — before judging evidence sufficient, verify it actually mentions
+    the named subjects from the brief.
+
+    Returns a human-readable failure string if relevance is below threshold, or None
+    when evidence is topically on-target.  A failure here returns a 'research_more'
+    signal so the lead loop dispatches per-subject targeted queries before synthesis.
+    """
+    # Only fire when named subjects exist (multi-subject comparisons, vendor evals, etc.)
+    named_subjects = [s for s in state.contract.subjects if s.strip()]
+    if len(named_subjects) < 2:
+        return None  # single-subject queries: no per-entity relevance check needed
+
+    # Collect searchable text from every bound evidence item.
+    evidence_text = " ".join(
+        " ".join([item.title or "", item.url or "", item.evidence or "", item.quoted_text or ""])
+        for item in state.evidence.items
+    ).lower()
+
+    if not evidence_text.strip():
+        return f"No evidence has been bound yet; {len(named_subjects)} named subjects have no coverage."
+
+    # For each subject, check whether any evidence item mentions it (case-insensitive token
+    # presence).  We accept a partial word match (e.g. "athenahealth" in a URL slug).
+    missing_subjects: list[str] = []
+    for subject in named_subjects:
+        subject_tokens = re.split(r"\s+", subject.lower().strip())
+        # Any token ≥4 chars is enough to confirm the subject was retrieved (avoids
+        # false positives from short tokens like "aws" matching "lawsuits").
+        significant_tokens = [t for t in subject_tokens if len(t) >= 4]
+        if not significant_tokens:
+            significant_tokens = subject_tokens  # keep even short ones if no other choice
+        if not any(token in evidence_text for token in significant_tokens):
+            missing_subjects.append(subject)
+
+    if not missing_subjects:
+        return None
+
+    threshold = max(1, int(len(named_subjects) * 0.4))  # allow up to 40% absent before flagging
+    if len(missing_subjects) > threshold:
+        return (
+            f"Evidence has no mention of {len(missing_subjects)} named subject(s): "
+            f"{', '.join(missing_subjects[:5])}. "
+            "Per-subject targeted queries are needed before synthesis."
+        )
+    return None
+
+
 def reflect(request: TurnRequest, state: ResearchStateStore) -> ReflectionDecision:
     open_cells = state.contract.open_cells()
     partial_cells = state.contract.partial_cells()
     coverage = state.contract.coverage_ratio()
     if not open_cells and coverage >= 1.0:
+        # Phase 12.2 — even with 100% cell fill, reject if evidence doesn't mention the subjects.
+        relevance_issue = _topical_relevance_check(state)
+        if relevance_issue:
+            targeted_queries = [
+                _targeted_query(subject, [state.contract.dimensions[0] if state.contract.dimensions else "overview"], request.message)
+                for subject in state.contract.subjects
+                if not any(
+                    (token := re.split(r"\s+", subject.lower())[0]) and token in (
+                        " ".join([i.title or "", i.url or "", i.evidence or ""]).lower()
+                    )
+                    for i in state.evidence.items
+                )
+            ][:4]
+            return ReflectionDecision(
+                sufficient=False,
+                open_subjects=state.contract.subjects,
+                targeted_queries=targeted_queries,
+                terminate_reason=None,
+                coverage_ratio=coverage,
+                next_action="continue",
+                source="heuristic",
+            )
         return ReflectionDecision(sufficient=True, terminate_reason="Coverage contract fully satisfied.", coverage_ratio=coverage, next_action="publish", source="heuristic")
     if state.budget_ledger.stopped:
         return ReflectionDecision(sufficient=True, terminate_reason=state.budget_ledger.stop_reason or "budget exhausted", coverage_ratio=coverage, next_action="stop_with_gaps" if open_cells else "publish", source="heuristic")
@@ -597,6 +670,20 @@ def reflect(request: TurnRequest, state: ResearchStateStore) -> ReflectionDecisi
         decision.source = "llm"
         if decision.sufficient and decision.next_action == "continue":
             decision.next_action = "publish" if not open_cells else "stop_with_gaps"
+        # Phase 12.2 — override LLM "sufficient" if evidence doesn't actually mention subjects
+        if decision.sufficient and decision.next_action == "publish":
+            relevance_issue = _topical_relevance_check(state)
+            if relevance_issue:
+                decision.sufficient = False
+                decision.next_action = "continue"
+                decision.terminate_reason = None
+                if not decision.targeted_queries:
+                    decision.targeted_queries = [
+                        _targeted_query(subject, [state.contract.dimensions[0] if state.contract.dimensions else "overview"], request.message)
+                        for subject in (decision.open_subjects or state.contract.subjects)[:4]
+                    ]
+                if not decision.open_subjects:
+                    decision.open_subjects = state.contract.subjects
         return decision
     except Exception as exc:
         logger.warning("agent reflection failed; using deterministic follow-up: %s", exc)

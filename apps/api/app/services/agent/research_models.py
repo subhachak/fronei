@@ -262,6 +262,13 @@ class ResearchBudget(BaseModel):
     # once max_model_calls - reserved_synthesis_model_calls is reached, ensuring synthesis
     # always runs on whatever evidence exists ("best-effort beats withholding", Phase 7).
     reserved_synthesis_model_calls: int = 2
+    # Phase 12 — guaranteed repair slot: the synthesis→verify→judge→repair chain is treated
+    # as one atomic reserved unit.  Gathering-phase calls stop consuming budget at
+    # max_model_calls - reserved_synthesis_model_calls - reserved_repair_model_calls.
+    # This ensures that if the judge requests a repair pass, there is always budget to run it
+    # rather than publishing a diagnosed-defective draft because budget was exhausted first.
+    # Default is 0 for backward-compat; profiles that support repair explicitly set it to 2.
+    reserved_repair_model_calls: int = 0
 
 
 class ResearchBudgetLedger(BaseModel):
@@ -311,17 +318,38 @@ class ResearchBudgetLedger(BaseModel):
         return True
 
     def can_start_model(self, agent_id: str) -> bool:
-        # Phase 10 — synthesis and repair agents get the full budget; gathering-phase
+        # Phase 10 — synthesis and repair agents get reserved slots; gathering-phase
         # agents (claim_classifier, citation_verifier, query/plan generators, etc.) stop
-        # consuming budget at max_model_calls - reserved_synthesis_model_calls so that
-        # synthesis always has guaranteed room to run, consistent with Phase 7's
-        # "best-effort beats withholding" rule.
-        _SYNTHESIS_AGENTS = frozenset({"synthesis_agent", "repair_agent"})
+        # consuming budget early so the synthesis→verify→judge→repair chain always has room.
+        #
+        # Phase 12 — repair_agent now has its own reserved slot separate from synthesis_agent.
+        # The hierarchy is:
+        #   gathering agents   → stop at  max - reserved_synthesis - reserved_repair
+        #   synthesis_agent    → stop at  max - reserved_repair
+        #   repair_agent       → uses the full budget
+        # This guarantees that if the judge requests repair, there's always a slot for it.
+        _SYNTHESIS_AGENTS = frozenset({"synthesis_agent"})
+        _REPAIR_AGENTS = frozenset({"repair_agent"})
+        _ALL_SYNTHESIS = _SYNTHESIS_AGENTS | _REPAIR_AGENTS
+
         effective_limit = self.budget.max_model_calls
-        if agent_id not in _SYNTHESIS_AGENTS:
-            effective_limit = max(0, self.budget.max_model_calls - self.budget.reserved_synthesis_model_calls)
+        if agent_id in _REPAIR_AGENTS:
+            # Repair uses the full budget; it's the last scheduled call in the chain.
+            effective_limit = self.budget.max_model_calls
+        elif agent_id in _SYNTHESIS_AGENTS:
+            # Synthesis gets full budget minus the repair reservation.
+            effective_limit = max(0, self.budget.max_model_calls - self.budget.reserved_repair_model_calls)
+        else:
+            # All gathering-phase agents: reserve both synthesis and repair slots.
+            effective_limit = max(
+                0,
+                self.budget.max_model_calls
+                - self.budget.reserved_synthesis_model_calls
+                - self.budget.reserved_repair_model_calls,
+            )
+
         if self.model_calls >= effective_limit:
-            if agent_id in _SYNTHESIS_AGENTS:
+            if agent_id in _ALL_SYNTHESIS:
                 self.stop(f"model budget exhausted before {agent_id}")
             # For gathering agents, don't stop the entire run — just deny this call.
             return False
@@ -358,6 +386,9 @@ class ResearchBudgetLedger(BaseModel):
             return
         if self.tool_calls >= self.budget.max_tool_calls:
             self.stop("tool budget exhausted")
+        # Phase 12 — only hard-stop on model_calls if we've consumed ALL slots including
+        # the reserved synthesis and repair slots; gathering agents are soft-denied via
+        # can_start_model() and don't trigger a full run stop.
         elif self.model_calls >= self.budget.max_model_calls:
             self.stop("model budget exhausted")
         elif self.cost_usd >= self.budget.max_cost_usd:

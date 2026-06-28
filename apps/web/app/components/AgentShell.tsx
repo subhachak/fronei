@@ -295,7 +295,7 @@ export function AgentShell() {
 
       <div
         className="flex min-h-0 flex-1 overflow-hidden md:grid"
-        style={{ gridTemplateColumns: `${leftRailCollapsed ? 56 : leftRailWidth}px minmax(0, 1fr) 56px` }}
+        style={{ gridTemplateColumns: `${leftRailCollapsed ? 56 : leftRailWidth}px minmax(0, 1fr) ${rightRailCollapsed ? 56 : 56}px` }}
       >
         {/* Desktop library rail */}
         <aside className="relative hidden flex-col overflow-hidden border-r border-neutral-200 bg-neutral-50/60 dark:border-neutral-800 dark:bg-neutral-900/40 md:flex">
@@ -475,8 +475,8 @@ export function AgentShell() {
       {/* Desktop context flyout — rendered OUTSIDE the grid so overflow:hidden cannot clip it */}
       {!rightRailCollapsed && (
         <div
-          className="fixed inset-y-0 right-0 z-50 hidden w-[min(480px,55vw)] flex-col border-l border-neutral-200 bg-white shadow-2xl dark:border-neutral-800 dark:bg-neutral-950 md:flex"
-          style={{ animation: 'slideInRight 0.18s ease-out' }}
+          className="fixed inset-y-0 right-0 z-50 hidden flex-col border-l border-neutral-200 bg-white shadow-2xl dark:border-neutral-800 dark:bg-neutral-950 md:flex"
+          style={{ width: 'min(520px, 55vw)' }}
         >
           <div className="flex flex-shrink-0 items-center justify-end border-b border-neutral-200 px-3 py-2 dark:border-neutral-800">
             <Button

@@ -7,11 +7,13 @@ export function Modal({
   open,
   onClose,
   title,
+  action,
   children,
 }: {
   open: boolean
   onClose: () => void
   title: string
+  action?: React.ReactNode
   children: React.ReactNode
 }) {
   React.useEffect(() => {
@@ -26,7 +28,13 @@ export function Modal({
   if (!open) return null
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-label={title}>
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center"
+      style={{ padding: '24px' }}
+      role="dialog"
+      aria-modal="true"
+      aria-label={title}
+    >
       {/* Backdrop */}
       <button
         type="button"
@@ -34,18 +42,24 @@ export function Modal({
         onClick={onClose}
         className="absolute inset-0 bg-black/40 backdrop-blur-[2px]"
       />
-      {/* Panel */}
-      <div className="relative z-10 flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-neutral-200 bg-white shadow-2xl dark:border-neutral-800 dark:bg-neutral-950">
+      {/* Panel — stretches to fill available space */}
+      <div
+        className="relative z-10 flex flex-col overflow-hidden rounded-2xl border border-neutral-200 bg-white shadow-2xl dark:border-neutral-800 dark:bg-neutral-950"
+        style={{ width: '100%', maxWidth: 'calc(100vw - 48px)', maxHeight: 'calc(100vh - 48px)' }}
+      >
         <div className="flex flex-shrink-0 items-center justify-between border-b border-neutral-200 px-5 py-3.5 dark:border-neutral-800">
           <h2 className="text-sm font-bold text-neutral-900 dark:text-neutral-50">{title}</h2>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close"
-            className="grid h-8 w-8 place-items-center rounded-full text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
-          >
-            <X size={16} />
-          </button>
+          <div className="flex items-center gap-2">
+            {action}
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="Close"
+              className="grid h-8 w-8 place-items-center rounded-full text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
+            >
+              <X size={16} />
+            </button>
+          </div>
         </div>
         <div className="flex-1 overflow-y-auto px-5 py-4">{children}</div>
       </div>

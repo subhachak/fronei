@@ -7,6 +7,7 @@ import { useTheme } from '../hooks/useTheme'
 import { AdminShell } from '../admin/components/AdminShell'
 import { brandAsset } from '../lib/brand'
 import { clamp } from '../lib/format'
+import { engineEventsCopyText } from '../lib/commentary'
 import { Composer } from './Composer'
 import { ContextPanel } from './ContextPanel'
 import { LibraryPanel } from './LibraryPanel'
@@ -14,6 +15,7 @@ import { ProfileView } from './ProfileView'
 import { Timeline } from './Timeline'
 import { Badge } from './ui/Card'
 import { Button } from './ui/Button'
+import { CopyButton } from './ui/CopyButton'
 import { Modal } from './ui/Modal'
 import { Sheet } from './ui/Sheet'
 
@@ -315,8 +317,6 @@ export function AgentShell() {
                 setView('admin')
                 setLeftRailCollapsed(false)
               }}
-              onOpenWork={() => setWorkModalOpen(true)}
-              onOpenPrefs={() => setPrefsModalOpen(true)}
               theme={theme}
               onToggleTheme={toggleTheme}
             />
@@ -462,7 +462,20 @@ export function AgentShell() {
       </Sheet>
 
       {/* Center modals — Current Work and Quick Preferences */}
-      <Modal open={workModalOpen} onClose={() => setWorkModalOpen(false)} title="Current Work">
+      <Modal
+        open={workModalOpen}
+        onClose={() => setWorkModalOpen(false)}
+        title="Current Work"
+        action={
+          agent.events.length > 0 ? (
+            <CopyButton
+              copied={agent.copiedKey === 'events:all'}
+              label="Copy full trace"
+              onClick={() => void agent.copyText(engineEventsCopyText(agent.events), 'events:all')}
+            />
+          ) : undefined
+        }
+      >
         {workContent}
       </Modal>
       <Modal open={prefsModalOpen} onClose={() => setPrefsModalOpen(false)} title="Quick Preferences">
@@ -509,8 +522,6 @@ function CollapsedLibraryRail({
   onOpenWorkspaces,
   onOpenProfile,
   onOpenAdmin,
-  onOpenWork,
-  onOpenPrefs,
   theme,
   onToggleTheme,
 }: {
@@ -520,8 +531,6 @@ function CollapsedLibraryRail({
   onOpenWorkspaces: () => void
   onOpenProfile: () => void
   onOpenAdmin: () => void
-  onOpenWork: () => void
-  onOpenPrefs: () => void
   theme: 'light' | 'dark'
   onToggleTheme: () => void
 }) {
@@ -539,9 +548,6 @@ function CollapsedLibraryRail({
       <CollapsedIconButton label="Workspaces" icon={Folder} active={activeView === 'chat'} onClick={onOpenWorkspaces} />
       <CollapsedIconButton label="Profile" icon={UserCog} active={activeView === 'profile'} onClick={onOpenProfile} />
       {isAdmin && <CollapsedIconButton label="Admin" icon={Shield} active={activeView === 'admin'} onClick={onOpenAdmin} />}
-      <div className="h-px w-8 bg-neutral-200 dark:bg-neutral-800" />
-      <CollapsedIconButton label="Current work" icon={Sparkles} onClick={onOpenWork} />
-      <CollapsedIconButton label="Quick preferences" icon={Settings2} onClick={onOpenPrefs} />
       <div className="mt-auto flex flex-col gap-2">
         <CollapsedIconButton
           label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}

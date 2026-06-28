@@ -15,6 +15,11 @@ def _get_extract_named_comparison_subjects():  # type: ignore[misc]
     from app.services.agent.research_contracts import _extract_named_comparison_subjects  # noqa: PLC0415
     return _extract_named_comparison_subjects
 
+
+def _get_count_comparison_dimensions():  # type: ignore[misc]
+    from app.services.agent.research_contracts import _count_comparison_dimensions  # noqa: PLC0415
+    return _count_comparison_dimensions
+
 logger = logging.getLogger(__name__)
 
 
@@ -245,19 +250,34 @@ def choose_research_level(request: TurnRequest, route: RouteName) -> Literal["ea
     asks_doc = _asks_for_document_artifact(text)
     if any(term in text for term in deep_terms) or any(term in text for term in high_stakes_terms):
         return "deep"
-    # Phase 9 — structural signal: N≥3 named subjects + recommendation/synthesis intent
-    # → definitionally a deep research task, regardless of keyword list.
-    # "Research the top 5 X... Provide a synthesized recommendation" should never fall
-    # through to "regular" just because the user didn't say the word "comprehensive".
-    _synthesis_intent_terms = ("recommend", "recommendation", "which is best", "which would", "synthesiz", "best framework", "best option", "best choice", "best platform", "best tool")
-    if any(term in text for term in _synthesis_intent_terms):
-        try:
-            _extract = _get_extract_named_comparison_subjects()
-            named_subjects = _extract(request.message)
-            if len(named_subjects) >= 3:
-                return "deep"
-        except Exception:
-            pass
+    # Phase 9 / Phase 11 — two independent structural signals, either alone → "deep".
+    # Extract subjects and count dimensions once; both checks share the result.
+    #
+    # Signal A (Phase 9): ≥3 named subjects + recommendation/synthesis intent term.
+    #   "Research the top 5 X… Provide a synthesized recommendation" must reach "deep"
+    #   even without explicit keywords like "comprehensive" or "thorough".
+    #
+    # Signal B (Phase 11): ≥2 named subjects + ≥3 explicit comparison dimensions.
+    #   "Compare AWS S3, Google Cloud Storage, and Azure Blob Storage on durability,
+    #    pricing tiers, and egress costs" is inherently deep-shaped even when the user
+    #   never asks "which one should I pick" — three subjects × three dimensions is
+    #   the same research burden as any other deep comparison task.
+    _synthesis_intent_terms = (
+        "recommend", "recommendation", "which is best", "which would", "synthesiz",
+        "best framework", "best option", "best choice", "best platform", "best tool",
+    )
+    try:
+        _extract = _get_extract_named_comparison_subjects()
+        _count_dims = _get_count_comparison_dimensions()
+        named_subjects = _extract(request.message)
+        # Signal A — recommendation-intent path (Phase 9)
+        if len(named_subjects) >= 3 and any(term in text for term in _synthesis_intent_terms):
+            return "deep"
+        # Signal B — dimension-richness path (Phase 11)
+        if len(named_subjects) >= 2 and _count_dims(request.message) >= 3:
+            return "deep"
+    except Exception:
+        pass
     explicit_research = "research" in text
     if asks_doc and route == "research_document":
         return "regular"

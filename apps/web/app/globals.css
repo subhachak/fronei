@@ -1,3 +1,9 @@
+/* ── Flyout animation ─────────────────────────────────────────────────────── */
+@keyframes slideInRight {
+  from { transform: translateX(12px); opacity: 0; }
+  to   { transform: translateX(0);    opacity: 1; }
+}
+
 /* ── Theme variables ──────────────────────────────────────────────────────── */
 /* Brand palette: navy (#0F172A / #1E293B) + gold (#FBBF24) from logo mark   */
 :root, [data-theme="dark"] {

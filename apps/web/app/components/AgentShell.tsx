@@ -295,7 +295,7 @@ export function AgentShell() {
 
       <div
         className="flex min-h-0 flex-1 overflow-hidden md:grid"
-        style={{ gridTemplateColumns: `${leftRailCollapsed ? 56 : leftRailWidth}px minmax(0, 1fr) ${rightRailCollapsed ? 56 : rightRailWidth}px` }}
+        style={{ gridTemplateColumns: `${leftRailCollapsed ? 56 : leftRailWidth}px minmax(0, 1fr) 56px` }}
       >
         {/* Desktop library rail */}
         <aside className="relative hidden flex-col overflow-hidden border-r border-neutral-200 bg-neutral-50/60 dark:border-neutral-800 dark:bg-neutral-900/40 md:flex">
@@ -447,33 +447,37 @@ export function AgentShell() {
           )}
         </section>
 
-        {/* Desktop context rail */}
-        <aside className="relative hidden flex-col overflow-hidden border-l border-neutral-200 bg-neutral-50/60 dark:border-neutral-800 dark:bg-neutral-900/40 md:flex">
+        {/* Desktop context rail — always a 56px icon strip */}
+        <aside className="relative hidden flex-col border-l border-neutral-200 bg-neutral-50/60 dark:border-neutral-800 dark:bg-neutral-900/40 md:flex">
           {rightRailCollapsed ? (
             <CollapsedContextRail
               hasArtifact={Boolean(agent.latestArtifact)}
               onExpand={() => setRightRailCollapsed(false)}
             />
           ) : (
-            <>
-              <div
-                role="separator"
-                aria-label="Resize context rail"
-                onPointerDown={event => beginHorizontalResize('right', event)}
-                className="absolute inset-y-0 left-[-5px] z-10 w-[10px] cursor-col-resize hover:bg-neutral-900/5 dark:hover:bg-white/5"
-              />
+            /* Strip: just the collapse button */
+            <div className="flex flex-col items-center pt-2">
               <Button
                 variant="outline"
                 size="icon-sm"
                 onClick={() => setRightRailCollapsed(true)}
                 aria-label="Collapse context"
                 title="Collapse context"
-                className="absolute right-2 top-2 rounded-full text-neutral-400"
+                className="rounded-full text-neutral-400"
               >
                 <ChevronsRight size={14} />
               </Button>
-              <div className="flex-1 overflow-hidden px-4 py-5">{contextContent}</div>
-            </>
+            </div>
+          )}
+
+          {/* Flyout panel — fixed overlay that slides over the center column */}
+          {!rightRailCollapsed && (
+            <div
+              className="fixed inset-y-0 right-14 z-40 flex w-[min(420px,45vw)] flex-col border-l border-neutral-200 bg-white shadow-xl dark:border-neutral-800 dark:bg-neutral-950"
+              style={{ animation: 'slideInRight 0.18s ease-out' }}
+            >
+              <div className="flex-1 overflow-y-auto px-4 py-5">{contextContent}</div>
+            </div>
           )}
         </aside>
       </div>

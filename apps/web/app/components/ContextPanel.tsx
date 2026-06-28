@@ -76,7 +76,13 @@ export function ContextPanel({
       </div>
 
       <div className="flex-1 space-y-3 overflow-y-auto">
-        <CollapsibleTile icon={Sparkles} title="Current Work" subtitle={workSummary.route} defaultOpen={view === 'chat' && hasWorkContext}>
+        <CollapsibleTile
+          icon={Sparkles}
+          title="Current Work"
+          subtitle={workSummary.route}
+          defaultOpen={view === 'chat' && hasWorkContext}
+          action={events.length > 0 ? <CopyButton copied={copiedKey === 'events:all'} label="Copy full trace" onClick={() => onCopyText(engineEventsCopyText(events), 'events:all')} /> : undefined}
+        >
           <div className="grid gap-4 border-t border-neutral-100 px-4 py-3.5 dark:border-neutral-800">
             <div>
               <p className="mb-3 line-clamp-3 text-sm font-bold text-neutral-900 dark:text-neutral-50">{workSummary.title}</p>
@@ -204,6 +210,7 @@ function CollapsibleTile({
   subtitle,
   defaultOpen,
   tone = 'neutral',
+  action,
   children,
 }: {
   icon: typeof Sparkles
@@ -211,6 +218,7 @@ function CollapsibleTile({
   subtitle?: string
   defaultOpen: boolean
   tone?: 'neutral' | 'amber'
+  action?: ReactNode
   children: ReactNode
 }) {
   return (
@@ -223,7 +231,10 @@ function CollapsibleTile({
             {subtitle && <span className="mt-0.5 block truncate text-xs font-medium text-neutral-400">{subtitle}</span>}
           </span>
         </span>
-        <ChevronDown size={16} className="flex-shrink-0 text-neutral-400 transition-transform group-open:rotate-180" />
+        <span className="flex flex-shrink-0 items-center gap-2">
+          {action && <span onClick={e => e.preventDefault()}>{action}</span>}
+          <ChevronDown size={16} className="text-neutral-400 transition-transform group-open:rotate-180" />
+        </span>
       </summary>
       {children}
     </details>

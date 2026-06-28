@@ -52,6 +52,60 @@ from app.services.agent.tool_registry import ToolRegistry
 from app.services.agent.tools import Tools, source_context
 
 
+def _is_owner_reliability_research(message: str) -> bool:
+    text = (message or "").lower()
+    owner_terms = (
+        "owner",
+        "owners",
+        "user reviews",
+        "customer reviews",
+        "reddit",
+        "forum",
+        "community",
+        "real-world",
+        "real world",
+    )
+    reliability_terms = (
+        "reliability",
+        "failure rate",
+        "failure rates",
+        "failures",
+        "degradation",
+        "capacity retention",
+        "long-term",
+        "long term",
+        "after 1",
+        "after 2",
+        "1-2 years",
+        "1–2 years",
+        "warranty claim",
+    )
+    return any(term in text for term in owner_terms) and any(term in text for term in reliability_terms)
+
+
+def _add_owner_reliability_gaps(request: TurnRequest, evidence: EvidencePack) -> None:
+    if not _is_owner_reliability_research(request.message):
+        return
+    combined = "\n".join(
+        f"{item.title} {item.url} {item.evidence}"
+        for item in evidence.items
+    ).lower()
+    gaps: list[str] = []
+    if not any(term in combined for term in ("reddit", "forum", "community", "owner review", "owner report", "verified purchase", "customer review")):
+        gaps.append("Missing actual owner/community/forum evidence; policy or warranty pages do not answer owner reliability.")
+    if not any(term in combined for term in ("12 month", "12-month", "1 year", "one year", "18 month", "18-month", "24 month", "24-month", "2 year", "two year", "long term", "long-term")):
+        gaps.append("Missing 12-24 month longitudinal owner evidence for field reliability.")
+    if any(term in (request.message or "").lower() for term in ("failure rate", "degradation", "capacity retention")) and not any(
+        term in combined for term in ("failure rate", "degradation", "capacity retention", "capacity loss", "warranty claim", "replacement")
+    ):
+        gaps.append("Missing quantified or outcome-based evidence for failure rate, degradation, or claim outcomes.")
+    for gap in gaps:
+        if gap not in evidence.gaps:
+            evidence.gaps.append(gap)
+    if gaps and evidence.coverage >= 1.0:
+        evidence.coverage = 0.55
+
+
 class Runtime:
     """Canonical Fronei turn runtime."""
 
@@ -669,6 +723,7 @@ class Runtime:
             yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
 
         evidence = bind_evidence(merged, plan=plan, max_items=plan.max_sources)
+        _add_owner_reliability_gaps(request, evidence)
         if evidence.gaps and not ledger.stopped and ledger.remaining_tool_calls() >= 2:
             followups = build_gap_followup_workers(request, plan, evidence)
             event = progress(
@@ -705,6 +760,7 @@ class Runtime:
                     ledger.record_tool_call(latency_ms=followup_read_call.latency_ms, sources_read=len(followup_selected))
                     merged = self._merge_sources(merged, self._merge_sources(followup_selected, followup_extracted))
             evidence = bind_evidence(merged, plan=plan, max_items=plan.max_sources)
+            _add_owner_reliability_gaps(request, evidence)
         elif evidence.gaps:
             event = progress(
                 "research_budget",

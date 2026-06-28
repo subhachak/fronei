@@ -643,6 +643,75 @@ def test_agent_research_budget_ledger_stops_tools_but_allows_synthesis():
     assert ledger.can_start_model("synthesis_agent")
 
 
+def test_owner_reliability_research_gets_larger_regular_budget():
+    from app.services.agent.research_subtree import research_budget_for
+
+    budget = research_budget_for(
+        TurnRequest(
+            message="Research Anker SOLIX real-world reliability, owner reviews, failure rates, and degradation after 1-2 years.",
+            research_level="regular",
+        )
+    )
+
+    assert budget.max_search_workers >= 6
+    assert budget.max_sources >= 14
+    assert budget.max_tool_calls >= 30
+
+
+def test_owner_reliability_policy_only_evidence_gets_gap_markers():
+    from app.services.agent.runtime import _add_owner_reliability_gaps
+    from app.services.agent.research_subtree import EvidenceItem, EvidencePack
+
+    evidence = EvidencePack(
+        items=[
+            EvidenceItem(
+                source_id="S1",
+                title="Anker warranty policy",
+                url="https://example.com/warranty.pdf",
+                evidence="Warranty terms require proof of purchase and a return authorization.",
+            )
+        ],
+        coverage=1.0,
+    )
+
+    _add_owner_reliability_gaps(
+        TurnRequest(message="Anker SOLIX owner reviews real-world reliability failure rate after 1-2 years"),
+        evidence,
+    )
+
+    assert evidence.coverage < 1.0
+    assert any("owner/community/forum" in gap for gap in evidence.gaps)
+    assert any("12-24 month" in gap for gap in evidence.gaps)
+
+
+def test_research_judge_rejects_owner_reliability_no_evidence_answer():
+    from app.services.agent.research_subtree import EvidenceItem, EvidencePack, ResearchPlan, judge_research
+
+    request = TurnRequest(
+        message="Research Anker SOLIX owner reviews real-world reliability failure rate and degradation after 1-2 years."
+    )
+    evidence = EvidencePack(
+        items=[
+            EvidenceItem(
+                source_id="S1",
+                title="Warranty policy",
+                url="https://example.com/warranty.pdf",
+                evidence="Warranty coverage lasts multiple years.",
+            )
+        ],
+        coverage=1.0,
+    )
+    answer = (
+        "The retrieved evidence does not contain owner or Reddit/forum reports after 1-2 years [S1]. "
+        "I cannot give a reliability or failure rate verdict from this evidence. Warranty terms are policy only [S1]."
+    )
+
+    verdict = judge_research(request, ResearchPlan(judge_threshold=0.72), evidence, answer)
+
+    assert verdict.status != "pass"
+    assert any("owner/community longitudinal" in issue for issue in verdict.issues)
+
+
 def test_agent_research_emits_agentic_goal_guardrail_and_judge_events(monkeypatch):
     _patch_completion(monkeypatch, "Research answer [S1].")
     runtime = Runtime(tools=FakeTools())

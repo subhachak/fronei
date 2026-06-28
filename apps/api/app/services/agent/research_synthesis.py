@@ -176,6 +176,10 @@ def judge_research(request: TurnRequest, plan: ResearchPlan, evidence: EvidenceP
     if evidence.gaps:
         score -= 0.08
         issues.extend(evidence.gaps)
+    owner_reliability_issues = _owner_reliability_answer_issues(request, answer)
+    if owner_reliability_issues:
+        score -= min(0.35, 0.16 * len(owner_reliability_issues))
+        issues.extend(owner_reliability_issues)
     score = max(0.0, min(1.0, score))
     threshold = plan.judge_threshold or 0.72
     if score >= threshold:
@@ -198,6 +202,51 @@ def judge_research(request: TurnRequest, plan: ResearchPlan, evidence: EvidenceP
         repair_instruction="Redo the research plan with better source coverage.",
         can_publish=False,
     )
+
+
+def _owner_reliability_answer_issues(request: TurnRequest, answer: str) -> list[str]:
+    message = (request.message or "").lower()
+    text = (answer or "").lower()
+    if not _is_owner_reliability_request(message):
+        return []
+    issues: list[str] = []
+    if re.search(r"\b(?:no|not|none)\b.{0,80}\b(?:owner|reddit|forum|community|longitudinal|1[–-]2 year|12[–-]24 month)", text):
+        issues.append("Answer admits the requested owner/community longitudinal evidence was not retrieved.")
+    if re.search(r"\b(?:cannot|can't)\s+(?:give|provide|characterize)\b.{0,120}\b(?:reliability|failure-rate|failure rate|verdict|consensus)", text):
+        issues.append("Answer cannot deliver the requested reliability verdict from the retrieved evidence.")
+    if "policy only" in text and any(term in text for term in ("warranty", "official_policy", "official policy")):
+        issues.append("Answer relies on warranty/policy evidence for an owner reliability question.")
+    return issues
+
+
+def _is_owner_reliability_request(message: str) -> bool:
+    owner_terms = (
+        "owner",
+        "owners",
+        "user reviews",
+        "customer reviews",
+        "reddit",
+        "forum",
+        "community",
+        "real-world",
+        "real world",
+    )
+    reliability_terms = (
+        "reliability",
+        "failure rate",
+        "failure rates",
+        "failures",
+        "degradation",
+        "capacity retention",
+        "long-term",
+        "long term",
+        "after 1",
+        "after 2",
+        "1-2 years",
+        "1–2 years",
+        "warranty claim",
+    )
+    return any(term in message for term in owner_terms) and any(term in message for term in reliability_terms)
 
 
 def repair_research_answer(

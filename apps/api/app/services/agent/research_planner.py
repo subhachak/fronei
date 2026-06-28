@@ -818,6 +818,10 @@ def judge_research_final(request: TurnRequest, state: ResearchStateStore, answer
     if disclaimer_issues:
         score -= min(0.42, 0.16 * len(disclaimer_issues))
         issues.extend(disclaimer_issues)
+    gap_saturation_issues = _answer_gap_saturation_issues(request, state, answer)
+    if gap_saturation_issues:
+        score -= min(0.35, 0.14 * len(gap_saturation_issues))
+        issues.extend(gap_saturation_issues)
     open_cells = state.contract.open_cells()
     if open_cells:
         score -= min(0.18, 0.025 * len(open_cells))
@@ -844,7 +848,7 @@ def judge_research_final(request: TurnRequest, state: ResearchStateStore, answer
             issues.append("Answer ends by soliciting user permission to do more research (LLM judgment). Repair: state remaining gaps plainly and do not ask for authorization to continue.")
     score = max(0.0, min(1.0, score))
     threshold = state.plan.judge_threshold or 0.78
-    if disclaimer_issues and not state.budget_ledger.stopped and state.budget_ledger.remaining_tool_calls() > 0 and state.budget_ledger.remaining_source_reads() > 0:
+    if (disclaimer_issues or gap_saturation_issues) and not state.budget_ledger.stopped and state.budget_ledger.remaining_tool_calls() > 0 and state.budget_ledger.remaining_source_reads() > 0:
         return JudgeVerdict(
             can_publish=False,
             repair_needed=False,
@@ -965,6 +969,41 @@ def _evidence_disclaimer_issues(state: ResearchStateStore, answer: str) -> list[
     ):
         issues.append("Multi-subject recommendation is explicitly single-source/provisional rather than decision-grade.")
     return issues
+
+
+def _answer_gap_saturation_issues(request: TurnRequest, state: ResearchStateStore, answer: str) -> list[str]:
+    lower = (answer or "").lower()
+    if not lower:
+        return []
+    gap_count = len(
+        re.findall(
+            r"\bnot in evidence\b|\bno evidence\b|\bnot specified in evidence\b|\bnot documented\b|"
+            r"\bnot supported\b|\bgap\b|\bgaps\b|\bdoes not contain\b|\babsence of evidence\b",
+            lower,
+        )
+    )
+    requested_gap_dimensions = [
+        term for term in (
+            "interoperability",
+            "implementation",
+            "total cost",
+            "tco",
+            "failure",
+            "failures",
+            "deployment failure",
+            "architecture",
+        )
+        if term in (request.message or "").lower() and term in lower
+    ]
+    if gap_count >= 6 and len(requested_gap_dimensions) >= 2:
+        return [
+            "Answer repeatedly marks requested dimensions as evidence gaps while research budget remains; run targeted follow-up before publishing."
+        ]
+    if len(state.evidence.items) >= state.plan.min_evidence_items and gap_count >= 10:
+        return [
+            "Answer has enough bound items but still saturates the response with evidence gaps, indicating the source set is off-target."
+        ]
+    return []
 
 
 # ---------------------------------------------------------------------------
@@ -1198,20 +1237,28 @@ def _domain_for_query(query: str) -> Literal["general", "academic", "repository"
 
 def _targeted_query(subject: str, dimensions: list[str], original: str) -> str:
     raw_subject = " ".join(str(subject or "").split())
-    if _is_framework_comparison_request(original):
+    if len(_extract_named_framework_subjects(original)) >= 3:
         return _framework_comparison_query(raw_subject, dimensions)
-    subject = _public_technical_subject(raw_subject) if infer_research_profile(original) == "technical_architecture" else raw_subject
+    inferred_profile = infer_research_profile(original)
+    original_lower = (original or "").lower()
+    dimension_text = " ".join(str(dim) for dim in dimensions if dim)
+    vendor_signal = inferred_profile == "vendor_comparison" or any(
+        term in original_lower
+        for term in ("ehr", "total cost", "tco", "pricing", "licensing", "vendors", "platforms")
+    )
+    subject = _public_technical_subject(raw_subject) if inferred_profile == "technical_architecture" and not vendor_signal else raw_subject
     primary_dim = " ".join(str(dimensions[0] if dimensions else "").split())
-    if infer_research_profile(original) == "technical_architecture":
-        grounding = _tech_arch_grounding_term(raw_subject)
-        return f"{subject} {primary_dim} {grounding}".strip()[:180]
     if subject and any(token in subject.lower() for token in ("tavily", "nimble", "you.com", "youcom")):
         return f"{subject} {primary_dim} official docs pricing security API enterprise".strip()[:180]
-    if infer_research_profile(original) == "vendor_comparison":
+    if vendor_signal:
         vendor_subject = _compact_search_subject(original)
         if _llm_vendor_comparison_subject(original):
             vendor_subject = "OpenAI Anthropic Google Gemini Claude GPT LLM API chatbot"
-        return f"{vendor_subject} {subject} {primary_dim} official docs pricing security API".strip()[:220]
+        focus = dimension_text or primary_dim
+        return f"{vendor_subject} {subject} {focus} pricing implementation interoperability failures official".strip()[:220]
+    if inferred_profile == "technical_architecture":
+        grounding = _tech_arch_grounding_term(raw_subject)
+        return f"{subject} {primary_dim} {grounding}".strip()[:180]
     base = f"{subject} {primary_dim}".strip()
     return f"{base} {original}".strip()[:220]
 
@@ -1469,6 +1516,24 @@ def _infer_primary_role_hint(message: str) -> str | None:
 def _fallback_plan(request: TurnRequest, goal: ResearchGoal | None = None) -> ResearchPlan:
     goal = goal or create_research_goal(request)
     profile = infer_research_profile(request.message)
+    try:
+        heuristic_brief = ResearchBrief(
+            objective=request.message,
+            research_profile=profile,
+            scope_in=_extract_named_comparison_subjects(request.message),
+            success_criteria=[],
+            source="heuristic",
+            fallback_reason="planner fallback from malformed/failed LLM plan",
+        )
+        contract = generate_coverage_contract(request, heuristic_brief)
+        if contract.cells:
+            plan = plan_from_contract(request, contract, goal.budget)
+            plan.goal_id = goal.id
+            plan.source = "heuristic_contract_fallback"
+            plan.fallback_reason = "LLM research plan failed; generated deterministic contract-based worker plan."
+            return plan
+    except Exception as exc:
+        logger.warning("contract-based fallback planning failed; using single-worker fallback: %s", exc)
     rationale = "Easy research uses one narrow source-grounding search." if request.research_level == "easy" else "Fallback worker from the original request."
     worker = SearchWorkerPlan(question=request.message, query=request.message, rationale=rationale, max_results=goal.budget.max_results_per_worker)
     return ResearchPlan(

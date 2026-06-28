@@ -324,7 +324,7 @@ def _extract_named_comparison_subjects(message: str) -> list[str]:
     text = message or ""
 
     # Look for explicit list structure: "top N X: A, B, C, D, E"
-    top_match = re.search(r"\btop\s+\d+\s+\w[\w\s]*?:\s*(.+?)(?:\.|$)", text, re.IGNORECASE)
+    top_match = re.search(r"\btop\s+\d+\s+[^:]{0,180}:\s*(.+?)(?:\.|$)", text, re.IGNORECASE)
     region = top_match.group(1) if top_match else text
 
     # Strip a leading comparison verb from the region
@@ -531,7 +531,7 @@ def _brief_anchored_contract(
     # Check for "for each: dim1, dim2, ..." or "covering dim1, dim2, ..."
     for pattern in (
         r"\bfor each[^:]*?:\s*(.+?)(?:\.|then|$)",
-        r"\b(?:covering|across|spanning|in\s+terms\s+of|on)\b\s*(.+?)(?:\.|;|$)",
+        r"\b(?:including|covering|across|spanning|in\s+terms\s+of|on)\b\s*(.+?)(?:\.|;|$)",
     ):
         m = re.search(pattern, message, re.IGNORECASE)
         if m:
@@ -543,7 +543,8 @@ def _brief_anchored_contract(
 
     # Fall back to brief.scope_in terms as dimensions (they're often topic facets)
     if not dimensions and brief.scope_in:
-        dimensions = [s for s in brief.scope_in if len(s.strip()) > 1][:6]
+        subject_keys = {subject.lower() for subject in subjects}
+        dimensions = [s for s in brief.scope_in if len(s.strip()) > 1 and s.lower() not in subject_keys][:6]
 
     # Final fallback: profile-aware generic dimensions
     if not dimensions:

@@ -26,6 +26,7 @@ const RESEARCH_OPTIONS = [
 
 export function ContextPanel({
   view,
+  section = 'work',
   result,
   events,
   sources,
@@ -45,6 +46,7 @@ export function ContextPanel({
   onUpdateProfileSettings,
 }: {
   view: 'chat' | 'profile' | 'admin'
+  section?: 'work' | 'prefs'
   result: AgentResult | null
   events: ProgressEvent[]
   sources: Source[]
@@ -66,37 +68,60 @@ export function ContextPanel({
   const workSummary = buildWorkSummary({ result, events, sources, activeConversation, currentMessage })
   const defaultTemplateId = profileSettings.default_template_id || ''
   const defaultTemplate = templates.find(template => template.id === defaultTemplateId)
-  const hasWorkContext = Boolean(result || events.length || activeConversation || currentMessage.trim())
+
+  if (section === 'prefs') {
+    return (
+      <div className="space-y-3">
+        <div className="grid min-w-0 gap-2">
+          <RailSelect
+            label="Quality"
+            value={profileSettings.quality_mode || 'standard'}
+            onChange={value => onUpdateProfileSettings({ quality_mode: value as QualityMode })}
+            options={QUALITY_OPTIONS}
+          />
+          <RailSelect
+            label="Output"
+            value={profileSettings.output_format || 'chat'}
+            onChange={value => onUpdateProfileSettings({ output_format: value as OutputFormat })}
+            options={OUTPUT_OPTIONS}
+          />
+          <RailSelect
+            label="Research"
+            value={profileSettings.research_level || 'auto'}
+            onChange={value => onUpdateProfileSettings({ research_level: value as ResearchLevel })}
+            options={RESEARCH_OPTIONS}
+          />
+          <RailSelect
+            label="Default deck"
+            value={defaultTemplateId}
+            onChange={value => onUpdateProfileSettings({ default_template_id: value })}
+            options={[{ value: '', label: 'Fronei default' }, ...templates.map(template => ({ value: template.id, label: template.name }))]}
+          />
+          {templateStatus && <p className="text-xs font-medium text-neutral-400">{templateStatus}</p>}
+          {defaultTemplate && <p className="text-xs text-neutral-400">Active template: {defaultTemplate.name}</p>}
+          {templateError && (
+            <p className="rounded-md border-l-2 border-red-400 bg-red-50 px-2.5 py-1.5 text-xs font-medium text-red-700 dark:bg-red-500/10 dark:text-red-400">{templateError}</p>
+          )}
+        </div>
+      </div>
+    )
+  }
 
   return (
-    <div className="flex h-full flex-col">
-      <div className="mb-4">
-        <p className="text-[11px] font-bold uppercase tracking-wider text-neutral-400">Context</p>
-        <h2 className="mt-0.5 text-lg font-bold text-neutral-900 dark:text-neutral-50">Current work</h2>
+    <div className="grid gap-5">
+      <div>
+        <p className="mb-2 line-clamp-3 text-sm font-bold text-neutral-900 dark:text-neutral-50">{workSummary.title}</p>
+        <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-y-2 gap-x-3 text-xs">
+          <SummaryRow label="Workspace" value={activeWorkspace?.name || 'None selected'} />
+          <SummaryRow label="Conversation" value={activeConversation?.title || 'None selected'} />
+          <SummaryRow label="Turns" value={workSummary.turns} />
+          <SummaryRow label="Route" value={workSummary.route} />
+          <SummaryRow label="Time" value={workSummary.time} />
+          <SummaryRow label="Budget" value={workSummary.budget} />
+          <SummaryRow label="Sources" value={workSummary.sources} />
+          <SummaryRow label="Events" value={workSummary.events} />
+        </div>
       </div>
-
-      <div className="flex-1 space-y-3 overflow-y-auto">
-        <CollapsibleTile
-          icon={Sparkles}
-          title="Current Work"
-          subtitle={workSummary.route}
-          defaultOpen={view === 'chat' && hasWorkContext}
-          action={events.length > 0 ? <CopyButton copied={copiedKey === 'events:all'} label="Copy full trace" onClick={() => onCopyText(engineEventsCopyText(events), 'events:all')} /> : undefined}
-        >
-          <div className="grid gap-4 border-t border-neutral-100 px-4 py-3.5 dark:border-neutral-800">
-            <div>
-              <p className="mb-3 line-clamp-3 text-sm font-bold text-neutral-900 dark:text-neutral-50">{workSummary.title}</p>
-              <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-y-2 gap-x-3 text-xs">
-                <SummaryRow label="Workspace" value={activeWorkspace?.name || 'None selected'} />
-                <SummaryRow label="Conversation" value={activeConversation?.title || 'None selected'} />
-                <SummaryRow label="Turns" value={workSummary.turns} />
-                <SummaryRow label="Route" value={workSummary.route} />
-                <SummaryRow label="Time" value={workSummary.time} />
-                <SummaryRow label="Budget" value={workSummary.budget} />
-                <SummaryRow label="Sources" value={workSummary.sources} />
-                <SummaryRow label="Events" value={workSummary.events} />
-              </div>
-            </div>
 
             <Subsection title="Status" icon={Clock3} action={result?.model_used}>
               <p className="text-sm leading-relaxed text-neutral-500 dark:text-neutral-400">
@@ -164,42 +189,6 @@ export function ContextPanel({
                 ))}
               </div>
             </Subsection>
-          </div>
-        </CollapsibleTile>
-
-        <CollapsibleTile icon={Settings2} title="Quick Profile Settings" subtitle={defaultTemplate?.name || 'Default template'} defaultOpen={view === 'profile'}>
-          <div className="grid min-w-0 gap-2 border-t border-neutral-100 px-4 py-3.5 dark:border-neutral-800">
-            <RailSelect
-              label="Quality"
-              value={profileSettings.quality_mode || 'standard'}
-              onChange={value => onUpdateProfileSettings({ quality_mode: value as QualityMode })}
-              options={QUALITY_OPTIONS}
-            />
-            <RailSelect
-              label="Output"
-              value={profileSettings.output_format || 'chat'}
-              onChange={value => onUpdateProfileSettings({ output_format: value as OutputFormat })}
-              options={OUTPUT_OPTIONS}
-            />
-            <RailSelect
-              label="Research"
-              value={profileSettings.research_level || 'auto'}
-              onChange={value => onUpdateProfileSettings({ research_level: value as ResearchLevel })}
-              options={RESEARCH_OPTIONS}
-            />
-            <RailSelect
-              label="Default deck"
-              value={defaultTemplateId}
-              onChange={value => onUpdateProfileSettings({ default_template_id: value })}
-              options={[{ value: '', label: 'Fronei default' }, ...templates.map(template => ({ value: template.id, label: template.name }))]}
-            />
-            {templateStatus && <p className="text-xs font-medium text-neutral-400">{templateStatus}</p>}
-            {templateError && (
-              <p className="rounded-md border-l-3 border-red-400 bg-red-50 px-2.5 py-1.5 text-xs font-medium text-red-700 dark:bg-red-500/10 dark:text-red-400">{templateError}</p>
-            )}
-          </div>
-        </CollapsibleTile>
-      </div>
     </div>
   )
 }

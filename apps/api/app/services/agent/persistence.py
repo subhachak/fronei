@@ -1598,6 +1598,23 @@ def get_artifact_for_user(artifact_id: str, user_id: str) -> tuple[ArtifactRow, 
         db.close()
 
 
+def set_turn_feedback(turn_id: str, user_id: str, rating: str) -> bool:
+    """Record user feedback ('positive' or 'negative') for a completed turn.
+
+    Returns True if the turn was found and owned by user_id, False otherwise.
+    """
+    db = SessionLocal()
+    try:
+        turn = db.get(Turn, turn_id)
+        if turn is None or turn.user_id != user_id:
+            return False
+        turn.feedback = rating
+        db.commit()
+        return True
+    finally:
+        db.close()
+
+
 def delete_artifacts_for_turn_ids(db, turn_ids: list[str]) -> int:
     if not turn_ids:
         return 0

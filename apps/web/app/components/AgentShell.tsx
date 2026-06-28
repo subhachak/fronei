@@ -395,6 +395,9 @@ export function AgentShell() {
                       onCopyText={agent.copyText}
                       downloadArtifact={agent.downloadArtifact}
                       onFollowUp={option => void agent.run(option)}
+                      feedbackMap={agent.feedbackMap}
+                      onFeedback={agent.submitFeedback}
+                      onRetry={message => void agent.run({ label: 'Retry', message })}
                     />
                   </>
                 )}

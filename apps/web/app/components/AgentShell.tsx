@@ -398,6 +398,7 @@ export function AgentShell() {
                       feedbackMap={agent.feedbackMap}
                       onFeedback={agent.submitFeedback}
                       onRetry={message => void agent.run({ label: 'Retry', message })}
+                      onEdit={agent.setMessage}
                     />
                   </>
                 )}

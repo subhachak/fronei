@@ -849,6 +849,95 @@ def test_generic_research_remediation_runs_targeted_followup_before_synthesis():
     assert any("pricing" in item.evidence.lower() for item in state.evidence.items)
 
 
+def test_deep_link_extraction_skips_assets_and_marketing_junk():
+    from app.services.agent.research_subtree import extract_deep_link_candidates
+
+    links = extract_deep_link_candidates(
+        [
+            Source(
+                title="Best Electronic Health Record Companies",
+                url="https://lifebit.ai/blog/best-electronic-medical-records-companies",
+                content=(
+                    "See https://lifebit.ai/wp-content/uploads/2025/04/logo.png "
+                    "https://lifebit.ai/pricing/ https://lifebit.ai/contact-us/ "
+                    "https://lifebit.ai/demo-2/ https://lifebit.ai/blog/category/industry/ "
+                    "and https://lifebit.ai/blog/ehr-market-analysis"
+                ),
+            )
+        ],
+        max_links=10,
+    )
+
+    assert [link.url for link in links] == ["https://lifebit.ai/blog/ehr-market-analysis"]
+
+
+def test_judge_requests_more_research_for_gap_saturated_answer():
+    from app.services.agent.research_subtree import (
+        CoverageCell,
+        CoverageContract,
+        EvidenceItem,
+        EvidencePack,
+        ResearchBudget,
+        ResearchBudgetLedger,
+        ResearchBrief,
+        ResearchPlan,
+        ResearchStateStore,
+        judge_research_final,
+    )
+
+    request = TurnRequest(
+        message=(
+            "Compare Epic, Oracle Health, MEDITECH, athenahealth, and eClinicalWorks "
+            "including interoperability architecture, implementation approach, total cost of ownership, "
+            "and known deployment failures."
+        ),
+        research_level="regular",
+    )
+    state = ResearchStateStore(
+        brief=ResearchBrief(objective=request.message, research_profile="vendor_comparison", source="heuristic"),
+        contract=CoverageContract(
+            cells=[CoverageCell(subject="Epic", dimension="interoperability architecture", status="filled", confidence=0.8)],
+            subjects=["Epic", "Oracle Health", "MEDITECH", "athenahealth", "eClinicalWorks"],
+            dimensions=["interoperability architecture", "implementation approach", "total cost of ownership", "known deployment failures"],
+            source="brief_anchored:vendor_comparison",
+        ),
+        plan=ResearchPlan(research_profile="vendor_comparison", min_evidence_items=2, judge_threshold=0.72),
+        evidence=EvidencePack(
+            items=[
+                EvidenceItem(source_id="S1", title="EHR overview", url="https://example.com/ehr", evidence="Epic and MEDITECH market fit evidence."),
+                EvidenceItem(source_id="S2", title="EHR costs", url="https://example.com/cost", evidence="Epic cost evidence."),
+            ],
+            coverage=1.0,
+        ),
+        budget_ledger=ResearchBudgetLedger(
+            budget=ResearchBudget(max_sources=10, max_deep_links=4, max_tool_calls=8, max_model_calls=8),
+            tool_calls=2,
+            sources_read=3,
+        ),
+    )
+    answer = """# EHR Platform Comparison
+
+## Evidence scope
+The evidence does not contain vendor-specific interoperability architecture, implementation methodology, TCO for most vendors, or known deployment failures.
+
+| Vendor | Interoperability | Implementation | TCO | Failures |
+|---|---|---|---|---|
+| Epic | partial [S1] | no evidence | partial [S2] | not in evidence |
+| Oracle Health | not in evidence | no evidence | gap | no evidence |
+| MEDITECH | not in evidence | gap | no evidence | not documented |
+| athenahealth | not supported | gap | no evidence | no evidence |
+| eClinicalWorks | not in evidence | no evidence | gap | no evidence |
+
+Recommendation: MEDITECH [S1].
+"""
+
+    verdict = judge_research_final(request, state, answer)
+
+    assert verdict.next_action == "research_more"
+    assert verdict.can_publish is False
+    assert any("requested dimensions as evidence gaps" in issue for issue in verdict.issues)
+
+
 def test_technical_architecture_queries_are_provider_friendly():
     from app.services.agent.research_subtree import (
         CoverageCell,
@@ -1045,6 +1134,37 @@ def test_coverage_contract_fallback_has_cells(monkeypatch):
 
     assert contract.cells
     assert contract.source == "heuristic"
+
+
+def test_plan_research_parse_fallback_uses_contract_workers(monkeypatch):
+    from app.services.agent import model_client
+    from app.services.agent.model_client import ModelResponse
+    from app.services.agent.research_subtree import plan_research
+
+    monkeypatch.setattr(
+        model_client,
+        "complete",
+        lambda *a, **kw: ModelResponse(text='{"questions": ["broken"],', model_used="fake", latency_ms=1, cost_usd=0.0),
+    )
+
+    request = TurnRequest(
+        message=(
+            "Research and compare the top 5 EHR platforms for mid-size hospital systems: "
+            "Epic, Oracle Health, MEDITECH, athenahealth, and eClinicalWorks, including "
+            "interoperability architecture, implementation approach, total cost of ownership, "
+            "and known deployment failures."
+        ),
+        research_level="regular",
+    )
+
+    plan = plan_research(request)
+    queries = " ".join(worker.query for worker in plan.workers).lower()
+
+    assert plan.source == "heuristic_contract_fallback"
+    assert len(plan.workers) > 1
+    assert any("epic" in worker.query.lower() for worker in plan.workers)
+    assert any("meditech" in worker.query.lower() for worker in plan.workers)
+    assert "interoperability" in queries or "implementation" in queries
 
 
 def test_coverage_contract_ratio():

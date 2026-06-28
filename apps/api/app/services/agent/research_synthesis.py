@@ -357,7 +357,12 @@ def extract_deep_link_candidates(sources: list[Source], *, max_links: int = 4) -
                 return candidates
         text = f"{source.snippet}\n{source.content}"
         for url in _extract_urls_from_text(text):
-            if url == source.url or url in seen or not is_public_source_url(url):
+            if (
+                url == source.url
+                or url in seen
+                or not is_public_source_url(url)
+                or not _is_useful_deep_link(url)
+            ):
                 continue
             seen.add(url)
             candidates.append(
@@ -370,6 +375,35 @@ def extract_deep_link_candidates(sources: list[Source], *, max_links: int = 4) -
             if len(candidates) >= max_links:
                 return candidates
     return candidates
+
+
+def _is_useful_deep_link(url: str) -> bool:
+    parsed = urlparse(url or "")
+    path = (parsed.path or "").lower().strip("/")
+    if not path:
+        return False
+    if re.search(r"\.(?:png|jpe?g|gif|webp|svg|ico|css|js|woff2?|ttf|mp4|mov|zip)(?:$|\?)", path):
+        return False
+    blocked_segments = {
+        "contact",
+        "contact-us",
+        "demo",
+        "demo-2",
+        "pricing",
+        "login",
+        "signin",
+        "sign-in",
+        "privacy-policy",
+        "cookie-policy",
+        "category",
+        "tag",
+    }
+    segments = [segment for segment in path.split("/") if segment]
+    if any(segment in blocked_segments for segment in segments):
+        return False
+    if "logo" in path or "wp-content/uploads" in path:
+        return False
+    return True
 
 
 def _domain_specific_link_candidates(source: Source) -> list[DeepLinkCandidate]:

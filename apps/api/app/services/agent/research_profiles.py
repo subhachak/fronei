@@ -357,6 +357,22 @@ def research_budget_for(request: TurnRequest) -> ResearchBudget:
         reserved_synthesis_model_calls=2,
         reserved_repair_model_calls=2,
     )
+    if _is_owner_reliability_research(request.message):
+        return ResearchBudget(
+            max_search_workers=6,
+            max_results_per_worker=10,
+            max_sources=14,
+            min_evidence_items=6,
+            repair_iterations=2,
+            judge_threshold=0.76,
+            max_tool_calls=30,
+            max_model_calls=30,
+            max_cost_usd=0.35,
+            max_elapsed_ms=240_000,
+            max_deep_links=6,
+            reserved_synthesis_model_calls=2,
+            reserved_repair_model_calls=2,
+        )
     named_subjects = _extract_named_comparison_subjects(request.message)
     extra_subjects = max(0, len(named_subjects) - 2)
     if extra_subjects > 0:
@@ -378,6 +394,37 @@ def research_budget_for(request: TurnRequest) -> ResearchBudget:
             reserved_repair_model_calls=base.reserved_repair_model_calls,
         )
     return base
+
+
+def _is_owner_reliability_research(message: str) -> bool:
+    text = (message or "").lower()
+    owner_terms = (
+        "owner",
+        "owners",
+        "user reviews",
+        "customer reviews",
+        "reddit",
+        "forum",
+        "community",
+        "real-world",
+        "real world",
+    )
+    reliability_terms = (
+        "reliability",
+        "failure rate",
+        "failure rates",
+        "failures",
+        "degradation",
+        "capacity retention",
+        "long-term",
+        "long term",
+        "after 1",
+        "after 2",
+        "1-2 years",
+        "1–2 years",
+        "warranty claim",
+    )
+    return any(term in text for term in owner_terms) and any(term in text for term in reliability_terms)
 
 
 def create_research_goal(request: TurnRequest) -> ResearchGoal:

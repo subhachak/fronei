@@ -822,6 +822,10 @@ def judge_research_final(request: TurnRequest, state: ResearchStateStore, answer
     if gap_saturation_issues:
         score -= min(0.35, 0.14 * len(gap_saturation_issues))
         issues.extend(gap_saturation_issues)
+    consistency_issues = _answer_internal_consistency_issues(state, answer)
+    if consistency_issues:
+        score -= min(0.30, 0.15 * len(consistency_issues))
+        issues.extend(consistency_issues)
     open_cells = state.contract.open_cells()
     if open_cells:
         score -= min(0.18, 0.025 * len(open_cells))
@@ -848,7 +852,7 @@ def judge_research_final(request: TurnRequest, state: ResearchStateStore, answer
             issues.append("Answer ends by soliciting user permission to do more research (LLM judgment). Repair: state remaining gaps plainly and do not ask for authorization to continue.")
     score = max(0.0, min(1.0, score))
     threshold = state.plan.judge_threshold or 0.78
-    if (disclaimer_issues or gap_saturation_issues) and not state.budget_ledger.stopped and state.budget_ledger.remaining_tool_calls() > 0 and state.budget_ledger.remaining_source_reads() > 0:
+    if (disclaimer_issues or gap_saturation_issues or consistency_issues) and not state.budget_ledger.stopped and state.budget_ledger.remaining_tool_calls() > 0 and state.budget_ledger.remaining_source_reads() > 0:
         return JudgeVerdict(
             can_publish=False,
             repair_needed=False,
@@ -1002,6 +1006,55 @@ def _answer_gap_saturation_issues(request: TurnRequest, state: ResearchStateStor
     if len(state.evidence.items) >= state.plan.min_evidence_items and gap_count >= 10:
         return [
             "Answer has enough bound items but still saturates the response with evidence gaps, indicating the source set is off-target."
+        ]
+    return []
+
+
+def _answer_internal_consistency_issues(state: ResearchStateStore, answer: str) -> list[str]:
+    text = answer or ""
+    lower = text.lower()
+    if not lower or not state.contract.subjects:
+        return []
+
+    all_subjects_claim = bool(
+        re.search(
+            r"\b(?:all\s+\d+|all\s+(?:five|four|three)|all\s+(?:platforms|vendors|frameworks|products|subjects))\b"
+            r".{0,140}\b(?:evidence|source|document|architecture|interoperability|failure|deployment|coverage)",
+            lower,
+            flags=re.DOTALL,
+        )
+        or re.search(
+            r"\b(?:evidence|source|document|architecture|interoperability|failure|deployment|coverage)\b"
+            r".{0,140}\b(?:for|across)\s+all\s+(?:\d+|five|four|three|platforms|vendors|frameworks|products|subjects)\b",
+            lower,
+            flags=re.DOTALL,
+        )
+    )
+    if not all_subjects_claim:
+        return []
+
+    empty_subjects = _framework_subjects_with_empty_sections(state, text)
+    if not empty_subjects:
+        no_evidence_subjects: list[str] = []
+        for subject in state.contract.subjects:
+            pattern = re.escape(subject.lower())
+            subject_pos = lower.find(subject.lower())
+            if subject_pos < 0:
+                continue
+            section = lower[subject_pos : subject_pos + 1200]
+            if re.search(
+                rf"\bno\s+{pattern}[a-z0-9\s-]{{0,80}}\b(?:evidence|source|architecture|interoperability|implementation|pricing|failure)"
+                r"|\binsufficient evidence\b|\bcannot responsibly compare\b|\bno evidence in (?:the )?pack\b",
+                section,
+            ):
+                no_evidence_subjects.append(subject)
+        empty_subjects = no_evidence_subjects
+
+    if empty_subjects:
+        return [
+            "Answer overclaims evidence coverage for all subjects while later saying evidence is absent for: "
+            + ", ".join(empty_subjects[:5])
+            + "."
         ]
     return []
 

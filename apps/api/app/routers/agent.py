@@ -5,8 +5,10 @@ import logging
 import time
 from queue import Empty, Queue
 from threading import Thread
+from typing import Literal
 
 from fastapi import APIRouter, Header, HTTPException
+from pydantic import BaseModel
 from fastapi.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
 
 from app.auth import CurrentActiveUser, CurrentUserIsAdmin
@@ -302,6 +304,18 @@ def cancel_turn(turn_id: str, user_id: str = CurrentActiveUser) -> dict:
         raise HTTPException(status_code=409, detail="Turn is not queued or running.")
     turn_job_worker.notify()
     return {"turn_id": turn_id, "status": "cancellation_requested"}
+
+
+class FeedbackBody(BaseModel):
+    rating: Literal["positive", "negative"]
+
+
+@router.post("/turns/{turn_id}/feedback")
+def submit_turn_feedback(turn_id: str, body: FeedbackBody, user_id: str = CurrentActiveUser) -> dict:
+    """Record thumbs-up / thumbs-down feedback for a completed turn."""
+    if not persistence.set_turn_feedback(turn_id, user_id, body.rating):
+        raise HTTPException(status_code=404, detail="Turn not found.")
+    return {"turn_id": turn_id, "rating": body.rating}
 
 
 @router.get("/workspaces")

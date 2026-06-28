@@ -7,6 +7,7 @@ import { useEffect, useMemo, useRef } from 'react'
 import { assistantTurnCopyText, buildConfidenceCues, plainCommentary } from '../lib/commentary'
 import type { Artifact, FollowUpOption, ProgressEvent, WorkItem } from '../types'
 import { CopyButton } from './ui/CopyButton'
+import { MessageActions } from './ui/MessageActions'
 import { MarkdownResult } from './MarkdownResult'
 import { ResearchPlanCard } from './ResearchPlanCard'
 
@@ -167,6 +168,9 @@ export function Timeline({
   onCopyText,
   downloadArtifact,
   onFollowUp,
+  feedbackMap,
+  onFeedback,
+  onRetry,
 }: {
   draftMessage: string
   liveAnswer: string
@@ -177,6 +181,9 @@ export function Timeline({
   onCopyText: (value: string, key: string) => void | Promise<void>
   downloadArtifact: (artifact: Artifact) => void | Promise<void>
   onFollowUp: (option: FollowUpOption) => void
+  feedbackMap: Record<string, 'positive' | 'negative'>
+  onFeedback: (turnId: string, rating: 'positive' | 'negative') => void
+  onRetry: (message: string) => void
 }) {
   if (turns.length === 0 && !running) {
     return (
@@ -198,7 +205,17 @@ export function Timeline({
   return (
     <div className="flex flex-1 flex-col gap-6">
       {turns.map(turn => (
-        <TurnPair key={turn.id} turn={turn} downloadArtifact={downloadArtifact} onFollowUp={onFollowUp} copiedKey={copiedKey} onCopyText={onCopyText} />
+        <TurnPair
+          key={turn.id}
+          turn={turn}
+          downloadArtifact={downloadArtifact}
+          onFollowUp={onFollowUp}
+          copiedKey={copiedKey}
+          onCopyText={onCopyText}
+          feedback={feedbackMap[turn.id] ?? null}
+          onFeedback={onFeedback}
+          onRetry={() => onRetry(turn.message || turn.title)}
+        />
       ))}
       {running && <LiveTurn message={draftMessage} answer={liveAnswer} events={events} copiedKey={copiedKey} onCopyText={onCopyText} />}
     </div>
@@ -211,12 +228,18 @@ function TurnPair({
   onFollowUp,
   copiedKey,
   onCopyText,
+  feedback,
+  onFeedback,
+  onRetry,
 }: {
   turn: WorkItem
   downloadArtifact: (artifact: Artifact) => void | Promise<void>
   onFollowUp?: (option: FollowUpOption) => void
   copiedKey: string | null
   onCopyText: (value: string, key: string) => void | Promise<void>
+  feedback: 'positive' | 'negative' | null
+  onFeedback: (turnId: string, rating: 'positive' | 'negative') => void
+  onRetry: () => void
 }) {
   const userCopy = turn.message || turn.title
   const assistantCopy = assistantTurnCopyText(turn)
@@ -240,7 +263,15 @@ function TurnPair({
             <p className="text-sm font-bold text-neutral-900 dark:text-neutral-50">Fronei</p>
             <p className="mt-0.5 text-sm leading-relaxed text-neutral-500 dark:text-neutral-400">Completed as {turn.route}.</p>
           </div>
-          <CopyButton copied={copiedKey === `${turn.id}:assistant`} label="Copy Fronei response" onClick={() => onCopyText(assistantCopy, `${turn.id}:assistant`)} />
+          <MessageActions
+            turnId={turn.id}
+            copyText={assistantCopy}
+            copied={copiedKey === `${turn.id}:assistant`}
+            onCopy={() => onCopyText(assistantCopy, `${turn.id}:assistant`)}
+            feedback={feedback}
+            onFeedback={onFeedback}
+            onRetry={onRetry}
+          />
         </div>
 
         {confidenceCues.length > 0 && (

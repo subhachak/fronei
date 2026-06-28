@@ -27,6 +27,9 @@ export function useAgent() {
   const [researchLevel, setResearchLevel] = useState<ResearchLevel>('auto')
   const [copiedKey, setCopiedKey] = useState<string | null>(null)
   const [isAdmin, setIsAdmin] = useState(false)
+  // Map of turn_id → feedback rating set by the user this session.
+  // Persisted to the backend; kept in state for immediate optimistic UI.
+  const [feedbackMap, setFeedbackMap] = useState<Record<string, 'positive' | 'negative'>>({})
   const [modelOverride, setModelOverride] = useState('')
   const composerSettingsDirtyRef = useRef(false)
   const runningRef = useRef(false)
@@ -171,6 +174,19 @@ export function useAgent() {
     return `${url}${separator}${encodeURIComponent(key)}=${encodeURIComponent(value)}`
   }
 
+  async function submitFeedback(turnId: string, rating: 'positive' | 'negative') {
+    // Optimistic update — flip immediately so the button feels instant.
+    setFeedbackMap(prev => ({ ...prev, [turnId]: rating }))
+    try {
+      await authorizedFetch(`/turns/${turnId}/feedback`, {
+        method: 'POST',
+        body: JSON.stringify({ rating }),
+      })
+    } catch {
+      // Silently swallow — feedback is non-critical; don't surface an error banner.
+    }
+  }
+
   async function copyText(value: string, key: string) {
     try {
       const ok = await copyToClipboard(value)
@@ -222,6 +238,8 @@ export function useAgent() {
     setPendingDelete: workspaceHook.setPendingDelete,
     copiedKey,
     copyText,
+    feedbackMap,
+    submitFeedback,
     downloadArtifact,
     selectConversation: workspaceHook.selectConversation,
     createWorkspace: workspaceHook.createWorkspace,

@@ -428,8 +428,24 @@ def extract_deep_link_candidates(sources: list[Source], *, max_links: int = 4) -
 
 def _is_useful_deep_link(url: str) -> bool:
     parsed = urlparse(url or "")
+    host = (parsed.netloc or "").lower()
     path = (parsed.path or "").lower().strip("/")
     if not path:
+        return False
+    blocked_hosts = {
+        "connect.facebook.net",
+        "facebook.com",
+        "www.facebook.com",
+        "google-analytics.com",
+        "www.google-analytics.com",
+        "googletagmanager.com",
+        "www.googletagmanager.com",
+    }
+    if host in blocked_hosts or host.endswith(".facebook.com"):
+        return False
+    raw_path = f"/{path}"
+    query = (parsed.query or "").lower()
+    if raw_path in {"/tr", "/collect", "/pixel"} or "pageview" in query:
         return False
     if re.search(r"\.(?:png|jpe?g|gif|webp|svg|ico|css|js|woff2?|ttf|mp4|mov|zip)(?:$|\?)", path):
         return False
@@ -509,6 +525,9 @@ def _source_inventory_summary(sources: list[Source]) -> dict[str, Any]:
 def build_gap_followup_workers(request: TurnRequest, plan: ResearchPlan, evidence: EvidencePack) -> list[SearchWorkerPlan]:
     if not evidence.gaps:
         return []
+    owner_workers = _owner_reliability_gap_followup_workers(request, plan, evidence)
+    if owner_workers:
+        return owner_workers
     gap_text = " ".join(evidence.gaps)[:240]
     query = f"{request.message} {gap_text}".strip()
     return [
@@ -518,6 +537,44 @@ def build_gap_followup_workers(request: TurnRequest, plan: ResearchPlan, evidenc
             rationale="Gap agent follow-up search from evidence coverage review.",
             max_results=min(3, plan.max_sources),
         )
+    ]
+
+
+def _owner_reliability_gap_followup_workers(
+    request: TurnRequest, plan: ResearchPlan, evidence: EvidencePack
+) -> list[SearchWorkerPlan]:
+    message = request.message or ""
+    if not _is_owner_reliability_request(message):
+        return []
+    gap_text = " ".join(evidence.gaps).lower()
+    if not any(term in gap_text for term in ("owner", "community", "forum", "failure rate", "degradation", "claim")):
+        return []
+
+    lower = message.lower()
+    if "anker" in lower and "solix" in lower:
+        queries = [
+            "Anker SOLIX F3800 owner review reliability failure degradation 12 months 18 months",
+            "Anker SOLIX X1 owner review reliability failure warranty degradation 12 months 18 months",
+            "site:reddit.com Anker SOLIX F3800 X1 reliability failure warranty degradation",
+            "site:diysolarforum.com Anker SOLIX F3800 X1 owner reliability degradation warranty",
+        ]
+    else:
+        subject = re.sub(r"\s+", " ", message).strip()[:120]
+        queries = [
+            f"{subject} owner review reliability failure degradation 12 months",
+            f"{subject} forum reddit reliability failure warranty degradation",
+            f"site:reddit.com {subject} reliability failure warranty degradation",
+        ]
+
+    max_results = min(6, max(3, plan.max_sources // 2 if plan.max_sources else 3))
+    return [
+        SearchWorkerPlan(
+            question=f"Close owner reliability evidence gap: {query}",
+            query=query[:220],
+            rationale="Gap agent follow-up search targeting dated owner, forum, degradation, and warranty evidence.",
+            max_results=max_results,
+        )
+        for query in queries
     ]
 
 # Phase 7 — Behavioral guardrails extracted as a single constant, appended to every

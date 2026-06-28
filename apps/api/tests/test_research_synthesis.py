@@ -1,6 +1,6 @@
 from app.services.agent.models import TurnRequest
 from app.services.agent.research_models import EvidencePack, ResearchPlan
-from app.services.agent.research_synthesis import build_synthesis_prompt, _synthesis_token_budget
+from app.services.agent.research_synthesis import build_gap_followup_workers, build_synthesis_prompt, _synthesis_token_budget
 
 
 def test_chat_research_synthesis_contract_is_elaborative_by_default():
@@ -54,6 +54,31 @@ def test_chat_research_budget_stays_small_when_user_asks_for_brief():
     plan = ResearchPlan(research_profile="general", questions=["Which repos fit?"])
 
     assert _synthesis_token_budget(request, plan) <= 1800
+
+
+def test_owner_reliability_gap_followup_uses_forum_queries():
+    request = TurnRequest(
+        message=(
+            "Research real-world reliability and failure rates of Anker SOLIX home battery "
+            "systems after 1-2 years based on owner reviews."
+        )
+    )
+    plan = ResearchPlan(questions=["Find owner evidence"], max_sources=14)
+    evidence = EvidencePack(
+        gaps=[
+            "Missing actual owner/community/forum evidence; policy pages do not answer owner reliability.",
+            "Missing quantified or outcome-based evidence for failure rate, degradation, or claim outcomes.",
+        ]
+    )
+
+    workers = build_gap_followup_workers(request, plan, evidence)
+    queries = [worker.query for worker in workers]
+
+    assert len(workers) == 4
+    assert any("site:reddit.com" in query for query in queries)
+    assert any("site:diysolarforum.com" in query for query in queries)
+    assert any("F3800" in query and "12 months" in query for query in queries)
+    assert all("Missing actual owner" not in query for query in queries)
 
 
 def test_framework_comparison_chat_gets_decision_grade_contract():

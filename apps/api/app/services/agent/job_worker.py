@@ -65,6 +65,9 @@ class TurnJobWorker:
 
     def _run(self, worker_id: str) -> None:
         settings = get_settings()
+        # Exponential backoff state for DB-error path — resets on a successful claim.
+        _error_backoff = 1.0
+        _MAX_ERROR_BACKOFF = 60.0
         while not self._stop.is_set():
             try:
                 claimed = persistence.claim_next_turn(
@@ -73,11 +76,20 @@ class TurnJobWorker:
                 )
             except Exception:
                 logger.exception("Turn worker %s could not claim work", worker_id)
-                self._wake.wait(timeout=max(0.25, settings.turn_worker_poll_seconds))
+                # Exponential backoff on repeated DB failures (e.g. quota exceeded).
+                # Caps at 60 s so a transient outage self-heals within a minute.
+                self._wake.wait(timeout=_error_backoff)
                 self._wake.clear()
+                _error_backoff = min(_error_backoff * 2, _MAX_ERROR_BACKOFF)
                 continue
+            # Successful DB contact — reset error backoff.
+            _error_backoff = 1.0
             if claimed is None:
-                self._wake.wait(timeout=max(0.05, settings.turn_worker_poll_seconds))
+                # No work available — sleep the full configured poll interval.
+                # The 0.05-floor was replaced with the configured value (default 5 s)
+                # to dramatically reduce idle DB traffic.  notify() wakes workers
+                # immediately when real work arrives, so latency is unaffected.
+                self._wake.wait(timeout=settings.turn_worker_poll_seconds)
                 self._wake.clear()
                 continue
             turn_id, user_id, request = claimed

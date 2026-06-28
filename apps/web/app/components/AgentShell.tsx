@@ -1,8 +1,7 @@
 'use client'
 
-import { BookOpen, CheckCircle2, ChevronsLeft, ChevronsRight, Clock3, FileText, Folder, Library, Loader2, Moon, PanelRight, Settings2, Shield, Sliders, Sparkles, Sun, UserCog, type LucideIcon } from 'lucide-react'
+import { CheckCircle2, ChevronsLeft, ChevronsRight, Folder, Library, Loader2, Moon, Settings2, Shield, Sparkles, Sun, UserCog, type LucideIcon } from 'lucide-react'
 import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
-import { createPortal } from 'react-dom'
 import { useAgent } from '../hooks/useAgent'
 import { useTheme } from '../hooks/useTheme'
 import { AdminShell } from '../admin/components/AdminShell'
@@ -15,16 +14,14 @@ import { ProfileView } from './ProfileView'
 import { Timeline } from './Timeline'
 import { Badge } from './ui/Card'
 import { Button } from './ui/Button'
+import { Modal } from './ui/Modal'
 import { Sheet } from './ui/Sheet'
 
 const MIN_LEFT_RAIL_WIDTH = 240
 const MAX_LEFT_RAIL_WIDTH = 420
-const MIN_RIGHT_RAIL_WIDTH = 280
-const MAX_RIGHT_RAIL_WIDTH = 480
 const MIN_COMPOSER_HEIGHT = 152
 const MAX_COMPOSER_HEIGHT = 340
 const LEFT_RAIL_COLLAPSED_KEY = 'agent-shell:left-rail-collapsed'
-const RIGHT_RAIL_COLLAPSED_KEY = 'agent-shell:right-rail-collapsed'
 
 function readStoredCollapsedState(key: string) {
   if (typeof window === 'undefined') return false
@@ -48,13 +45,12 @@ export function AgentShell() {
   const { theme, toggleTheme } = useTheme()
 
   const [librarySheetOpen, setLibrarySheetOpen] = useState(false)
-  const [contextSheetOpen, setContextSheetOpen] = useState(false)
   const [traceOpen, setTraceOpen] = useState(false)
   const [leftRailWidth, setLeftRailWidth] = useState(280)
-  const [rightRailWidth, setRightRailWidth] = useState(340)
   const [composerHeight, setComposerHeight] = useState(168)
   const [leftRailCollapsed, setLeftRailCollapsed] = useState(false)
-  const [rightRailCollapsed, setRightRailCollapsed] = useState(false)
+  const [workModalOpen, setWorkModalOpen] = useState(false)
+  const [prefsModalOpen, setPrefsModalOpen] = useState(false)
   const [uploadSource, setUploadSource] = useState<'composer' | 'profile'>('profile')
   const [view, setView] = useState<'chat' | 'profile' | 'admin'>('chat')
   const templateUploadRef = useRef<HTMLInputElement | null>(null)
@@ -81,16 +77,11 @@ export function AgentShell() {
   // the first painted frame, so the user never sees the expanded→collapsed shift.
   useLayoutEffect(() => {
     setLeftRailCollapsed(readStoredCollapsedState(LEFT_RAIL_COLLAPSED_KEY))
-    setRightRailCollapsed(readStoredCollapsedState(RIGHT_RAIL_COLLAPSED_KEY))
   }, [])
 
   useEffect(() => {
     writeStoredCollapsedState(LEFT_RAIL_COLLAPSED_KEY, leftRailCollapsed)
   }, [leftRailCollapsed])
-
-  useEffect(() => {
-    writeStoredCollapsedState(RIGHT_RAIL_COLLAPSED_KEY, rightRailCollapsed)
-  }, [rightRailCollapsed])
 
   function openTemplateUpload(source: 'composer' | 'profile') {
     setUploadSource(source)
@@ -101,14 +92,13 @@ export function AgentShell() {
     attachFileRef.current?.click()
   }
 
-  function beginHorizontalResize(kind: 'left' | 'right', event: ReactPointerEvent) {
+  function beginHorizontalResize(event: ReactPointerEvent) {
     event.preventDefault()
     const startX = event.clientX
-    const startWidth = kind === 'left' ? leftRailWidth : rightRailWidth
+    const startWidth = leftRailWidth
     const onMove = (moveEvent: PointerEvent) => {
       const delta = moveEvent.clientX - startX
-      if (kind === 'left') setLeftRailWidth(clamp(startWidth + delta, MIN_LEFT_RAIL_WIDTH, MAX_LEFT_RAIL_WIDTH))
-      else setRightRailWidth(clamp(startWidth - delta, MIN_RIGHT_RAIL_WIDTH, MAX_RIGHT_RAIL_WIDTH))
+      setLeftRailWidth(clamp(startWidth + delta, MIN_LEFT_RAIL_WIDTH, MAX_LEFT_RAIL_WIDTH))
     }
     const onUp = () => {
       document.removeEventListener('pointermove', onMove)
@@ -175,28 +165,28 @@ export function AgentShell() {
     />
   )
 
-  const contextContent = (
-    <ContextPanel
-      view={view}
-      result={agent.result}
-      events={agent.events}
-      sources={agent.sources}
-      latestArtifact={agent.latestArtifact}
-      activeWorkspace={agent.activeWorkspace}
-      activeConversation={agent.activeConversation}
-      currentMessage={agent.running ? agent.activeRunMessage || agent.message : agent.message}
-      downloadArtifact={agent.downloadArtifact}
-      traceOpen={traceOpen}
-      setTraceOpen={setTraceOpen}
-      copiedKey={agent.copiedKey}
-      onCopyText={agent.copyText}
-      templates={agent.templates}
-      templateStatus={uploadSource === 'profile' ? agent.templateStatus : ''}
-      templateError={agent.templateError}
-      profileSettings={agent.profileSettings}
-      onUpdateProfileSettings={agent.updateProfileSettings}
-    />
-  )
+  const sharedContextProps = {
+    view,
+    result: agent.result,
+    events: agent.events,
+    sources: agent.sources,
+    latestArtifact: agent.latestArtifact,
+    activeWorkspace: agent.activeWorkspace,
+    activeConversation: agent.activeConversation,
+    currentMessage: agent.running ? agent.activeRunMessage || agent.message : agent.message,
+    downloadArtifact: agent.downloadArtifact,
+    traceOpen,
+    setTraceOpen,
+    copiedKey: agent.copiedKey,
+    onCopyText: agent.copyText,
+    templates: agent.templates,
+    templateStatus: uploadSource === 'profile' ? agent.templateStatus : '',
+    templateError: agent.templateError,
+    profileSettings: agent.profileSettings,
+    onUpdateProfileSettings: agent.updateProfileSettings,
+  }
+  const workContent = <ContextPanel {...sharedContextProps} section="work" />
+  const prefsContent = <ContextPanel {...sharedContextProps} section="prefs" />
   const showConversationPlaceholder = view === 'chat' && !agent.running && (agent.workspacesLoading || agent.conversationLoading) && agent.visibleTurns.length === 0
 
   return (
@@ -282,11 +272,19 @@ export function AgentShell() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => setContextSheetOpen(true)}
-                  aria-label="Open context"
+                  onClick={() => setWorkModalOpen(true)}
+                  aria-label="Current work"
                   className="grid h-8 w-8 place-items-center rounded-full border border-neutral-200 text-neutral-600 dark:border-neutral-800 dark:text-neutral-300"
                 >
-                  <PanelRight size={15} />
+                  <Sparkles size={15} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPrefsModalOpen(true)}
+                  aria-label="Quick preferences"
+                  className="grid h-8 w-8 place-items-center rounded-full border border-neutral-200 text-neutral-600 dark:border-neutral-800 dark:text-neutral-300"
+                >
+                  <Settings2 size={15} />
                 </button>
               </>
             )}
@@ -296,7 +294,7 @@ export function AgentShell() {
 
       <div
         className="flex min-h-0 flex-1 overflow-hidden md:grid"
-        style={{ gridTemplateColumns: `${leftRailCollapsed ? 56 : leftRailWidth}px minmax(0, 1fr) ${rightRailCollapsed ? 56 : 56}px` }}
+        style={{ gridTemplateColumns: `${leftRailCollapsed ? 56 : leftRailWidth}px minmax(0, 1fr)` }}
       >
         {/* Desktop library rail */}
         <aside className="relative hidden flex-col overflow-hidden border-r border-neutral-200 bg-neutral-50/60 dark:border-neutral-800 dark:bg-neutral-900/40 md:flex">
@@ -317,6 +315,8 @@ export function AgentShell() {
                 setView('admin')
                 setLeftRailCollapsed(false)
               }}
+              onOpenWork={() => setWorkModalOpen(true)}
+              onOpenPrefs={() => setPrefsModalOpen(true)}
               theme={theme}
               onToggleTheme={toggleTheme}
             />
@@ -336,7 +336,7 @@ export function AgentShell() {
               <div
                 role="separator"
                 aria-label="Resize library rail"
-                onPointerDown={event => beginHorizontalResize('left', event)}
+                onPointerDown={event => beginHorizontalResize(event)}
                 className="absolute inset-y-0 right-[-5px] z-10 w-[10px] cursor-col-resize hover:bg-neutral-900/5 dark:hover:bg-white/5"
               />
             </>
@@ -368,6 +368,12 @@ export function AgentShell() {
                       {agent.running ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
                       {agent.running ? 'Working' : 'Ready'}
                     </Badge>
+                    <Button variant="outline" size="icon-sm" onClick={() => setWorkModalOpen(true)} aria-label="Current work" title="Current work" className="rounded-full text-neutral-500">
+                      <Sparkles size={14} />
+                    </Button>
+                    <Button variant="outline" size="icon-sm" onClick={() => setPrefsModalOpen(true)} aria-label="Quick preferences" title="Quick preferences" className="rounded-full text-neutral-500">
+                      <Settings2 size={14} />
+                    </Button>
                   </div>
                 </div>
               </header>
@@ -448,73 +454,20 @@ export function AgentShell() {
           )}
         </section>
 
-        {/* Desktop context rail — always a 56px icon strip */}
-        <aside className="relative hidden flex-col border-l border-neutral-200 bg-neutral-50/60 dark:border-neutral-800 dark:bg-neutral-900/40 md:flex">
-          {rightRailCollapsed ? (
-            <CollapsedContextRail
-              hasArtifact={Boolean(agent.latestArtifact)}
-              onExpand={() => setRightRailCollapsed(false)}
-            />
-          ) : (
-            /* Just the close-button strip when flyout is open */
-            <div className="flex flex-col items-center pt-2">
-              <Button
-                variant="outline"
-                size="icon-sm"
-                onClick={() => setRightRailCollapsed(true)}
-                aria-label="Collapse context"
-                title="Collapse context"
-                className="rounded-full text-neutral-400"
-              >
-                <ChevronsRight size={14} />
-              </Button>
-            </div>
-          )}
-        </aside>
       </div>
 
-      {/* Desktop context flyout — portal into document.body, immune to any parent clipping */}
-      {!rightRailCollapsed && typeof document !== 'undefined' && createPortal(
-        <div
-          className="hidden md:flex"
-          style={{
-            position: 'fixed',
-            top: 0,
-            right: 0,
-            bottom: 0,
-            width: 'min(520px, 55vw)',
-            zIndex: 9999,
-            flexDirection: 'column',
-            borderLeft: '1px solid var(--context-border, #e5e7eb)',
-            backgroundColor: 'var(--context-bg, #fff)',
-            boxShadow: '-8px 0 32px rgba(0,0,0,0.12)',
-            overflow: 'hidden',
-          }}
-        >
-          <div style={{ display: 'flex', flexShrink: 0, justifyContent: 'flex-end', padding: '8px 12px', borderBottom: '1px solid var(--context-border, #e5e7eb)' }}>
-            <Button
-              variant="outline"
-              size="icon-sm"
-              onClick={() => setRightRailCollapsed(true)}
-              aria-label="Collapse context"
-              title="Collapse context"
-              className="rounded-full text-neutral-400"
-            >
-              <ChevronsRight size={14} />
-            </Button>
-          </div>
-          <div className="min-w-0 flex-1 overflow-y-auto px-4 py-4">{contextContent}</div>
-        </div>,
-        document.body,
-      )}
-
-      {/* Mobile sheets */}
+      {/* Mobile library sheet */}
       <Sheet open={librarySheetOpen} onClose={() => setLibrarySheetOpen(false)} side="left" title="Studio">
         {libraryContent}
       </Sheet>
-      <Sheet open={contextSheetOpen} onClose={() => setContextSheetOpen(false)} side="right" title="Context">
-        {contextContent}
-      </Sheet>
+
+      {/* Center modals — Current Work and Quick Preferences */}
+      <Modal open={workModalOpen} onClose={() => setWorkModalOpen(false)} title="Current Work">
+        {workContent}
+      </Modal>
+      <Modal open={prefsModalOpen} onClose={() => setPrefsModalOpen(false)} title="Quick Preferences">
+        {prefsContent}
+      </Modal>
     </div>
   )
 }
@@ -556,6 +509,8 @@ function CollapsedLibraryRail({
   onOpenWorkspaces,
   onOpenProfile,
   onOpenAdmin,
+  onOpenWork,
+  onOpenPrefs,
   theme,
   onToggleTheme,
 }: {
@@ -565,6 +520,8 @@ function CollapsedLibraryRail({
   onOpenWorkspaces: () => void
   onOpenProfile: () => void
   onOpenAdmin: () => void
+  onOpenWork: () => void
+  onOpenPrefs: () => void
   theme: 'light' | 'dark'
   onToggleTheme: () => void
 }) {
@@ -582,6 +539,9 @@ function CollapsedLibraryRail({
       <CollapsedIconButton label="Workspaces" icon={Folder} active={activeView === 'chat'} onClick={onOpenWorkspaces} />
       <CollapsedIconButton label="Profile" icon={UserCog} active={activeView === 'profile'} onClick={onOpenProfile} />
       {isAdmin && <CollapsedIconButton label="Admin" icon={Shield} active={activeView === 'admin'} onClick={onOpenAdmin} />}
+      <div className="h-px w-8 bg-neutral-200 dark:bg-neutral-800" />
+      <CollapsedIconButton label="Current work" icon={Sparkles} onClick={onOpenWork} />
+      <CollapsedIconButton label="Quick preferences" icon={Settings2} onClick={onOpenPrefs} />
       <div className="mt-auto flex flex-col gap-2">
         <CollapsedIconButton
           label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
@@ -594,21 +554,6 @@ function CollapsedLibraryRail({
   )
 }
 
-function CollapsedContextRail({ hasArtifact, onExpand }: { hasArtifact: boolean; onExpand: () => void }) {
-  return (
-    <div className="flex h-full flex-col items-center gap-2 px-2 py-3">
-      <CollapsedIconButton label="Current work" icon={Sparkles} onClick={onExpand} />
-      <CollapsedIconButton label="Quick profile settings" icon={Settings2} onClick={onExpand} />
-      <CollapsedIconButton label="Status" icon={Clock3} onClick={onExpand} />
-      <CollapsedIconButton label="Engine events" icon={Sliders} onClick={onExpand} />
-      <CollapsedIconButton label="Sources" icon={BookOpen} onClick={onExpand} />
-      {hasArtifact && <CollapsedIconButton label="Generated document" icon={FileText} onClick={onExpand} />}
-      <div className="mt-auto">
-        <CollapsedIconButton label="Expand context" icon={ChevronsLeft} onClick={onExpand} />
-      </div>
-    </div>
-  )
-}
 
 function CollapsedIconButton({ label, icon: Icon, active = false, onClick }: { label: string; icon: LucideIcon; active?: boolean; onClick: () => void }) {
   return (

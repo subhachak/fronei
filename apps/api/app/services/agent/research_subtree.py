@@ -83,6 +83,7 @@ from app.services.agent.research_profiles import (  # noqa: F401, E402
 # Coverage contract functions live in research_contracts.py (TD-01 extraction).
 from app.services.agent.research_contracts import (  # noqa: F401, E402
     COVERAGE_CONTRACT_PROMPT,
+    _count_comparison_dimensions,
     _derive_fallback_dimensions,
     _derive_fallback_subjects,
     _extract_named_comparison_subjects,

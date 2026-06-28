@@ -1995,3 +1995,140 @@ def test_max_model_calls_raised_across_tiers():
     assert deep.max_model_calls > 24, (
         f"Deep tier max_model_calls should exceed pre-Phase-1 value of 24, got {deep.max_model_calls}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 11 tests
+# ---------------------------------------------------------------------------
+
+def test_count_comparison_dimensions_basic():
+    """Phase 11 — _count_comparison_dimensions returns the right count for 'on X, Y, and Z'."""
+    from app.services.agent.research_subtree import _count_comparison_dimensions
+
+    count = _count_comparison_dimensions(
+        "Compare AWS S3, Google Cloud Storage, and Azure Blob Storage on durability, pricing tiers, and egress costs"
+    )
+    assert count == 3, f"Expected 3 dimensions (durability/pricing tiers/egress costs), got {count}"
+
+
+def test_count_comparison_dimensions_covering():
+    """Phase 11 — 'covering' lead-in is also detected."""
+    from app.services.agent.research_subtree import _count_comparison_dimensions
+
+    count = _count_comparison_dimensions(
+        "Review LangGraph, AutoGen, and CrewAI covering memory management, tool calling, and fault tolerance"
+    )
+    assert count >= 3, f"Expected ≥3 dimensions after 'covering', got {count}"
+
+
+def test_count_comparison_dimensions_no_match():
+    """Phase 11 — returns 0 when no dimension-list lead-in keyword is present."""
+    from app.services.agent.research_subtree import _count_comparison_dimensions
+
+    count = _count_comparison_dimensions("What is the capital of France?")
+    assert count == 0, f"Expected 0 dimensions for trivial query, got {count}"
+
+
+def test_cloud_storage_no_recommendation_classifies_as_deep():
+    """Phase 11 — a 3-subject, 3-dimension query with NO synthesis-intent words must
+    classify as 'deep' via the dimension-richness path (Signal B).
+    'Compare AWS S3, GCS, and Azure Blob on durability, pricing, and egress' has zero
+    recommendation/synthesis keywords and must still reach deep tier."""
+    from app.services.agent.orchestrator import choose_research_level
+
+    request = TurnRequest(
+        message="Compare AWS S3, Google Cloud Storage, and Azure Blob Storage on durability, pricing tiers, and egress costs"
+    )
+    level = choose_research_level(request, "research")
+    assert level == "deep", (
+        f"Expected 'deep' for 3-subject + 3-dimension query (no synthesis-intent words), got '{level}'"
+    )
+
+
+def test_two_subjects_three_dimensions_classifies_as_deep():
+    """Phase 11 — 2 subjects (≥2 threshold) + 3 dimensions is sufficient for deep tier."""
+    from app.services.agent.orchestrator import choose_research_level
+
+    request = TurnRequest(
+        message="Compare PostgreSQL and MySQL on performance, replication support, and JSONB indexing"
+    )
+    level = choose_research_level(request, "research")
+    assert level == "deep", (
+        f"Expected 'deep' for 2-subject + 3-dimension query, got '{level}'"
+    )
+
+
+def test_one_subject_many_dimensions_stays_regular():
+    """Phase 11 — a single-subject query with many dimensions does not reach deep tier
+    via the dimension-richness path (requires ≥2 named subjects)."""
+    from app.services.agent.orchestrator import choose_research_level
+
+    request = TurnRequest(
+        message="Research PostgreSQL on performance, replication, indexing, JSONB, and partitioning"
+    )
+    level = choose_research_level(request, "research")
+    # May be regular or deep for other reasons; the dimension-richness path alone
+    # should not push a single-subject query to deep.
+    # We can't assert "regular" absolutely because other signals may fire, but we
+    # verify the dimension counter doesn't incorrectly extract 1 subject as 2.
+    from app.services.agent.research_subtree import _extract_named_comparison_subjects
+    subjects = _extract_named_comparison_subjects(request.message)
+    assert len(subjects) < 2, (
+        f"Single-subject query should not yield ≥2 extracted subjects, got {subjects}"
+    )
+
+
+def test_recommendation_intent_path_still_works_after_phase11():
+    """Phase 11 regression — Phase 9's recommendation-intent path (Signal A) must still
+    classify queries with ≥3 subjects + synthesis terms as 'deep'."""
+    from app.services.agent.orchestrator import choose_research_level
+
+    request = TurnRequest(
+        message=(
+            "Research the top 5 agentic AI frameworks in 2025: LangGraph, CrewAI, "
+            "AutoGen, Haystack, and LlamaIndex Workflows. Provide for each: architecture model, "
+            "multi-agent coordination approach, production readiness, and known failure modes. "
+            "Then synthesize a recommendation for the best framework for an enterprise orchestration layer."
+        ),
+    )
+    level = choose_research_level(request, "research")
+    assert level == "deep", (
+        f"Phase 9 Signal A should still classify 5-subject + recommendation query as 'deep', got '{level}'"
+    )
+
+
+def test_docx_offer_boundary_in_citation_verifier_prompt():
+    """Phase 11 — the citation verifier prompt must explicitly exclude document-formatting
+    offers from the asks_permission_to_continue check.  This guards against the field
+    firing on 'I can produce this as a DOCX if you supply vendor quotes'."""
+    from app.services.agent.research_planner import CITATION_VERIFICATION_PROMPT
+
+    # The narrowing language must be present so the LLM understands the boundary.
+    assert "formatting" in CITATION_VERIFICATION_PROMPT.lower() or "reformat" in CITATION_VERIFICATION_PROMPT.lower(), (
+        "CITATION_VERIFICATION_PROMPT must reference the formatting-offer exclusion "
+        "so the LLM knows not to flag document-format offers as permission-seeking"
+    )
+    # Also confirm the original prohibited-endings examples are still present.
+    assert "deeper dive" in CITATION_VERIFICATION_PROMPT.lower(), (
+        "Original permission-seeking examples must still be in the prompt"
+    )
+
+
+def test_golden_set_has_phase11_cases():
+    """Phase 11 — research_golden_set.json must contain the two Phase 11 anchor cases."""
+    import json
+    import os
+
+    golden_path = os.path.join(
+        os.path.dirname(__file__), "..", "evals", "research_golden_set.json"
+    )
+    with open(golden_path) as f:
+        cases = json.load(f)
+
+    ids = {c["id"] for c in cases}
+    assert "cloud_storage_no_recommendation_multi_dimension" in ids, (
+        "Golden set must include Phase 11 cloud-storage (no-recommendation) anchor case"
+    )
+    assert "docx_offer_not_permission_seeking" in ids, (
+        "Golden set must include Phase 11 DOCX-offer boundary case"
+    )

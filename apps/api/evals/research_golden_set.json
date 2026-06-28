@@ -358,5 +358,43 @@
       "min_independent_sources": 5,
       "notes": "Phase 10 fix: (1) 'as EHR platforms' must be truncated by the new 'as <Category> platforms/tools/systems/...' stop pattern; (2) athenahealth must be accepted via the proper-noun list-context inference (≥2 siblings have capitals → the whole list is treated as proper nouns). Verify extractor output directly."
     }
+  },
+  {
+    "id": "cloud_storage_no_recommendation_multi_dimension",
+    "category": "deep_classification",
+    "description": "Phase 11 anchor case: a 3-subject, 3-dimension cloud-storage comparison with NO synthesis-intent words (no 'recommend', 'synthesize', 'best'). Must classify as 'deep' via the dimension-richness path, not fall through to 'regular' because of missing intent keywords.",
+    "request": {
+      "message": "Compare AWS S3, Google Cloud Storage, and Azure Blob Storage on durability, pricing tiers, and egress costs"
+    },
+    "expected": {
+      "research_level": "deep",
+      "primary_evidence_role": "official_policy",
+      "unacceptable_failure_modes": [
+        "classifies as 'regular' tier due to absence of 'recommend'/'synthesize'/'best' keywords",
+        "returns fewer than 20 total sources — a 'regular'-tier budget symptom",
+        "fails to surface AWS S3 durability SLA (11 nines, published on AWS docs)",
+        "fails to surface published per-GB egress rates for at least two of the three providers"
+      ],
+      "min_independent_sources": 6,
+      "notes": "Phase 11 fix: dimension-richness path in choose_research_level() must fire: ≥2 named subjects (3 present) AND ≥3 explicit dimensions after 'on' (durability, pricing tiers, egress costs). Neither a recommendation word nor ≥3 subjects is required for this signal."
+    }
+  },
+  {
+    "id": "docx_offer_not_permission_seeking",
+    "category": "permission_asking_boundary",
+    "description": "Phase 11 boundary case: an answer that offers to reformat the already-delivered content as a DOCX/PPTX, or to incorporate data the system cannot retrieve itself (vendor quotes, live demo results), must NOT trip the asks_permission_to_continue judgment field. Only offers to do more automated research should trigger that field.",
+    "request": {
+      "message": "Research the top 3 cloud hyperscalers and compare their enterprise SLA commitments for object storage"
+    },
+    "expected": {
+      "asks_permission_to_continue": false,
+      "primary_evidence_role": "official_policy",
+      "unacceptable_failure_modes": [
+        "flags an offer to produce a formatted DOCX/PPTX as asks_permission_to_continue",
+        "flags an offer to incorporate vendor-supplied quotes or RFP responses as asks_permission_to_continue",
+        "conflates document-formatting offers with research-continuation solicitation"
+      ],
+      "notes": "Phase 11 fix: the asks_permission_to_continue prompt was narrowed to exclude (a) offers to reformat already-delivered content into a different document format, and (b) offers to supplement with data the system cannot retrieve automatically. The judgment must only fire when the system asks for authorization to do more automated research it could have already done."
+    }
   }
 ]

@@ -394,6 +394,44 @@ def _extract_named_comparison_subjects(message: str) -> list[str]:
     return _dedupe(subjects)[:8]
 
 
+def _count_comparison_dimensions(message: str) -> int:
+    """Count distinct comparison dimensions/criteria stated after a list-lead-in keyword.
+
+    Phase 11 — reuses the same boundary patterns Phase 10 added as truncation stops in
+    _extract_named_comparison_subjects(), but now counts the items ON THE DIMENSION SIDE
+    of that boundary rather than discarding them.
+
+    Example: "Compare AWS S3, Google Cloud Storage, and Azure Blob Storage on durability,
+    pricing tiers, and egress costs" → 3 dimensions (durability / pricing tiers / egress costs).
+
+    Returns 0 if no dimension-list pattern is found.
+    """
+    text = message or ""
+    # Find the first dimension-list lead-in.  Anchors match the same boundary keywords
+    # used in the stop_match inside _extract_named_comparison_subjects().
+    dim_match = re.search(
+        r"\b(?:on|covering|across|spanning|in\s+terms\s+of)\b\s*(.+?)(?:\.|;|$)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not dim_match:
+        return 0
+    dim_region = dim_match.group(1).strip()
+    # Split on comma/and — same delimiters as the subject-extraction pass.
+    raw_dims = re.split(r",|\band\b", dim_region, flags=re.IGNORECASE)
+    dims: list[str] = []
+    for raw in raw_dims:
+        value = raw.strip(" .:-()[]\"'")
+        if not value or len(value) < 2:
+            continue
+        words = value.split()
+        if len(words) > 6:
+            # Likely prose rather than a dimension label — stop counting here.
+            break
+        dims.append(value)
+    return len(dims)
+
+
 def _is_multi_subject_comparison(message: str) -> bool:
     """True when the request names N≥3 comparable entities in a comparison context."""
     subjects = _extract_named_comparison_subjects(message)
@@ -566,6 +604,7 @@ def generate_coverage_contract(request: TurnRequest, brief: ResearchBrief) -> Co
 
 __all__ = [
     "COVERAGE_CONTRACT_PROMPT",
+    "_count_comparison_dimensions",
     "_derive_fallback_dimensions",
     "_derive_fallback_subjects",
     "_extract_named_comparison_subjects",

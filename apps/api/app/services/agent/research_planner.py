@@ -119,6 +119,15 @@ For each factual claim with a [S#] citation, verify:
    If the answer states remaining gaps plainly and moves on without soliciting permission, set
    asks_permission_to_continue: false. Only set true if the closing explicitly invites the user
    to authorize continuation as if their approval is needed.
+   Phase 11 — IMPORTANT BOUNDARY: Do NOT flag the following as asks_permission_to_continue:
+   - Offers to reformat or export the already-delivered answer (e.g. "I can produce this as a
+     DOCX or slide deck if you'd like") — this is a formatting offer, not a research request.
+   - Offers to incorporate data the system has no way to retrieve automatically (vendor quotes
+     from RFP calls, live demo outcomes, custom negotiated pricing, internal documents) — the
+     system cannot fetch these; offering to include them once supplied is appropriate, not
+     permission-seeking research solicitation.
+   Only flag asks_permission_to_continue when the system is offering to do more automated
+   research/information-gathering that it could have already done within the current run.
 
 Return only JSON:
 {

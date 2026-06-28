@@ -92,10 +92,14 @@ class Settings(BaseSettings):
     # database-backed workers claims turns with renewable leases. Expired
     # leases are eligible for retry after a deploy or process crash.
     turn_worker_concurrency: int = 2
-    turn_worker_poll_seconds: float = 0.5
+    # Idle poll interval — how long a worker sleeps when the queue is empty.
+    # Workers are woken immediately via notify() when real work arrives, so
+    # raising this from 0.5 → 5.0 cuts idle DB queries by 10× with no latency
+    # impact on active requests.  Override via TURN_WORKER_POLL_SECONDS env var.
+    turn_worker_poll_seconds: float = 5.0
     turn_worker_lease_seconds: int = 90
     turn_worker_max_attempts: int = 3
-    maintenance_worker_poll_seconds: float = 1.0
+    maintenance_worker_poll_seconds: float = 5.0
     maintenance_worker_lease_seconds: int = 120
     maintenance_worker_max_attempts: int = 3
 

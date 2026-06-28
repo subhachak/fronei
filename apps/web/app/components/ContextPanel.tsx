@@ -114,7 +114,7 @@ export function ContextPanel({
                 <ChevronDown size={15} className={`flex-shrink-0 text-neutral-400 transition-transform ${traceOpen ? 'rotate-180' : ''}`} />
               </button>
               {traceOpen && (
-                <div className="mt-3 max-h-[360px] space-y-0 overflow-y-auto border-l-2 border-neutral-200 pl-3 dark:border-neutral-700">
+                <div className="mt-3 space-y-0 border-l-2 border-neutral-200 pl-3 dark:border-neutral-700">
                   {events.length === 0 && <p className="py-2 text-sm text-neutral-400">No events yet.</p>}
                   {events.map((event, index) => (
                     <div key={`${event.stage}-${index}`} className="relative border-b border-neutral-100 py-2.5 last:border-0 dark:border-neutral-800">

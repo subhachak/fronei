@@ -449,34 +449,33 @@ export function AgentShell() {
 
         {/* Desktop context rail — always a 56px icon strip */}
         <aside className="relative hidden flex-col border-l border-neutral-200 bg-neutral-50/60 dark:border-neutral-800 dark:bg-neutral-900/40 md:flex">
-          {rightRailCollapsed ? (
+          {rightRailCollapsed && (
             <CollapsedContextRail
               hasArtifact={Boolean(agent.latestArtifact)}
               onExpand={() => setRightRailCollapsed(false)}
             />
-          ) : (
-            /* Strip: just the collapse button */
-            <div className="flex flex-col items-center pt-2">
-              <Button
-                variant="outline"
-                size="icon-sm"
-                onClick={() => setRightRailCollapsed(true)}
-                aria-label="Collapse context"
-                title="Collapse context"
-                className="rounded-full text-neutral-400"
-              >
-                <ChevronsRight size={14} />
-              </Button>
-            </div>
           )}
 
-          {/* Flyout panel — fixed overlay that slides over the center column */}
+          {/* Flyout panel — fixed overlay, anchored flush-right, extends left over center */}
           {!rightRailCollapsed && (
             <div
-              className="fixed inset-y-0 right-14 z-40 flex w-[min(420px,45vw)] flex-col border-l border-neutral-200 bg-white shadow-xl dark:border-neutral-800 dark:bg-neutral-950"
+              className="fixed inset-y-0 right-0 z-40 flex w-[min(480px,55vw)] flex-col border-l border-neutral-200 bg-white shadow-2xl dark:border-neutral-800 dark:bg-neutral-950"
               style={{ animation: 'slideInRight 0.18s ease-out' }}
             >
-              <div className="flex-1 overflow-y-auto px-4 py-5">{contextContent}</div>
+              {/* Flyout header with close button */}
+              <div className="flex flex-shrink-0 items-center justify-end border-b border-neutral-200 px-3 py-2 dark:border-neutral-800">
+                <Button
+                  variant="outline"
+                  size="icon-sm"
+                  onClick={() => setRightRailCollapsed(true)}
+                  aria-label="Collapse context"
+                  title="Collapse context"
+                  className="rounded-full text-neutral-400"
+                >
+                  <ChevronsRight size={14} />
+                </Button>
+              </div>
+              <div className="min-w-0 flex-1 overflow-y-auto px-4 py-4">{contextContent}</div>
             </div>
           )}
         </aside>

@@ -1,7 +1,12 @@
 /* ── Flyout animation ─────────────────────────────────────────────────────── */
-@keyframes slideInRight {
-  from { transform: translateX(12px); opacity: 0; }
-  to   { transform: translateX(0);    opacity: 1; }
+/* ── Context flyout portal vars ───────────────────────────────────────────── */
+:root {
+  --context-bg: #ffffff;
+  --context-border: #e5e7eb;
+}
+.dark, [data-theme="dark"] {
+  --context-bg: #030712;
+  --context-border: #1f2937;
 }
 
 /* ── Theme variables ──────────────────────────────────────────────────────── */

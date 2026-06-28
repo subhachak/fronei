@@ -2,6 +2,7 @@
 
 import { BookOpen, CheckCircle2, ChevronsLeft, ChevronsRight, Clock3, FileText, Folder, Library, Loader2, Moon, PanelRight, Settings2, Shield, Sliders, Sparkles, Sun, UserCog, type LucideIcon } from 'lucide-react'
 import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
+import { createPortal } from 'react-dom'
 import { useAgent } from '../hooks/useAgent'
 import { useTheme } from '../hooks/useTheme'
 import { AdminShell } from '../admin/components/AdminShell'
@@ -472,13 +473,25 @@ export function AgentShell() {
         </aside>
       </div>
 
-      {/* Desktop context flyout — rendered OUTSIDE the grid so overflow:hidden cannot clip it */}
-      {!rightRailCollapsed && (
+      {/* Desktop context flyout — portal into document.body, immune to any parent clipping */}
+      {!rightRailCollapsed && typeof document !== 'undefined' && createPortal(
         <div
-          className="fixed inset-y-0 right-0 z-50 hidden flex-col border-l border-neutral-200 bg-white shadow-2xl dark:border-neutral-800 dark:bg-neutral-950 md:flex"
-          style={{ width: 'min(520px, 55vw)' }}
+          className="hidden md:flex"
+          style={{
+            position: 'fixed',
+            top: 0,
+            right: 0,
+            bottom: 0,
+            width: 'min(520px, 55vw)',
+            zIndex: 9999,
+            flexDirection: 'column',
+            borderLeft: '1px solid var(--context-border, #e5e7eb)',
+            backgroundColor: 'var(--context-bg, #fff)',
+            boxShadow: '-8px 0 32px rgba(0,0,0,0.12)',
+            overflow: 'hidden',
+          }}
         >
-          <div className="flex flex-shrink-0 items-center justify-end border-b border-neutral-200 px-3 py-2 dark:border-neutral-800">
+          <div style={{ display: 'flex', flexShrink: 0, justifyContent: 'flex-end', padding: '8px 12px', borderBottom: '1px solid var(--context-border, #e5e7eb)' }}>
             <Button
               variant="outline"
               size="icon-sm"
@@ -491,7 +504,8 @@ export function AgentShell() {
             </Button>
           </div>
           <div className="min-w-0 flex-1 overflow-y-auto px-4 py-4">{contextContent}</div>
-        </div>
+        </div>,
+        document.body,
       )}
 
       {/* Mobile sheets */}

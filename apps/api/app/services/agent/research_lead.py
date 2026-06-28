@@ -1380,7 +1380,7 @@ class LeadResearchAgent:
         state.evidence = bind_evidence(
             _prioritized_sources_for_binding(self.request, state),
             plan=state.plan,
-            max_items=self.budget.max_sources + self.budget.max_deep_links,
+            max_items=self.budget.max_sources,
             contract=state.contract,
             overrides=self.request.model_overrides,
             ledger=self.ledger,

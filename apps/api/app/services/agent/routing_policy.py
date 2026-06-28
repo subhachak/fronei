@@ -128,6 +128,25 @@ BOOTSTRAP_SIGNAL_GROUPS: tuple[SignalGroup, ...] = (
         ),
         description="High-stakes domains need fuller routing and guardrails.",
     ),
+    SignalGroup(
+        id="owner_reliability_research",
+        suggested_route="agentic",
+        terms=(
+            "owner reviews",
+            "owner reports",
+            "real-world reliability",
+            "real world reliability",
+            "failure rate",
+            "failure rates",
+            "long-term owner",
+            "long term owner",
+            "after 1-2 years",
+            "after 1–2 years",
+            "degradation",
+            "warranty claims",
+        ),
+        description="Owner-experience and durability questions need broader evidence than a quick web lookup.",
+    ),
 )
 
 _GROUPS_BY_ID = {group.id: group for group in BOOTSTRAP_SIGNAL_GROUPS}

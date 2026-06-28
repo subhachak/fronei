@@ -373,6 +373,47 @@ def test_agent_routing_policy_bootstrap_escalates_current_recommendation():
     assert "volatile_product_catalog" in decision.matched_groups
 
 
+def test_agent_routing_policy_escalates_owner_reliability_research():
+    from app.services.agent.routing_policy import evaluate_routing_signals
+
+    decision = evaluate_routing_signals(
+        "What do owner reviews say about Anker SOLIX real-world reliability and failure rate after 1-2 years?"
+    )
+
+    assert decision.suggested_route == "agentic"
+    assert "owner_reliability_research" in decision.matched_groups
+
+
+def test_fast_router_overrides_web_fast_for_owner_reliability(monkeypatch):
+    from app.services.agent import model_client
+    from app.services.agent.fast_path import decide_fast_path
+
+    def fake_complete(messages, *, preferred_model=None, role=None, quality_mode="standard", timeout_s=30, max_tokens=1200, **_kwargs):
+        assert role == "fast_router"
+        return SimpleNamespace(
+            text=json.dumps(
+                {
+                    "path": "web_fast",
+                    "confidence": 0.9,
+                    "reason": "A quick lookup seems enough.",
+                    "web_query": "Anker SOLIX real-world reliability failure rate owner reviews 1-2 years",
+                }
+            ),
+            model_used="fake-fast-router",
+            latency_ms=2,
+            cost_usd=0.001,
+        )
+
+    monkeypatch.setattr(model_client, "complete", fake_complete)
+
+    decision = decide_fast_path(
+        TurnRequest(message="Anker SOLIX home battery backup real-world reliability failure rate owner reviews 1-2 years")
+    )
+
+    assert decision.path == "agentic"
+    assert "owner_reliability_research" in decision.matched_signal_groups
+
+
 def test_agent_routing_feedback_creates_candidate(monkeypatch):
     from app.services.agent import routing_policy
 

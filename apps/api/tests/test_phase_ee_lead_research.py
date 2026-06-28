@@ -861,6 +861,7 @@ def test_deep_link_extraction_skips_assets_and_marketing_junk():
                     "See https://lifebit.ai/wp-content/uploads/2025/04/logo.png "
                     "https://lifebit.ai/pricing/ https://lifebit.ai/contact-us/ "
                     "https://lifebit.ai/demo-2/ https://lifebit.ai/blog/category/industry/ "
+                    "https://www.facebook.com/tr?id=451780285406566&ev=PageView&noscript=1 "
                     "and https://lifebit.ai/blog/ehr-market-analysis"
                 ),
             )

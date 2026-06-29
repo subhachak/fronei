@@ -16,6 +16,8 @@ RUN pip install --no-cache-dir uv && uv sync --frozen --no-dev
 COPY apps/api/app ./app
 COPY apps/api/alembic.ini ./alembic.ini
 COPY apps/api/alembic ./alembic
+COPY apps/api/evals ./evals
+COPY apps/api/scripts ./scripts
 
 # AgentDeck PptxGenJS renderer + its node_modules (pptxgenjs)
 COPY apps/api/pptx_render ./pptx_render

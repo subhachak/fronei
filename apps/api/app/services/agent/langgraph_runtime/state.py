@@ -23,7 +23,8 @@ GraphNodeName = Literal[
     "subject_derivation",
     "contract",
     "plan",
-    "search",
+    "dispatch_search",
+    "search_worker",
     "rank",
     "read",
     "classify_claims",
@@ -115,6 +116,7 @@ class ResearchGraphState(TypedDict, total=False):
     # ---- Dedup inventories (last-write-wins; nodes reconstruct from sources) -
     source_inventory: list[str]      # canonical URL set
     query_history: list[str]         # search queries issued
+    ranked_source_urls: list[str]    # output of rank node, consumed by read node
 
     # ---- Budget counters (LangGraph add reducers) -------------------------
     cost_usd_spent: Annotated[float, operator.add]

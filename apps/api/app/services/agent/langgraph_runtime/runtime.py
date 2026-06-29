@@ -29,21 +29,23 @@ def configured_orchestrator() -> str:
 
 
 def run_langgraph_research(request: Any, tools: Any, progress: Any = None) -> dict[str, Any]:
-    """LangGraph research entry point — Slice 1.
+    """LangGraph research entry point — Slice 2.
 
-    The first four nodes (brief, subject_derivation, contract, plan) are real.
-    Remaining nodes (search → repair) are still stubs until Slice 2+.
+    Nodes through bind are real (brief → subject_derivation → contract → plan →
+    dispatch_search/search_worker → rank → read → classify_claims →
+    expand_source_graph → bind).
+    synthesize/verify/judge/repair remain stubs until Slice 3.
     The returned dictionary matches the public keys of lead_research_loop.
     """
-    _ = tools
     run_id = new_id("lgrun")
     final_state = run_stub_graph(
         {"request_message": getattr(request, "message", ""), "visited_nodes": [], "artifacts": {}},
         run_id=run_id,
         request=request,
         progress=progress,
+        tools=tools,
     )
-    stub_model = "langgraph-slice-1-stub"
+    stub_model = "langgraph-slice-2-stub"
     response = model_client.ModelResponse(
         text=final_state.get("answer", ""),
         model_used=final_state.get("model_used", stub_model),
@@ -58,12 +60,12 @@ def run_langgraph_research(request: Any, tools: Any, progress: Any = None) -> di
         final_score=1.0,
     )
     return {
-        "sources": [],
-        "tool_calls": [],
-        "evidence": EvidencePack(),
+        "sources": final_state.get("sources") or [],
+        "tool_calls": final_state.get("tool_calls") or [],
+        "evidence": final_state.get("evidence") or EvidencePack(),
         "response": response,
-        "plan": final_state.get("plan") or ResearchPlan(source="stub", fallback_reason="LangGraph Slice 1 stub — search not yet wired."),
-        "worker_reports": [],
+        "plan": final_state.get("plan") or ResearchPlan(source="stub", fallback_reason="LangGraph Slice 2 — plan derivation failed."),
+        "worker_reports": final_state.get("worker_reports") or [],
         "feedback": feedback,
         "answer_streamed": False,
         "replay_final_answer": False,

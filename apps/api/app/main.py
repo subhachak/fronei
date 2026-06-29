@@ -22,6 +22,15 @@ settings = get_settings()
 configure_observability(settings)
 
 
+def _configure_langsmith() -> None:
+    try:
+        from app.services.langsmith_evals import configure_tracing
+        configure_tracing()
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning("LangSmith configuration skipped: %s", exc)
+
+
 def _bootstrap_eval_cases() -> None:
     """Seed golden-set eval cases on every startup (idempotent — skips existing rows)."""
     import io
@@ -49,6 +58,7 @@ async def lifespan(app: FastAPI):
     check_production_config()
     check_schema_version(engine)
     configure_provider_keys()
+    _configure_langsmith()
     _bootstrap_eval_cases()
     turn_job_worker.start()
     maintenance_job_worker.start()

@@ -139,6 +139,19 @@ class Settings(BaseSettings):
     agentdeck_vision_judge_enabled: bool = True
     agentdeck_vision_judge_model: str = "gemini/gemini-2.5-flash"
 
+    # LangSmith observability + eval framework.
+    # Set LANGSMITH_API_KEY to enable the LangSmith eval runner and dataset sync.
+    # When unset the admin eval runner falls back to the in-process scorer.
+    langsmith_api_key: str | None = None
+    langchain_project: str = "fronei"
+    # LangGraph/LangChain tracing to LangSmith.
+    # MUST be set explicitly to True to activate — having a key alone is NOT
+    # enough. This prevents accidental upload of prompts, retrieved evidence,
+    # and user queries in production environments where tracing was not
+    # deliberately chosen. Review data-retention and privacy implications before
+    # enabling in production.
+    langchain_tracing_v2: bool = False
+
     # Research orchestration implementation selector. This is a deployment
     # default, not an end-user request option.
     # Default remains "legacy" until the real parity comparator confirms

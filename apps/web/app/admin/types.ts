@@ -322,6 +322,23 @@ export type EvalCaseRunResult = {
   overall_structural_pass: boolean
 }
 
+export type LangSmithExperiment = {
+  mode: 'langsmith'
+  dataset_id?: string
+  legacy_experiment_url?: string
+  langgraph_experiment_url?: string
+  pipelines?: Record<string, unknown>
+}
+
+/** Consistent envelope returned by /runs/{run_id}/result regardless of eval mode. */
+export type EvalRunResult = {
+  mode: 'langsmith' | 'in_process' | 'error'
+  /** Per-case results — populated for in_process runs; empty for LangSmith runs. */
+  cases: EvalCaseRunResult[]
+  /** LangSmith experiment summary — populated for LangSmith runs; null otherwise. */
+  langsmith: LangSmithExperiment | null
+}
+
 export type EvalRunSummary = {
   run_id: string
   status: 'running' | 'complete' | 'error'

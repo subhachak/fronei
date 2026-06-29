@@ -1317,6 +1317,9 @@ def test_vendor_comparison_cloud_storage_does_not_use_llm_provider_lanes():
     assert "durability" in queries
     assert "pricing" in queries
     assert "egress" in queries
+    assert "site:docs.aws.amazon.com/amazons3/latest/userguide" in queries
+    assert "site:cloud.google.com/storage/docs" in queries
+    assert "site:learn.microsoft.com/azure/storage" in queries
 
 
 def test_coverage_contract_fallback_has_cells(monkeypatch):

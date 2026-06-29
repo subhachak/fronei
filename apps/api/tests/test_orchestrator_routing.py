@@ -129,6 +129,45 @@ def test_medical_supplement_safety_normalizes_llm_direct_route(monkeypatch):
     assert "Routing signals" in decision.reason
 
 
+def test_workplace_policy_evidence_normalizes_llm_direct_route(monkeypatch):
+    from app.services.agent import model_client
+
+    def fake_complete(messages, **_kwargs):
+        return SimpleNamespace(
+            text=json.dumps(
+                {
+                    "route": "direct",
+                    "confidence": 0.9,
+                    "reason": "Well-established workplace policy pattern.",
+                    "output_format": "chat",
+                    "research_level": "regular",
+                    "requires_confirmation": False,
+                }
+            ),
+            model_used="fake-orchestrator",
+            latency_ms=1,
+            cost_usd=0.0,
+        )
+
+    monkeypatch.setattr(model_client, "complete", fake_complete)
+
+    decision = decide_with_options(
+        TurnRequest(
+            message=(
+                "Give a concise overview for a mid-size manufacturing company considering a four-day work week, "
+                "based on evidence about productivity and retention."
+            )
+        ),
+        available_routes=["direct", "clarify", "research", "document", "research_document"],
+        available_tools=[],
+    )
+
+    assert decision.route == "research"
+    assert decision.research_level == "regular"
+    assert decision.requires_confirmation is False
+    assert "Routing signals" in decision.reason
+
+
 def test_medical_supplement_safety_heuristic_routes_to_research():
     decision = heuristic_decide(
         TurnRequest(message="Is long-term creatine supplementation safe for kidney health?")

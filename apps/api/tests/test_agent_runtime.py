@@ -425,6 +425,52 @@ def test_fast_router_overrides_direct_fast_for_medical_supplement_safety(monkeyp
     assert "high_stakes" in decision.matched_signal_groups
 
 
+def test_agent_routing_policy_escalates_workplace_policy_evidence():
+    from app.services.agent.routing_policy import evaluate_routing_signals
+
+    decision = evaluate_routing_signals(
+        "Give a concise overview for a mid-size manufacturing company considering a four-day work week, based on evidence about productivity and retention."
+    )
+
+    assert decision.suggested_route == "agentic"
+    assert "workplace_policy_evidence" in decision.matched_groups
+
+
+def test_fast_router_overrides_direct_fast_for_workplace_policy_evidence(monkeypatch):
+    from app.services.agent import model_client
+    from app.services.agent.fast_path import decide_fast_path
+
+    def fake_complete(messages, *, preferred_model=None, role=None, quality_mode="standard", timeout_s=30, max_tokens=1200, **_kwargs):
+        assert role == "fast_router"
+        return SimpleNamespace(
+            text=json.dumps(
+                {
+                    "path": "direct_fast",
+                    "confidence": 0.9,
+                    "reason": "Well-established workplace trend.",
+                    "web_query": None,
+                }
+            ),
+            model_used="fake-fast-router",
+            latency_ms=2,
+            cost_usd=0.001,
+        )
+
+    monkeypatch.setattr(model_client, "complete", fake_complete)
+
+    decision = decide_fast_path(
+        TurnRequest(
+            message=(
+                "Here’s a concise overview to help a mid-size manufacturing company consider moving "
+                "to a four-day work week, based on evidence about productivity and retention."
+            )
+        )
+    )
+
+    assert decision.path == "agentic"
+    assert "workplace_policy_evidence" in decision.matched_signal_groups
+
+
 def test_fast_router_overrides_web_fast_for_owner_reliability(monkeypatch):
     from app.services.agent import model_client
     from app.services.agent.fast_path import decide_fast_path

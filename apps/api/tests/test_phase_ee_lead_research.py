@@ -1990,6 +1990,40 @@ def test_bind_evidence_uses_snippet_when_extracted_content_is_site_navigation():
     assert "Forum 2029" not in evidence.items[0].evidence
 
 
+def test_bind_evidence_uses_snippet_when_extracted_content_is_university_navigation():
+    from app.services.agent.research_subtree import ResearchPlan, bind_evidence
+
+    snippet = (
+        "Companies noted improved productivity and revenue growth; workers reported less stress, "
+        "less burnout, and positive effects on mental and physical health."
+    )
+    nav = (
+        "* [Academic Calendar](/content/bc-web/resources/academic-calendar-r.html) "
+        "* [BC Magazine](/content/bc-web/sites/bc-magazine.html) "
+        "* [BC News](/content/bc-web/bcnews.html) "
+        "* [Directories](/content/bc-web/resources/directories-r.html) "
+        "* [Webcams](/content/bc-web/resources/webcam-r.html) "
+        "* [Offices, Services, Resources](/content/bc-web/resources/offices-services-resources.html)"
+    )
+
+    evidence = bind_evidence(
+        [
+            Source(
+                title="A four-day work week? - Boston College",
+                url="https://www.bc.edu/bc-web/bcnews/nation-world-society/sociology/-study-pilots-four-day-work-week.html",
+                snippet=snippet,
+                content=nav,
+            )
+        ],
+        plan=ResearchPlan(questions=["four-day work week productivity burnout revenue"], min_evidence_items=1),
+        max_items=1,
+    )
+
+    assert evidence.items
+    assert "improved productivity" in evidence.items[0].evidence
+    assert "Academic Calendar" not in evidence.items[0].evidence
+
+
 def test_technical_architecture_binds_architecture_cards():
     from app.services.agent.research_subtree import ResearchPlan, bind_evidence
 

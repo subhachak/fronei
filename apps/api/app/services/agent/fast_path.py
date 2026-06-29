@@ -43,7 +43,7 @@ Choose the fastest safe path:
 
 Rules:
 - If requested_output_format is not "chat", choose agentic.
-- If the user asks for a document, deck, report file, DOCX, PPTX, deep research, broad comparison, strategy, legal/regulatory/financial advice, owner/user reliability evidence, failure rates, durability, degradation, or high-stakes decision support, choose agentic.
+- If the user asks for a document, deck, report file, DOCX, PPTX, deep research, broad comparison, strategy, legal/regulatory/medical/health/financial advice, supplement safety, owner/user reliability evidence, failure rates, durability, degradation, or high-stakes decision support, choose agentic.
 - Use web_fast only for quick current facts or one narrow lookup. Do not use it for full research.
 - Use web_fast for current AI model/provider/pricing/API recommendation questions, because model catalogs and prices change frequently.
 - For vague follow-ups, use direct_fast only if the current conversation context clearly contains the target. Otherwise choose agentic.

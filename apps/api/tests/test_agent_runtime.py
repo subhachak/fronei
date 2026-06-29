@@ -384,6 +384,47 @@ def test_agent_routing_policy_escalates_owner_reliability_research():
     assert "owner_reliability_research" in decision.matched_groups
 
 
+def test_agent_routing_policy_escalates_medical_supplement_safety():
+    from app.services.agent.routing_policy import evaluate_routing_signals
+
+    decision = evaluate_routing_signals(
+        "Is long-term creatine supplementation safe for kidney health?"
+    )
+
+    assert decision.suggested_route == "agentic"
+    assert "high_stakes" in decision.matched_groups
+
+
+def test_fast_router_overrides_direct_fast_for_medical_supplement_safety(monkeypatch):
+    from app.services.agent import model_client
+    from app.services.agent.fast_path import decide_fast_path
+
+    def fake_complete(messages, *, preferred_model=None, role=None, quality_mode="standard", timeout_s=30, max_tokens=1200, **_kwargs):
+        assert role == "fast_router"
+        return SimpleNamespace(
+            text=json.dumps(
+                {
+                    "path": "direct_fast",
+                    "confidence": 0.9,
+                    "reason": "Well documented in general literature.",
+                    "web_query": None,
+                }
+            ),
+            model_used="fake-fast-router",
+            latency_ms=2,
+            cost_usd=0.001,
+        )
+
+    monkeypatch.setattr(model_client, "complete", fake_complete)
+
+    decision = decide_fast_path(
+        TurnRequest(message="Is long-term creatine supplementation safe for kidney health?")
+    )
+
+    assert decision.path == "agentic"
+    assert "high_stakes" in decision.matched_signal_groups
+
+
 def test_fast_router_overrides_web_fast_for_owner_reliability(monkeypatch):
     from app.services.agent import model_client
     from app.services.agent.fast_path import decide_fast_path

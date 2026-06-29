@@ -225,7 +225,7 @@ def plan_from_contract(
     if request.research_level == "deep":
         workers = _compose_deep_worker_wave(
             contract_workers=workers,
-            anchor_workers=anchor_workers + phase6_workers,
+            anchor_workers=phase6_workers + anchor_workers,
             domain_workers=domain_workers,
             max_workers=budget.max_search_workers,
         )
@@ -1144,11 +1144,11 @@ def _per_entity_anchor_queries(message: str, budget: ResearchBudget) -> list[Sea
         elif "crewai" in entity_lower:
             query = f"CrewAI official docs role-based crew agent coordination site:docs.crewai.com"
         elif entity_lower in {"awss3", "amazons3", "s3"}:
-            query = "AWS S3 official documentation durability storage classes pricing data transfer out egress"
+            query = "site:docs.aws.amazon.com/AmazonS3/latest/userguide OR site:aws.amazon.com/s3/pricing AWS S3 durability storage classes egress"
         elif "googlecloudstorage" in entity_lower or entity_lower == "gcs":
-            query = "Google Cloud Storage official docs durability storage classes pricing egress data transfer"
+            query = "site:cloud.google.com/storage/docs OR site:cloud.google.com/storage/pricing Google Cloud Storage durability storage classes egress"
         elif "azureblobstorage" in entity_lower or entity_lower == "azureblob":
-            query = "Azure Blob Storage official docs durability redundancy access tiers pricing egress data transfer"
+            query = "site:learn.microsoft.com/azure/storage OR site:azure.microsoft.com/en-us/pricing/details/storage/blobs Azure Blob Storage redundancy durability access tiers egress"
         else:
             query = f"{entity} official documentation {focus}"
         workers.append(

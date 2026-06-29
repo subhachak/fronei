@@ -61,8 +61,9 @@ def build_research_graph(
               "stop_with_gaps"   → END
               "requires_approval"→ END
 
-    classify_claims is a partial stub (Slice 4 will wire real claim classification).
-    All other nodes are real domain-function calls.
+    All nodes are real domain-function calls (Slice 4 complete).
+    classify_claims pre-classifies sources and stores results in state;
+    bind reads them via pre_classified_by_url to skip duplicate LLM calls.
     """
     graph: StateGraph = StateGraph(ResearchGraphState)
 

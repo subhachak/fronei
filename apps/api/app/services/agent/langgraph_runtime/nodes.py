@@ -542,43 +542,114 @@ def classify_claims(
     tools: Tools | None = None,
     progress: ProgressCallback | None = None,
 ) -> dict:
-    """Pre-classify claims from extracted sources before binding.
+    """Pre-classify claim sentences from extracted sources before binding (Slice 4).
 
-    Slice 2 status: PARTIAL STUB.
-    `classify_claims_llm` is called per EvidenceItem inside `bind_evidence`, so
-    claim classification already happens implicitly in the bind node. This node
-    exists as the explicit pipeline stage so it can be upgraded in Slice 3 to:
-      - run `classify_claims_llm` independently per source (not per evidence item)
-      - emit per-source classification events and budget deltas
-      - write `claim_classification_results` with per-sentence classifications
+    Calls classify_claims_llm per source using the extracted content, building a
+    minimal EvidenceItem from each Source so the LLM classifier has the source_type,
+    url, and title context it needs.
 
-    Until Slice 3, this node is a pass-through: it records itself as visited,
-    emits a progress event marking it as stub, and returns 0-delta budget counters.
-    The actual LLM calls are counted against the model budget when bind fires.
+    Results are stored as claim_classification_results (Annotated[list, operator.add])
+    so they accumulate across any future parallel classification paths.
+
+    Results flow into bind via state field claim_classification_results.  bind reads
+    them as pre_classified_by_url and passes to bind_evidence/extract_evidence_claims,
+    which skips the LLM call for already-classified sources (P2 fix, Slice 4).
+
+    Falls back to empty results gracefully (regex fallback fires inside
+    classify_claims_llm when the LLM is unavailable).
     """
-    visited = [*state.get("visited_nodes", []), "classify_claims"]
+    from app.services.agent.research_evidence import (
+        classify_claims_llm,
+        _claim_candidate_sentences,  # type: ignore[attr-defined]
+    )
+    from app.services.agent.research_models import EvidenceItem, ResearchBudgetLedger
+    from app.services.agent.research_profiles import research_budget_for
+    from app.services.agent.research_utils import classify_source_type
+
+    node_name: GraphNodeName = "classify_claims"
+    visited = [*state.get("visited_nodes", []), node_name]
     sources = state.get("sources") or []
+    overrides = getattr(request, "model_overrides", None)
+
+    # One ledger for the whole node — records each classify_claims_llm LLM call.
+    # ledger.model_calls delta distinguishes a real LLM call from a regex fallback
+    # (fallback returns results without calling record_model_call).
+    ledger = ResearchBudgetLedger(budget=research_budget_for(request))
+
     emit_graph_event(
         progress,
         run_id=run_id,
-        node_name="classify_claims",
-        message=(
-            f"classify_claims: {len(sources)} source(s) ready; "
-            "per-source LLM classification fires inside bind_evidence (Slice 3 will extract it here)."
-        ),
+        node_name=node_name,
+        message=f"Classifying claim sentences for {len(sources)} source(s).",
         source_count=len(sources),
-        stub=True,
-        cost_usd_spent=0.0,
-        tool_calls_made=0,
-        model_calls_made=0,
     )
+
+    classification_records: list[dict[str, Any]] = []
+
+    for idx, source in enumerate(sources):
+        content = source.content or source.snippet or ""
+        if not content:
+            continue
+
+        # Build a minimal EvidenceItem — classify_claims_llm only needs
+        # source_type, url, and title from it.
+        item = EvidenceItem(
+            source_id=f"S{idx + 1}",
+            title=source.title or "",
+            url=source.url or "",
+            source_type=classify_source_type(source.url or ""),
+            evidence=content,
+        )
+
+        sentences = _claim_candidate_sentences(content)
+        if not sentences:
+            continue
+
+        calls_before = ledger.model_calls
+        # Batch per source — one LLM call covers all sentences for this source.
+        llm_results = classify_claims_llm(
+            sentences[:5],  # cap at 5 sentences per source for budget control
+            item,
+            overrides=overrides,
+            ledger=ledger,
+        )
+        # Only append a record when results are present (regex fallback may also
+        # return results, but ledger.model_calls won't advance for those — that's
+        # intentional: regex fallback is free and should not count as a model call).
+        if llm_results:
+            record: dict[str, Any] = {
+                "url": source.url,
+                "title": source.title or "",
+                "source_type": item.source_type,
+                "sentence_count": len(sentences[:5]),
+                "classifications": llm_results,
+                # Flag whether this came from a real LLM call or regex fallback.
+                "llm_classified": ledger.model_calls > calls_before,
+            }
+            classification_records.append(record)
+
+    total_model_calls = ledger.model_calls
+    total_cost = ledger.cost_usd
+
+    emit_graph_event(
+        progress,
+        run_id=run_id,
+        node_name=node_name,
+        message=(
+            f"Classified claims for {len(classification_records)}/{len(sources)} source(s); "
+            f"{total_model_calls} LLM call(s), ${total_cost:.5f}."
+        ),
+        classified_source_count=len(classification_records),
+        model_calls=total_model_calls,
+    )
+
     return {
         "visited_nodes": visited,
-        "artifacts": {**state.get("artifacts", {}), "classify_claims": {"status": "stub_slice2"}},
-        "claim_classification_results": [],  # delta — Slice 3 will populate this
-        "cost_usd_spent": 0.0,
+        "artifacts": {**state.get("artifacts", {}), node_name: {"status": "real"}},
+        "claim_classification_results": classification_records,
+        "cost_usd_spent": total_cost,
         "tool_calls_made": 0,
-        "model_calls_made": 0,
+        "model_calls_made": total_model_calls,
     }
 
 
@@ -664,6 +735,8 @@ def bind(
 ) -> dict:
     """Merge sources by URL priority and call bind_evidence to produce EvidencePack."""
     from app.services.agent.research_evidence import bind_evidence
+    from app.services.agent.research_models import ResearchBudgetLedger
+    from app.services.agent.research_profiles import research_budget_for
 
     visited = [*state.get("visited_nodes", []), "bind"]
     all_sources = state.get("sources") or []
@@ -673,31 +746,49 @@ def bind(
     # URL-priority merge: prefer content-rich (extracted) over snippet-only (search result)
     merged_sources = _url_priority_merge(all_sources)
 
+    # Build pre_classified_by_url from classify_claims node output so that
+    # bind_evidence/extract_evidence_claims can skip the redundant LLM call for
+    # sources already classified in the pre-bind pass (P2 fix).
+    pre_classified_by_url: dict[str, list[dict[str, Any]]] = {
+        rec["url"]: rec["classifications"]
+        for rec in (state.get("claim_classification_results") or [])
+        if rec.get("url") and rec.get("classifications")
+    }
+
+    # Ledger tracks the classify_claims_llm calls made inside bind_evidence for
+    # sources NOT covered by the pre-classified map (P1b fix).
+    bind_ledger = ResearchBudgetLedger(budget=research_budget_for(request))
+
     evidence = bind_evidence(
         merged_sources,
         research_plan,
         contract=coverage_contract,
         overrides=getattr(request, "model_overrides", None),
+        ledger=bind_ledger,
+        pre_classified_by_url=pre_classified_by_url or None,
     )
 
     emit_graph_event(
         progress,
         run_id=run_id,
         node_name="bind",
-        message=f"Evidence bound: {len(evidence.items)} item(s) from {len(merged_sources)} source(s).",
+        message=(
+            f"Evidence bound: {len(evidence.items)} item(s) from {len(merged_sources)} source(s); "
+            f"{bind_ledger.model_calls} classify call(s), ${bind_ledger.cost_usd:.5f}."
+        ),
         evidence_item_count=len(evidence.items),
         source_count=len(merged_sources),
-        cost_usd_spent=0.0,
+        cost_usd_spent=bind_ledger.cost_usd,
         tool_calls_made=0,
-        model_calls_made=0,
+        model_calls_made=bind_ledger.model_calls,
     )
     return {
         "visited_nodes": visited,
         "artifacts": {**state.get("artifacts", {}), "bind": {"status": "done"}},
         "evidence": evidence,
-        "cost_usd_spent": 0.0,
+        "cost_usd_spent": bind_ledger.cost_usd,
         "tool_calls_made": 0,
-        "model_calls_made": 0,
+        "model_calls_made": bind_ledger.model_calls,
     }
 
 

@@ -221,8 +221,13 @@ def _owner_reliability_answer_issues(request: TurnRequest, answer: str) -> list[
 
 def _is_owner_reliability_request(message: str) -> bool:
     owner_terms = (
-        "owner",
-        "owners",
+        "owner review",
+        "owner reviews",
+        "owner report",
+        "owner reports",
+        "owner experience",
+        "owner experiences",
+        "owners say",
         "user reviews",
         "customer reviews",
         "reddit",
@@ -440,6 +445,8 @@ def _is_useful_deep_link(url: str) -> bool:
         "www.google-analytics.com",
         "googletagmanager.com",
         "www.googletagmanager.com",
+        "avatars.githubusercontent.com",
+        "docs.github.com",
     }
     if host in blocked_hosts or host.endswith(".facebook.com"):
         return False

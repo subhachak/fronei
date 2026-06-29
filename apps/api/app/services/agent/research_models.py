@@ -65,6 +65,12 @@ _LOW_VALUE_CONTENT_MARKERS = (
     "blog",
     "tools",
     "forum",
+    "academic calendar",
+    "directories",
+    "webcams",
+    "offices",
+    "services",
+    "resources",
 )
 
 
@@ -85,6 +91,8 @@ def _looks_like_low_value_extraction(text: str) -> bool:
         return True
     link_label_count = cleaned.count("](")
     if link_label_count >= 5 and markers >= 3:
+        return True
+    if link_label_count >= 5 and len(cleaned) < 800:
         return True
     return False
 

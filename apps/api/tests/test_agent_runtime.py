@@ -940,6 +940,23 @@ def test_deep_link_helpers_skip_category_topic_and_series_pages():
     assert [link.url for link in links] == ["https://sloanreview.mit.edu/article/useful-follow-up"]
 
 
+def test_deep_link_helpers_skip_svg_namespace_links():
+    from app.services.agent.research_subtree import extract_deep_link_candidates
+
+    links = extract_deep_link_candidates(
+        [
+            Source(
+                title="Article",
+                url="https://sloanreview.mit.edu/article/four-day-workweek-make-it-stick",
+                content="See http://www.w3.org/2000/svg and https://example.com/useful-source",
+            )
+        ],
+        max_links=3,
+    )
+
+    assert [link.url for link in links] == ["https://example.com/useful-source"]
+
+
 def test_agent_research_repair_loop_runs_when_judge_requests_repair(monkeypatch):
     from app.services.agent import model_client
 

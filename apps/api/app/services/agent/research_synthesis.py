@@ -450,6 +450,7 @@ def _is_useful_deep_link(url: str) -> bool:
         "www.googletagmanager.com",
         "avatars.githubusercontent.com",
         "docs.github.com",
+        "www.w3.org",
     }
     if host in blocked_hosts or host.endswith(".facebook.com"):
         return False
@@ -458,6 +459,8 @@ def _is_useful_deep_link(url: str) -> bool:
     if raw_path in {"/tr", "/collect", "/pixel"} or "pageview" in query:
         return False
     if re.search(r"\.(?:png|jpe?g|gif|webp|svg|ico|css|js|woff2?|ttf|mp4|mov|zip)(?:$|\?)", path):
+        return False
+    if "svg" in path and host.endswith("w3.org"):
         return False
     blocked_segments = {
         "contact",

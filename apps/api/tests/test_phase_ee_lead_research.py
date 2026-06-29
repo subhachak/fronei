@@ -2833,3 +2833,242 @@ def test_golden_set_has_phase11_cases():
     assert "docx_offer_not_permission_seeking" in ids, (
         "Golden set must include Phase 11 DOCX-offer boundary case"
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 13b — taxonomy token leakage prevention
+# ---------------------------------------------------------------------------
+
+def test_synthesis_substance_requirements_has_taxonomy_ban():
+    """Phase 13b — SYNTHESIS_SUBSTANCE_REQUIREMENTS must contain requirement #6 banning
+    taxonomy token names from leaking into rendered prose."""
+    from app.services.agent.research_synthesis import SYNTHESIS_SUBSTANCE_REQUIREMENTS
+
+    text = SYNTHESIS_SUBSTANCE_REQUIREMENTS
+    assert "claim_role" in text, "Requirement #6 must mention 'claim_role'"
+    assert "claim_type" in text, "Requirement #6 must mention 'claim_type'"
+    assert "statistical_data" in text, "Requirement #6 must give an example taxonomy token (statistical_data)"
+    assert "operational_reality" in text, "Requirement #6 must give an example taxonomy token (operational_reality)"
+    # The requirement number must be present
+    assert "6." in text, "Requirement #6 must be numbered in the behavioral requirements list"
+
+
+# ---------------------------------------------------------------------------
+# Phase 13c — starved subject escalation
+# ---------------------------------------------------------------------------
+
+def test_escalate_starved_subjects_fires_for_zero_coverage_sibling(monkeypatch):
+    """Phase 13c — _escalate_starved_subjects must dispatch escalation queries when
+    one named subject has zero filled cells while siblings have substantial coverage."""
+    from unittest.mock import MagicMock, patch
+    from app.services.agent.research_models import (
+        CoverageCell,
+        CoverageContract,
+        EvidencePack,
+        ResearchBudget,
+        ResearchBudgetLedger,
+        ResearchPlan,
+        ResearchStateStore,
+    )
+    from app.services.agent.research_models import ResearchBrief
+    from app.services.agent.research_lead import LeadResearchAgent
+
+    budget = ResearchBudget(max_model_calls=20, max_tool_calls=20, max_sources=30)
+    ledger = ResearchBudgetLedger(budget=budget)
+
+    brief = ResearchBrief(
+        objective="Compare Epic vs eClinicalWorks",
+        research_profile="vendor_comparison",
+        scope_in=["Epic", "eClinicalWorks"],
+    )
+    contract = CoverageContract(
+        subjects=["Epic", "eClinicalWorks"],
+        dimensions=["pricing", "integration", "usability"],
+        cells=[
+            # Epic has 3 filled cells
+            CoverageCell(dimension="pricing", subject="Epic", status="filled"),
+            CoverageCell(dimension="integration", subject="Epic", status="filled"),
+            CoverageCell(dimension="usability", subject="Epic", status="filled"),
+            # eClinicalWorks has 0 filled cells (starved)
+            CoverageCell(dimension="pricing", subject="eClinicalWorks", status="empty"),
+            CoverageCell(dimension="integration", subject="eClinicalWorks", status="empty"),
+            CoverageCell(dimension="usability", subject="eClinicalWorks", status="empty"),
+        ],
+    )
+    plan = ResearchPlan(workers=[])
+    state = ResearchStateStore(brief=brief, contract=contract, plan=plan, budget_ledger=ledger)
+
+    tools = MagicMock()
+    tools.search_web.return_value = ([], MagicMock(latency_ms=50, ok=True, error=None))
+
+    progress_calls = []
+
+    def fake_progress(stage, message, data=None):
+        progress_calls.append(stage)
+        return MagicMock(model_dump=lambda **kw: {})
+
+    agent = LeadResearchAgent.__new__(LeadResearchAgent)
+    agent.request = MagicMock()
+    agent.request.message = "Compare Epic vs eClinicalWorks EHR systems"
+    agent.ledger = ledger
+    agent.tools = tools
+    agent._progress = fake_progress
+    agent._dispatch_worker_wave = MagicMock()
+    agent._bind_state_evidence = MagicMock()
+    agent._mark_attempts_for_open_cells = MagicMock()
+
+    with patch("app.services.agent.research_lead.plan_from_targeted_queries") as mock_plan:
+        mock_plan.return_value = ResearchPlan(workers=[])
+        agent._escalate_starved_subjects(state)
+
+    assert "subject_escalation" in progress_calls, (
+        "_escalate_starved_subjects must emit a 'subject_escalation' progress event"
+    )
+    assert mock_plan.called, (
+        "_escalate_starved_subjects must call plan_from_targeted_queries with escalation queries"
+    )
+    escalation_queries = mock_plan.call_args[0][0]
+    assert any("eClinicalWorks" in q for q in escalation_queries), (
+        "Escalation queries must target the starved subject 'eClinicalWorks'"
+    )
+    assert not any("Epic" in q for q in escalation_queries), (
+        "Escalation queries must NOT target the well-covered subject 'Epic'"
+    )
+
+
+def test_escalate_starved_subjects_skips_when_only_one_subject():
+    """Phase 13c — escalation must be a no-op when the contract has only one subject."""
+    from unittest.mock import MagicMock
+    from app.services.agent.research_models import (
+        CoverageCell,
+        CoverageContract,
+        EvidencePack,
+        ResearchBudget,
+        ResearchBudgetLedger,
+        ResearchPlan,
+        ResearchStateStore,
+    )
+    from app.services.agent.research_models import ResearchBrief
+    from app.services.agent.research_lead import LeadResearchAgent
+
+    budget = ResearchBudget(max_model_calls=20, max_tool_calls=20)
+    ledger = ResearchBudgetLedger(budget=budget)
+    brief = ResearchBrief(objective="Research Epic EHR", research_profile="vendor_comparison")
+    contract = CoverageContract(
+        subjects=["Epic"],
+        dimensions=["pricing"],
+        cells=[CoverageCell(dimension="pricing", subject="Epic", status="empty")],
+    )
+    state = ResearchStateStore(
+        brief=brief,
+        contract=contract,
+        plan=ResearchPlan(workers=[]),
+        budget_ledger=ledger,
+    )
+
+    agent = LeadResearchAgent.__new__(LeadResearchAgent)
+    agent.request = MagicMock()
+    agent.ledger = ledger
+    agent.tools = MagicMock()
+    agent._progress = MagicMock()
+    agent._dispatch_worker_wave = MagicMock()
+    agent._bind_state_evidence = MagicMock()
+    agent._mark_attempts_for_open_cells = MagicMock()
+
+    agent._escalate_starved_subjects(state)
+
+    agent._dispatch_worker_wave.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Phase 13d — heartbeat constant and _with_heartbeat helper
+# ---------------------------------------------------------------------------
+
+def test_deep_research_heartbeat_constant_is_2_5():
+    """Phase 13d — DEEP_RESEARCH_HEARTBEAT_SECONDS must be ≤ 3.0 seconds."""
+    from app.services.agent.runtime import DEEP_RESEARCH_HEARTBEAT_SECONDS
+
+    assert DEEP_RESEARCH_HEARTBEAT_SECONDS <= 3.0, (
+        f"DEEP_RESEARCH_HEARTBEAT_SECONDS is {DEEP_RESEARCH_HEARTBEAT_SECONDS}; "
+        "must be ≤ 3.0 to keep deep research from going silent too long."
+    )
+
+
+def test_with_heartbeat_emits_events_during_slow_call():
+    """Phase 13d — _with_heartbeat must yield at least one heartbeat StreamEnvelope
+    during a call that takes longer than the heartbeat interval."""
+    import time as _time
+    from app.services.agent.runtime import Runtime
+    from app.services.agent.models import StreamEnvelope
+
+    progress_calls = []
+
+    def fake_progress(stage, message, **data):
+        from types import SimpleNamespace
+        progress_calls.append(stage)
+        return SimpleNamespace(model_dump=lambda **kw: {"stage": stage})
+
+    def slow_fn():
+        _time.sleep(0.15)
+        return "done"
+
+    runtime = Runtime.__new__(Runtime)
+    envelopes = list(
+        runtime._with_heartbeat(
+            fake_progress,
+            "test_stage",
+            "Test is running…",
+            slow_fn,
+            heartbeat_interval=0.05,
+        )
+    )
+
+    assert len(envelopes) >= 1, "_with_heartbeat must emit ≥1 heartbeat for a 150ms call with 50ms interval"
+    assert all(isinstance(e, StreamEnvelope) for e in envelopes)
+    assert all(e.type == "progress" for e in envelopes)
+    assert "research_progress" in progress_calls
+
+
+def test_with_heartbeat_returns_fn_result():
+    """Phase 13d — _with_heartbeat must return the result of the blocking call."""
+    from app.services.agent.runtime import Runtime
+
+    def fake_progress(stage, message, **data):
+        from types import SimpleNamespace
+        return SimpleNamespace(model_dump=lambda **kw: {})
+
+    runtime = Runtime.__new__(Runtime)
+    gen = runtime._with_heartbeat(
+        fake_progress, "test_stage", "Running…", lambda: 42, heartbeat_interval=10.0
+    )
+    try:
+        while True:
+            next(gen)
+    except StopIteration as exc:
+        result = exc.value
+
+    assert result == 42, "_with_heartbeat must return the fn result via StopIteration.value"
+
+
+def test_with_heartbeat_propagates_exception():
+    """Phase 13d — _with_heartbeat must re-raise exceptions from the blocking call."""
+    import pytest
+    from app.services.agent.runtime import Runtime
+
+    def fake_progress(stage, message, **data):
+        from types import SimpleNamespace
+        return SimpleNamespace(model_dump=lambda **kw: {})
+
+    def failing_fn():
+        raise ValueError("deliberate failure")
+
+    runtime = Runtime.__new__(Runtime)
+    gen = runtime._with_heartbeat(
+        fake_progress, "test_stage", "Running…", failing_fn, heartbeat_interval=10.0
+    )
+    with pytest.raises(ValueError, match="deliberate failure"):
+        try:
+            while True:
+                next(gen)
+        except StopIteration:
+            pass

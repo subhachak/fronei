@@ -181,6 +181,38 @@ BOOTSTRAP_SIGNAL_GROUPS: tuple[SignalGroup, ...] = (
         ),
         description="Evidence-backed workplace policy and retention/productivity decisions need source-grounded synthesis.",
     ),
+    # Phase 13a — plainly-phrased time-sensitive factual questions ask about current, variable
+    # real-world state (wait times, processing delays, backlogs) that require source-grounded
+    # evidence rather than general knowledge.
+    SignalGroup(
+        id="time_sensitive_factual",
+        suggested_route="web_fast",
+        terms=(
+            "how long does it take",
+            "how long do they take",
+            "how long will it take",
+            "how long is the wait",
+            "wait time",
+            "wait times",
+            "waiting time",
+            "waiting times",
+            "processing time",
+            "processing times",
+            "turnaround time",
+            "turnaround times",
+            "in practice",
+            "in reality",
+            "actually takes",
+            "currently taking",
+            "real-world experience",
+            "real world experience",
+            "how long does",
+            "how long is",
+            "backlog",
+            "scheduling backlog",
+        ),
+        description="Plainly-phrased queries about current real-world wait/processing times need source-grounded lookup, not general knowledge.",
+    ),
 )
 
 _GROUPS_BY_ID = {group.id: group for group in BOOTSTRAP_SIGNAL_GROUPS}

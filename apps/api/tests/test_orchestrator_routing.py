@@ -175,3 +175,72 @@ def test_medical_supplement_safety_heuristic_routes_to_research():
 
     assert decision.route == "research"
     assert decision.research_level == "regular"
+
+
+# ---------------------------------------------------------------------------
+# Phase 13a — time_sensitive_factual signal group routing
+# ---------------------------------------------------------------------------
+
+def test_cardiology_wait_time_heuristic_routes_to_research():
+    """Phase 13a anchor case: 'in practice' + 'how long does' must route to research."""
+    decision = heuristic_decide(
+        TurnRequest(message="How long does a cardiology referral actually take in practice?")
+    )
+
+    assert decision.route == "research", (
+        f"Expected research, got {decision.route!r}. "
+        "The time_sensitive_factual signal group must promote this to research."
+    )
+
+
+def test_passport_processing_wait_time_heuristic_routes_to_research():
+    """Phase 13a: 'currently taking' must route to research."""
+    decision = heuristic_decide(
+        TurnRequest(message="How long is passport processing currently taking?")
+    )
+
+    assert decision.route == "research", (
+        f"Expected research, got {decision.route!r}. "
+        "The time_sensitive_factual signal group must promote this to research."
+    )
+
+
+def test_small_claims_wait_time_heuristic_routes_to_research():
+    """Phase 13a: 'wait time' must route to research."""
+    decision = heuristic_decide(
+        TurnRequest(message="What is the typical wait time to get a small claims court hearing scheduled?")
+    )
+
+    assert decision.route == "research", (
+        f"Expected research, got {decision.route!r}. "
+        "The time_sensitive_factual signal group must promote this to research."
+    )
+
+
+def test_time_sensitive_signal_group_is_registered():
+    """Phase 13a: time_sensitive_factual group must exist in BOOTSTRAP_SIGNAL_GROUPS."""
+    from app.services.agent.routing_policy import BOOTSTRAP_SIGNAL_GROUPS
+
+    ids = {g.id for g in BOOTSTRAP_SIGNAL_GROUPS}
+    assert "time_sensitive_factual" in ids, (
+        "BOOTSTRAP_SIGNAL_GROUPS must contain a 'time_sensitive_factual' group (Phase 13a)."
+    )
+
+
+def test_golden_set_has_phase13a_cases():
+    """Phase 13a — research_golden_set.json must contain at least 3 time_sensitive_factual entries."""
+    import json
+    import os
+
+    golden_path = os.path.join(
+        os.path.dirname(__file__), "..", "evals", "research_golden_set.json"
+    )
+    with open(golden_path) as f:
+        cases = json.load(f)
+
+    phase13a = [c for c in cases if c.get("category") == "time_sensitive_factual_routing"]
+    assert len(phase13a) >= 3, (
+        f"Golden set must include at least 3 Phase 13a time_sensitive_factual_routing cases; found {len(phase13a)}."
+    )
+    ids = {c["id"] for c in phase13a}
+    assert "cardiology_referral_wait_time" in ids, "Must include cardiology anchor case."

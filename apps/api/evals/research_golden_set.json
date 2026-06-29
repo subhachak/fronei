@@ -396,5 +396,59 @@
       ],
       "notes": "Phase 11 fix: the asks_permission_to_continue prompt was narrowed to exclude (a) offers to reformat already-delivered content into a different document format, and (b) offers to supplement with data the system cannot retrieve automatically. The judgment must only fire when the system asks for authorization to do more automated research it could have already done."
     }
+  },
+  {
+    "id": "cardiology_referral_wait_time",
+    "category": "time_sensitive_factual_routing",
+    "description": "Phase 13a anchor case: a plainly-phrased question about current real-world wait times must route to research (not direct). The signal group 'time_sensitive_factual' should match 'in practice' and 'how long'. Answering from general knowledge is the primary failure mode.",
+    "request": {
+      "message": "How long does a cardiology referral actually take in practice?"
+    },
+    "expected": {
+      "route": "research",
+      "primary_evidence_role": "operational_reality",
+      "unacceptable_failure_modes": [
+        "routes to direct and answers from general knowledge alone",
+        "cites no source-grounded evidence for the wait time figure",
+        "presents a single textbook number without practitioner or survey evidence"
+      ],
+      "notes": "Phase 13a fix: 'in practice' and 'how long does' terms are now in the time_sensitive_factual signal group, which promotes web_fast routing. The orchestrator SYSTEM_PROMPT also explicitly names this category."
+    }
+  },
+  {
+    "id": "passport_processing_wait_time",
+    "category": "time_sensitive_factual_routing",
+    "description": "Phase 13a: a plainly-phrased question about passport processing times asks about current, variable government backlog — not a stable policy fact. Must route to research so the answer reflects current operational reality.",
+    "request": {
+      "message": "How long is passport processing currently taking?"
+    },
+    "expected": {
+      "route": "research",
+      "primary_evidence_role": "operational_reality",
+      "unacceptable_failure_modes": [
+        "routes to direct and cites only the official 6-8 week estimate without current backlog data",
+        "provides no source-grounded evidence for the current wait window",
+        "treats the State Department's published SLA as the actual processing time without qualification"
+      ],
+      "notes": "Phase 13a: 'currently taking' and 'how long is' terms trigger the time_sensitive_factual signal group. Processing time is operationally variable and cannot be answered correctly from general knowledge."
+    }
+  },
+  {
+    "id": "small_claims_court_hearing_wait",
+    "category": "time_sensitive_factual_routing",
+    "description": "Phase 13a: scheduling backlogs in court systems are jurisdiction-specific and highly variable. A question about wait times for a small claims hearing is a time-sensitive factual query requiring sourced evidence, not a direct answer.",
+    "request": {
+      "message": "What is the typical wait time to get a small claims court hearing scheduled?"
+    },
+    "expected": {
+      "route": "research",
+      "primary_evidence_role": "operational_reality",
+      "unacceptable_failure_modes": [
+        "routes to direct and gives a generic 30-70 day estimate with no source",
+        "does not acknowledge that wait times vary substantially by jurisdiction",
+        "presents a single number without source-grounded evidence"
+      ],
+      "notes": "Phase 13a: 'wait time' term triggers the time_sensitive_factual signal group. Court scheduling backlogs are operationally variable and jurisdiction-dependent."
+    }
   }
 ]

@@ -28,6 +28,7 @@ from app.services.agent.models import (
     new_id,
 )
 from app.services.agent.orchestrator import OrchestratorDecision, decide_with_options
+from app.services.agent.research_models import _looks_like_low_value_extraction
 from app.services.agent.research_subtree import (
     EvidencePack,
     ResearchBudgetLedger,
@@ -1401,7 +1402,8 @@ class Runtime:
         by_url = {source.url: source for source in search_sources if source.url}
         for source in extracted_sources:
             if source.url in by_url:
-                by_url[source.url].content = source.content
+                if source.content and not _looks_like_low_value_extraction(source.content):
+                    by_url[source.url].content = source.content
                 if source.title:
                     by_url[source.url].title = source.title
             elif source.url:

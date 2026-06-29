@@ -852,6 +852,27 @@ def test_agent_research_source_ranking_and_deep_link_helpers():
     assert [link.url for link in links] == ["https://example.com/b"]
 
 
+def test_deep_link_helpers_skip_ncbi_account_and_fragment_chrome_links():
+    from app.services.agent.research_subtree import extract_deep_link_candidates
+
+    links = extract_deep_link_candidates(
+        [
+            Source(
+                title="PMC article",
+                url="https://pmc.ncbi.nlm.nih.gov/articles/PMC123",
+                content=(
+                    "See https://pmc.ncbi.nlm.nih.gov/articles/PMC123#main-content "
+                    "and https://www.ncbi.nlm.nih.gov/myncbi/ "
+                    "and https://pmc.ncbi.nlm.nih.gov/articles/PMC456"
+                ),
+            )
+        ],
+        max_links=3,
+    )
+
+    assert [link.url for link in links] == ["https://pmc.ncbi.nlm.nih.gov/articles/PMC456"]
+
+
 def test_agent_research_repair_loop_runs_when_judge_requests_repair(monkeypatch):
     from app.services.agent import model_client
 

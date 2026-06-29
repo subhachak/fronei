@@ -437,6 +437,9 @@ def _is_useful_deep_link(url: str) -> bool:
     path = (parsed.path or "").lower().strip("/")
     if not path:
         return False
+    fragment = (parsed.fragment or "").lower()
+    if fragment in {"main-content", "content", "top"}:
+        return False
     blocked_hosts = {
         "connect.facebook.net",
         "facebook.com",
@@ -472,6 +475,8 @@ def _is_useful_deep_link(url: str) -> bool:
     }
     segments = [segment for segment in path.split("/") if segment]
     if any(segment in blocked_segments for segment in segments):
+        return False
+    if host.endswith("ncbi.nlm.nih.gov") and any(segment in {"myncbi", "account", "login", "settings"} for segment in segments):
         return False
     if "logo" in path or "wp-content/uploads" in path:
         return False

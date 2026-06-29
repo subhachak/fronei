@@ -1609,7 +1609,7 @@ def test_citation_verification_detects_hallucinated(monkeypatch):
 
 def test_lead_research_loop_returns_expected_shape(monkeypatch):
     from app.services.agent import model_client
-    from app.services.agent.model_client import ModelResponse
+    from app.services.agent.model_client import ModelDelta, ModelResponse
     from app.services.agent.research_subtree import lead_research_loop
 
     responses = iter(
@@ -1624,7 +1624,14 @@ def test_lead_research_loop_returns_expected_shape(monkeypatch):
     def fake_complete(messages, **kwargs):
         return ModelResponse(text=next(responses), model_used="test-model", latency_ms=10, cost_usd=0.001)
 
+    def fake_stream_complete(messages, **kwargs):
+        text = "Tavily pricing is public [S1]. Nimble pricing is not clearly public [S2]."
+        yield ModelDelta(text="Tavily pricing is public [S1]. ")
+        yield ModelDelta(text="Nimble pricing is not clearly public [S2].")
+        yield ModelResponse(text=text, model_used="test-model", latency_ms=10, cost_usd=0.001)
+
     monkeypatch.setattr(model_client, "complete", fake_complete)
+    monkeypatch.setattr(model_client, "stream_complete", fake_stream_complete)
     monkeypatch.setattr(
         model_client,
         "simple_completion",
@@ -1649,16 +1656,21 @@ def test_lead_research_loop_returns_expected_shape(monkeypatch):
                 for url in urls
             ], ToolCall(name="read_url", input={"urls": urls}, output={"source_count": len(urls)}, ok=True)
 
+    stages: list[str] = []
+
     result = lead_research_loop(
         TurnRequest(message="Compare Tavily and Nimble pricing", research_level="deep"),
         FakeTools(),
-        lambda stage, message, data: None,
+        lambda stage, message, data: stages.append(stage),
     )
 
-    assert set(result) == {"sources", "tool_calls", "evidence", "response", "plan", "worker_reports", "feedback"}
+    assert set(result) == {"sources", "tool_calls", "evidence", "response", "plan", "worker_reports", "feedback", "answer_streamed"}
     assert result["response"].text
     assert result["tool_calls"]
     assert result["worker_reports"]
+    assert result["answer_streamed"] is True
+    assert "answer_delta" in stages
+    assert stages.index("answer_delta") < stages.index("research_budget")
 
 
 def test_technical_architecture_synthesis_uses_report_budget(monkeypatch):

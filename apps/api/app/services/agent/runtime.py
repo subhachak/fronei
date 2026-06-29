@@ -348,7 +348,7 @@ class Runtime:
             elif route == "research":
                 research = yield from self._run_research_subtree(request, progress)
                 response = research["response"]
-                if request.research_level == "deep":
+                if request.research_level == "deep" and not research.get("answer_streamed"):
                     yield from self._emit_buffered_answer(response, progress)
                 result = TurnResult(
                     turn_id=turn_id,

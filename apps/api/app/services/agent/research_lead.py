@@ -41,6 +41,7 @@ from app.services.agent.research_models import (
 from app.services.agent.research_planner import (
     _cell_terms,
     _extract_named_framework_subjects,
+    _longform_timeout_s,
     _max_iterations_for,
     _targeted_query,
     _tech_arch_grounding_term,
@@ -62,13 +63,14 @@ from app.services.agent.research_profiles import (
 from app.services.agent.research_contracts import generate_coverage_contract
 from app.services.agent.research_evidence import bind_evidence
 from app.services.agent.research_synthesis import (
+    _synthesis_token_budget,
     _select_diverse_ranked_sources,
     _source_inventory_summary,
+    build_synthesis_prompt,
     extract_deep_link_candidates,
     is_public_source_url,
     rank_sources,
     repair_research_answer,
-    synthesize_answer,
 )
 from app.services.agent.research_utils import (
     _estimate_relevance,
@@ -661,6 +663,7 @@ class LeadResearchAgent:
         self.progress = progress or (lambda _stage, _message, _data: None)
         self.budget = research_budget_for(request)
         self.ledger = ResearchBudgetLedger(budget=self.budget)
+        self.answer_streamed = False
 
     def run(self) -> dict[str, Any]:
         registry = get_research_registry()
@@ -819,6 +822,7 @@ class LeadResearchAgent:
             "plan": state.plan,
             "worker_reports": state.worker_reports,
             "feedback": feedback,
+            "answer_streamed": response.get("answer_streamed", False),
         }
 
     def _dispatch_worker_wave(self, state: ResearchStateStore) -> None:
@@ -1241,7 +1245,7 @@ class LeadResearchAgent:
                 **model_client.telemetry_for_role("synthesis", quality_mode=self.request.quality_mode, overrides=self.request.model_overrides),
             },
         )
-        model_response = synthesize_answer(self.request, state.plan, state.evidence)
+        model_response = self._stream_synthesize_answer(state)
         self.ledger.record_model_call(cost_usd=model_response.cost_usd, latency_ms=model_response.latency_ms)
         self._progress(
             "synthesis_result",
@@ -1355,7 +1359,7 @@ class LeadResearchAgent:
             self._mark_attempts_for_open_cells(state)
             self._dispatch_worker_wave(state)
             self._bind_state_evidence(state)
-            model_response = synthesize_answer(self.request, state.plan, state.evidence)
+            model_response = self._stream_synthesize_answer(state)
             self.ledger.record_model_call(cost_usd=model_response.cost_usd, latency_ms=model_response.latency_ms)
             answer = model_response.text
             verdict = judge_research_final(self.request, state, answer)
@@ -1374,7 +1378,60 @@ class LeadResearchAgent:
             "verdict": verdict,
             "repaired": repaired,
             "repair_attempts": repair_attempts,
+            "answer_streamed": self.answer_streamed,
         }
+
+    def _stream_synthesize_answer(self, state: ResearchStateStore) -> model_client.ModelResponse:
+        system_prompt, user_prompt = build_synthesis_prompt(self.request, state.plan, state.evidence)
+        buffered = ""
+        response: model_client.ModelResponse | None = None
+        for item in model_client.stream_complete(
+            [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            role="synthesis",
+            quality_mode=self.request.quality_mode,
+            overrides=self.request.model_overrides,
+            max_tokens=_synthesis_token_budget(self.request, state.plan),
+            timeout_s=_longform_timeout_s(),
+        ):
+            if isinstance(item, model_client.ModelDelta):
+                if not item.text:
+                    continue
+                buffered += item.text
+                self.answer_streamed = True
+                self._progress(
+                    "answer_delta",
+                    "Streaming answer.",
+                    {
+                        "delta": item.text,
+                        "char_count": len(buffered),
+                        "ephemeral_ui": True,
+                    },
+                )
+            else:
+                response = item
+        if response is None:
+            response = model_client.ModelResponse(
+                text=buffered.strip(),
+                model_used="",
+                latency_ms=0,
+                cost_usd=0.0,
+                model_role="synthesis",
+            )
+        self._progress(
+            "answer_complete",
+            "Answer stream complete.",
+            {
+                "char_count": len(response.text),
+                "model_used": response.model_used,
+                "latency_ms": response.latency_ms,
+                "cost_usd": response.cost_usd,
+                "ephemeral_ui": True,
+            },
+        )
+        return response
 
     def _bind_state_evidence(self, state: ResearchStateStore) -> None:
         state.evidence = bind_evidence(

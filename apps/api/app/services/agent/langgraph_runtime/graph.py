@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import functools
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from langgraph.graph import END, StateGraph
 
 from app.services.agent.langgraph_runtime import nodes
 from app.services.agent.langgraph_runtime.events import ProgressCallback
 from app.services.agent.langgraph_runtime.state import BudgetDecision, ResearchGraphState
+
+if TYPE_CHECKING:
+    from app.services.agent.models import TurnRequest
 
 
 def _budget_gate_router(state: ResearchGraphState) -> str:
@@ -22,9 +25,10 @@ def _budget_gate_router(state: ResearchGraphState) -> str:
 
 def build_research_graph(
     run_id: str,
+    request: TurnRequest,
     progress: ProgressCallback | None = None,
 ) -> Any:  # langgraph.graph.compiled.CompiledStateGraph
-    """Build and compile the Slice 0B StateGraph.
+    """Build and compile the Slice 1 StateGraph.
 
     Pipeline shape:
       brief → subject_derivation → contract → plan →
@@ -32,22 +36,20 @@ def build_research_graph(
       bind → [budget_gate] → synthesize → verify →
       judge → [budget_gate] → repair → END
 
-    The budget gate fires after `bind` (pre-synthesis) and after `judge`
-    (pre-repair).  In 0B the nodes are still stubs; real domain logic
-    is wired in Slices 1–3.
+    Slice 1: brief, subject_derivation, contract, plan nodes are real.
+    Remaining nodes are still stubs until Slice 2+.
     """
     graph: StateGraph = StateGraph(ResearchGraphState)
 
-    # --- Stub pipeline nodes ------------------------------------------------
+    # --- Pipeline nodes (each bound with run_id, request, progress) ---------
     for node_name in nodes.NODE_ORDER:
         node_fn = getattr(nodes, node_name)
-        bound = functools.partial(node_fn, run_id=run_id, progress=progress)
+        bound = functools.partial(node_fn, run_id=run_id, request=request, progress=progress)
         graph.add_node(node_name, bound)
 
     # --- Budget gate (fires at two points in the pipeline) ------------------
-    # Use distinct node names so each gate instance has its own graph position.
-    pre_synthesis_gate = functools.partial(nodes.budget_gate, run_id=run_id, progress=progress)
-    pre_repair_gate = functools.partial(nodes.budget_gate, run_id=run_id, progress=progress)
+    pre_synthesis_gate = functools.partial(nodes.budget_gate, run_id=run_id, request=request, progress=progress)
+    pre_repair_gate = functools.partial(nodes.budget_gate, run_id=run_id, request=request, progress=progress)
     graph.add_node("budget_gate_pre_synthesis", pre_synthesis_gate)
     graph.add_node("budget_gate_pre_repair", pre_repair_gate)
 
@@ -96,8 +98,9 @@ def run_stub_graph(
     initial_state: ResearchGraphState,
     *,
     run_id: str,
+    request: TurnRequest,
     progress: ProgressCallback | None = None,
 ) -> ResearchGraphState:
-    """Execute the Slice 0B stub graph synchronously via LangGraph invoke."""
-    compiled = build_research_graph(run_id=run_id, progress=progress)
+    """Execute the graph synchronously via LangGraph invoke."""
+    compiled = build_research_graph(run_id=run_id, request=request, progress=progress)
     return compiled.invoke(initial_state)

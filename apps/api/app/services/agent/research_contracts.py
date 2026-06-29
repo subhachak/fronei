@@ -607,14 +607,24 @@ def _brief_anchored_contract(
 # Main entry point
 # ---------------------------------------------------------------------------
 
-def generate_coverage_contract(request: TurnRequest, brief: ResearchBrief) -> CoverageContract:
+def generate_coverage_contract(
+    request: TurnRequest,
+    brief: ResearchBrief,
+    *,
+    named_subjects: list[str] | None = None,
+) -> CoverageContract:
     # Phase 12 — prefer subjects extracted from the brief / message over any static template.
     # The brief is built by an LLM with full query context; static templates are domain-generic
     # and silently override the brief's correctly-extracted scope_in list.
     # Strategy: extract named subjects; if ≥3 are found, use the multi-subject path so
     # cells are anchored to real entities.  Profile-specific static templates remain as the
     # fallback for genuinely un-structured, single-subject queries.
-    named_subjects = _extract_named_comparison_subjects(request.message)
+    #
+    # LangGraph Slice 1 additive param: when called from the graph's contract node,
+    # named_subjects are pre-derived by the subject_derivation node and passed in
+    # directly to avoid re-deriving them.  When None (legacy call sites), derive as before.
+    if named_subjects is None:
+        named_subjects = _extract_named_comparison_subjects(request.message)
     brief_subjects = [s for s in brief.scope_in if len(s.strip()) > 1] if brief.scope_in else []
 
     # For comparison-flavoured profiles, try to build a subject-anchored contract rather than

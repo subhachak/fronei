@@ -1208,7 +1208,81 @@ class LeadResearchAgent:
                 },
             )
 
+    def _escalate_starved_subjects(self, state: ResearchStateStore) -> None:
+        """Phase 13c — Before synthesis, detect named subjects that received near-zero evidence
+        while sibling subjects have substantial coverage, and dispatch targeted escalation queries.
+
+        This handles the case where one vendor/entity gates its documentation behind a login
+        (Epic EMR, eClinicalWorks) and the normal search wave returns zero usable evidence for it
+        while returning many items for its comparators.
+        """
+        subjects = state.contract.subjects
+        if len(subjects) < 2:
+            return
+        if not self.ledger.can_start_tool("web_search") or self.ledger.remaining_tool_calls() <= 0:
+            return
+
+        # Count filled+partial cells per subject
+        cells_by_subject: dict[str, int] = {s: 0 for s in subjects}
+        for cell in state.contract.cells:
+            if cell.subject in cells_by_subject and cell.status in ("filled", "partial"):
+                cells_by_subject[cell.subject] += 1
+
+        covered_counts = [v for v in cells_by_subject.values() if v > 0]
+        if not covered_counts:
+            return  # no subject has any coverage yet — not a starvation pattern
+
+        mean_covered = sum(covered_counts) / len(covered_counts)
+        # A subject is "starved" if it has ≤1 filled cells and mean of non-zero siblings is ≥3
+        starved = [
+            subject
+            for subject, count in cells_by_subject.items()
+            if count <= 1 and mean_covered >= 3
+        ]
+        if not starved:
+            return
+
+        escalation_queries: list[str] = []
+        for subject in starved:
+            escalation_queries.append(f"{subject} developer documentation")
+            escalation_queries.append(f"{subject} API reference features")
+            if len(escalation_queries) >= 6:  # cap total escalation queries
+                break
+
+        if not escalation_queries:
+            return
+
+        self._progress(
+            "subject_escalation",
+            f"Evidence gap detected: {len(starved)} subject(s) have near-zero coverage; running {len(escalation_queries)} escalation search(es).",
+            {
+                "starved_subjects": starved,
+                "escalation_queries": escalation_queries,
+                "cells_by_subject": cells_by_subject,
+                "mean_covered_cells": round(mean_covered, 1),
+            },
+        )
+        previous_plan = state.plan
+        try:
+            state.plan = plan_from_targeted_queries(escalation_queries, state)
+            self._mark_attempts_for_open_cells(state)
+            self._dispatch_worker_wave(state)
+            self._bind_state_evidence(state)
+        finally:
+            if not state.plan.workers and previous_plan.workers:
+                state.plan = previous_plan
+        self._progress(
+            "subject_escalation_result",
+            "Subject escalation searches complete.",
+            {
+                "evidence_item_count": len(state.evidence.items),
+                "coverage_ratio": state.contract.coverage_ratio(),
+                "budget_ledger": self.ledger.model_dump(mode="json"),
+            },
+        )
+
     def _synthesize_verify_and_judge(self, state: ResearchStateStore) -> dict[str, Any]:
+        self._escalate_starved_subjects(state)
         self._remediate_weak_evidence_if_needed(state)
         self._progress(
             "evidence_binder",

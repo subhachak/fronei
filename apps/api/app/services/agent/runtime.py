@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from typing import Any
 
 from app.services.agent import model_client
 from app.services.agent.deck_subtree import plan_deck
@@ -52,7 +53,7 @@ from app.services.agent.research_planner import _longform_timeout_s
 from app.services.agent.tool_registry import ToolRegistry
 from app.services.agent.tools import Tools, source_context
 
-DEEP_RESEARCH_HEARTBEAT_SECONDS = 8.0
+DEEP_RESEARCH_HEARTBEAT_SECONDS = 2.5
 DEEP_RESEARCH_QUEUE_POLL_SECONDS = 0.25
 
 
@@ -524,6 +525,62 @@ class Runtime:
         )
         yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
 
+    def _with_heartbeat(
+        self,
+        progress,
+        stage: str,
+        label: str,
+        fn: Callable,
+        *args: Any,
+        heartbeat_interval: float = 2.5,
+        **kwargs: Any,
+    ) -> Iterator[StreamEnvelope]:
+        """Phase 13d — Run a blocking call on a background thread while yielding
+        heartbeat progress events every heartbeat_interval seconds.
+
+        Usage (inside a generator):
+            result = yield from self._with_heartbeat(
+                progress, "citation_verification", "Verifying citations…",
+                verify_claims, answer_text, evidence
+            )
+
+        The generator yields StreamEnvelope heartbeat events and returns the fn result
+        via StopIteration.value so the caller can capture it with 'yield from'.
+        The retry design of the underlying calls is preserved — fn runs exactly once,
+        and any internal retry logic inside fn is unaffected.
+        """
+        from threading import Thread
+
+        result_box: dict[str, Any] = {}
+
+        def _run() -> None:
+            try:
+                result_box["result"] = fn(*args, **kwargs)
+            except Exception as exc:  # noqa: BLE001
+                result_box["error"] = exc
+
+        t = Thread(target=_run, daemon=True)
+        t.start()
+        start = time.monotonic()
+        heartbeat_count = 0
+        while t.is_alive():
+            t.join(timeout=heartbeat_interval)
+            if t.is_alive():
+                heartbeat_count += 1
+                elapsed_ms = int((time.monotonic() - start) * 1000)
+                event = progress(
+                    "research_progress",
+                    label,
+                    blocking_stage=stage,
+                    elapsed_ms=elapsed_ms,
+                    heartbeat_count=heartbeat_count,
+                    ephemeral_ui=True,
+                )
+                yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
+        if "error" in result_box:
+            raise result_box["error"]  # type: ignore[misc]
+        return result_box["result"]  # type: ignore[misc]
+
     def _run_research_subtree(self, request: TurnRequest, progress):
         if request.research_level == "deep":
             from queue import Empty, Queue
@@ -939,7 +996,14 @@ class Runtime:
             budget_ledger=ledger.model_dump(mode="json"),
         )
         yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
-        verification = verify_claims(response.text, evidence)
+        verification = yield from self._with_heartbeat(
+            progress,
+            "citation_verification",
+            "Verifying citations and source support…",
+            verify_claims,
+            response.text,
+            evidence,
+        )
         event = progress(
             "claim_verifier",
             f"Claim verifier returned {verification.status}.",
@@ -973,7 +1037,17 @@ class Runtime:
                 budget_ledger=ledger.model_dump(mode="json"),
             )
             yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
-            repaired = repair_research_answer(request, plan, evidence, response.text, judge)
+            repaired = yield from self._with_heartbeat(
+                progress,
+                "research_repair",
+                "Repairing the answer…",
+                repair_research_answer,
+                request,
+                plan,
+                evidence,
+                response.text,
+                judge,
+            )
             ledger.record_model_call(cost_usd=repaired.cost_usd, latency_ms=repaired.latency_ms)
             repaired_judge = judge_research(request, plan, evidence, repaired.text)
             response = repaired

@@ -11,6 +11,9 @@ from test_agent_runtime import FakeTools, _patch_completion
 
 
 def test_langgraph_slice_0a_returns_legacy_public_shape(monkeypatch):
+    # Slice 3: synthesis/repair make real LLM calls — patch model_client.
+    _patch_completion(monkeypatch)
+
     events = []
 
     def progress(stage, message, **data):
@@ -29,8 +32,10 @@ def test_langgraph_slice_0a_returns_legacy_public_shape(monkeypatch):
         "answer_streamed",
         "replay_final_answer",
     }.issubset(result)
-    assert result["response"].text == ""
-    assert result["response"].model_used == "langgraph-slice-2-stub"
+    # Slice 3: answer is real (non-empty from fake_simple_completion).
+    assert isinstance(result["response"].text, str)
+    # model_used is from the real synthesize/repair call (fake-model in tests).
+    assert result["response"].model_used not in ("", "langgraph-slice-2-stub")
     # Slice 2: search is real; sources/tool_calls are populated by FakeTools.
     assert isinstance(result["sources"], list)
     assert isinstance(result["tool_calls"], list)
@@ -62,8 +67,10 @@ def test_server_side_langgraph_flag_runs_stub_path(monkeypatch):
 
     result = next(envelope.data for envelope in envelopes if envelope.type == "result")
     assert result["route"] == "research"
-    assert result["answer"] == ""
-    assert result["model_used"] == "langgraph-slice-2-stub"
+    # Slice 3: answer is real (from fake_simple_completion patch).
+    assert isinstance(result["answer"], str)
+    # model_used is from the synthesize/repair call — no longer "-stub" suffix.
+    assert result["model_used"] not in ("", "langgraph-slice-2-stub")
     assert any(event["stage"] == "brief" for event in result["events"])
 
 
@@ -100,7 +107,8 @@ def test_ordinary_request_cannot_select_langgraph_path(monkeypatch):
     assert called is False
     result = next(envelope.data for envelope in envelopes if envelope.type == "result")
     assert result["route"] == "research"
-    assert result["model_used"] != "langgraph-slice-2-stub"
+    # The legacy path never uses the langgraph model identifier.
+    assert result["model_used"] not in ("", "langgraph", "langgraph-slice-2-stub")
 
 
 def test_production_unsafe_qa_override_fails_closed(monkeypatch):

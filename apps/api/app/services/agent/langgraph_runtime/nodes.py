@@ -702,33 +702,8 @@ def bind(
 
 
 # ---------------------------------------------------------------------------
-# Remaining stub nodes (Slice 3+)
+# Synthesis half: synthesize → verify → judge → repair  (Slice 3)
 # ---------------------------------------------------------------------------
-
-def _stub_node(
-    state: ResearchGraphState,
-    *,
-    run_id: str,
-    node_name: GraphNodeName,
-    progress: ProgressCallback | None,
-) -> dict:
-    visited = [*state.get("visited_nodes", []), node_name]
-    artifacts = {**state.get("artifacts", {}), node_name: {"status": "stubbed"}}
-    emit_graph_event(
-        progress,
-        run_id=run_id,
-        node_name=node_name,
-        message=f"LangGraph {node_name} node stubbed.",
-        placeholder=True,
-    )
-    return {
-        "visited_nodes": visited,
-        "artifacts": artifacts,
-        "cost_usd_spent": 0.0,
-        "tool_calls_made": 0,
-        "model_calls_made": 0,
-    }
-
 
 def synthesize(
     state: ResearchGraphState,
@@ -738,8 +713,59 @@ def synthesize(
     tools: Tools | None = None,
     progress: ProgressCallback | None = None,
 ) -> dict:
-    result = _stub_node(state, run_id=run_id, node_name="synthesize", progress=progress)
-    return {**result, "answer": "", "model_used": "langgraph-slice-2-stub", "latency_ms": 0, "model_calls_made": 1}
+    """Call synthesize_answer(request, plan, evidence) → answer text + model metadata.
+
+    Returns delta-only: answer, model_used, latency_ms, cost_usd_spent, model_calls_made.
+    """
+    from app.services.agent.research_synthesis import synthesize_answer
+
+    node_name: GraphNodeName = "synthesize"
+    visited = [*state.get("visited_nodes", []), node_name]
+    artifacts = {**state.get("artifacts", {}), node_name: {"status": "real"}}
+
+    plan = state.get("plan")
+    evidence = state.get("evidence")
+
+    emit_graph_event(
+        progress,
+        run_id=run_id,
+        node_name=node_name,
+        message="Writing one coherent answer from the evidence.",
+    )
+
+    if plan is None or evidence is None:
+        logger.warning("synthesize: plan or evidence missing — returning empty answer")
+        return {
+            "visited_nodes": visited,
+            "artifacts": artifacts,
+            "answer": "",
+            "model_used": "synthesize-no-plan",
+            "latency_ms": 0,
+            "cost_usd_spent": 0.0,
+            "model_calls_made": 0,
+        }
+
+    response = synthesize_answer(request, plan, evidence)
+
+    emit_graph_event(
+        progress,
+        run_id=run_id,
+        node_name=node_name,
+        message=f"Synthesis used {response.model_used or 'the configured synthesis model'}.",
+        model_used=response.model_used,
+        latency_ms=response.latency_ms,
+        cost_usd=response.cost_usd,
+    )
+
+    return {
+        "visited_nodes": visited,
+        "artifacts": artifacts,
+        "answer": response.text or "",
+        "model_used": response.model_used or "",
+        "latency_ms": response.latency_ms or 0,
+        "cost_usd_spent": response.cost_usd or 0.0,
+        "model_calls_made": 1,
+    }
 
 
 def verify(
@@ -750,7 +776,63 @@ def verify(
     tools: Tools | None = None,
     progress: ProgressCallback | None = None,
 ) -> dict:
-    return _stub_node(state, run_id=run_id, node_name="verify", progress=progress)
+    """Call verify_citations_semantically(answer, evidence) → CitationVerification in state.
+
+    Returns delta-only: last_citation_verification, cost_usd_spent, model_calls_made.
+    LLM call is skipped (heuristic path) when answer has no [S#] citations.
+    """
+    from app.services.agent.research_planner import verify_citations_semantically
+
+    node_name: GraphNodeName = "verify"
+    visited = [*state.get("visited_nodes", []), node_name]
+    artifacts = {**state.get("artifacts", {}), node_name: {"status": "real"}}
+
+    answer = state.get("answer", "")
+    evidence = state.get("evidence")
+    plan = state.get("plan")
+
+    emit_graph_event(
+        progress,
+        run_id=run_id,
+        node_name=node_name,
+        message="Checking citations and source support before publishing.",
+    )
+
+    if not evidence:
+        return {
+            "visited_nodes": visited,
+            "artifacts": artifacts,
+            "last_citation_verification": None,
+            "cost_usd_spent": 0.0,
+            "model_calls_made": 0,
+        }
+
+    expected_primary_role = (
+        plan.expected_primary_role if plan and hasattr(plan, "expected_primary_role") else None
+    )
+    result = verify_citations_semantically(
+        answer,
+        evidence,
+        overrides=getattr(request, "model_overrides", None),
+        expected_primary_role=expected_primary_role,
+    )
+
+    emit_graph_event(
+        progress,
+        run_id=run_id,
+        node_name=node_name,
+        message="Citation verification complete.",
+        repair_needed=result.repair_needed,
+        source=result.source,
+    )
+
+    return {
+        "visited_nodes": visited,
+        "artifacts": artifacts,
+        "last_citation_verification": result,
+        "cost_usd_spent": result.cost_usd or 0.0,
+        "model_calls_made": 1 if result.model_used else 0,
+    }
 
 
 def judge(
@@ -761,8 +843,124 @@ def judge(
     tools: Tools | None = None,
     progress: ProgressCallback | None = None,
 ) -> dict:
-    result = _stub_node(state, run_id=run_id, node_name="judge", progress=progress)
-    return {**result, "next_action": "publish", "model_calls_made": 1}
+    """Call judge_research(request, plan, evidence, answer) + enforce citation verification.
+
+    Two signal sources feed the final decision:
+
+    1. judge_research() — heuristic score: coverage, citation density, length.
+       next_action:
+         "publish"        — can_publish=True (score ≥ threshold, no signals)
+         "research_more"  — status="repair" (fixable by repair node)
+         "stop_with_gaps" — status="fail" (needs full redo, repair won't help)
+
+    2. last_citation_verification — signals from verify node:
+         repair_needed, role_mismatch_issues, unresolved_conflicts,
+         asks_permission_to_continue.
+       If ANY of these are present, next_action is forced to "research_more"
+       even if judge_research alone would have said "publish".
+       The repair instruction from the verifier is added to judge_result.issues
+       so repair node can act on it.
+
+    No LLM call — pure heuristic + stored verifier output.
+    """
+    from app.services.agent.research_synthesis import judge_research
+    from app.services.agent.research_models import ResearchJudgeResult
+
+    node_name: GraphNodeName = "judge"
+    visited = [*state.get("visited_nodes", []), node_name]
+    artifacts = {**state.get("artifacts", {}), node_name: {"status": "real"}}
+
+    answer = state.get("answer", "")
+    evidence = state.get("evidence")
+    plan = state.get("plan")
+    citation_result = state.get("last_citation_verification")
+
+    emit_graph_event(
+        progress,
+        run_id=run_id,
+        node_name=node_name,
+        message="Checking whether the answer is ready to publish.",
+    )
+
+    if plan is None or evidence is None:
+        judge_result = ResearchJudgeResult(
+            status="pass", score=1.0, issues=[], can_publish=True
+        )
+        emit_graph_event(
+            progress, run_id=run_id, node_name=node_name,
+            message="Judge skipped (no plan/evidence) — marking as publish.",
+        )
+        return {
+            "visited_nodes": visited,
+            "artifacts": artifacts,
+            "judge_result": judge_result,
+            "next_action": "publish",
+            "model_calls_made": 0,
+        }
+
+    judge_result = judge_research(request, plan, evidence, answer)
+
+    # --- Enforce citation verification signals --------------------------------
+    # Mirrors the legacy check in _synthesize_verify_and_judge:
+    #   needs_repair = (
+    #     citation_result.repair_needed
+    #     or bool(citation_result.role_mismatch_issues)
+    #     or bool(citation_result.unresolved_conflicts)
+    #     or citation_result.asks_permission_to_continue
+    #   )
+    citation_repair_signals: list[str] = []
+    if citation_result is not None:
+        if citation_result.repair_needed and citation_result.repair_instruction:
+            citation_repair_signals.append(citation_result.repair_instruction)
+        for issue in (citation_result.role_mismatch_issues or []):
+            citation_repair_signals.append(f"Role mismatch: {issue}")
+        for conflict in (citation_result.unresolved_conflicts or []):
+            citation_repair_signals.append(f"Unresolved conflict: {conflict}")
+        if citation_result.asks_permission_to_continue:
+            citation_repair_signals.append(
+                "Answer asks permission to continue research — rewrite to deliver findings directly."
+            )
+
+    if citation_repair_signals:
+        # Merge verifier issues into judge_result so repair node has full context.
+        merged_issues = list(judge_result.issues) + citation_repair_signals
+        repair_instruction = (
+            judge_result.repair_instruction
+            or citation_repair_signals[0]
+        )
+        judge_result = ResearchJudgeResult(
+            status="repair",
+            score=judge_result.score,
+            issues=merged_issues,
+            repair_instruction=repair_instruction,
+            can_publish=False,
+        )
+
+    if judge_result.can_publish:
+        next_action: str = "publish"
+    elif judge_result.status == "repair":
+        next_action = "research_more"
+    else:  # "fail" — repair cannot recover; full redo would be needed
+        next_action = "stop_with_gaps"
+
+    emit_graph_event(
+        progress,
+        run_id=run_id,
+        node_name=node_name,
+        message=f"Judge recommends {next_action} (score={judge_result.score:.2f}).",
+        score=judge_result.score,
+        can_publish=judge_result.can_publish,
+        next_action=next_action,
+        issues=judge_result.issues,
+    )
+
+    return {
+        "visited_nodes": visited,
+        "artifacts": artifacts,
+        "judge_result": judge_result,
+        "next_action": next_action,
+        "model_calls_made": 0,  # pure heuristic — no LLM call
+    }
 
 
 def repair(
@@ -773,8 +971,94 @@ def repair(
     tools: Tools | None = None,
     progress: ProgressCallback | None = None,
 ) -> dict:
-    result = _stub_node(state, run_id=run_id, node_name="repair", progress=progress)
-    return {**result, "model_calls_made": 1}
+    """Repair the answer when judge requests it.
+
+    Pass-through (no LLM call) when:
+      - judge_result is None (no judge ran)
+      - judge_result.can_publish is True (already approved)
+      - judge_result.status != "repair" (e.g. "fail" — repair cannot recover)
+
+    When repair runs: calls repair_research_answer(request, plan, evidence, answer, judge_result).
+    Updates answer, model_used, latency_ms, cost_usd_spent, repair_history.
+    """
+    from app.services.agent.research_synthesis import repair_research_answer
+
+    node_name: GraphNodeName = "repair"
+    visited = [*state.get("visited_nodes", []), node_name]
+    artifacts = {**state.get("artifacts", {}), node_name: {"status": "real"}}
+
+    judge_result = state.get("judge_result")
+
+    # ── Pass-through paths ───────────────────────────────────────────────────
+    skip = (
+        judge_result is None
+        or judge_result.can_publish
+        or judge_result.status != "repair"
+    )
+    if skip:
+        emit_graph_event(
+            progress,
+            run_id=run_id,
+            node_name=node_name,
+            message="Repair skipped — answer already publishable or cannot be repaired.",
+        )
+        return {
+            "visited_nodes": visited,
+            "artifacts": artifacts,
+            "repair_history": list(state.get("repair_history") or []),
+            "cost_usd_spent": 0.0,
+            "tool_calls_made": 0,
+            "model_calls_made": 0,
+        }
+
+    # ── Actual repair ────────────────────────────────────────────────────────
+    answer = state.get("answer", "")
+    evidence = state.get("evidence")
+    plan = state.get("plan")
+    instruction = judge_result.repair_instruction or "Improve the answer with better citations."
+
+    emit_graph_event(
+        progress,
+        run_id=run_id,
+        node_name=node_name,
+        message=f"Repairing answer: {instruction[:120]}",
+        repair_instruction=instruction,
+    )
+
+    if plan is None or evidence is None:
+        logger.warning("repair: plan or evidence missing — cannot repair, returning as-is")
+        return {
+            "visited_nodes": visited,
+            "artifacts": artifacts,
+            "repair_history": list(state.get("repair_history") or []),
+            "cost_usd_spent": 0.0,
+            "tool_calls_made": 0,
+            "model_calls_made": 0,
+        }
+
+    response = repair_research_answer(request, plan, evidence, answer, judge_result)
+    history = [*(state.get("repair_history") or []), instruction]
+
+    emit_graph_event(
+        progress,
+        run_id=run_id,
+        node_name=node_name,
+        message=f"Repair used {response.model_used or 'the configured repair model'}.",
+        model_used=response.model_used,
+        latency_ms=response.latency_ms,
+        cost_usd=response.cost_usd,
+    )
+
+    return {
+        "visited_nodes": visited,
+        "artifacts": artifacts,
+        "answer": response.text or answer,
+        "model_used": response.model_used or "",
+        "latency_ms": response.latency_ms or 0,
+        "cost_usd_spent": response.cost_usd or 0.0,
+        "model_calls_made": 1,
+        "repair_history": history,
+    }
 
 
 # ---------------------------------------------------------------------------

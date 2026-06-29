@@ -20,6 +20,8 @@ from app.services.agent.langgraph_runtime.state import (
 )
 from app.services.agent.models import TurnRequest
 
+from test_agent_runtime import FakeTools, _patch_completion
+
 _TEST_REQUEST = TurnRequest(message="test request")
 
 
@@ -35,9 +37,16 @@ def test_slice_version_is_0b():
 # 0B.2  Budget reducer semantics: Annotated[float, operator.add]
 # ---------------------------------------------------------------------------
 
-def test_budget_reducers_accumulate_via_langgraph():
-    """When stub nodes each emit budget deltas, LangGraph adds them together."""
-    compiled = build_research_graph(run_id="test-run", request=_TEST_REQUEST)
+def test_budget_reducers_accumulate_via_langgraph(monkeypatch):
+    """When nodes emit budget deltas, LangGraph adds them together.
+
+    Slice 3: synthesis/repair make real LLM calls — patch model_client so
+    this structural test remains fast and sandbox-safe.
+    """
+    _patch_completion(monkeypatch)
+    compiled = build_research_graph(
+        run_id="test-run", request=_TEST_REQUEST, tools=FakeTools()
+    )
     initial: ResearchGraphState = {
         "request_message": "budget reducer test",
         "cost_usd_spent": 0.0,
@@ -47,19 +56,22 @@ def test_budget_reducers_accumulate_via_langgraph():
         "artifacts": {},
     }
     result = compiled.invoke(initial)
-    # synthesize (1) + judge (1) + repair (1) = 3
-    # brief also adds 1 (real node) → total = 4
-    assert result["model_calls_made"] >= 3, (
-        f"Expected model_calls_made>=3, got {result['model_calls_made']}"
+    # brief(1) + synthesize(1) = 2 minimum.
+    # contract/plan/judge are pure heuristic (0 LLM calls each).
+    # repair adds 1 only when judge.status=="repair" (not "fail" or "pass").
+    assert result["model_calls_made"] >= 2, (
+        f"Expected model_calls_made>=2, got {result['model_calls_made']}"
     )
 
 
-def test_accumulated_list_reducer_sources():
-    """Annotated[list[Source], operator.add] fields start empty and stay empty for stubs."""
+def test_accumulated_list_reducer_sources(monkeypatch):
+    """Annotated[list[Source], operator.add] fields are lists after a full graph run."""
+    _patch_completion(monkeypatch)
     result = run_stub_graph(
         {"request_message": "list reducer test", "visited_nodes": [], "artifacts": {}},
         run_id="test-list-reducer",
         request=_TEST_REQUEST,
+        tools=FakeTools(),
     )
     assert isinstance(result.get("sources", []), list)
     assert isinstance(result.get("worker_reports", []), list)
@@ -267,7 +279,8 @@ def test_graph_terminates_at_approval_required(monkeypatch):
 # 0B.9  Event identity fields appear on every emitted event
 # ---------------------------------------------------------------------------
 
-def test_every_graph_event_has_full_identity_fields():
+def test_every_graph_event_has_full_identity_fields(monkeypatch):
+    _patch_completion(monkeypatch)
     events = []
 
     def capture(stage, message, **data):
@@ -277,6 +290,7 @@ def test_every_graph_event_has_full_identity_fields():
         {"request_message": "event identity test", "visited_nodes": [], "artifacts": {}},
         run_id="test-identity",
         request=_TEST_REQUEST,
+        tools=FakeTools(),
         progress=capture,
     )
 
@@ -291,7 +305,8 @@ def test_every_graph_event_has_full_identity_fields():
         assert event["state_version"] == "slice_0b"
 
 
-def test_run_id_is_consistent_across_all_events():
+def test_run_id_is_consistent_across_all_events(monkeypatch):
+    _patch_completion(monkeypatch)
     events = []
 
     def capture(stage, message, **data):
@@ -301,6 +316,7 @@ def test_run_id_is_consistent_across_all_events():
         {"request_message": "run id test", "visited_nodes": [], "artifacts": {}},
         run_id="consistent-run-id",
         request=_TEST_REQUEST,
+        tools=FakeTools(),
         progress=capture,
     )
 

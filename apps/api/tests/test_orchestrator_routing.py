@@ -93,3 +93,46 @@ def test_search_github_ppt_generator_lookup_normalizes_llm_document_route(monkey
 
     assert decision.route == "research"
     assert decision.output_format == "chat"
+
+
+def test_medical_supplement_safety_normalizes_llm_direct_route(monkeypatch):
+    from app.services.agent import model_client
+
+    def fake_complete(messages, **_kwargs):
+        return SimpleNamespace(
+            text=json.dumps(
+                {
+                    "route": "direct",
+                    "confidence": 0.95,
+                    "reason": "Well-established clinical knowledge.",
+                    "output_format": "chat",
+                    "research_level": "regular",
+                    "requires_confirmation": False,
+                }
+            ),
+            model_used="fake-orchestrator",
+            latency_ms=1,
+            cost_usd=0.0,
+        )
+
+    monkeypatch.setattr(model_client, "complete", fake_complete)
+
+    decision = decide_with_options(
+        TurnRequest(message="Is long-term creatine supplementation safe for kidney health?"),
+        available_routes=["direct", "clarify", "research", "document", "research_document"],
+        available_tools=[],
+    )
+
+    assert decision.route == "research"
+    assert decision.research_level == "regular"
+    assert decision.requires_confirmation is False
+    assert "Routing signals" in decision.reason
+
+
+def test_medical_supplement_safety_heuristic_routes_to_research():
+    decision = heuristic_decide(
+        TurnRequest(message="Is long-term creatine supplementation safe for kidney health?")
+    )
+
+    assert decision.route == "research"
+    assert decision.research_level == "regular"

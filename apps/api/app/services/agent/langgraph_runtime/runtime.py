@@ -31,13 +31,10 @@ def configured_orchestrator() -> str:
 def run_langgraph_research(request: Any, tools: Any, progress: Any = None) -> dict[str, Any]:
     """LangGraph research entry point — Slice 3.
 
-    Real nodes:
+    Real nodes (full pipeline — Slice 4 complete):
       brief → subject_derivation → contract → plan →
-      dispatch_search/search_worker → rank → read →
+      dispatch_search/search_worker → rank → read → classify_claims →
       expand_source_graph → bind → synthesize → verify → judge → repair
-
-    Partial stub (Slice 4 will wire real claim classification):
-      classify_claims — still returns empty claim_classification_results
 
     The returned dictionary matches the public keys of lead_research_loop.
     """

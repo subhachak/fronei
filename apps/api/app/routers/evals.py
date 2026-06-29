@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import queue
 import sys
 import threading
@@ -281,15 +282,19 @@ def stream_parity_run(
     events: queue.Queue = run["events"]
 
     def generate():
+        # Tell browser to reconnect after 3s if the connection drops.
+        yield "retry: 3000\n\n"
         while True:
             try:
-                event = events.get(timeout=30)
+                # Short timeout so heartbeats fire frequently — keeps Railway/nginx
+                # proxy from closing the connection on its idle-TCP timeout (often
+                # 60–120s). A 25-case parity run takes ~12 min; we must keep the
+                # connection alive for the full duration.
+                event = events.get(timeout=10)
             except queue.Empty:
-                # Keep-alive heartbeat
-                yield "event: heartbeat\ndata: {}\n\n"
+                yield ": heartbeat\n\n"  # SSE comment — no event fired client-side
                 continue
             if event is None:
-                # Run finished; send a final close event
                 yield "event: close\ndata: {}\n\n"
                 break
             yield f"data: {json.dumps(event, default=str)}\n\n"
@@ -380,6 +385,21 @@ def revert_orchestrator(admin: AdminPrincipal = RequireAdmin) -> dict:
     return {
         "effective_orchestrator": effective,
         "reverted_by": admin.user_id,
+    }
+
+
+@router.get("/langsmith/status")
+def get_langsmith_status(admin: AdminPrincipal = RequireAdmin) -> dict:
+    """Return LangSmith configuration status."""
+    from app.services.langsmith_evals import is_configured
+    from app.config import get_settings
+    s = get_settings()
+    configured = is_configured()
+    return {
+        "configured": configured,
+        "project": s.langchain_project if configured else None,
+        "tracing_on": os.environ.get("LANGCHAIN_TRACING_V2") == "true" if configured else False,
+        "dataset_name": "fronei-eval-cases",
     }
 
 
@@ -680,6 +700,22 @@ def _run_one_eval_case(case_dict: dict, tools) -> dict[str, Any]:
     }
 
 
+def _make_result_envelope(mode: str, cases: list, langsmith_summary: dict | None) -> dict:
+    """Consistent result envelope stored in memory and DB regardless of eval mode.
+
+    Shape:
+      {
+        "mode": "langsmith" | "in_process",
+        "cases": [EvalCaseRunResult, ...],  # empty for LangSmith runs (LangSmith is source of truth)
+        "langsmith": { ... } | null         # LangSmith experiment summary, null for in-process
+      }
+
+    This guarantees /runs/{run_id}/result always returns the same contract; the
+    caller need not branch on mode to read per-case rows vs. a summary dict.
+    """
+    return {"mode": mode, "cases": cases, "langsmith": langsmith_summary}
+
+
 def _run_eval_background(run_id: str, case_dicts: list[dict]) -> None:
     run = _EVAL_RUNS.get(run_id)
     if run is None:
@@ -687,28 +723,43 @@ def _run_eval_background(run_id: str, case_dicts: list[dict]) -> None:
     events: queue.Queue = run["events"]
 
     try:
-        from app.services.agent.tools import Tools
-        tools = Tools.from_settings()
-        total = len(case_dicts)
-        events.put({"type": "started", "total": total, "run_id": run_id})
+        from app.services.langsmith_evals import is_configured as ls_configured, run_eval as ls_run_eval
 
-        all_results = []
-        for idx, case_dict in enumerate(case_dicts):
-            events.put({"type": "case_start", "case_id": case_dict["id"], "title": case_dict["title"],
-                        "index": idx, "total": total})
-            result = _run_one_eval_case(case_dict, tools)
-            all_results.append(result)
-            events.put({"type": "case_result", "case_id": case_dict["id"], "index": idx,
-                        "total": total, "result": result})
+        if ls_configured():
+            # --- LangSmith path ---
+            # Per-case rows are not available in-process; LangSmith holds them.
+            # Store an empty cases list and put the experiment summary in "langsmith".
+            events.put({"type": "started", "total": len(case_dicts), "run_id": run_id, "mode": "langsmith"})
+            ls_summary = ls_run_eval(run_id, case_dicts, events)
+            envelope = _make_result_envelope("langsmith", [], ls_summary)
+            run["results"] = envelope
+            run["status"] = "complete"
+            run["completed_at"] = time.time()
+            _persist_eval_run(run_id, envelope, "complete")
+            events.put({"type": "complete", "results": envelope, "run_id": run_id})
 
-        run["results"] = all_results
-        run["status"] = "complete"
-        run["completed_at"] = time.time()
+        else:
+            # --- In-process fallback path ---
+            from app.services.agent.tools import Tools
+            tools = Tools.from_settings()
+            total = len(case_dicts)
+            events.put({"type": "started", "total": total, "run_id": run_id, "mode": "in_process"})
 
-        # Persist to DB
-        _persist_eval_run(run_id, all_results, "complete")
+            all_results = []
+            for idx, case_dict in enumerate(case_dicts):
+                events.put({"type": "case_start", "case_id": case_dict["id"], "title": case_dict["title"],
+                            "index": idx, "total": total})
+                result = _run_one_eval_case(case_dict, tools)
+                all_results.append(result)
+                events.put({"type": "case_result", "case_id": case_dict["id"], "index": idx,
+                            "total": total, "result": result})
 
-        events.put({"type": "complete", "results": all_results, "run_id": run_id})
+            envelope = _make_result_envelope("in_process", all_results, None)
+            run["results"] = envelope
+            run["status"] = "complete"
+            run["completed_at"] = time.time()
+            _persist_eval_run(run_id, envelope, "complete")
+            events.put({"type": "complete", "results": envelope, "run_id": run_id})
 
     except Exception as exc:
         import traceback
@@ -716,13 +767,13 @@ def _run_eval_background(run_id: str, case_dicts: list[dict]) -> None:
         run["error"] = err
         run["status"] = "error"
         run["completed_at"] = time.time()
-        _persist_eval_run(run_id, [], "error", error=err)
+        _persist_eval_run(run_id, _make_result_envelope("error", [], None), "error", error=err)
         events.put({"type": "error", "error": str(exc), "run_id": run_id})
     finally:
         events.put(None)
 
 
-def _persist_eval_run(run_id: str, results: list, status: str, error: str | None = None) -> None:
+def _persist_eval_run(run_id: str, results: dict, status: str, error: str | None = None) -> None:
     try:
         from app.db.models import EvalRun, SessionLocal
         db = SessionLocal()
@@ -821,11 +872,12 @@ def stream_eval_run(run_id: str, admin: AdminPrincipal = RequireAdmin) -> Stream
     events: queue.Queue = run["events"]
 
     def generate():
+        yield "retry: 3000\n\n"
         while True:
             try:
-                event = events.get(timeout=30)
+                event = events.get(timeout=10)
             except queue.Empty:
-                yield "event: heartbeat\ndata: {}\n\n"
+                yield ": heartbeat\n\n"  # SSE comment keeps proxy alive without firing client events
                 continue
             if event is None:
                 yield "event: close\ndata: {}\n\n"
@@ -859,7 +911,14 @@ def get_eval_run_result(run_id: str, admin: AdminPrincipal = RequireAdmin) -> di
         row = db.query(EvalRun).filter(EvalRun.id == run_id).first()
         if not row:
             raise HTTPException(status_code=404, detail=f"Eval run {run_id!r} not found.")
-        results = json.loads(row.results_json or "[]")
+        raw = json.loads(row.results_json or "null")
+        # Normalise: old runs stored a raw list; new runs store the envelope dict.
+        if isinstance(raw, list):
+            results = _make_result_envelope("in_process", raw, None)
+        elif isinstance(raw, dict):
+            results = raw
+        else:
+            results = _make_result_envelope("in_process", [], None)
         return {"status": row.status, "run_id": run_id, "results": results, "error": row.error}
     finally:
         db.close()

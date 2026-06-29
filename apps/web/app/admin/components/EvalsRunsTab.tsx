@@ -1,9 +1,60 @@
 'use client'
 
-import { ChevronDown, ChevronRight, Play } from 'lucide-react'
+import { ChevronDown, ChevronRight, ExternalLink, Play } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { readErrorBody } from '../../lib/api'
-import type { AuthorizedFetch, EvalCase, EvalCaseRunResult, EvalRunSummary } from '../types'
+import type { AuthorizedFetch, EvalCase, EvalCaseRunResult, EvalRunResult, EvalRunSummary } from '../types'
+
+type LangSmithStatus = {
+  configured: boolean
+  project: string | null
+  tracing_on: boolean
+  dataset_name: string
+}
+
+function LangSmithBanner({ authorizedFetch }: { authorizedFetch: AuthorizedFetch }) {
+  const [status, setStatus] = useState<LangSmithStatus | null>(null)
+
+  useEffect(() => {
+    authorizedFetch('/admin/evals/langsmith/status')
+      .then(r => r.ok ? r.json() : null)
+      .then(d => d && setStatus(d))
+      .catch(() => {})
+  }, [authorizedFetch])
+
+  if (!status) return null
+
+  if (!status.configured) {
+    return (
+      <div className="rounded-lg border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-900 px-4 py-3 text-xs text-neutral-500">
+        <span className="font-semibold text-neutral-700 dark:text-neutral-300">LangSmith not configured</span>
+        {' — '}set <code className="bg-neutral-100 dark:bg-neutral-800 px-1 rounded">LANGSMITH_API_KEY</code> to enable experiment tracking and the LangSmith eval runner.
+        Runs will use the in-process scorer instead.
+      </div>
+    )
+  }
+
+  return (
+    <div className="rounded-lg border border-emerald-200 dark:border-emerald-900 bg-emerald-50 dark:bg-emerald-950/30 px-4 py-3 text-xs flex items-center gap-3">
+      <span className="h-2 w-2 rounded-full bg-emerald-500 flex-shrink-0" />
+      <div className="flex-1">
+        <span className="font-semibold text-emerald-800 dark:text-emerald-300">LangSmith active</span>
+        {' — '}project <code className="bg-emerald-100 dark:bg-emerald-900/50 px-1 rounded text-emerald-700 dark:text-emerald-400">{status.project}</code>
+        {', dataset '}
+        <code className="bg-emerald-100 dark:bg-emerald-900/50 px-1 rounded text-emerald-700 dark:text-emerald-400">{status.dataset_name}</code>
+        {status.tracing_on && <span className="ml-2 text-emerald-600 dark:text-emerald-400">· tracing on</span>}
+      </div>
+      <a
+        href="https://smith.langchain.com"
+        target="_blank"
+        rel="noopener noreferrer"
+        className="flex items-center gap-1 text-emerald-700 dark:text-emerald-400 hover:underline font-semibold"
+      >
+        Open LangSmith <ExternalLink size={11} />
+      </a>
+    </div>
+  )
+}
 
 // ---------------------------------------------------------------------------
 // Small helpers
@@ -167,9 +218,11 @@ export function EvalsRunsTab({ authorizedFetch }: { authorizedFetch: AuthorizedF
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
   const [runStatus, setRunStatus] = useState<'idle' | 'running' | 'complete' | 'error'>('idle')
   const [log, setLog] = useState<string[]>([])
-  const [results, setResults] = useState<EvalCaseRunResult[]>([])
+  // Always use the envelope type — cases[] for in-process, langsmith for LS runs.
+  const [runResult, setRunResult] = useState<EvalRunResult | null>(null)
   const [runs, setRuns] = useState<EvalRunSummary[]>([])
   const [error, setError] = useState('')
+  const [langsmithLinks, setLangsmithLinks] = useState<{ legacy?: string; langgraph?: string }>({})
   const logRef = useRef<HTMLDivElement>(null)
   const abortRef = useRef<AbortController | null>(null)
 
@@ -213,8 +266,9 @@ export function EvalsRunsTab({ authorizedFetch }: { authorizedFetch: AuthorizedF
   async function startRun() {
     setRunStatus('running')
     setLog([])
-    setResults([])
+    setRunResult(null)
     setError('')
+    setLangsmithLinks({})
 
     const payload = selectedIds.size > 0
       ? { case_ids: Array.from(selectedIds) }
@@ -279,7 +333,7 @@ export function EvalsRunsTab({ authorizedFetch }: { authorizedFetch: AuthorizedF
   function handleSSEEvent(ev: Record<string, unknown>) {
     switch (ev.type) {
       case 'started':
-        setLog(l => [...l, `▶ Run started — ${ev.total} case(s)`])
+        setLog(l => [...l, `▶ Run started — ${ev.total} case(s)${ev.mode === 'langsmith' ? ' [LangSmith]' : ''}`])
         break
       case 'case_start':
         setLog(l => [...l, `  [${(ev.index as number) + 1}/${ev.total}] ${ev.title}`])
@@ -291,13 +345,43 @@ export function EvalsRunsTab({ authorizedFetch }: { authorizedFetch: AuthorizedF
         const legScore = pct(r.legacy.criteria?.score)
         const lgScore = pct(r.langgraph.criteria?.score)
         setLog(l => [...l, `  → Legacy ${legOk} (criteria ${legScore})  LG ${lgOk} (criteria ${lgScore})`])
-        setResults(prev => [...prev, r])
+        // Accumulate into the envelope's cases list
+        setRunResult(prev => ({
+          mode: 'in_process',
+          cases: [...(prev?.cases ?? []), r],
+          langsmith: null,
+        }))
         break
       }
-      case 'complete':
+      case 'langsmith_sync':
+        setLog(l => [...l, `  ⟳ ${ev.message}`])
+        break
+      case 'langsmith_sync_done':
+        setLog(l => [...l, `  ✓ Dataset synced`])
+        break
+      case 'langsmith_pipeline_start':
+        setLog(l => [...l, `  ▶ Running ${ev.pipeline} pipeline via LangSmith…`])
+        break
+      case 'langsmith_pipeline_done': {
+        const url = ev.experiment_url as string | undefined
+        if (url) {
+          setLangsmithLinks(prev => ({ ...prev, [ev.pipeline as string]: url }))
+        }
+        setLog(l => [...l, `  ✓ ${ev.pipeline} done${ev.elapsed_s ? ` (${ev.elapsed_s}s)` : ''}${url ? ' — experiment ready' : ''}`])
+        break
+      }
+      case 'langsmith_pipeline_error':
+        setLog(l => [...l, `  ✗ ${ev.pipeline} error: ${ev.error}`])
+        break
+      case 'complete': {
+        // The complete event carries the full envelope; use it as the final
+        // source of truth (avoids any gap if a case_result event was missed).
+        const envelope = ev.results as import('../types').EvalRunResult | undefined
+        if (envelope) setRunResult(envelope)
         setLog(l => [...l, '✓ Run complete'])
         setRunStatus('complete')
         break
+      }
       case 'error':
         setLog(l => [...l, `✗ Error: ${ev.error}`])
         setRunStatus('error')
@@ -309,6 +393,8 @@ export function EvalsRunsTab({ authorizedFetch }: { authorizedFetch: AuthorizedF
 
   return (
     <div className="space-y-6">
+      <LangSmithBanner authorizedFetch={authorizedFetch} />
+
       {/* Case selection + run trigger */}
       <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 p-4 space-y-3">
         <div className="flex items-center justify-between">
@@ -367,16 +453,41 @@ export function EvalsRunsTab({ authorizedFetch }: { authorizedFetch: AuthorizedF
         </div>
       )}
 
-      {/* Results */}
-      {results.length > 0 && (
+      {/* LangSmith experiment links */}
+      {(langsmithLinks.legacy || langsmithLinks.langgraph) && (
+        <div className="rounded-xl border border-emerald-200 dark:border-emerald-900 bg-emerald-50 dark:bg-emerald-950/30 px-4 py-3 space-y-1">
+          <p className="text-xs font-bold text-emerald-800 dark:text-emerald-300 mb-2">LangSmith experiments</p>
+          {langsmithLinks.legacy && (
+            <a href={langsmithLinks.legacy} target="_blank" rel="noopener noreferrer"
+              className="flex items-center gap-1.5 text-xs text-emerald-700 dark:text-emerald-400 hover:underline">
+              <ExternalLink size={11} /> Legacy pipeline experiment
+            </a>
+          )}
+          {langsmithLinks.langgraph && (
+            <a href={langsmithLinks.langgraph} target="_blank" rel="noopener noreferrer"
+              className="flex items-center gap-1.5 text-xs text-emerald-700 dark:text-emerald-400 hover:underline">
+              <ExternalLink size={11} /> LangGraph pipeline experiment
+            </a>
+          )}
+        </div>
+      )}
+
+      {/* Results — in-process per-case rows */}
+      {(runResult?.cases?.length ?? 0) > 0 && (
         <div>
           <p className="text-xs font-bold text-neutral-500 mb-2">
-            Results — {results.filter(r => r.overall_structural_pass).length}/{results.length} structural pass
+            Results — {runResult!.cases.filter(r => r.overall_structural_pass).length}/{runResult!.cases.length} structural pass
           </p>
           <div className="space-y-2">
-            {results.map(r => <CaseResultRow key={r.case_id} r={r} />)}
+            {runResult!.cases.map(r => <CaseResultRow key={r.case_id} r={r} />)}
           </div>
         </div>
+      )}
+      {/* Results — LangSmith mode note */}
+      {runResult?.mode === 'langsmith' && runStatus === 'complete' && (
+        <p className="text-xs text-neutral-500 italic">
+          Per-case rows are in LangSmith. Use the experiment links above to view detailed results.
+        </p>
       )}
 
       {/* Run history */}

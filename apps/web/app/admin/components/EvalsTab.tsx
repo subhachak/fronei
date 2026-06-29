@@ -103,7 +103,19 @@ function CaseRow({ result }: { result: ParityCaseResult }) {
           <span title="Answer length ratio">ans {fmtRatio(result.answer_length_ratio)}</span>
           <span title="Evidence count ratio">evid {fmtRatio(result.evidence_count_ratio)}</span>
           <span title="Claim count ratio">claims {fmtRatio(result.claim_count_ratio)}</span>
-          <span title="Judge verdict agreement">{result.judge_verdict_agrees ? '✓ verdict' : '✗ verdict'}</span>
+          <span title={
+            result.judge_verdict_agrees
+              ? `Both agree: ${result.legacy_judge_verdict}`
+              : `Disagree — legacy: ${result.legacy_judge_verdict}, LG: ${result.langgraph_judge_verdict}`
+          }>
+            {result.judge_verdict_agrees
+              ? `✓ ${result.legacy_judge_verdict}`
+              : result.langgraph_judge_verdict === 'pass' && result.legacy_judge_verdict !== 'pass'
+                ? '↑ LG better'
+                : result.legacy_judge_verdict === 'pass' && result.langgraph_judge_verdict !== 'pass'
+                  ? '↓ LG worse'
+                  : '≠ verdict'}
+          </span>
         </div>
         {open ? <ChevronDown size={14} className="text-neutral-400 flex-shrink-0" /> : <ChevronRight size={14} className="text-neutral-400 flex-shrink-0" />}
       </button>
@@ -463,7 +475,7 @@ function ParitySubTab({ authorizedFetch }: { authorizedFetch: AuthorizedFetch })
             <GateRow label="Structural (no crash)" pass={report.structural_pass} total={report.total_cases} threshold={1.0} />
             <GateRow label="Answer length ≥70% of legacy" pass={report.answer_length_gate_pass} total={report.total_cases} threshold={0.80} />
             <GateRow label="Evidence count ≥80% of legacy" pass={report.evidence_gate_pass} total={report.total_cases} threshold={0.80} />
-            <GateRow label="Claim count ≥70% of legacy" pass={report.claim_gate_pass} total={report.total_cases} threshold={0.80} />
+            <GateRow label="Claim count ≥60% of legacy" pass={report.claim_gate_pass} total={report.total_cases} threshold={0.80} />
             <GateRow label="Budget ≤1.5× legacy" pass={report.budget_gate_pass} total={report.total_cases} threshold={0.80} />
             <GateRow label="Judge verdict agreement" pass={report.verdict_agree} total={report.total_cases} threshold={0.80} />
           </div>

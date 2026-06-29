@@ -30,9 +30,10 @@ def test_langgraph_slice_0a_returns_legacy_public_shape(monkeypatch):
         "replay_final_answer",
     }.issubset(result)
     assert result["response"].text == ""
-    assert result["response"].model_used == "langgraph-slice-1-stub"
-    assert result["sources"] == []
-    assert result["tool_calls"] == []
+    assert result["response"].model_used == "langgraph-slice-2-stub"
+    # Slice 2: search is real; sources/tool_calls are populated by FakeTools.
+    assert isinstance(result["sources"], list)
+    assert isinstance(result["tool_calls"], list)
     # All pipeline nodes must be visited; budget gate nodes are additional.
     visited = result["langgraph_state"]["visited_nodes"]
     for node in NODE_ORDER:
@@ -62,7 +63,7 @@ def test_server_side_langgraph_flag_runs_stub_path(monkeypatch):
     result = next(envelope.data for envelope in envelopes if envelope.type == "result")
     assert result["route"] == "research"
     assert result["answer"] == ""
-    assert result["model_used"] == "langgraph-slice-1-stub"
+    assert result["model_used"] == "langgraph-slice-2-stub"
     assert any(event["stage"] == "brief" for event in result["events"])
 
 
@@ -99,7 +100,7 @@ def test_ordinary_request_cannot_select_langgraph_path(monkeypatch):
     assert called is False
     result = next(envelope.data for envelope in envelopes if envelope.type == "result")
     assert result["route"] == "research"
-    assert result["model_used"] != "langgraph-slice-1-stub"
+    assert result["model_used"] != "langgraph-slice-2-stub"
 
 
 def test_production_unsafe_qa_override_fails_closed(monkeypatch):

@@ -11,6 +11,7 @@ from app.services.agent.langgraph_runtime.state import BudgetDecision, ResearchG
 
 if TYPE_CHECKING:
     from app.services.agent.models import TurnRequest
+    from app.services.agent.tools import Tools
 
 
 def _budget_gate_router(state: ResearchGraphState) -> str:
@@ -27,39 +28,75 @@ def build_research_graph(
     run_id: str,
     request: TurnRequest,
     progress: ProgressCallback | None = None,
+    tools: Tools | None = None,
 ) -> Any:  # langgraph.graph.compiled.CompiledStateGraph
-    """Build and compile the Slice 1 StateGraph.
+    """Build and compile the Slice 2 StateGraph.
 
     Pipeline shape:
       brief → subject_derivation → contract → plan →
-      search → rank → read → classify_claims → expand_source_graph →
+      dispatch_search ──(Send×N)──► search_worker (parallel)
+                                         │
+                                         ▼
+      rank → read → classify_claims → expand_source_graph →
       bind → [budget_gate] → synthesize → verify →
       judge → [budget_gate] → repair → END
 
-    Slice 1: brief, subject_derivation, contract, plan nodes are real.
-    Remaining nodes are still stubs until Slice 2+.
+    Slice 2: search fan-out (dispatch_search/search_worker), rank, read,
+             classify_claims, expand_source_graph, bind nodes are real.
+    synthesize/verify/judge/repair remain stubs until Slice 3.
     """
     graph: StateGraph = StateGraph(ResearchGraphState)
 
-    # --- Pipeline nodes (each bound with run_id, request, progress) ---------
+    # --- Pipeline nodes: each bound with run_id, request, tools, progress ----
     for node_name in nodes.NODE_ORDER:
         node_fn = getattr(nodes, node_name)
-        bound = functools.partial(node_fn, run_id=run_id, request=request, progress=progress)
+        bound = functools.partial(
+            node_fn,
+            run_id=run_id,
+            request=request,
+            tools=tools,
+            progress=progress,
+        )
         graph.add_node(node_name, bound)
 
     # --- Budget gate (fires at two points in the pipeline) ------------------
-    pre_synthesis_gate = functools.partial(nodes.budget_gate, run_id=run_id, request=request, progress=progress)
-    pre_repair_gate = functools.partial(nodes.budget_gate, run_id=run_id, request=request, progress=progress)
-    graph.add_node("budget_gate_pre_synthesis", pre_synthesis_gate)
-    graph.add_node("budget_gate_pre_repair", pre_repair_gate)
+    gate_kwargs = dict(run_id=run_id, request=request, tools=tools, progress=progress)
+    graph.add_node(
+        "budget_gate_pre_synthesis",
+        functools.partial(nodes.budget_gate, **gate_kwargs),
+    )
+    graph.add_node(
+        "budget_gate_pre_repair",
+        functools.partial(nodes.budget_gate, **gate_kwargs),
+    )
 
-    # --- Linear edges through the search/read/bind phase --------------------
-    pre_gate_sequence = [
-        "brief", "subject_derivation", "contract", "plan",
-        "search", "rank", "read", "classify_claims", "expand_source_graph", "bind",
+    # --- Linear pre-search edges --------------------------------------------
+    pre_search_sequence = ["brief", "subject_derivation", "contract", "plan"]
+    for i, name in enumerate(pre_search_sequence[:-1]):
+        graph.add_edge(name, pre_search_sequence[i + 1])
+    graph.add_edge("plan", "dispatch_search")
+
+    # dispatch_search → search_worker fan-out via Send routing function.
+    # dispatch_search_router returns either [Send("search_worker", ...)] or ["rank"].
+    # After all search_worker invocations complete, execution continues at rank.
+    graph.add_conditional_edges(
+        "dispatch_search",
+        functools.partial(
+            nodes.dispatch_search_router,
+            run_id=run_id,
+            request=request,
+            tools=tools,
+            progress=progress,
+        ),
+    )
+    graph.add_edge("search_worker", "rank")
+
+    # --- Linear post-search edges through bind ------------------------------
+    post_search_sequence = [
+        "rank", "read", "classify_claims", "expand_source_graph", "bind",
     ]
-    for i, name in enumerate(pre_gate_sequence[:-1]):
-        graph.add_edge(name, pre_gate_sequence[i + 1])
+    for i, name in enumerate(post_search_sequence[:-1]):
+        graph.add_edge(name, post_search_sequence[i + 1])
     graph.add_edge("bind", "budget_gate_pre_synthesis")
 
     # --- Conditional routing after pre-synthesis gate -----------------------
@@ -100,7 +137,10 @@ def run_stub_graph(
     run_id: str,
     request: TurnRequest,
     progress: ProgressCallback | None = None,
+    tools: Tools | None = None,
 ) -> ResearchGraphState:
     """Execute the graph synchronously via LangGraph invoke."""
-    compiled = build_research_graph(run_id=run_id, request=request, progress=progress)
+    compiled = build_research_graph(
+        run_id=run_id, request=request, progress=progress, tools=tools
+    )
     return compiled.invoke(initial_state)

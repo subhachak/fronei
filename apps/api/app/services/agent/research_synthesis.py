@@ -472,6 +472,12 @@ def _is_useful_deep_link(url: str) -> bool:
         "cookie-policy",
         "category",
         "tag",
+        "topic",
+        "topics",
+        "series",
+        "column",
+        "author",
+        "authors",
     }
     segments = [segment for segment in path.split("/") if segment]
     if any(segment in blocked_segments for segment in segments):

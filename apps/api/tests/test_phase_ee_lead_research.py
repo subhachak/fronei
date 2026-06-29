@@ -1776,7 +1776,17 @@ def test_lead_research_loop_returns_expected_shape(monkeypatch):
         lambda stage, message, data: stages.append(stage),
     )
 
-    assert set(result) == {"sources", "tool_calls", "evidence", "response", "plan", "worker_reports", "feedback", "answer_streamed"}
+    assert set(result) == {
+        "sources",
+        "tool_calls",
+        "evidence",
+        "response",
+        "plan",
+        "worker_reports",
+        "feedback",
+        "answer_streamed",
+        "replay_final_answer",
+    }
     assert result["response"].text
     assert result["tool_calls"]
     assert result["worker_reports"]

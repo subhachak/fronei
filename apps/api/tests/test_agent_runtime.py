@@ -744,6 +744,109 @@ def test_agent_deep_research_replays_final_answer_stream(monkeypatch):
     assert result["answer"] == "Deep answer first paragraph.\n\nDeep answer second paragraph."
 
 
+def test_agent_deep_research_emits_heartbeat_during_quiet_lead_loop(monkeypatch):
+    from app.services.agent import runtime as runtime_module
+    from app.services.agent import research_subtree
+    from app.services.agent.model_client import ModelResponse
+    from app.services.agent.orchestrator import OrchestratorDecision
+
+    monkeypatch.setattr(runtime_module, "DEEP_RESEARCH_HEARTBEAT_SECONDS", 0.01)
+    monkeypatch.setattr(runtime_module, "DEEP_RESEARCH_QUEUE_POLL_SECONDS", 0.005)
+    monkeypatch.setattr(runtime_module, "decide_fast_path", lambda request: SimpleNamespace(path="none"))
+    monkeypatch.setattr(
+        runtime_module,
+        "decide_with_options",
+        lambda request, **kwargs: OrchestratorDecision(
+            route="research",
+            research_level="deep",
+            requires_confirmation=False,
+            reason="test",
+            source="test",
+            available_routes=kwargs.get("available_routes", []),
+            available_tools=kwargs.get("available_tools", []),
+        ),
+    )
+
+    def fake_lead_loop(request, tools, progress):
+        time.sleep(0.04)
+        return {
+            "sources": [],
+            "tool_calls": [],
+            "evidence": None,
+            "response": ModelResponse(text="quiet deep answer", model_used="fake-deep", latency_ms=5, cost_usd=0.0),
+            "plan": None,
+            "feedback": None,
+        }
+
+    monkeypatch.setattr(research_subtree, "lead_research_loop", fake_lead_loop)
+
+    envelopes = _collect_stream(Runtime(), TurnRequest(message="Deep quiet research", research_level="deep"))
+    heartbeats = [
+        e.data
+        for e in envelopes
+        if e.type == "progress" and e.data["stage"] == "research_progress"
+    ]
+
+    assert heartbeats
+    assert heartbeats[0]["data"]["ephemeral_ui"] is True
+    assert heartbeats[0]["data"]["quiet_seconds"] >= 0
+
+
+def test_agent_deep_research_replays_repaired_final_answer(monkeypatch):
+    from app.services.agent import runtime as runtime_module
+    from app.services.agent import research_subtree
+    from app.services.agent.model_client import ModelResponse
+    from app.services.agent.orchestrator import OrchestratorDecision
+
+    monkeypatch.setattr(runtime_module, "decide_fast_path", lambda request: SimpleNamespace(path="none"))
+    monkeypatch.setattr(
+        runtime_module,
+        "decide_with_options",
+        lambda request, **kwargs: OrchestratorDecision(
+            route="research",
+            research_level="deep",
+            requires_confirmation=False,
+            reason="test",
+            source="test",
+            available_routes=kwargs.get("available_routes", []),
+            available_tools=kwargs.get("available_tools", []),
+        ),
+    )
+
+    def fake_lead_loop(request, tools, progress):
+        progress("answer_delta", "Streaming answer.", {"delta": "Draft answer", "char_count": 12, "ephemeral_ui": True})
+        progress("answer_complete", "Answer stream complete.", {"char_count": 12, "ephemeral_ui": True})
+        return {
+            "sources": [],
+            "tool_calls": [],
+            "evidence": None,
+            "response": ModelResponse(
+                text="Final repaired answer",
+                model_used="fake-repair",
+                latency_ms=5,
+                cost_usd=0.0,
+            ),
+            "plan": None,
+            "feedback": None,
+            "answer_streamed": True,
+            "replay_final_answer": True,
+        }
+
+    monkeypatch.setattr(research_subtree, "lead_research_loop", fake_lead_loop)
+
+    envelopes = _collect_stream(Runtime(), TurnRequest(message="Deep repaired research", research_level="deep"))
+    answer_deltas = [
+        e.data["data"]["delta"]
+        for e in envelopes
+        if e.type == "progress" and e.data["stage"] == "answer_delta"
+    ]
+    result = next(e.data for e in envelopes if e.type == "result")
+
+    assert "Draft answer" in answer_deltas
+    assert any("Final repaired answer" in delta for delta in answer_deltas)
+    assert result["answer"] == "Final repaired answer"
+
+
 def test_agent_research_registry_exposes_agent_team():
     from app.services.agent.research_subtree import get_research_registry
 

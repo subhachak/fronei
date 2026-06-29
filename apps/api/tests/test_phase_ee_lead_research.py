@@ -1212,6 +1212,72 @@ def test_core_banking_vendor_selection_profile_beats_regulatory_dimension():
     assert infer_research_profile(prompt) == "vendor_comparison"
 
 
+def test_core_banking_vendor_selection_contract_keeps_all_named_vendors():
+    from app.services.agent.research_models import ResearchBrief
+    from app.services.agent.research_subtree import (
+        _extract_named_comparison_subjects,
+        generate_coverage_contract,
+    )
+
+    prompt = (
+        "We're doing a vendor selection for our core banking platform — compare "
+        "Temenos, Finastra, FIS, and Mambu on regulatory compliance, integration "
+        "risk, and total cost of ownership. Which carries the least implementation risk?"
+    )
+
+    assert _extract_named_comparison_subjects(prompt) == ["Temenos", "Finastra", "FIS", "Mambu"]
+
+    contract = generate_coverage_contract(
+        TurnRequest(message=prompt),
+        ResearchBrief(
+            objective="Compare core banking vendors",
+            research_profile="vendor_comparison",
+            source="heuristic",
+        ),
+    )
+
+    assert contract.source == "brief_anchored:vendor_comparison"
+    assert contract.subjects == ["Temenos", "Finastra", "FIS", "Mambu"]
+    assert contract.dimensions == [
+        "regulatory compliance",
+        "integration risk",
+        "total cost of ownership",
+    ]
+
+
+def test_core_banking_vendor_selection_plan_has_per_vendor_anchors():
+    from app.services.agent.research_models import CoverageCell, CoverageContract
+    from app.services.agent.research_subtree import plan_from_contract
+
+    prompt = (
+        "We're doing a vendor selection for our core banking platform — compare "
+        "Temenos, Finastra, FIS, and Mambu on regulatory compliance, integration "
+        "risk, and total cost of ownership. Which carries the least implementation risk?"
+    )
+    subjects = ["Temenos", "Finastra", "FIS", "Mambu"]
+    dimensions = ["regulatory compliance", "integration risk", "total cost of ownership"]
+    contract = CoverageContract(
+        cells=[
+            CoverageCell(subject=subject, dimension=dimension, required=True)
+            for subject in subjects
+            for dimension in dimensions
+        ],
+        subjects=subjects,
+        dimensions=dimensions,
+        source="brief_anchored:vendor_comparison",
+    )
+
+    plan = plan_from_contract(TurnRequest(message=prompt, research_level="deep"), contract)
+    queries = [worker.query for worker in plan.workers]
+
+    for vendor in subjects:
+        assert any(
+            vendor.lower() in query.lower() and "official" in query.lower()
+            for query in queries
+        ), f"Missing per-vendor official-source anchor for {vendor}: {queries}"
+    assert plan.research_profile == "vendor_comparison"
+
+
 def test_model_brief_vendor_guardrail_overrides_strategy(monkeypatch):
     from app.services.agent import model_client
     from app.services.agent.research_subtree import generate_research_brief

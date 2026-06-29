@@ -31,6 +31,7 @@ from app.services.agent.research_models import (
     EvidencePack,
     ResearchBudgetLedger,
     ResearchPlan,
+    _source_evidence_text,
 )
 from app.services.agent.research_planner import (
     _meaningful_tokens,
@@ -370,7 +371,7 @@ def bind_evidence(
         if sfam and cfp:
             seen_independence.add((sfam, cfp))
 
-        body = (source.content or source.snippet or "").strip()
+        body = _source_evidence_text(source).strip()
         if not body:
             continue
         source_type = classify_source_type(url=source.url)

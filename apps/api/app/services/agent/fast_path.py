@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from app.services.agent import model_client
 from app.services.agent import routing_policy
 from app.services.agent.models import TurnRequest, Source
+from app.services.agent.research_models import _looks_like_low_value_extraction
 from app.services.agent.tools import source_context
 
 logger = logging.getLogger(__name__)
@@ -378,7 +379,8 @@ def _merge_sources(search_sources: list[Source], extracted_sources: list[Source]
     by_url = {source.url: source for source in search_sources if source.url}
     for source in extracted_sources:
         if source.url in by_url:
-            by_url[source.url].content = source.content
+            if source.content and not _looks_like_low_value_extraction(source.content):
+                by_url[source.url].content = source.content
             if source.title:
                 by_url[source.url].title = source.title
         elif source.url:

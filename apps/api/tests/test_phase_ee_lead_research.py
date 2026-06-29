@@ -1814,6 +1814,57 @@ def test_state_add_sources_upgrades_candidate_with_read_content():
     assert state.all_sources[0].provider == "Reader"
 
 
+def test_state_add_sources_preserves_snippet_when_reader_returns_account_chrome():
+    from app.services.agent.research_subtree import (
+        CoverageContract,
+        ResearchBrief,
+        ResearchPlan,
+        ResearchStateStore,
+    )
+
+    state = ResearchStateStore(
+        brief=ResearchBrief(objective="creatine kidney safety", source="heuristic"),
+        contract=CoverageContract(),
+        plan=ResearchPlan(source="heuristic"),
+    )
+
+    snippet = "Systematic review of creatine supplementation found no adverse kidney function effects in healthy adults."
+    chrome = "![logo](x) Log in Dashboard Publications Account settings Log out"
+    state.add_sources([Source(title="PMC review", url="https://pmc.ncbi.nlm.nih.gov/articles/PMC123", snippet=snippet)])
+    state.add_sources([Source(title="PMC review", url="https://pmc.ncbi.nlm.nih.gov/articles/PMC123", content=chrome)])
+
+    assert len(state.all_sources) == 1
+    assert state.all_sources[0].snippet == snippet
+    assert state.all_sources[0].content == ""
+
+
+def test_bind_evidence_uses_snippet_when_extracted_content_is_account_chrome():
+    from app.services.agent.research_subtree import ResearchPlan, bind_evidence
+
+    snippet = "Creatine supplementation at recommended doses has not been shown to impair kidney function in healthy adults."
+    chrome = "![logo](x) Log in Dashboard Publications Account settings Log out"
+
+    evidence = bind_evidence(
+        [
+            Source(
+                title="Creatine kidney safety review",
+                url="https://pmc.ncbi.nlm.nih.gov/articles/PMC123",
+                snippet=snippet,
+                content=chrome,
+            )
+        ],
+        plan=ResearchPlan(
+            questions=["Is long-term creatine supplementation safe for kidney health?"],
+            min_evidence_items=1,
+        ),
+        max_items=1,
+    )
+
+    assert evidence.items
+    assert "Creatine supplementation" in evidence.items[0].evidence
+    assert "Dashboard" not in evidence.items[0].evidence
+
+
 def test_technical_architecture_binds_architecture_cards():
     from app.services.agent.research_subtree import ResearchPlan, bind_evidence
 

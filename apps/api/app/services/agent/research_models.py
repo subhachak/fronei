@@ -8,6 +8,7 @@ no imports from other agent sub-modules (except the shared models layer).
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
@@ -39,6 +40,43 @@ _RESEARCH_PROFILES: tuple[ResearchProfile, ...] = (
     "implementation_plan",
     "academic_literature",
 )
+
+
+_LOW_VALUE_CONTENT_MARKERS = (
+    "log in",
+    "dashboard",
+    "publications",
+    "account settings",
+    "log out",
+    "skip to content",
+    "navigation menu",
+    "cookie settings",
+    "subscribe",
+)
+
+
+def _looks_like_low_value_extraction(text: str) -> bool:
+    """Detect page chrome/account UI that a reader sometimes returns as article text."""
+    cleaned = re.sub(r"\s+", " ", (text or "").strip().lower())
+    if not cleaned:
+        return True
+    markers = sum(1 for marker in _LOW_VALUE_CONTENT_MARKERS if marker in cleaned)
+    if markers >= 4:
+        return True
+    if markers >= 3 and len(cleaned) < 900:
+        return True
+    if cleaned.count("![") >= 3 and markers >= 2:
+        return True
+    return False
+
+
+def _source_evidence_text(source: Source) -> str:
+    """Prefer extracted content, unless it is reader chrome and the snippet is better."""
+    content = (source.content or "").strip()
+    snippet = (source.snippet or "").strip()
+    if content and not _looks_like_low_value_extraction(content):
+        return content
+    return snippet or content
 
 
 class ResearchProfilePolicy(BaseModel):
@@ -651,7 +689,11 @@ def _merge_source_detail(existing: Source, incoming: Source) -> None:
         existing.title = incoming.title
     if incoming.snippet and not existing.snippet:
         existing.snippet = incoming.snippet
-    if incoming.content and len(incoming.content) > len(existing.content or ""):
+    if (
+        incoming.content
+        and not _looks_like_low_value_extraction(incoming.content)
+        and len(incoming.content) > len(existing.content or "")
+    ):
         existing.content = incoming.content
     if incoming.query and not existing.query:
         existing.query = incoming.query

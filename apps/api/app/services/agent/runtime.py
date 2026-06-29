@@ -52,6 +52,9 @@ from app.services.agent.research_planner import _longform_timeout_s
 from app.services.agent.tool_registry import ToolRegistry
 from app.services.agent.tools import Tools, source_context
 
+DEEP_RESEARCH_HEARTBEAT_SECONDS = 8.0
+DEEP_RESEARCH_QUEUE_POLL_SECONDS = 0.25
+
 
 def _is_owner_reliability_research(message: str) -> bool:
     text = (message or "").lower()
@@ -348,7 +351,9 @@ class Runtime:
             elif route == "research":
                 research = yield from self._run_research_subtree(request, progress)
                 response = research["response"]
-                if request.research_level == "deep" and not research.get("answer_streamed"):
+                if request.research_level == "deep" and (
+                    not research.get("answer_streamed") or research.get("replay_final_answer")
+                ):
                     yield from self._emit_buffered_answer(response, progress)
                 result = TurnResult(
                     turn_id=turn_id,
@@ -544,15 +549,33 @@ class Runtime:
 
             thread = Thread(target=run_lead_loop, name="lead-research", daemon=True)
             thread.start()
+            last_event_at = time.monotonic()
+            last_stage = "lead_research"
+            heartbeat_count = 0
             while True:
                 try:
-                    item = event_queue.get(timeout=0.25)
+                    item = event_queue.get(timeout=DEEP_RESEARCH_QUEUE_POLL_SECONDS)
                 except Empty:
                     if not thread.is_alive():
                         break
+                    now = time.monotonic()
+                    if now - last_event_at >= DEEP_RESEARCH_HEARTBEAT_SECONDS:
+                        heartbeat_count += 1
+                        event = progress(
+                            "research_progress",
+                            "Deep research is still working.",
+                            last_stage=last_stage,
+                            heartbeat_count=heartbeat_count,
+                            quiet_seconds=int(now - last_event_at),
+                            ephemeral_ui=True,
+                        )
+                        last_event_at = now
+                        yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
                     continue
                 if item is done:
                     break
+                last_event_at = time.monotonic()
+                last_stage = str(getattr(item, "stage", None) or last_stage)
                 yield StreamEnvelope(type="progress", data=item.model_dump(mode="json"))
             thread.join(timeout=1)
             if "error" in result_holder:

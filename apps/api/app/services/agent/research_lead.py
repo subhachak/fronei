@@ -823,6 +823,7 @@ class LeadResearchAgent:
             "worker_reports": state.worker_reports,
             "feedback": feedback,
             "answer_streamed": response.get("answer_streamed", False),
+            "replay_final_answer": response.get("replay_final_answer", False),
         }
 
     def _dispatch_worker_wave(self, state: ResearchStateStore) -> None:
@@ -1260,6 +1261,18 @@ class LeadResearchAgent:
         )
         answer = model_response.text
 
+        self._progress(
+            "citation_verification",
+            "Checking citations and source support before publishing.",
+            {
+                "agent_id": "claim_verifier",
+                **model_client.telemetry_for_role(
+                    "citation_verifier",
+                    quality_mode="standard",
+                    overrides=self.request.model_overrides,
+                ),
+            },
+        )
         citation_result = verify_citations_semantically(
             answer,
             state.evidence,
@@ -1321,6 +1334,11 @@ class LeadResearchAgent:
             repaired = True
             repair_attempts += 1
 
+        self._progress(
+            "research_judge",
+            "Checking whether the answer is ready to publish.",
+            {"agent_id": "research_judge"},
+        )
         verdict = judge_research_final(self.request, state, answer)
         self._progress(
             "research_judge_result",
@@ -1362,6 +1380,11 @@ class LeadResearchAgent:
             model_response = self._stream_synthesize_answer(state)
             self.ledger.record_model_call(cost_usd=model_response.cost_usd, latency_ms=model_response.latency_ms)
             answer = model_response.text
+            self._progress(
+                "research_judge",
+                "Checking whether the refreshed answer is ready to publish.",
+                {"agent_id": "research_judge", "followup_pass": judge_followups},
+            )
             verdict = judge_research_final(self.request, state, answer)
             self._progress(
                 "research_judge_result",
@@ -1372,6 +1395,11 @@ class LeadResearchAgent:
             model_response = self._repair_answer(state, answer, verdict.repair_instruction)
             repaired = True
             repair_attempts += 1
+            self._progress(
+                "research_judge",
+                "Checking the repaired answer before publishing.",
+                {"agent_id": "research_judge", "repair_attempts": repair_attempts},
+            )
             verdict = judge_research_final(self.request, state, model_response.text)
         return {
             "model_response": model_response,
@@ -1379,6 +1407,7 @@ class LeadResearchAgent:
             "repaired": repaired,
             "repair_attempts": repair_attempts,
             "answer_streamed": self.answer_streamed,
+            "replay_final_answer": repaired,
         }
 
     def _stream_synthesize_answer(self, state: ResearchStateStore) -> model_client.ModelResponse:

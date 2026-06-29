@@ -4,7 +4,7 @@ from typing import Any
 
 from app.config import get_settings
 from app.services.agent import model_client
-from app.services.agent.langgraph_runtime.graph import run_stub_graph
+from app.services.agent.langgraph_runtime.graph import run_stub_graph  # noqa: F401 — re-exported for tests
 from app.services.agent.models import new_id
 from app.services.agent.research_models import (
     EvidencePack,
@@ -29,24 +29,26 @@ def configured_orchestrator() -> str:
 
 
 def run_langgraph_research(request: Any, tools: Any, progress: Any = None) -> dict[str, Any]:
-    """Run the Slice 0A LangGraph compatibility shell.
+    """LangGraph research entry point — Slice 1.
 
-    All nodes are placeholders. The returned dictionary intentionally matches
-    the public keys consumed from the legacy lead_research_loop result.
+    The first four nodes (brief, subject_derivation, contract, plan) are real.
+    Remaining nodes (search → repair) are still stubs until Slice 2+.
+    The returned dictionary matches the public keys of lead_research_loop.
     """
-
     _ = tools
     run_id = new_id("lgrun")
     final_state = run_stub_graph(
         {"request_message": getattr(request, "message", ""), "visited_nodes": [], "artifacts": {}},
         run_id=run_id,
+        request=request,
         progress=progress,
     )
+    stub_model = "langgraph-slice-1-stub"
     response = model_client.ModelResponse(
         text=final_state.get("answer", ""),
-        model_used=final_state.get("model_used", "langgraph-slice-0a-stub"),
+        model_used=final_state.get("model_used", stub_model),
         latency_ms=final_state.get("latency_ms", 0),
-        cost_usd=final_state.get("cost_usd", 0.0),
+        cost_usd=final_state.get("cost_usd_spent", 0.0),
         model_role="research_synthesis",
     )
     feedback = ResearchFeedbackLoop(
@@ -60,7 +62,7 @@ def run_langgraph_research(request: Any, tools: Any, progress: Any = None) -> di
         "tool_calls": [],
         "evidence": EvidencePack(),
         "response": response,
-        "plan": ResearchPlan(source="stub", fallback_reason="LangGraph Slice 0A compatibility shell."),
+        "plan": final_state.get("plan") or ResearchPlan(source="stub", fallback_reason="LangGraph Slice 1 stub — search not yet wired."),
         "worker_reports": [],
         "feedback": feedback,
         "answer_streamed": False,

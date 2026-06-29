@@ -90,16 +90,27 @@ def _evict_old_runs() -> None:
 # Background runner
 # ---------------------------------------------------------------------------
 
-def _ensure_evals_on_path() -> None:
-    """Make sure apps/api is on sys.path so evals.run_parity_comparator imports work."""
+def _load_parity_comparator_module():
+    """Load evals/run_parity_comparator.py directly from its file path.
+
+    We use importlib.util rather than a bare `from evals.xxx import ...` because
+    the FastAPI process may not have apps/api on sys.path and the evals/ directory
+    has no __init__.py, making it an implicit namespace package that can be shadowed
+    by other installed packages.  Loading by absolute path is fully deterministic.
+    """
+    import importlib.util as ilu
     api_root = Path(__file__).resolve().parents[2]  # apps/api
-    if str(api_root) not in sys.path:
-        sys.path.insert(0, str(api_root))
+    mod_path = api_root / "evals" / "run_parity_comparator.py"
+    if not mod_path.exists():
+        raise ImportError(f"run_parity_comparator.py not found at {mod_path}")
+    spec = ilu.spec_from_file_location("_parity_runner", mod_path)
+    mod = ilu.module_from_spec(spec)  # type: ignore[arg-type]
+    spec.loader.exec_module(mod)  # type: ignore[union-attr]
+    return mod
 
 
 def _run_parity_background(run_id: str, case_ids: list[str] | None) -> None:
     """Runs in a daemon thread; emits SSE events via the per-run queue."""
-    _ensure_evals_on_path()
     run = _get_run(run_id)
     events: queue.Queue = run["events"]
 
@@ -109,7 +120,10 @@ def _run_parity_background(run_id: str, case_ids: list[str] | None) -> None:
             compare_pipeline_results,
         )
         from app.services.agent.tools import Tools
-        from evals.run_parity_comparator import _load_golden_set, _run_legacy, _run_langgraph
+        _parity = _load_parity_comparator_module()
+        _load_golden_set = _parity._load_golden_set
+        _run_legacy = _parity._run_legacy
+        _run_langgraph = _parity._run_langgraph
 
         tools = Tools.from_settings()
         golden_set = _load_golden_set(case_ids)

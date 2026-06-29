@@ -138,6 +138,14 @@ class Settings(BaseSettings):
     # slide thumbnails to a vision-capable model and adds cost/latency.
     agentdeck_vision_judge_enabled: bool = True
     agentdeck_vision_judge_model: str = "gemini/gemini-2.5-flash"
+
+    # Research orchestration implementation selector. This is a deployment
+    # default, not an end-user request option.
+    fronei_orchestrator: str = "legacy"
+    # Reserved for trusted QA tooling in a later slice. Slice 0A intentionally
+    # does not implement a per-request override; production must fail closed if
+    # this unsafe bypass is enabled accidentally.
+    fronei_orchestrator_qa_override_enabled: bool = False
     agentdeck_vision_judge_max_slides: int = 12
     # Reuse a persistent Node/PptxGenJS process for AgentDeck rendering.
     # Falls back to one-shot subprocess rendering if the warm process fails.

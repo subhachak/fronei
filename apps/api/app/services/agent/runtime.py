@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from collections.abc import Callable, Iterator
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from app.services.agent import model_client
 from app.services.agent.deck_subtree import plan_deck
@@ -582,6 +585,26 @@ class Runtime:
         return result_box["result"]  # type: ignore[misc]
 
     def _run_research_subtree(self, request: TurnRequest, progress):
+        from app.services.agent.langgraph_runtime.runtime import configured_orchestrator
+
+        if configured_orchestrator() == "langgraph":
+            from app.config import get_settings
+            from app.services.agent.langgraph_runtime import run_langgraph_research
+            from app.services.agent.models import new_id
+
+            audit_id = new_id("lgaudit")
+            logger.info(
+                "langgraph_orchestrator_dispatch",
+                extra={
+                    "audit_id": audit_id,
+                    "orchestrator": "langgraph",
+                    "env": get_settings().app_env,
+                    "research_level": getattr(request, "research_level", None),
+                    "message_preview": (getattr(request, "message", "") or "")[:60],
+                },
+            )
+            return run_langgraph_research(request, self.tool_registry.tools, progress)
+
         if request.research_level == "deep":
             from queue import Empty, Queue
             from threading import Thread

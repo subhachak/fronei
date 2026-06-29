@@ -1084,8 +1084,17 @@ def _tech_arch_anchor_queries(original_message: str) -> list[str]:
 def _vendor_comparison_anchor_queries(original_message: str) -> list[str]:
     if _llm_vendor_comparison_subject(original_message):
         return ["OpenAI API models pricing official docs GPT chatbot", "Anthropic Claude API models pricing official docs chatbot", "Google Gemini API models pricing official docs chatbot", "LLM API model pricing comparison OpenAI Anthropic Google Gemini Claude GPT"]
+    entities = _extract_named_comparison_subjects(original_message)
+    focus = _comparison_focus_terms(original_message)
+    if len(entities) >= 2:
+        subject = " ".join(entities[:5])
+        return [
+            f"{subject} {focus} official documentation",
+            f"{subject} {focus} pricing official docs",
+            f"{subject} {focus} comparison limitations",
+        ]
     subject = _compact_search_subject(original_message)
-    return [f"{subject} pricing comparison", f"{subject} vs alternatives review site:g2.com OR site:capterra.com", f"{subject} analyst comparison 2024 2025"]
+    return [f"{subject} pricing comparison official docs", f"{subject} vs alternatives review site:g2.com OR site:capterra.com", f"{subject} analyst comparison 2024 2025"]
 
 
 def _market_landscape_anchor_queries(original_message: str) -> list[str]:
@@ -1120,6 +1129,7 @@ def _per_entity_anchor_queries(message: str, budget: ResearchBudget) -> list[Sea
     if len(entities) < 3:
         return []
     workers: list[SearchWorkerPlan] = []
+    focus = _comparison_focus_terms(message)
     for entity in entities:
         # For known tech entities, prefer official docs/GitHub
         entity_lower = entity.lower().replace(" ", "")
@@ -1133,8 +1143,14 @@ def _per_entity_anchor_queries(message: str, budget: ResearchBudget) -> list[Sea
             query = f"LangGraph official docs architecture state graph agents site:langchain.com"
         elif "crewai" in entity_lower:
             query = f"CrewAI official docs role-based crew agent coordination site:docs.crewai.com"
+        elif entity_lower in {"awss3", "amazons3", "s3"}:
+            query = "AWS S3 official documentation durability storage classes pricing data transfer out egress"
+        elif "googlecloudstorage" in entity_lower or entity_lower == "gcs":
+            query = "Google Cloud Storage official docs durability storage classes pricing egress data transfer"
+        elif "azureblobstorage" in entity_lower or entity_lower == "azureblob":
+            query = "Azure Blob Storage official docs durability redundancy access tiers pricing egress data transfer"
         else:
-            query = f"{entity} official documentation architecture overview 2025"
+            query = f"{entity} official documentation {focus}"
         workers.append(
             SearchWorkerPlan(
                 question=f"Per-entity anchor: {entity} primary source",
@@ -1231,6 +1247,29 @@ def _compact_search_subject(message: str) -> str:
     tokens = [token for token in re.findall(r"[a-z0-9.]{2,}", (message or "").lower()) if token not in stop]
     cleaned = " ".join(_dedupe(tokens)[:16])
     return cleaned[:140] or (message or "")[:110] or "research topic"
+
+
+def _comparison_focus_terms(message: str) -> str:
+    text = (message or "").lower()
+    focus_terms: list[str] = []
+    term_map = [
+        ("durability", ("durability", "reliability", "data loss")),
+        ("availability SLA", ("availability", "sla", "uptime")),
+        ("pricing", ("pricing", "price", "cost", "costs", "tco", "licensing")),
+        ("tiers", ("tier", "tiers", "class", "classes", "storage class", "access tier")),
+        ("egress", ("egress", "data transfer", "transfer out", "bandwidth")),
+        ("redundancy", ("redundancy", "replication", "multi-region", "zone")),
+        ("security compliance", ("security", "compliance", "soc 2", "hipaa")),
+        ("API integration", ("api", "integration", "interoperability")),
+        ("implementation", ("implementation", "deployment", "migration")),
+        ("limitations", ("limitation", "limitations", "tradeoff", "tradeoffs", "failure")),
+    ]
+    for label, needles in term_map:
+        if any(needle in text for needle in needles):
+            focus_terms.append(label)
+    if focus_terms:
+        return " ".join(_dedupe(focus_terms)[:8])
+    return "pricing capabilities limitations"
 
 
 def _extract_search_subject_phrase(message: str) -> str:
@@ -1412,9 +1451,37 @@ def _is_framework_comparison_request(message: str) -> bool:
 
 def _llm_vendor_comparison_subject(message: str) -> bool:
     text = (message or "").lower()
-    model_terms = ("llm", "model", "models", "gpt", "openai", "anthropic", "claude", "gemini", "google", "chatbot")
-    api_terms = ("api", "provider", "vendor", "pricing", "cost", "cheap", "accuracy", "fast", "fidelity")
-    return any(term in text for term in model_terms) and any(term in text for term in api_terms)
+    if any(
+        term in text
+        for term in (
+            "aws s3",
+            "amazon s3",
+            "google cloud storage",
+            "azure blob",
+            "blob storage",
+            "object storage",
+            "storage bucket",
+            "egress",
+            "durability",
+        )
+    ) and not any(term in text for term in ("openai", "anthropic", "claude", "gemini", "gpt", "llm")):
+        return False
+
+    explicit_llm_terms = (
+        "llm",
+        "language model",
+        "large language model",
+        "gpt",
+        "openai",
+        "anthropic",
+        "claude",
+        "gemini",
+    )
+    model_use_terms = ("model", "models", "chatbot", "chat bot", "ai assistant")
+    decision_terms = ("api", "provider", "vendor", "pricing", "cost", "cheap", "accuracy", "fast", "fidelity", "affordable")
+    if any(term in text for term in explicit_llm_terms) and any(term in text for term in decision_terms + model_use_terms):
+        return True
+    return any(term in text for term in model_use_terms) and any(term in text for term in decision_terms) and "storage" not in text
 
 
 def _public_technical_subject(subject: str) -> str:

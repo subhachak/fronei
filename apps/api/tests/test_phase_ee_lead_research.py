@@ -1274,6 +1274,51 @@ def test_profile_execution_policies_drive_domain_workers_and_anchor_queries():
     assert any(worker.discovery_domain == "documentation" for worker in workers)
 
 
+def test_vendor_comparison_cloud_storage_does_not_use_llm_provider_lanes():
+    from app.services.agent.research_subtree import (
+        CoverageCell,
+        CoverageContract,
+        plan_from_contract,
+        research_budget_for,
+    )
+
+    request = TurnRequest(
+        message="Compare AWS S3, Google Cloud Storage, and Azure Blob Storage on durability, pricing tiers, and egress costs.",
+        research_level="deep",
+    )
+    contract = CoverageContract(
+        cells=[
+            CoverageCell(subject="AWS S3", dimension="durability"),
+            CoverageCell(subject="AWS S3", dimension="pricing tiers"),
+            CoverageCell(subject="AWS S3", dimension="egress costs"),
+            CoverageCell(subject="Google Cloud Storage", dimension="durability"),
+            CoverageCell(subject="Google Cloud Storage", dimension="pricing tiers"),
+            CoverageCell(subject="Google Cloud Storage", dimension="egress costs"),
+            CoverageCell(subject="Azure Blob Storage", dimension="durability"),
+            CoverageCell(subject="Azure Blob Storage", dimension="pricing tiers"),
+            CoverageCell(subject="Azure Blob Storage", dimension="egress costs"),
+        ],
+        subjects=["AWS S3", "Google Cloud Storage", "Azure Blob Storage"],
+        dimensions=["durability", "pricing tiers", "egress costs"],
+        source="brief_anchored:vendor_comparison",
+    )
+
+    plan = plan_from_contract(request, contract, research_budget_for(request))
+    queries = " ".join(worker.query for worker in plan.workers).lower()
+
+    assert "openai" not in queries
+    assert "anthropic" not in queries
+    assert "gemini" not in queries
+    assert "llm api" not in queries
+    assert "chatbot" not in queries
+    assert "aws s3" in queries
+    assert "google cloud storage" in queries
+    assert "azure blob storage" in queries
+    assert "durability" in queries
+    assert "pricing" in queries
+    assert "egress" in queries
+
+
 def test_coverage_contract_fallback_has_cells(monkeypatch):
     from app.services.agent import model_client
     from app.services.agent.research_subtree import ResearchBrief, generate_coverage_contract

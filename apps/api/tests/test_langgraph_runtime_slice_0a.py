@@ -30,11 +30,17 @@ def test_langgraph_slice_0a_returns_legacy_public_shape(monkeypatch):
         "replay_final_answer",
     }.issubset(result)
     assert result["response"].text == ""
-    assert result["response"].model_used == "langgraph-slice-0a-stub"
+    assert result["response"].model_used == "langgraph-slice-0b-stub"
     assert result["sources"] == []
     assert result["tool_calls"] == []
-    assert result["langgraph_state"]["visited_nodes"] == list(NODE_ORDER)
-    assert [stage for stage, _message, _data in events] == list(NODE_ORDER)
+    # All pipeline nodes must be visited; budget gate nodes are additional.
+    visited = result["langgraph_state"]["visited_nodes"]
+    for node in NODE_ORDER:
+        assert node in visited, f"Expected node '{node}' in visited_nodes"
+    # Progress events are emitted for every pipeline node (plus budget gate nodes).
+    stages = [stage for stage, _message, _data in events]
+    for node in NODE_ORDER:
+        assert node in stages, f"Expected progress event for '{node}'"
 
 
 def test_server_side_langgraph_flag_runs_stub_path(monkeypatch):
@@ -56,7 +62,7 @@ def test_server_side_langgraph_flag_runs_stub_path(monkeypatch):
     result = next(envelope.data for envelope in envelopes if envelope.type == "result")
     assert result["route"] == "research"
     assert result["answer"] == ""
-    assert result["model_used"] == "langgraph-slice-0a-stub"
+    assert result["model_used"] == "langgraph-slice-0b-stub"
     assert any(event["stage"] == "brief" for event in result["events"])
 
 
@@ -93,7 +99,7 @@ def test_ordinary_request_cannot_select_langgraph_path(monkeypatch):
     assert called is False
     result = next(envelope.data for envelope in envelopes if envelope.type == "result")
     assert result["route"] == "research"
-    assert result["model_used"] != "langgraph-slice-0a-stub"
+    assert result["model_used"] != "langgraph-slice-0b-stub"
 
 
 def test_production_unsafe_qa_override_fails_closed(monkeypatch):

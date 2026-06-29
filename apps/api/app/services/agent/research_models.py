@@ -43,6 +43,7 @@ _RESEARCH_PROFILES: tuple[ResearchProfile, ...] = (
 
 
 _LOW_VALUE_CONTENT_MARKERS = (
+    "ncbi home page",
     "log in",
     "dashboard",
     "publications",
@@ -52,6 +53,13 @@ _LOW_VALUE_CONTENT_MARKERS = (
     "navigation menu",
     "cookie settings",
     "subscribe",
+    "for authors",
+    "for reviewers",
+    "for editors",
+    "for librarians",
+    "for publishers",
+    "for societies",
+    "conference organizers",
 )
 
 
@@ -65,7 +73,13 @@ def _looks_like_low_value_extraction(text: str) -> bool:
         return True
     if markers >= 3 and len(cleaned) < 900:
         return True
-    if cleaned.count("![") >= 3 and markers >= 2:
+    image_count = cleaned.count("![")
+    if image_count >= 3 and (markers >= 1 or "static/img" in cleaned or ".svg" in cleaned):
+        return True
+    if image_count >= 5:
+        return True
+    link_label_count = cleaned.count("](")
+    if link_label_count >= 5 and markers >= 3:
         return True
     return False
 

@@ -1865,6 +1865,68 @@ def test_bind_evidence_uses_snippet_when_extracted_content_is_account_chrome():
     assert "Dashboard" not in evidence.items[0].evidence
 
 
+def test_bind_evidence_uses_snippet_when_extracted_content_is_image_chrome():
+    from app.services.agent.research_subtree import ResearchPlan, bind_evidence
+
+    snippet = "Renal biomarkers showed creatine supplementation did not produce kidney injury in the trial."
+    chrome = (
+        "![NCBI home page](https://cdn.ncbi.nlm.nih.gov/static/img/ncbi.svg) "
+        "![](https://cdn.ncbi.nlm.nih.gov/static/img/search.svg) "
+        "![](https://cdn.ncbi.nlm.nih.gov/static/img/person.svg) "
+        "![](https://cdn.ncbi.nlm.nih.gov/static/img/expand_less.svg) "
+        "![](https://cdn.ncbi.nlm.nih.gov/static/img/expand_more.svg)"
+    )
+
+    evidence = bind_evidence(
+        [
+            Source(
+                title="Novel renal biomarkers show that creatine supplementation is safe",
+                url="https://pmc.ncbi.nlm.nih.gov/articles/PMC7329184",
+                snippet=snippet,
+                content=chrome,
+            )
+        ],
+        plan=ResearchPlan(questions=["creatine kidney biomarkers"], min_evidence_items=1),
+        max_items=1,
+    )
+
+    assert evidence.items
+    assert "Renal biomarkers" in evidence.items[0].evidence
+    assert "static/img" not in evidence.items[0].evidence
+
+
+def test_bind_evidence_uses_snippet_when_extracted_content_is_publisher_nav():
+    from app.services.agent.research_subtree import ResearchPlan, bind_evidence
+
+    snippet = "Reviewers recommend avoiding creatine in very low GFR from pre-existing kidney disease."
+    chrome = (
+        "[For Authors](https://www.mdpi.com/authors)"
+        "[For Reviewers](https://www.mdpi.com/reviewers)"
+        "[For Editors](https://www.mdpi.com/editors)"
+        "[For Librarians](https://www.mdpi.com/librarians)"
+        "[For Publishers](https://www.mdpi.com/publishing_services)"
+        "[For Societies](https://www.mdpi.com/societies)"
+        "[For Conference Organizers](https://www.mdpi.com/conference_organizers)"
+    )
+
+    evidence = bind_evidence(
+        [
+            Source(
+                title="Creatine Supplementation-Induced Kidney Dysfunction",
+                url="https://www.mdpi.com/2072-6643/15/6/1466",
+                snippet=snippet,
+                content=chrome,
+            )
+        ],
+        plan=ResearchPlan(questions=["creatine pre-existing kidney disease"], min_evidence_items=1),
+        max_items=1,
+    )
+
+    assert evidence.items
+    assert "very low GFR" in evidence.items[0].evidence
+    assert "For Authors" not in evidence.items[0].evidence
+
+
 def test_technical_architecture_binds_architecture_cards():
     from app.services.agent.research_subtree import ResearchPlan, bind_evidence
 

@@ -327,6 +327,14 @@ def _extract_named_comparison_subjects(message: str) -> list[str]:
     # Look for explicit list structure: "top N X: A, B, C, D, E"
     top_match = re.search(r"\btop\s+\d+\s+[^:]{0,180}:\s*(.+?)(?:\.|$)", text, re.IGNORECASE)
     region = top_match.group(1) if top_match else text
+    if not top_match:
+        compare_match = re.search(
+            r"\b(?:compare|comparing|evaluate|evaluating|assess|assessing|review|rank|ranking|benchmark)\b\s+(.+)",
+            region,
+            flags=re.IGNORECASE,
+        )
+        if compare_match:
+            region = compare_match.group(1)
 
     # Strip a leading comparison verb from the region
     region = re.sub(
@@ -348,7 +356,7 @@ def _extract_named_comparison_subjects(message: str) -> list[str]:
         r"|\bincluding\b|\bfor (?:a|an|the|use|each|globally|enterprise|production)\b"
         r"|\bas (?:a|an|the)\b|\bto (?:determine|decide|select|choose)\b"
         r"|\bcovering\b|\bacross\b|\bspanning\b"
-        r"|\bon\b(?=\s+\w+(?:,|\s+and\b))"
+        r"|\bon\b(?=\s+(?:[\w/-]+\s+){0,4}[\w/-]+(?:,|\s+and\b))"
         r"|\bas (?:[A-Z][A-Za-z]*\s+)?(?:platforms?|tools?|systems?|solutions?|vendors?|products?|providers?|frameworks?|services?|options?|databases?|stacks?)\b",
         region,
         flags=re.IGNORECASE,

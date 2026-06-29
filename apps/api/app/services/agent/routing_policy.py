@@ -164,6 +164,23 @@ BOOTSTRAP_SIGNAL_GROUPS: tuple[SignalGroup, ...] = (
         ),
         description="Owner-experience and durability questions need broader evidence than a quick web lookup.",
     ),
+    SignalGroup(
+        id="workplace_policy_evidence",
+        suggested_route="agentic",
+        terms=(
+            "four-day work week",
+            "four day work week",
+            "4-day work week",
+            "4 day work week",
+            "4 day week",
+            "reduced work week",
+            "compressed work week",
+            "productivity and retention",
+            "employee retention",
+            "pilot program",
+        ),
+        description="Evidence-backed workplace policy and retention/productivity decisions need source-grounded synthesis.",
+    ),
 )
 
 _GROUPS_BY_ID = {group.id: group for group in BOOTSTRAP_SIGNAL_GROUPS}

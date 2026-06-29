@@ -972,7 +972,7 @@ def _score_passage(
 
 
 def _passage_confidence(source: Source, *, passage_score: float) -> float:
-    base = 0.66 if source.content else 0.50
+    base = 0.66 if _source_evidence_text(source) == (source.content or "").strip() and source.content else 0.50
     return max(0.45, min(0.9, base + min(0.18, passage_score * 0.18)))
 
 

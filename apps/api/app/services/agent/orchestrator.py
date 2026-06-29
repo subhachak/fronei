@@ -8,6 +8,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from app.services.agent import model_client
+from app.services.agent import routing_policy
 from app.services.agent.models import RouteName, TurnRequest
 
 # Imported lazily to avoid circular imports — only used inside choose_research_level().
@@ -188,12 +189,15 @@ def heuristic_decide(
             available_routes=available_routes,
             available_tools=available_tools,
         )
+    signal_decision = routing_policy.evaluate_routing_signals(request.message)
     if asks_research and asks_doc:
         route: RouteName = "research_document"
     elif asks_research:
         route = "research"
     elif asks_doc or request.output_format in {"docx", "markdown", "pptx"}:
         route = "document"
+    elif signal_decision.suggested_route:
+        route = "research"
     else:
         route = "direct"
     research_level = choose_research_level(request, route)
@@ -290,6 +294,11 @@ def _normalize_research_decision(request: TurnRequest, decision: OrchestratorDec
     text = request.message.lower()
     asks_research = "research" in text or decision.route in {"research", "research_document"}
     asks_doc = _asks_for_document_artifact(text)
+    signal_decision = routing_policy.evaluate_routing_signals(request.message)
+    if decision.source != "forced" and decision.route == "direct" and signal_decision.suggested_route:
+        decision.route = "research"
+        decision.reason = f"Routing signals require source-grounded handling. {decision.reason}".strip()
+        asks_research = True
     if request.output_format == "chat" and _asks_research_about_document_tools(text):
         decision.route = "research"
         decision.output_format = "chat"

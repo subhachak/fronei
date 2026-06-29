@@ -1,0 +1,122 @@
+name: LangGraph Parity Check
+
+# Runs the real golden-set parity comparator against both pipelines.
+# Produces a structured markdown report as a job summary and uploads the
+# JSON results as a workflow artifact.
+#
+# Required secrets:
+#   OPENAI_API_KEY        — for LLM calls (synthesis, classification, etc.)
+#   TAVILY_API_KEY        — for web search tool
+#   ANTHROPIC_API_KEY     — optional: if Anthropic models are in the model policy
+#   OPENROUTER_API_KEY    — optional: if OpenRouter models are used
+#
+# The job exits 0 (cutover recommended) or 1 (gates not met).
+# The cutover gate requires ALL of the following across 25 golden-set cases:
+#   - 100% structural pass (no crashes in either pipeline)
+#   - ≥80% of cases: LangGraph answer length ≥70% of legacy
+#   - ≥80% of cases: LangGraph evidence count ≥80% of legacy
+#   - ≥80% of cases: LangGraph claim count ≥70% of legacy
+#   - ≥80% judge verdict agreement
+#   - ≥80% of cases: LangGraph cost ≤1.5× legacy
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Optional label for result files (e.g. 'candidate-v2')"
+        required: false
+        default: ""
+      case_ids:
+        description: "Comma-separated case IDs to run (empty = all 25)"
+        required: false
+        default: ""
+
+  schedule:
+    # Weekly run every Sunday at 03:00 UTC
+    - cron: "0 3 * * 0"
+
+jobs:
+  parity:
+    name: Golden-set parity comparison
+    runs-on: ubuntu-latest
+    timeout-minutes: 90       # 25 cases × ~3 min each (with real search)
+
+    defaults:
+      run:
+        working-directory: apps/api
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: apps/api/requirements*.txt
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          # Install the API package and all its deps
+          pip install -e ".[dev]" || pip install -r requirements.txt
+
+      - name: Validate API key availability
+        run: |
+          python - <<'EOF'
+          import os, sys
+          required = {"OPENAI_API_KEY", "TAVILY_API_KEY"}
+          missing = [k for k in required if not os.environ.get(k)]
+          if missing:
+              print(f"ERROR: Missing required secrets: {', '.join(missing)}")
+              sys.exit(1)
+          print(f"API keys present: {', '.join(required - set(missing))}")
+          EOF
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+
+      - name: Run parity comparator
+        id: parity
+        run: |
+          # Build optional args
+          EXTRA_ARGS="--markdown"
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            EXTRA_ARGS="$EXTRA_ARGS --tag ${{ github.event.inputs.tag }}"
+          fi
+          if [ -n "${{ github.event.inputs.case_ids }}" ]; then
+            IDS=$(echo "${{ github.event.inputs.case_ids }}" | tr ',' ' ')
+            EXTRA_ARGS="$EXTRA_ARGS --ids $IDS"
+          fi
+
+          python -m evals.run_parity_comparator $EXTRA_ARGS
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          YOU_API_KEY: ${{ secrets.YOU_API_KEY }}
+          NIMBLE_API_KEY: ${{ secrets.NIMBLE_API_KEY }}
+          # Force legacy default so the comparator runs both explicitly
+          FRONEI_ORCHESTRATOR: legacy
+          # Use a file-based SQLite DB for the run (avoids needing a real DB)
+          DATABASE_URL: sqlite:///./parity_run.db
+          APP_ENV: ci
+
+      - name: Upload parity results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: parity-results-${{ github.run_id }}
+          path: apps/api/evals/parity_results/
+          retention-days: 90
+
+      - name: Post summary on failure
+        if: failure() && steps.parity.outcome == 'failure'
+        run: |
+          echo "## ❌ Parity gate did not pass" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Review the uploaded \`parity-results\` artifact for per-case breakdown." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Do not promote \`FRONEI_ORCHESTRATOR=langgraph\` as the default until all gates pass.**" >> $GITHUB_STEP_SUMMARY

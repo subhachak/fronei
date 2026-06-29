@@ -46,6 +46,17 @@ class FakeTools(Tools):
         return extracted, ToolCall(name="read_url", input={"urls": urls}, output={"source_count": 1}, latency_ms=1)
 
 
+def _use_legacy_orchestrator(monkeypatch) -> None:
+    """Pin a test to the legacy research pipeline (FRONEI_ORCHESTRATOR=legacy).
+
+    Call as the first line of any test that specifically exercises legacy-path
+    behavior (progress stages, deep-research threading, repair events, etc.)
+    so the test continues to pass now that LangGraph is the production default.
+    """
+    import app.services.agent.langgraph_runtime.runtime as lg_runtime
+    monkeypatch.setattr(lg_runtime, "configured_orchestrator", lambda: "legacy")
+
+
 def _patch_completion(monkeypatch, text="# Answer\n\nDone."):
     from app.services.agent import model_client
 
@@ -648,6 +659,7 @@ def test_agent_orchestrator_falls_back_to_heuristic(monkeypatch):
 
 
 def test_agent_research_streams_milestones(monkeypatch):
+    _use_legacy_orchestrator(monkeypatch)
     _patch_completion(monkeypatch, "Research answer [S1].")
     runtime = Runtime(tools=FakeTools())
 
@@ -692,6 +704,7 @@ def test_agent_research_streams_milestones(monkeypatch):
 
 
 def test_agent_deep_research_replays_final_answer_stream(monkeypatch):
+    _use_legacy_orchestrator(monkeypatch)
     from app.services.agent import runtime as runtime_module
     from app.services.agent import research_subtree
     from app.services.agent.model_client import ModelResponse
@@ -745,6 +758,7 @@ def test_agent_deep_research_replays_final_answer_stream(monkeypatch):
 
 
 def test_agent_deep_research_emits_heartbeat_during_quiet_lead_loop(monkeypatch):
+    _use_legacy_orchestrator(monkeypatch)
     from app.services.agent import runtime as runtime_module
     from app.services.agent import research_subtree
     from app.services.agent.model_client import ModelResponse
@@ -793,6 +807,7 @@ def test_agent_deep_research_emits_heartbeat_during_quiet_lead_loop(monkeypatch)
 
 
 def test_agent_deep_research_replays_repaired_final_answer(monkeypatch):
+    _use_legacy_orchestrator(monkeypatch)
     from app.services.agent import runtime as runtime_module
     from app.services.agent import research_subtree
     from app.services.agent.model_client import ModelResponse
@@ -1012,6 +1027,7 @@ def test_research_judge_rejects_owner_reliability_no_evidence_answer():
 
 
 def test_agent_research_emits_agentic_goal_guardrail_and_judge_events(monkeypatch):
+    _use_legacy_orchestrator(monkeypatch)
     _patch_completion(monkeypatch, "Research answer [S1].")
     runtime = Runtime(tools=FakeTools())
 
@@ -1127,6 +1143,7 @@ def test_deep_link_helpers_skip_svg_namespace_links():
 
 
 def test_agent_research_repair_loop_runs_when_judge_requests_repair(monkeypatch):
+    _use_legacy_orchestrator(monkeypatch)
     from app.services.agent import model_client
 
     def fake_complete(messages, *, preferred_model=None, role=None, quality_mode="standard", timeout_s=30, max_tokens=1200, **_kwargs):
@@ -1335,6 +1352,7 @@ def test_agent_web_search_falls_back_to_nimble(monkeypatch):
 
 
 def test_agent_research_document_creates_artifact(monkeypatch):
+    _use_legacy_orchestrator(monkeypatch)
     _patch_completion(monkeypatch, "## Report\n\n- Finding")
     runtime = Runtime(tools=FakeTools())
 
@@ -1373,6 +1391,7 @@ def test_agent_research_document_creates_artifact(monkeypatch):
 
 
 def test_agent_markdown_output_renders_in_chat_without_artifact(monkeypatch):
+    _use_legacy_orchestrator(monkeypatch)
     markdown = "## Report\n\n- Finding"
     _patch_completion(monkeypatch, markdown)
     runtime = Runtime(tools=FakeTools())
@@ -1899,6 +1918,7 @@ def test_agent_workspace_context_is_shared_across_conversations(monkeypatch, tmp
 
 
 def test_agent_vague_followup_does_not_import_other_workspace_conversation(monkeypatch, tmp_path):
+    _use_legacy_orchestrator(monkeypatch)
     from app.services.agent import model_client, persistence
 
     _set_artifact_dir(monkeypatch, tmp_path)
@@ -2143,6 +2163,7 @@ def test_agent_deep_research_requires_confirmation(monkeypatch):
 
 
 def test_agent_confirmed_deep_research_runs_deep_budget(monkeypatch):
+    _use_legacy_orchestrator(monkeypatch)
     _patch_completion(monkeypatch, "Deep research answer [S1].")
     runtime = Runtime(tools=FakeTools())
 

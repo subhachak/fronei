@@ -341,7 +341,6 @@ def bind_evidence(
     contract: CoverageContract | None = None,
     overrides: dict[str, Any] | None = None,
     ledger: ResearchBudgetLedger | None = None,
-    pre_classified_by_url: dict[str, list[dict[str, Any]]] | None = None,
 ) -> EvidencePack:
     # Phase 4 — diversity backfill before the main loop so the reordered list
     # drives all subsequent EvidenceItem creation and dedup.
@@ -452,7 +451,6 @@ def bind_evidence(
         plan=plan,
         overrides=overrides,
         ledger=ledger,
-        pre_classified_by_url=pre_classified_by_url,
     )
     pack.architecture_cards = extract_architecture_cards(pack, plan=plan)
     return pack
@@ -465,14 +463,17 @@ def extract_evidence_claims(
     max_claims_per_item: int = 3,
     overrides: dict[str, Any] | None = None,
     ledger: ResearchBudgetLedger | None = None,
-    pre_classified_by_url: dict[str, list[dict[str, Any]]] | None = None,
 ) -> list[EvidenceClaim]:
     """Extract and classify claims from all evidence items.
 
-    When *pre_classified_by_url* is supplied (populated by the classify_claims
-    graph node), items whose URL is already in the map reuse those results
-    directly — no second LLM call is made for those sources.  Items not in the
-    map still go through the normal classify_claims_llm path.
+    The classify_claims graph node runs a pre-pass over raw source.content
+    sentences for audit/analytics purposes and stores results in state as
+    claim_classification_results.  Those results are intentionally NOT reused
+    here: classify_claims operates on raw source text while bind operates on
+    _select_evidence_passages passage text — different text fragments, different
+    sentence ordering — so index-based reuse would corrupt claim_type, claim_role,
+    and freshness_risk.  bind_evidence always runs its own classify_claims_llm
+    call on the evidence passage sentences, tracked through the bind_ledger.
     """
     claims: list[EvidenceClaim] = []
     query_terms = _claim_query_terms(plan)
@@ -487,13 +488,8 @@ def extract_evidence_claims(
         candidates.sort(key=lambda pair: pair[0], reverse=True)
         top_sentences = [s for _, s in candidates[:item_claim_limit]]
 
-        # Phase 4 — reuse pre-classified results from the classify_claims node
-        # when available; otherwise fall back to a fresh LLM call (or regex fallback).
-        if pre_classified_by_url and item.url and item.url in pre_classified_by_url:
-            llm_results = pre_classified_by_url[item.url]
-        else:
-            # Phase 1 — LLM classification batched per source; regex fallback on failure.
-            llm_results = classify_claims_llm(top_sentences, item, overrides=overrides, ledger=ledger)
+        # LLM classification batched per evidence passage; regex fallback on failure.
+        llm_results = classify_claims_llm(top_sentences, item, overrides=overrides, ledger=ledger)
 
         for i, (score, sentence) in enumerate(candidates[:item_claim_limit]):
             llm = llm_results[i] if i < len(llm_results) else {}

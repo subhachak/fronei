@@ -4,6 +4,7 @@ import {
   Activity,
   ArrowLeft,
   Cpu,
+  FlaskConical,
   LayoutDashboard,
   ListTodo,
   Loader2,
@@ -16,6 +17,7 @@ import {
 import { useState } from 'react'
 import { useTheme } from '../../hooks/useTheme'
 import { useAdmin } from '../hooks/useAdmin'
+import { EvalsTab } from './EvalsTab'
 import { ModelPolicyTab } from './ModelPolicyTab'
 import { JobsTab } from './JobsTab'
 import { OverviewTab } from './OverviewTab'
@@ -23,7 +25,7 @@ import { SystemTab } from './SystemTab'
 import { UsageTab } from './UsageTab'
 import { UsersTab } from './UsersTab'
 
-type AdminTab = 'overview' | 'jobs' | 'users' | 'modelpolicy' | 'usage' | 'system'
+type AdminTab = 'overview' | 'jobs' | 'users' | 'modelpolicy' | 'usage' | 'system' | 'evals'
 
 const TABS: { id: AdminTab; label: string; icon: typeof LayoutDashboard }[] = [
   { id: 'overview', label: 'Overview', icon: LayoutDashboard },
@@ -32,6 +34,7 @@ const TABS: { id: AdminTab; label: string; icon: typeof LayoutDashboard }[] = [
   { id: 'modelpolicy', label: 'Model policy', icon: Cpu },
   { id: 'usage', label: 'Usage', icon: Activity },
   { id: 'system', label: 'System', icon: ServerCog },
+  { id: 'evals', label: 'Evals', icon: FlaskConical },
 ]
 
 export function AdminShell({ embedded = false, onClose }: { embedded?: boolean; onClose?: () => void }) {
@@ -142,6 +145,7 @@ export function AdminShell({ embedded = false, onClose }: { embedded?: boolean; 
             {tab === 'modelpolicy' && <ModelPolicyTab authorizedFetch={authorizedFetch} />}
             {tab === 'usage' && <UsageTab authorizedFetch={authorizedFetch} />}
             {tab === 'system' && <SystemTab authorizedFetch={authorizedFetch} />}
+            {tab === 'evals' && <EvalsTab authorizedFetch={authorizedFetch} />}
           </>
         )}
       </div>

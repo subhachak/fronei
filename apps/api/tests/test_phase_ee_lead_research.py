@@ -2428,6 +2428,11 @@ def test_technical_architecture_ranker_prioritizes_primary_technical_sources():
 
 
 def test_runtime_routes_deep_to_lead_loop(monkeypatch):
+    # Pin to legacy: this test verifies the legacy lead_research_loop routing path.
+    # LangGraph is the production default since Slice 6; legacy remains reachable
+    # via FRONEI_ORCHESTRATOR=legacy.
+    import app.services.agent.langgraph_runtime.runtime as lg_runtime
+    monkeypatch.setattr(lg_runtime, "configured_orchestrator", lambda: "legacy")
     from app.services.agent import research_subtree
     from app.services.agent.runtime import Runtime
 

@@ -536,7 +536,7 @@ def _apply_profile_decision_guardrails(brief: ResearchBrief, request: TurnReques
 
     # High-precision deterministic overrides keep sensitive/vendor work from
     # drifting into generic strategy because of vague recommendation language.
-    if _vendor_comparison_signal(text) and profile in {"general", "strategy_brief", "market_landscape"}:
+    if _vendor_comparison_signal(text) and profile in {"general", "strategy_brief", "market_landscape", "policy_regulatory"}:
         if profile != "vendor_comparison" and profile not in secondary:
             secondary.append(profile)
         profile = "vendor_comparison"
@@ -621,16 +621,16 @@ def _technical_signal(message: str) -> bool:
 def infer_research_profile(message: str) -> ResearchProfile:
     text = (message or "").lower()
 
+    # vendor_comparison before policy: in vendor-selection work, compliance and
+    # regulatory risk are comparison dimensions, not the primary source strategy.
+    if _vendor_comparison_signal(text):
+        return "vendor_comparison"
+
     # policy_regulatory — check before technical to avoid misclassifying compliance
     # architecture queries. "policy" alone is omitted — too broad (routing policy,
     # model policy, AI policy document) — require stronger legal/regulatory signals.
     if _regulatory_signal(text) or any(term in text for term in ("law ", "laws", "legislation")):
         return "policy_regulatory"
-
-    # vendor_comparison before strategy: named options plus decision language is
-    # still fundamentally comparison research; strategy can tune the output.
-    if _vendor_comparison_signal(text):
-        return "vendor_comparison"
 
     # strategy_brief — executive decision framing
     if _strategy_signal(text):

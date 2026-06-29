@@ -22,11 +22,34 @@ settings = get_settings()
 configure_observability(settings)
 
 
+def _bootstrap_eval_cases() -> None:
+    """Seed golden-set eval cases on every startup (idempotent — skips existing rows)."""
+    import io
+    import logging
+    log = logging.getLogger(__name__)
+    try:
+        from scripts.seed_eval_cases import seed  # type: ignore[import]
+        # Capture the per-row stdout so startup logs stay clean
+        buf = io.StringIO()
+        import sys as _sys
+        _old_stdout, _sys.stdout = _sys.stdout, buf
+        try:
+            seed(force=False)
+        finally:
+            _sys.stdout = _old_stdout
+        summary = [l for l in buf.getvalue().splitlines() if l.startswith("Done")]
+        log.info("eval case bootstrap: %s", summary[0] if summary else "complete")
+    except Exception as exc:
+        # Never block startup — log and continue.
+        log.warning("eval case bootstrap skipped: %s", exc)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     check_production_config()
     check_schema_version(engine)
     configure_provider_keys()
+    _bootstrap_eval_cases()
     turn_job_worker.start()
     maintenance_job_worker.start()
     try:

@@ -1290,6 +1290,14 @@ def _domain_for_query(query: str) -> Literal["general", "academic", "repository"
 
 def _targeted_query(subject: str, dimensions: list[str], original: str) -> str:
     raw_subject = " ".join(str(subject or "").split())
+    if _is_owner_reliability_query(original):
+        focus = " ".join(str(dim) for dim in dimensions if dim).lower()
+        terms = "owner review reliability failure degradation warranty 12 months 18 months forum reddit"
+        if "software" in focus or "firmware" in focus:
+            terms = "owner forum firmware app bluetooth reliability failure warranty 12 months"
+        elif "support" in focus or "warranty" in focus:
+            terms = "owner review warranty claim support replacement failure forum reddit"
+        return f"{raw_subject} {terms}".strip()[:220]
     if len(_extract_named_framework_subjects(original)) >= 3:
         return _framework_comparison_query(raw_subject, dimensions)
     inferred_profile = infer_research_profile(original)
@@ -1314,6 +1322,28 @@ def _targeted_query(subject: str, dimensions: list[str], original: str) -> str:
         return f"{subject} {primary_dim} {grounding}".strip()[:180]
     base = f"{subject} {primary_dim}".strip()
     return f"{base} {original}".strip()[:220]
+
+
+def _is_owner_reliability_query(message: str) -> bool:
+    text = (message or "").lower()
+    owner_terms = (
+        "owner review",
+        "owner reviews",
+        "owner report",
+        "owner reports",
+        "owner experience",
+        "owner experiences",
+        "owners say",
+        "user reviews",
+        "customer reviews",
+        "reddit",
+        "forum",
+        "community",
+        "real-world",
+        "real world",
+    )
+    reliability_terms = ("reliability", "failure rate", "failure rates", "failures", "degradation", "capacity retention", "long-term", "long term", "1-2 years", "1–2 years", "warranty claim")
+    return any(term in text for term in owner_terms) and any(term in text for term in reliability_terms)
 
 
 def _framework_comparison_query(subject: str, dimensions: list[str]) -> str:

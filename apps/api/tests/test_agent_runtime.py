@@ -658,6 +658,49 @@ def test_owner_reliability_research_gets_larger_regular_budget():
     assert budget.max_tool_calls >= 30
 
 
+def test_owner_reliability_contract_query_is_compact():
+    from app.services.agent.research_planner import _targeted_query
+
+    query = _targeted_query(
+        "Anker SOLIX F3800",
+        ["Common failure modes and defects", "Failure rate and frequency after 1-2 years"],
+        "Research and summarize verified owner experiences and reviews to determine the real-world reliability and failure rate of Anker SOLIX home battery backup systems after 1-2 years.",
+    )
+
+    assert "Research and summarize" not in query
+    assert "owner review" in query
+    assert "12 months" in query
+    assert len(query) < 140
+
+
+def test_total_cost_of_ownership_does_not_trigger_owner_reviews():
+    from app.services.agent.research_planner import _targeted_query
+
+    query = _targeted_query(
+        "Epic",
+        ["interoperability architecture", "total cost of ownership", "known deployment failures"],
+        "Research and compare EHR platforms for mid-size hospital systems, including interoperability architecture, total cost of ownership, and known deployment failures.",
+    )
+
+    assert "owner review" not in query
+    assert "interoperability" in query or "implementation" in query
+
+
+def test_owner_reliability_reserves_reads_for_gap_followup():
+    from app.services.agent.runtime import _gap_followup_read_reserve
+    from app.services.agent.research_subtree import ResearchBudget, ResearchBudgetLedger
+
+    ledger = ResearchBudgetLedger(budget=ResearchBudget(max_sources=14, max_deep_links=6))
+    ledger.record_tool_call(sources_read=14)
+
+    reserve = _gap_followup_read_reserve(
+        TurnRequest(message="Anker SOLIX owner reviews real-world reliability failure rate after 1-2 years"),
+        ledger,
+    )
+
+    assert reserve == 4
+
+
 def test_owner_reliability_policy_only_evidence_gets_gap_markers():
     from app.services.agent.runtime import _add_owner_reliability_gaps
     from app.services.agent.research_subtree import EvidenceItem, EvidencePack

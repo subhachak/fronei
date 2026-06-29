@@ -399,8 +399,13 @@ def research_budget_for(request: TurnRequest) -> ResearchBudget:
 def _is_owner_reliability_research(message: str) -> bool:
     text = (message or "").lower()
     owner_terms = (
-        "owner",
-        "owners",
+        "owner review",
+        "owner reviews",
+        "owner report",
+        "owner reports",
+        "owner experience",
+        "owner experiences",
+        "owners say",
         "user reviews",
         "customer reviews",
         "reddit",

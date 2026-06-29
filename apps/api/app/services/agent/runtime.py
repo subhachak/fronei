@@ -55,8 +55,13 @@ from app.services.agent.tools import Tools, source_context
 def _is_owner_reliability_research(message: str) -> bool:
     text = (message or "").lower()
     owner_terms = (
-        "owner",
-        "owners",
+        "owner review",
+        "owner reviews",
+        "owner report",
+        "owner reports",
+        "owner experience",
+        "owner experiences",
+        "owners say",
         "user reviews",
         "customer reviews",
         "reddit",
@@ -104,6 +109,12 @@ def _add_owner_reliability_gaps(request: TurnRequest, evidence: EvidencePack) ->
             evidence.gaps.append(gap)
     if gaps and evidence.coverage >= 1.0:
         evidence.coverage = 0.55
+
+
+def _gap_followup_read_reserve(request: TurnRequest, ledger: ResearchBudgetLedger) -> int:
+    if not _is_owner_reliability_research(request.message):
+        return 0
+    return min(4, ledger.budget.max_deep_links, max(0, ledger.remaining_source_reads()))
 
 
 class Runtime:
@@ -692,7 +703,11 @@ class Runtime:
             )
             yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
         merged = self._merge_sources(selected, extracted)
-        deep_link_budget = min(ledger.budget.max_deep_links, ledger.remaining_source_reads())
+        gap_read_reserve = _gap_followup_read_reserve(request, ledger)
+        deep_link_budget = min(
+            ledger.budget.max_deep_links,
+            max(0, ledger.remaining_source_reads() - gap_read_reserve),
+        )
         deep_links = extract_deep_link_candidates(merged, max_links=deep_link_budget)
         event = progress(
             "deep_link_agent",
@@ -748,7 +763,9 @@ class Runtime:
                 ledger.record_tool_call(latency_ms=call.latency_ms, sources_seen=len(sources))
                 followup_public = [source for source in sources if is_public_source_url(source.url)]
                 followup_ranked = rank_sources(followup_public, plan)
-                followup_selected = [item.source for item in followup_ranked[: max(1, plan.min_evidence_items)]]
+                remaining_workers = max(1, len(followups) - idx + 1)
+                per_worker_read_limit = max(1, ledger.remaining_source_reads() // remaining_workers)
+                followup_selected = [item.source for item in followup_ranked[:per_worker_read_limit]]
                 if followup_selected and ledger.can_start_tool("read_url") and ledger.can_read_more_sources():
                     followup_selected = followup_selected[: ledger.remaining_source_reads()]
                     followup_extracted, followup_read_call = yield from self._run_tool(

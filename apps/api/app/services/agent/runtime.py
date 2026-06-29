@@ -348,6 +348,8 @@ class Runtime:
             elif route == "research":
                 research = yield from self._run_research_subtree(request, progress)
                 response = research["response"]
+                if request.research_level == "deep":
+                    yield from self._emit_buffered_answer(response, progress)
                 result = TurnResult(
                     turn_id=turn_id,
                     goal=goal,
@@ -482,6 +484,40 @@ class Runtime:
         )
         yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
         return response
+
+    def _emit_buffered_answer(self, response: model_client.ModelResponse, progress) -> Iterator[StreamEnvelope]:
+        """Emit answer stream events for non-streaming synthesis paths.
+
+        Deep lead-loop research uses internally retriable complete() calls for synthesis and
+        repair, so there is no token stream to forward live. Replay the final answer in
+        chunks before the result event so clients that render answer_delta/answer_complete
+        do not appear to stall at the research ledger.
+        """
+        text = response.text or ""
+        if not text:
+            return
+        char_count = 0
+        for start in range(0, len(text), 900):
+            delta = text[start : start + 900]
+            char_count += len(delta)
+            event = progress(
+                "answer_delta",
+                "Streaming answer.",
+                delta=delta,
+                char_count=char_count,
+                ephemeral_ui=True,
+            )
+            yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
+        event = progress(
+            "answer_complete",
+            "Answer stream complete.",
+            char_count=len(text),
+            model_used=response.model_used,
+            latency_ms=response.latency_ms,
+            cost_usd=response.cost_usd,
+            ephemeral_ui=True,
+        )
+        yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
 
     def _run_research_subtree(self, request: TurnRequest, progress):
         if request.research_level == "deep":

@@ -678,6 +678,59 @@ def test_agent_research_streams_milestones(monkeypatch):
     assert provider_events[0]["data"]["provider"] == "FakeSearch"
 
 
+def test_agent_deep_research_replays_final_answer_stream(monkeypatch):
+    from app.services.agent import runtime as runtime_module
+    from app.services.agent import research_subtree
+    from app.services.agent.model_client import ModelResponse
+    from app.services.agent.orchestrator import OrchestratorDecision
+
+    monkeypatch.setattr(runtime_module, "decide_fast_path", lambda request: SimpleNamespace(path="none"))
+    monkeypatch.setattr(
+        runtime_module,
+        "decide_with_options",
+        lambda request, **kwargs: OrchestratorDecision(
+            route="research",
+            research_level="deep",
+            requires_confirmation=False,
+            reason="test",
+            source="test",
+            available_routes=kwargs.get("available_routes", []),
+            available_tools=kwargs.get("available_tools", []),
+        ),
+    )
+
+    def fake_lead_loop(request, tools, progress):
+        progress("research_budget", "Lead research budget ledger closed.", {})
+        return {
+            "sources": [],
+            "tool_calls": [],
+            "evidence": None,
+            "response": ModelResponse(
+                text="Deep answer first paragraph.\n\nDeep answer second paragraph.",
+                model_used="fake-deep",
+                latency_ms=5,
+                cost_usd=0.0,
+            ),
+            "plan": None,
+            "feedback": None,
+        }
+
+    monkeypatch.setattr(research_subtree, "lead_research_loop", fake_lead_loop)
+
+    envelopes = _collect_stream(
+        Runtime(),
+        TurnRequest(message="Compare AWS S3, Google Cloud Storage, and Azure Blob Storage.", research_level="deep"),
+    )
+    stages = [e.data["stage"] for e in envelopes if e.type == "progress"]
+
+    assert "research_budget" in stages
+    assert "answer_delta" in stages
+    assert "answer_complete" in stages
+    assert stages.index("answer_delta") < stages.index("answer_complete")
+    result = next(e.data for e in envelopes if e.type == "result")
+    assert result["answer"] == "Deep answer first paragraph.\n\nDeep answer second paragraph."
+
+
 def test_agent_research_registry_exposes_agent_team():
     from app.services.agent.research_subtree import get_research_registry
 

@@ -395,6 +395,19 @@ def test_agent_routing_policy_escalates_medical_supplement_safety():
     assert "high_stakes" in decision.matched_groups
 
 
+def test_agent_routing_policy_escalates_core_banking_vendor_selection():
+    from app.services.agent.routing_policy import evaluate_routing_signals
+
+    decision = evaluate_routing_signals(
+        "We're doing a vendor selection for our core banking platform — compare "
+        "Temenos, Finastra, FIS, and Mambu on regulatory compliance, integration "
+        "risk, and total cost of ownership. Which carries the least implementation risk?"
+    )
+
+    assert decision.suggested_route == "agentic"
+    assert "high_stakes" in decision.matched_groups
+
+
 def test_fast_router_overrides_direct_fast_for_medical_supplement_safety(monkeypatch):
     from app.services.agent import model_client
     from app.services.agent.fast_path import decide_fast_path

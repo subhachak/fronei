@@ -1200,6 +1200,18 @@ def test_research_profile_classifier_handles_non_architecture_profiles():
         assert infer_research_profile(prompt) == expected
 
 
+def test_core_banking_vendor_selection_profile_beats_regulatory_dimension():
+    from app.services.agent.research_subtree import infer_research_profile
+
+    prompt = (
+        "We're doing a vendor selection for our core banking platform — compare "
+        "Temenos, Finastra, FIS, and Mambu on regulatory compliance, integration "
+        "risk, and total cost of ownership. Which carries the least implementation risk?"
+    )
+
+    assert infer_research_profile(prompt) == "vendor_comparison"
+
+
 def test_model_brief_vendor_guardrail_overrides_strategy(monkeypatch):
     from app.services.agent import model_client
     from app.services.agent.research_subtree import generate_research_brief
@@ -1228,6 +1240,40 @@ def test_model_brief_vendor_guardrail_overrides_strategy(monkeypatch):
     assert brief.research_profile == "vendor_comparison"
     assert "strategy_brief" in brief.secondary_profiles
     assert brief.source == "llm"
+
+
+def test_model_brief_vendor_guardrail_overrides_policy_regulatory(monkeypatch):
+    from app.services.agent import model_client
+    from app.services.agent.research_subtree import generate_research_brief
+
+    response = SimpleNamespace(
+        text=(
+            '{"objective":"Compare core banking vendors","research_profile":"policy_regulatory",'
+            '"secondary_profiles":[],"profile_confidence":0.82,'
+            '"classification_reason":"regulatory compliance risk","domain_strategy_hints":[],'
+            '"audience":"bank CTO","scope_in":["Temenos","Finastra","FIS","Mambu"],'
+            '"scope_out":[],"success_criteria":["Compare implementation risk"],'
+            '"output_type":"comparison","assumptions":[]}'
+        ),
+        model_used="test-model",
+        latency_ms=12,
+        cost_usd=0.001,
+    )
+    monkeypatch.setattr(model_client, "complete", lambda *a, **kw: response)
+
+    brief = generate_research_brief(
+        TurnRequest(
+            message=(
+                "We're doing a vendor selection for our core banking platform — compare "
+                "Temenos, Finastra, FIS, and Mambu on regulatory compliance, integration "
+                "risk, and total cost of ownership. Which carries the least implementation risk?"
+            ),
+            research_level="deep",
+        )
+    )
+
+    assert brief.research_profile == "vendor_comparison"
+    assert "policy_regulatory" in brief.secondary_profiles
 
 
 def test_plan_from_contract_uses_profile_source_for_execution_policy():
@@ -2358,6 +2404,23 @@ def test_multi_subject_recommendation_request_classified_as_deep():
     assert level == "deep", (
         f"Expected 'deep' for 5-subject + recommendation request, got '{level}'"
     )
+
+
+def test_core_banking_vendor_selection_high_stakes_path_still_classifies_deep():
+    """Phase 9.1 regression — existing high-stakes terms such as vendor selection,
+    compliance, and risk must still classify as deep without relying on newer
+    recommendation-selection signals."""
+    from app.services.agent.orchestrator import choose_research_level
+
+    request = TurnRequest(
+        message=(
+            "We're doing a vendor selection for our core banking platform — compare "
+            "Temenos, Finastra, FIS, and Mambu on regulatory compliance, integration "
+            "risk, and total cost of ownership. Which carries the least implementation risk?"
+        )
+    )
+    level = choose_research_level(request, "research")
+    assert level == "deep"
 
 
 def test_multi_subject_recommendation_single_subject_stays_regular():

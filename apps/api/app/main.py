@@ -10,6 +10,7 @@ from app.observability import configure_observability
 from app.routers.admin import router as admin_router
 from app.routers.agent import router as agent_router
 from app.routers.documents import router as documents_router
+from app.routers.evals import router as evals_router
 from app.routers.internal import router as internal_router
 from app.routers.profile import router as profile_router
 from app.routers.users import router as users_router
@@ -52,6 +53,7 @@ def health() -> dict:
 
 
 app.include_router(admin_router)
+app.include_router(evals_router)
 app.include_router(agent_router)
 app.include_router(documents_router)
 app.include_router(internal_router)

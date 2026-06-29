@@ -120,6 +120,45 @@ class AdminSetting(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
+class EvalCase(Base):
+    """An admin-managed evaluation case for testing the research pipeline."""
+    __tablename__ = "eval_cases"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    title: Mapped[str] = mapped_column(String(256), nullable=False)
+    query: Mapped[str] = mapped_column(Text, nullable=False)
+    category: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # JSON list of strings describing what a good answer should include.
+    expected_criteria_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Primary evidence role expected ("official_policy", "operational_reality", etc.)
+    expected_primary_role: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    min_independent_sources: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+
+class EvalRun(Base):
+    """A single admin-triggered evaluation run over a set of EvalCases."""
+    __tablename__ = "eval_runs"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    status: Mapped[str] = mapped_column(String(32), default="running")  # running|complete|error
+    started_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # JSON list of case IDs run; null means all cases at the time of the run.
+    case_ids_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # JSON-serialised list of EvalCaseRunResult dicts.
+    results_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
 class MaintenanceJob(Base):
     __tablename__ = "maintenance_jobs"
 

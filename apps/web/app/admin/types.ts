@@ -204,3 +204,131 @@ export type ModelPolicy = {
   defaults: { roles: Record<string, string>; fallback_models: string[] }
   available_roles: string[]
 }
+
+// ---------------------------------------------------------------------------
+// Parity eval types
+// ---------------------------------------------------------------------------
+
+export type ParityCaseResult = {
+  case_id: string
+  legacy_ok: boolean
+  langgraph_ok: boolean
+  legacy_error: string | null
+  langgraph_error: string | null
+  legacy_answer_length: number
+  langgraph_answer_length: number
+  legacy_evidence_count: number
+  langgraph_evidence_count: number
+  legacy_claim_count: number
+  langgraph_claim_count: number
+  legacy_judge_verdict: string
+  langgraph_judge_verdict: string
+  legacy_cost_usd: number
+  langgraph_cost_usd: number
+  legacy_ms?: number
+  langgraph_ms?: number
+  answer_length_ratio: number | null
+  evidence_count_ratio: number | null
+  claim_count_ratio: number | null
+  cost_ratio: number | null
+  judge_verdict_agrees: boolean | null
+  passes_structural_gate: boolean | null
+  passes_answer_length_gate: boolean | null
+  passes_evidence_gate: boolean | null
+  passes_claim_gate: boolean | null
+  passes_budget_gate: boolean | null
+  overall_pass: boolean
+}
+
+export type ParityReport = {
+  total_cases: number
+  structural_pass: number
+  structural_fail: number
+  answer_length_gate_pass: number
+  evidence_gate_pass: number
+  claim_gate_pass: number
+  budget_gate_pass: number
+  verdict_agree: number
+  overall_pass: number
+  overall_fail: number
+  median_answer_length_ratio: number | null
+  median_evidence_count_ratio: number | null
+  median_claim_count_ratio: number | null
+  median_cost_ratio: number | null
+  cutover_recommended: boolean
+  cutover_blockers: string[]
+  per_case: ParityCaseResult[]
+}
+
+export type ParityRunSummary = {
+  run_id: string
+  status: 'running' | 'complete' | 'error'
+  started_at: number
+  completed_at: number | null
+  cutover_recommended: boolean | null
+  overall_pass: number | null
+  total_cases: number | null
+}
+
+export type OrchestratorStatus = {
+  effective_orchestrator: 'legacy' | 'langgraph'
+  override_active: boolean
+  override_value: string | null
+  env_default: string
+}
+
+// ---------------------------------------------------------------------------
+// General eval case / run types
+// ---------------------------------------------------------------------------
+
+export type EvalCase = {
+  id: number
+  title: string
+  query: string
+  category: string | null
+  expected_criteria: string[]
+  expected_primary_role: string | null
+  min_independent_sources: number | null
+  notes: string | null
+  created_by: string | null
+  created_at: string | null
+  updated_at: string | null
+}
+
+export type EvalPipelineResult = {
+  ok: boolean
+  error: string | null
+  answer: string
+  answer_length: number
+  evidence_count: number
+  claim_count: number
+  judge_score: number | null
+  latency_ms: number
+  criteria: {
+    score: number | null
+    passed: string[]
+    failed: string[]
+    explanation: string
+  } | null
+}
+
+export type EvalCaseRunResult = {
+  case_id: number
+  title: string
+  query: string
+  legacy: EvalPipelineResult
+  langgraph: EvalPipelineResult
+  structural: Record<string, boolean>
+  overall_structural_pass: boolean
+}
+
+export type EvalRunSummary = {
+  run_id: string
+  status: 'running' | 'complete' | 'error'
+  started_by: string | null
+  case_count: number
+  started_at: string | null
+  completed_at: string | null
+  error: string | null
+  live: boolean
+}

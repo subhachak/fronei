@@ -746,17 +746,13 @@ def bind(
     # URL-priority merge: prefer content-rich (extracted) over snippet-only (search result)
     merged_sources = _url_priority_merge(all_sources)
 
-    # Build pre_classified_by_url from classify_claims node output so that
-    # bind_evidence/extract_evidence_claims can skip the redundant LLM call for
-    # sources already classified in the pre-bind pass (P2 fix).
-    pre_classified_by_url: dict[str, list[dict[str, Any]]] = {
-        rec["url"]: rec["classifications"]
-        for rec in (state.get("claim_classification_results") or [])
-        if rec.get("url") and rec.get("classifications")
-    }
-
-    # Ledger tracks the classify_claims_llm calls made inside bind_evidence for
-    # sources NOT covered by the pre-classified map (P1b fix).
+    # Ledger tracks classify_claims_llm calls made inside bind_evidence.
+    # Note: classify_claims ran a pre-pass over raw source.content sentences and
+    # stored results in state as claim_classification_results — those results are
+    # intentionally NOT forwarded here.  classify_claims operates on source.content
+    # while bind operates on _select_evidence_passages passage text; the sentence
+    # sets differ, so index-based reuse would corrupt claim_type/claim_role/
+    # freshness_risk.  bind always classifies its own passage sentences fresh.
     bind_ledger = ResearchBudgetLedger(budget=research_budget_for(request))
 
     evidence = bind_evidence(
@@ -765,7 +761,6 @@ def bind(
         contract=coverage_contract,
         overrides=getattr(request, "model_overrides", None),
         ledger=bind_ledger,
-        pre_classified_by_url=pre_classified_by_url or None,
     )
 
     emit_graph_event(

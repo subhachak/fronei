@@ -919,6 +919,27 @@ def test_deep_link_helpers_skip_ncbi_account_and_fragment_chrome_links():
     assert [link.url for link in links] == ["https://pmc.ncbi.nlm.nih.gov/articles/PMC456"]
 
 
+def test_deep_link_helpers_skip_category_topic_and_series_pages():
+    from app.services.agent.research_subtree import extract_deep_link_candidates
+
+    links = extract_deep_link_candidates(
+        [
+            Source(
+                title="Article",
+                url="https://sloanreview.mit.edu/article/four-day-workweek-make-it-stick",
+                content=(
+                    "See https://sloanreview.mit.edu/series/column/ "
+                    "and https://sloanreview.mit.edu/topic/leadership/ "
+                    "and https://sloanreview.mit.edu/article/useful-follow-up"
+                ),
+            )
+        ],
+        max_links=3,
+    )
+
+    assert [link.url for link in links] == ["https://sloanreview.mit.edu/article/useful-follow-up"]
+
+
 def test_agent_research_repair_loop_runs_when_judge_requests_repair(monkeypatch):
     from app.services.agent import model_client
 

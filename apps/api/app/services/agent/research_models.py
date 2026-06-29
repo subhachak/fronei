@@ -60,6 +60,11 @@ _LOW_VALUE_CONTENT_MARKERS = (
     "for publishers",
     "for societies",
     "conference organizers",
+    "our work",
+    "reports",
+    "blog",
+    "tools",
+    "forum",
 )
 
 
@@ -84,11 +89,28 @@ def _looks_like_low_value_extraction(text: str) -> bool:
     return False
 
 
+def _looks_like_thin_extraction(content: str, snippet: str) -> bool:
+    """Detect short teaser extracts when search returned a richer source snippet."""
+    cleaned_content = re.sub(r"\s+", " ", (content or "").strip())
+    cleaned_snippet = re.sub(r"\s+", " ", (snippet or "").strip())
+    if not cleaned_content or not cleaned_snippet:
+        return False
+    content_tokens = re.findall(r"[a-zA-Z][a-zA-Z-]{2,}", cleaned_content.lower())
+    snippet_tokens = re.findall(r"[a-zA-Z][a-zA-Z-]{2,}", cleaned_snippet.lower())
+    if len(content_tokens) <= 12 and len(snippet_tokens) >= len(content_tokens) + 6:
+        return True
+    if len(cleaned_content) < 180 and len(cleaned_snippet) >= len(cleaned_content) * 3:
+        return True
+    return False
+
+
 def _source_evidence_text(source: Source) -> str:
     """Prefer extracted content, unless it is reader chrome and the snippet is better."""
     content = (source.content or "").strip()
     snippet = (source.snippet or "").strip()
     if content and not _looks_like_low_value_extraction(content):
+        if _looks_like_thin_extraction(content, snippet):
+            return snippet
         return content
     return snippet or content
 

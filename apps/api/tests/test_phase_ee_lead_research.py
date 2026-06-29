@@ -1927,6 +1927,69 @@ def test_bind_evidence_uses_snippet_when_extracted_content_is_publisher_nav():
     assert "For Authors" not in evidence.items[0].evidence
 
 
+def test_bind_evidence_uses_snippet_when_extracted_content_is_short_teaser():
+    from app.services.agent.research_subtree import ResearchPlan, bind_evidence
+
+    snippet = (
+        "Trials show gains in worker well-being and satisfaction, as well as improvements "
+        "in retention and recruitment, with most companies choosing to continue."
+    )
+    teaser = "Employees are enthusiastic about a shortened schedule. What does the research say?"
+
+    evidence = bind_evidence(
+        [
+            Source(
+                title="The rise of the 4-day workweek",
+                url="https://www.apa.org/monitor/2025/01/rise-of-4-day-workweek",
+                snippet=snippet,
+                content=teaser,
+            )
+        ],
+        plan=ResearchPlan(questions=["four-day work week retention recruitment"], min_evidence_items=1),
+        max_items=1,
+    )
+
+    assert evidence.items
+    assert "retention and recruitment" in evidence.items[0].evidence
+    assert "Employees are enthusiastic" not in evidence.items[0].evidence
+
+
+def test_bind_evidence_uses_snippet_when_extracted_content_is_site_navigation():
+    from app.services.agent.research_subtree import ResearchPlan, bind_evidence
+
+    snippet = (
+        "The UK pilot found 56 of 61 companies continued the four-day week, revenue stayed "
+        "broadly the same, and participating companies tailored policies to their industries."
+    )
+    nav = (
+        "* [Forum 2029](https://autonomy.work/forum-2029/) "
+        "* [Our work](https://autonomy.work/ourwork/) "
+        "+ [Reports](https://autonomy.work/category/reports/) "
+        "+ [Blog](https://autonomy.work/category/blog/) "
+        "+ [Tools](https://autonomy.work/category/tools/) "
+        "- [ADI](https://adi.apps.autonomy.work/) "
+        "- [ASPECTT](https://aspectt.apps.autonomy.work/) "
+        "- [Risks to British Business](https://www.riskstobritishbusiness.today/)"
+    )
+
+    evidence = bind_evidence(
+        [
+            Source(
+                title="The results are in: the UK's four-day week pilot",
+                url="https://autonomy.work/portfolio/uk4dwpilotresults",
+                snippet=snippet,
+                content=nav,
+            )
+        ],
+        plan=ResearchPlan(questions=["four-day work week productivity retention pilot results"], min_evidence_items=1),
+        max_items=1,
+    )
+
+    assert evidence.items
+    assert "56 of 61 companies" in evidence.items[0].evidence
+    assert "Forum 2029" not in evidence.items[0].evidence
+
+
 def test_technical_architecture_binds_architecture_cards():
     from app.services.agent.research_subtree import ResearchPlan, bind_evidence
 

@@ -18,7 +18,14 @@ from app.services.agent.langgraph_runtime.state import ResearchGraphState
 from app.services.agent.models import TurnRequest
 from app.services.agent.research_models import EvidencePack
 
-from test_agent_runtime import FakeTools
+from test_agent_runtime import FakeTools, _patch_completion
+
+
+# Slice 3: synthesize/repair now make real LLM calls.  Patch model_client for
+# all tests in this file so they remain fast and sandbox-safe.
+@pytest.fixture(autouse=True)
+def patch_model_completions(monkeypatch):
+    _patch_completion(monkeypatch)
 
 EHR_QUERY = (
     "Compare Epic, Oracle Cerner, Meditech Expanse, athenahealth, and eClinicalWorks as EHR platforms "

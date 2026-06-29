@@ -24,13 +24,28 @@ def _budget_gate_router(state: ResearchGraphState) -> str:
     return "continue"
 
 
+def _judge_router(state: ResearchGraphState) -> str:
+    """Conditional edge: route after the judge fires, keyed on next_action.
+
+    "publish"        → END (answer is ready; skip budget gate and repair)
+    "stop_with_gaps" → END (judge failed; repair cannot recover)
+    "requires_approval" → END (budget approval needed before repair)
+    "research_more"  → budget_gate_pre_repair → repair (judge or verifier requested repair)
+    default          → END (treat unknown values as publish)
+    """
+    next_action = state.get("next_action", "publish")
+    if next_action == "research_more":
+        return "repair_gate"
+    return "publish_end"
+
+
 def build_research_graph(
     run_id: str,
     request: TurnRequest,
     progress: ProgressCallback | None = None,
     tools: Tools | None = None,
 ) -> Any:  # langgraph.graph.compiled.CompiledStateGraph
-    """Build and compile the Slice 2 StateGraph.
+    """Build and compile the Slice 3 StateGraph.
 
     Pipeline shape:
       brief → subject_derivation → contract → plan →
@@ -38,12 +53,16 @@ def build_research_graph(
                                          │
                                          ▼
       rank → read → classify_claims → expand_source_graph →
-      bind → [budget_gate] → synthesize → verify →
-      judge → [budget_gate] → repair → END
+      bind → [budget_gate_pre_synthesis] → synthesize → verify →
+      judge → [_judge_router] →
+          "publish_end"  → END           (judge approved or unrecoverable fail)
+          "repair_gate"  → budget_gate_pre_repair →
+              "continue"         → repair → END
+              "stop_with_gaps"   → END
+              "requires_approval"→ END
 
-    Slice 2: search fan-out (dispatch_search/search_worker), rank, read,
-             classify_claims, expand_source_graph, bind nodes are real.
-    synthesize/verify/judge/repair remain stubs until Slice 3.
+    classify_claims is a partial stub (Slice 4 will wire real claim classification).
+    All other nodes are real domain-function calls.
     """
     graph: StateGraph = StateGraph(ResearchGraphState)
 
@@ -113,7 +132,19 @@ def build_research_graph(
     # --- Synthesis → verify → judge -----------------------------------------
     graph.add_edge("synthesize", "verify")
     graph.add_edge("verify", "judge")
-    graph.add_edge("judge", "budget_gate_pre_repair")
+
+    # Judge sets next_action; _judge_router reads it and decides whether
+    # repair is warranted.  "publish" and unrecoverable cases go straight to END.
+    # Only "research_more" (judge or citation verifier requested repair) passes
+    # through the budget gate before repair.
+    graph.add_conditional_edges(
+        "judge",
+        _judge_router,
+        {
+            "repair_gate": "budget_gate_pre_repair",
+            "publish_end": END,
+        },
+    )
 
     # --- Conditional routing after pre-repair gate --------------------------
     graph.add_conditional_edges(

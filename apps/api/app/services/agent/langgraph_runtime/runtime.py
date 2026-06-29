@@ -29,12 +29,16 @@ def configured_orchestrator() -> str:
 
 
 def run_langgraph_research(request: Any, tools: Any, progress: Any = None) -> dict[str, Any]:
-    """LangGraph research entry point — Slice 2.
+    """LangGraph research entry point — Slice 3.
 
-    Nodes through bind are real (brief → subject_derivation → contract → plan →
-    dispatch_search/search_worker → rank → read → classify_claims →
-    expand_source_graph → bind).
-    synthesize/verify/judge/repair remain stubs until Slice 3.
+    Real nodes:
+      brief → subject_derivation → contract → plan →
+      dispatch_search/search_worker → rank → read →
+      expand_source_graph → bind → synthesize → verify → judge → repair
+
+    Partial stub (Slice 4 will wire real claim classification):
+      classify_claims — still returns empty claim_classification_results
+
     The returned dictionary matches the public keys of lead_research_loop.
     """
     run_id = new_id("lgrun")
@@ -45,30 +49,45 @@ def run_langgraph_research(request: Any, tools: Any, progress: Any = None) -> di
         progress=progress,
         tools=tools,
     )
-    stub_model = "langgraph-slice-2-stub"
+
+    answer = final_state.get("answer", "")
+    model_used = final_state.get("model_used") or "langgraph"
+    latency_ms = final_state.get("latency_ms") or 0
+    cost_usd = final_state.get("cost_usd_spent") or 0.0
+
     response = model_client.ModelResponse(
-        text=final_state.get("answer", ""),
-        model_used=final_state.get("model_used", stub_model),
-        latency_ms=final_state.get("latency_ms", 0),
-        cost_usd=final_state.get("cost_usd_spent", 0.0),
+        text=answer,
+        model_used=model_used,
+        latency_ms=latency_ms,
+        cost_usd=cost_usd,
         model_role="research_synthesis",
     )
-    feedback = ResearchFeedbackLoop(
-        judge=ResearchJudgeResult(status="pass", score=1.0, issues=[], can_publish=True),
-        repaired=False,
-        repair_attempts=0,
-        final_score=1.0,
+
+    # Build feedback from real judge result; fall back to pass if judge didn't run.
+    judge_result = final_state.get("judge_result") or ResearchJudgeResult(
+        status="pass", score=1.0, issues=[], can_publish=True
     )
+    repair_history = final_state.get("repair_history") or []
+    repaired = bool(repair_history)
+    feedback = ResearchFeedbackLoop(
+        judge=judge_result,
+        repaired=repaired,
+        repair_attempts=len(repair_history),
+        final_score=judge_result.score,
+    )
+
     return {
         "sources": final_state.get("sources") or [],
         "tool_calls": final_state.get("tool_calls") or [],
         "evidence": final_state.get("evidence") or EvidencePack(),
         "response": response,
-        "plan": final_state.get("plan") or ResearchPlan(source="stub", fallback_reason="LangGraph Slice 2 — plan derivation failed."),
+        "plan": final_state.get("plan") or ResearchPlan(
+            source="stub", fallback_reason="LangGraph Slice 3 — plan derivation failed."
+        ),
         "worker_reports": final_state.get("worker_reports") or [],
         "feedback": feedback,
         "answer_streamed": False,
-        "replay_final_answer": False,
+        "replay_final_answer": repaired,
         "langgraph_run_id": run_id,
         "langgraph_state": final_state,
     }

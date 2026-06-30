@@ -281,6 +281,8 @@ export type OrchestratorStatus = {
 // General eval case / run types
 // ---------------------------------------------------------------------------
 
+export type EvalRoute = 'direct' | 'clarify' | 'research' | 'document' | 'research_document'
+
 export type EvalCase = {
   id: number
   title: string
@@ -293,6 +295,9 @@ export type EvalCase = {
    *  actual run, separate from the LLM-judged expected_criteria above. */
   min_evidence_items: number | null
   min_criteria_score: number | null
+  /** Which orchestrator route this query SHOULD resolve to. Null = don't
+   *  assert on routing, just grade whatever route the orchestrator picks. */
+  expected_route: EvalRoute | null
   notes: string | null
   is_active: boolean
   created_by: string | null
@@ -330,6 +335,12 @@ export type EvalCaseRunResult = {
    *  pipeline graded against expected_criteria (ground truth), not the other
    *  pipeline's output. Use the parity runner to compare legacy vs langgraph. */
   pipeline: EvalPipeline
+  /** The route the orchestrator actually picked for this query (no force_route —
+   *  the harness lets routing happen for real, so it can catch routing bugs too). */
+  route: EvalRoute
+  expected_route: EvalRoute | null
+  /** null if the case didn't set expected_route (no routing assertion made). */
+  route_correct: boolean | null
   run: EvalPipelineResult
   structural: Record<string, boolean>
   /** Deterministic pass/fail against the case's structured benchmark

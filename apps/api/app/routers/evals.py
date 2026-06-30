@@ -450,6 +450,13 @@ class EvalCaseCreate(BaseModel):
     # Which orchestrator route this query SHOULD resolve to. Null = don't
     # assert on routing, just grade whatever route the orchestrator picks.
     expected_route: str | None = Field(default=None, max_length=32)
+    # v2 scoring schema's optional nested sections (routing.expected_gate_fires/
+    # expected_gate_silent, retrieval_requirements, cost_latency_budget, etc.)
+    # — see eval_case_schema.json case_template. Permissive dict, not a strict
+    # nested model: the schema has open implementation questions and is still
+    # evolving (scoring_spec.md §4); validating loosely here keeps the API from
+    # needing a migration every time a sub-field gets refined.
+    v2_spec: dict[str, Any] | None = None
     notes: str | None = None
 
 
@@ -463,6 +470,7 @@ class EvalCaseUpdate(BaseModel):
     min_evidence_items: int | None = Field(default=None, ge=1)
     min_criteria_score: float | None = Field(default=None, ge=0.0, le=1.0)
     expected_route: str | None = Field(default=None, max_length=32)
+    v2_spec: dict[str, Any] | None = None
     notes: str | None = None
 
 
@@ -478,6 +486,7 @@ def _case_out(c) -> dict:
         "min_evidence_items": getattr(c, "min_evidence_items", None),
         "min_criteria_score": getattr(c, "min_criteria_score", None),
         "expected_route": getattr(c, "expected_route", None),
+        "v2_spec": json.loads(c.v2_spec_json) if getattr(c, "v2_spec_json", None) else None,
         "notes": c.notes,
         "is_active": c.is_active,
         "created_by": c.created_by,
@@ -519,6 +528,7 @@ def create_eval_case(body: EvalCaseCreate, admin: AdminPrincipal = RequireAdmin)
             min_evidence_items=body.min_evidence_items,
             min_criteria_score=body.min_criteria_score,
             expected_route=body.expected_route,
+            v2_spec_json=json.dumps(body.v2_spec) if body.v2_spec else None,
             notes=body.notes,
             created_by=admin.user_id,
             created_at=now,
@@ -571,6 +581,8 @@ def update_eval_case(case_id: int, body: EvalCaseUpdate, admin: AdminPrincipal =
             case.min_criteria_score = body.min_criteria_score
         if body.expected_route is not None:
             case.expected_route = body.expected_route
+        if body.v2_spec is not None:
+            case.v2_spec_json = json.dumps(body.v2_spec)
         if body.notes is not None:
             case.notes = body.notes
         case.updated_at = datetime.now(timezone.utc)
@@ -700,21 +712,74 @@ class EvalCaseUploadItem(BaseModel):
     min_evidence_items: int | None = Field(default=None, ge=1)
     min_criteria_score: float | None = Field(default=None, ge=0.0, le=1.0)
     expected_route: str | None = Field(default=None, max_length=32)
+    v2_spec: dict[str, Any] | None = None
     notes: str | None = None
+
+
+def _normalize_v2_upload_item(raw: dict[str, Any]) -> dict[str, Any]:
+    """Flatten a v2-schema case dict (eval_case_schema.json case_template —
+    nested routing/retrieval_requirements/synthesis_requirements/
+    document_requirements/cost_latency_budget/adversarial_properties/
+    harness_integrity_checks sections) into EvalCaseUploadItem's flat shape,
+    packing the nested sections into v2_spec for scoring functions to read.
+
+    Also accepts the existing flat shape (eval_cases_routing_seed.json) as-is —
+    a dict with no v2 nested keys passes through with v2_spec=None.
+    """
+    v2_keys = (
+        "routing", "retrieval_requirements", "synthesis_requirements",
+        "document_requirements", "cost_latency_budget", "adversarial_properties",
+        "harness_integrity_checks",
+    )
+    if not any(k in raw for k in v2_keys):
+        return raw  # already flat (or has no v2 sections to extract)
+
+    routing = raw.get("routing") or {}
+    flat = {
+        "title": raw.get("title"),
+        "query": raw.get("query"),
+        "category": raw.get("category"),
+        "expected_criteria": raw.get("expected_criteria") or [],
+        "expected_primary_role": raw.get("expected_primary_role"),
+        "notes": raw.get("notes"),
+        "expected_route": routing.get("expected_route"),
+        "v2_spec": {k: raw[k] for k in v2_keys if raw.get(k) is not None},
+    }
+    retrieval = raw.get("retrieval_requirements") or {}
+    if retrieval.get("min_independent_sources") is not None:
+        flat["min_independent_sources"] = retrieval["min_independent_sources"]
+    if retrieval.get("min_evidence_items") is not None:
+        flat["min_evidence_items"] = retrieval["min_evidence_items"]
+    harness_checks = raw.get("harness_integrity_checks") or {}
+    band = harness_checks.get("expected_judge_score_band")
+    if band:
+        flat["min_criteria_score"] = band[0]
+    return flat
 
 
 @router.post("/cases/upload", status_code=200)
 def upload_eval_cases(
-    body: list[EvalCaseUploadItem] = Body(...),
+    body: Any = Body(...),
     admin: AdminPrincipal = RequireAdmin,
 ) -> dict:
-    """Bulk upsert eval cases from a JSON array.
+    """Bulk upsert eval cases from a JSON array (or {"cases": [...]} wrapper,
+    matching eval_case_schema.json's top-level shape).
+
+    Accepts both the original flat case shape and the v2 nested schema
+    (routing/retrieval_requirements/etc. — see _normalize_v2_upload_item);
+    each item is detected and normalized independently, so a single upload
+    can mix both shapes.
 
     Matching is by title (case-insensitive). Existing active cases are updated;
     inactive (soft-deleted) cases are reactivated and updated; new titles are created.
     Returns counts: created / updated / reactivated.
     """
     from app.db.models import EvalCase, SessionLocal
+
+    raw_items = body.get("cases", []) if isinstance(body, dict) else body
+    if not isinstance(raw_items, list):
+        raise HTTPException(status_code=422, detail="Body must be a JSON array of cases, or {\"cases\": [...]}.")
+
     db = SessionLocal()
     created = updated = reactivated = 0
     errors: list[dict] = []
@@ -727,8 +792,9 @@ def upload_eval_cases(
             for c in db.query(EvalCase).all()
         }
 
-        for item in body:
+        for raw_item in raw_items:
             try:
+                item = EvalCaseUploadItem(**_normalize_v2_upload_item(raw_item))
                 key = item.title.lower()
                 case = existing.get(key)
                 if case:
@@ -742,6 +808,7 @@ def upload_eval_cases(
                     case.min_evidence_items = item.min_evidence_items
                     case.min_criteria_score = item.min_criteria_score
                     case.expected_route = item.expected_route
+                    case.v2_spec_json = json.dumps(item.v2_spec) if item.v2_spec else None
                     case.notes = item.notes
                     case.is_active = True
                     case.updated_at = now
@@ -760,6 +827,7 @@ def upload_eval_cases(
                         min_evidence_items=item.min_evidence_items,
                         min_criteria_score=item.min_criteria_score,
                         expected_route=item.expected_route,
+                        v2_spec_json=json.dumps(item.v2_spec) if item.v2_spec else None,
                         notes=item.notes,
                         created_by=admin.user_id,
                         is_active=True,
@@ -769,7 +837,7 @@ def upload_eval_cases(
                     db.add(new_case)
                     created += 1
             except Exception as exc:
-                errors.append({"title": item.title, "error": str(exc)})
+                errors.append({"title": raw_item.get("title", "?") if isinstance(raw_item, dict) else "?", "error": str(exc)})
 
         db.commit()
     finally:
@@ -1148,6 +1216,7 @@ def _run_one_eval_case(case_dict: dict, tools, pipeline: str = "langgraph") -> d
         err = tb.format_exc()
     latency_ms = int((time.perf_counter() - t0) * 1000)
 
+    evidence_items: list = []
     if err or result is None:
         run = {"ok": False, "error": (err or "")[:500], "answer": "", "answer_length": 0,
                "evidence_count": 0, "claim_count": 0, "judge_score": None}
@@ -1156,12 +1225,13 @@ def _run_one_eval_case(case_dict: dict, tools, pipeline: str = "langgraph") -> d
         answer = response.text if hasattr(response, "text") else str(response or "")
         evidence = result.get("evidence")
         feedback = result.get("feedback")
+        evidence_items = list(evidence.items) if evidence and hasattr(evidence, "items") else []
         run = {
             "ok": True,
             "error": None,
             "answer": answer[:2000],
             "answer_length": len(answer),
-            "evidence_count": len(evidence.items) if evidence and hasattr(evidence, "items") else 0,
+            "evidence_count": len(evidence_items),
             "claim_count": len(evidence.claims) if evidence and hasattr(evidence, "claims") else 0,
             "independent_source_count": getattr(evidence, "independent_source_count", None) if evidence else None,
             "judge_score": getattr(feedback, "final_score", None) if feedback else None,
@@ -1181,6 +1251,10 @@ def _run_one_eval_case(case_dict: dict, tools, pipeline: str = "langgraph") -> d
 
     expected_route = case_dict.get("expected_route")
     route_correct = (route == expected_route) if expected_route else None
+    gate_correct = score_gate_correct(case_dict, deep_research_gate)
+    retrieval_completeness = score_retrieval_completeness(case_dict, evidence_items)
+    retrieval_independence = score_retrieval_independence(case_dict, run, evidence_items)
+    latency_pass = score_latency_pass(case_dict, route, decision.research_level, latency_ms)
 
     overall_structural_pass = all(structural.values())
     overall_benchmark_pass = all(b["pass"] for b in benchmarks.values()) if benchmarks else None
@@ -1199,17 +1273,134 @@ def _run_one_eval_case(case_dict: dict, tools, pipeline: str = "langgraph") -> d
         "query": query,
         "pipeline": pipeline,
         "route": route,
+        "research_level": decision.research_level,
         "expected_route": expected_route,
         "route_correct": route_correct,
         "deep_research_gate": deep_research_gate,
         "run": run,
         "structural": structural,
         "benchmarks": benchmarks,
+        "scores": {
+            # scoring_spec.md §3 axis names — independent of overall_status,
+            # never collapsed into one number (see §0 on why v1's blended
+            # criteria.score hid the judge-decoupling and retrieval defects).
+            "route_correct": route_correct,
+            "gate_correct": gate_correct,
+            "retrieval_completeness": retrieval_completeness,
+            "retrieval_independence": retrieval_independence,
+            "latency_pass": latency_pass,
+        },
         "overall_structural_pass": overall_structural_pass,
         "overall_benchmark_pass": overall_benchmark_pass,
         "judge_structural_agreement": judge_structural_agreement,
         "overall_status": overall_status,
     }
+
+
+# scoring_spec.md §1.8 — default latency ceilings by route/tier. A case's own
+# v2_spec.cost_latency_budget.latency_ms_ceiling overrides this when set.
+_TIER_CEILING_MS = {
+    "direct": 2000, "clarify": 2000,
+    "research_easy": 20000, "research_regular": 60000, "research_deep": 300000,
+    "document": 30000, "research_document": 120000,
+}
+
+
+def score_gate_correct(case_dict: dict, deep_research_gate: dict[str, Any] | None) -> bool | None:
+    """scoring_spec.md §1.1 — compares deep_research_gate's actual firing
+    against the case's routing.expected_gate_fires / expected_gate_silent.
+    None if the case asserts nothing about gate behavior."""
+    v2 = case_dict.get("v2_spec") or {}
+    routing = v2.get("routing") or {}
+    expected_fires = routing.get("expected_gate_fires")
+    expected_silent = routing.get("expected_gate_silent")
+    if expected_fires is None and expected_silent is None:
+        return None
+    fired = deep_research_gate is not None
+    if expected_fires:
+        return fired and bool(deep_research_gate.get("pass"))
+    if expected_silent or expected_fires is False:
+        return not fired
+    return None
+
+
+def score_retrieval_completeness(case_dict: dict, evidence_items: list) -> float | None:
+    """scoring_spec.md §1.2 — coverage_cells_filled / coverage_cells_required.
+
+    Matches each evidence item's url/title/content/originating-query against
+    each required (subject, dimension) pair — not the rendered answer's prose,
+    which can claim coverage it doesn't have. None if the case doesn't set
+    required_subjects/required_dimensions.
+    """
+    v2 = case_dict.get("v2_spec") or {}
+    req = v2.get("retrieval_requirements") or {}
+    subjects = req.get("required_subjects")
+    dimensions = req.get("required_dimensions")
+    if not subjects or not dimensions:
+        return None
+    required_cells = len(subjects) * len(dimensions)
+    if required_cells == 0:
+        return None
+    haystacks = [
+        f"{getattr(item, 'url', '')} {getattr(item, 'title', '')} "
+        f"{getattr(item, 'evidence', '')} {getattr(item, 'query', '')}".lower()
+        for item in evidence_items
+    ]
+    filled = 0
+    for subject in subjects:
+        subject_l = subject.lower()
+        for dimension in dimensions:
+            dimension_l = dimension.lower()
+            if any(subject_l in h and dimension_l in h for h in haystacks):
+                filled += 1
+    return filled / required_cells
+
+
+def score_retrieval_independence(case_dict: dict, run: dict, evidence_items: list) -> bool | None:
+    """scoring_spec.md §1.3 — min_independent_sources AND max_single_domain_share
+    must both hold (when set). max_single_domain_share formalizes why e.g. 6
+    evidence items from one forum domain (independent_source_count=1) is a
+    fail, not a borderline case: if any single domain accounts for more than
+    max_single_domain_share of evidence_count, fail regardless of the
+    independent_source_count figure. None if the case sets neither threshold."""
+    v2 = case_dict.get("v2_spec") or {}
+    req = v2.get("retrieval_requirements") or {}
+    min_sources = req.get("min_independent_sources") or case_dict.get("min_independent_sources")
+    max_share = req.get("max_single_domain_share")
+    if min_sources is None and max_share is None:
+        return None
+
+    ok = True
+    if min_sources is not None:
+        independent_count = run.get("independent_source_count")
+        ok = ok and independent_count is not None and independent_count >= min_sources
+
+    if max_share is not None and evidence_items:
+        from urllib.parse import urlparse
+        domain_counts: dict[str, int] = {}
+        for item in evidence_items:
+            domain = getattr(item, "source_family", "") or urlparse(getattr(item, "url", "")).netloc or "unknown"
+            domain_counts[domain] = domain_counts.get(domain, 0) + 1
+        if domain_counts:
+            share = max(domain_counts.values()) / len(evidence_items)
+            if share > max_share:
+                ok = False
+
+    return ok
+
+
+def score_latency_pass(case_dict: dict, route: str, research_level: str | None, latency_ms: int) -> bool:
+    """scoring_spec.md §1.8 — latency against a tiered SLA ceiling. Always
+    computed (no opt-out): every case has a route and therefore a ceiling,
+    so this is never None — v1 had latencies from 595ms to 309s with zero
+    ceiling attached to any of it."""
+    v2 = case_dict.get("v2_spec") or {}
+    budget = v2.get("cost_latency_budget") or {}
+    ceiling = budget.get("latency_ms_ceiling")
+    if ceiling is None:
+        key = f"research_{research_level}" if route in ("research",) and research_level else route
+        ceiling = _TIER_CEILING_MS.get(key, _TIER_CEILING_MS.get(route, 60000))
+    return latency_ms <= ceiling
 
 
 def _score_benchmarks(case_dict: dict, run: dict) -> dict[str, dict[str, Any]]:

@@ -1051,6 +1051,54 @@ def _run_non_research_route_blocking(request, decision, route: str, tools) -> di
     return {"response": response_shim, "sources": result.sources, "tool_calls": result.tool_calls}
 
 
+def check_judge_structural_agreement(judge_score: float | None, answer_length: int) -> bool:
+    """Harness integrity gate (scoring_spec.md §1.9).
+
+    The pipeline's internal judge_score must not be confidently high while the
+    answer is empty — that combination means the judge scored something other
+    than the actual answer, or never ran at all and a fallback masqueraded as
+    a real score (see PR #31's root cause: budget_gate_pre_synthesis routing
+    to END before synthesize/judge ever ran, with the old fallback defaulting
+    to score=1.0). Checked independently of trusting that upstream fix holds
+    forever — this is a defense-in-depth structural check, not a product-
+    quality judgment. Returns False (disagreement detected) when judge_score
+    > 0.5 and the answer is empty; True otherwise (including judge_score is
+    None, e.g. direct/clarify/document routes that never run a research judge).
+    """
+    non_empty_answer = answer_length > 0
+    return not (judge_score is not None and judge_score > 0.5 and not non_empty_answer)
+
+
+def compute_overall_status(
+    *,
+    judge_structural_agreement: bool,
+    overall_structural_pass: bool,
+    overall_benchmark_pass: bool | None,
+    route_correct: bool | None,
+    deep_research_gate: dict[str, Any] | None,
+) -> str:
+    """Roll up a case's independent axis results into one of
+    pass | fail | partial | harness_error (eval_case_schema.json's
+    result_record_template.overall_status).
+
+    harness_error takes priority over everything else: a judge_structural_agreement
+    failure means the result data itself is untrustworthy, so the case can't be
+    meaningfully scored pass/fail/partial at all — it must never be averaged into
+    product-quality dashboards alongside genuine pass/fail/partial results.
+    """
+    if not judge_structural_agreement:
+        return "harness_error"
+    if not overall_structural_pass:
+        return "fail"
+    if (
+        overall_benchmark_pass is False
+        or route_correct is False
+        or (deep_research_gate is not None and not deep_research_gate.get("pass"))
+    ):
+        return "partial"
+    return "pass"
+
+
 def _run_one_eval_case(case_dict: dict, tools, pipeline: str = "langgraph") -> dict[str, Any]:
     """Run a single eval case through ONE pipeline and grade it against the
     case's pre-determined expected_criteria (ground truth), not against the
@@ -1134,6 +1182,17 @@ def _run_one_eval_case(case_dict: dict, tools, pipeline: str = "langgraph") -> d
     expected_route = case_dict.get("expected_route")
     route_correct = (route == expected_route) if expected_route else None
 
+    overall_structural_pass = all(structural.values())
+    overall_benchmark_pass = all(b["pass"] for b in benchmarks.values()) if benchmarks else None
+    judge_structural_agreement = check_judge_structural_agreement(run.get("judge_score"), run["answer_length"])
+    overall_status = compute_overall_status(
+        judge_structural_agreement=judge_structural_agreement,
+        overall_structural_pass=overall_structural_pass,
+        overall_benchmark_pass=overall_benchmark_pass,
+        route_correct=route_correct,
+        deep_research_gate=deep_research_gate,
+    )
+
     return {
         "case_id": case_dict["id"],
         "title": case_dict["title"],
@@ -1146,8 +1205,10 @@ def _run_one_eval_case(case_dict: dict, tools, pipeline: str = "langgraph") -> d
         "run": run,
         "structural": structural,
         "benchmarks": benchmarks,
-        "overall_structural_pass": all(structural.values()),
-        "overall_benchmark_pass": all(b["pass"] for b in benchmarks.values()) if benchmarks else None,
+        "overall_structural_pass": overall_structural_pass,
+        "overall_benchmark_pass": overall_benchmark_pass,
+        "judge_structural_agreement": judge_structural_agreement,
+        "overall_status": overall_status,
     }
 
 
@@ -1196,13 +1257,30 @@ def _make_result_envelope(
         "mode": "langsmith" | "in_process",
         "pipeline": "langgraph" | "legacy", # which single pipeline these cases ran against
         "cases": [EvalCaseRunResult, ...],  # empty for LangSmith runs (LangSmith is source of truth)
-        "langsmith": { ... } | null         # LangSmith experiment summary, null for in-process
+        "langsmith": { ... } | null,        # LangSmith experiment summary, null for in-process
+        "harness_integrity_ok": bool,       # false if ANY case hit overall_status=="harness_error"
+        "harness_error_case_ids": [...],    # which cases, for direct lookup
       }
+
+    harness_integrity_ok must be checked BEFORE trusting any pass/fail rate in
+    this envelope (scoring_spec.md §3) — a harness_error means the pipeline's
+    judge_score disagreed with the actual answer for that case (see
+    judge_structural_agreement), which is a scoring/pipeline integrity defect,
+    not a product-quality signal, and would corrupt any aggregate computed
+    from raw judge_score/criteria.score values.
 
     This guarantees /runs/{run_id}/result always returns the same contract; the
     caller need not branch on mode to read per-case rows vs. a summary dict.
     """
-    return {"mode": mode, "pipeline": pipeline, "cases": cases, "langsmith": langsmith_summary}
+    harness_error_case_ids = [c["case_id"] for c in cases if c.get("overall_status") == "harness_error"]
+    return {
+        "mode": mode,
+        "pipeline": pipeline,
+        "cases": cases,
+        "langsmith": langsmith_summary,
+        "harness_integrity_ok": len(harness_error_case_ids) == 0,
+        "harness_error_case_ids": harness_error_case_ids,
+    }
 
 
 def _drain_ls_events_to_run(events_q: queue.Queue, run: dict) -> None:
@@ -1274,7 +1352,22 @@ def _run_in_process_core(run: dict, case_dicts: list[dict], pipeline: str = "lan
             all_results.append(result)
             run["progress"].append(result)
             run["completed"] = len(all_results)
-            run["log"].append(f"  [{idx + 1}/{total}] {case_dict['title']} — done.")
+            if result.get("overall_status") == "harness_error":
+                # judge_structural_agreement failed — the pipeline reported a
+                # confident judge_score against an empty/missing answer. This is
+                # a scoring/pipeline integrity defect, not a product-quality
+                # finding (scoring_spec.md §1.9) — flag loudly so it isn't
+                # silently averaged into pass/fail dashboards downstream.
+                logger.warning(
+                    "eval case %s (%s) is a harness_error: judge_score=%s with empty answer",
+                    case_dict.get("id"), case_dict.get("title"), result.get("run", {}).get("judge_score"),
+                )
+                run["log"].append(
+                    f"  ⚠ [{idx + 1}/{total}] {case_dict['title']} — HARNESS ERROR "
+                    f"(judge_score={result.get('run', {}).get('judge_score')} but empty answer)"
+                )
+            else:
+                run["log"].append(f"  [{idx + 1}/{total}] {case_dict['title']} — done.")
         return result
 
     with _forced_pipeline(pipeline):

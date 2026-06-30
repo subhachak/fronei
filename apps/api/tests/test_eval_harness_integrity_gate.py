@@ -117,3 +117,42 @@ def test_against_real_production_run_flags_exactly_the_known_eleven_cases():
     ]
     flagged = [cid for cid, score, length in real_run_data if not check_judge_structural_agreement(score, length)]
     assert sorted(flagged) == [1, 4, 6, 8, 9, 10, 11, 12, 25, 30, 35]
+
+
+# ── Issue 2 fix: fixture injection ──────────────────────────────────────────
+
+def test_harness_only_query_produces_harness_error_without_model_call():
+    """Case 120 must never touch the model. The [HARNESS-ONLY] prefix causes
+    _run_one_eval_case to skip all pipeline calls and inject answer='',
+    judge_score=1.0 directly, then let the integrity gate fire to produce
+    overall_status=harness_error."""
+    from unittest.mock import patch, MagicMock
+    from app.routers.evals import _run_one_eval_case
+
+    case_dict = {
+        "id": 47,
+        "title": "Harness integrity probe — synthetic empty-answer injection",
+        "query": "[HARNESS-ONLY] Synthetic case: forces an empty answer field at the test-fixture level.",
+        "expected_criteria": [],
+        "expected_route": "direct",
+        "v2_spec": {
+            "routing": {"expected_route": "direct"},
+            "harness_integrity_checks": {"is_canary": True, "require_structural_judge_agreement": True},
+        },
+        "min_independent_sources": None,
+        "min_evidence_items": None,
+        "min_criteria_score": None,
+    }
+
+    # _decide_eval_route must not be called for a fixture-injection case
+    with patch("app.routers.evals._decide_eval_route") as mock_decide:
+        result = _run_one_eval_case(case_dict, tools=MagicMock(), pipeline="langgraph")
+        mock_decide.assert_not_called()
+
+    assert result["overall_status"] == "harness_error", (
+        f"Fixture probe must produce harness_error, got {result['overall_status']!r}"
+    )
+    assert result["route"] == "fixture"
+    assert result["run"]["answer_length"] == 0
+    assert result["run"]["judge_score"] == 1.0
+    assert result["judge_structural_agreement"] is False

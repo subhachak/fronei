@@ -66,11 +66,13 @@ from app.services.agent.research_synthesis import (
     _synthesis_token_budget,
     _select_diverse_ranked_sources,
     _source_inventory_summary,
+    balance_sources_for_deep_links,
     build_synthesis_prompt,
     extract_deep_link_candidates,
     is_public_source_url,
     rank_sources,
     repair_research_answer,
+    subjects_for_deep_link_balance,
 )
 from app.services.agent.research_utils import (
     _estimate_relevance,
@@ -1119,7 +1121,10 @@ class LeadResearchAgent:
     def _follow_deep_links(self, state: ResearchStateStore, sources: list[Source]) -> None:
         if self.budget.max_deep_links <= 0 or not self.ledger.can_read_more_sources():
             return
-        candidates = extract_deep_link_candidates(sources, max_links=self.budget.max_deep_links)
+        subjects = subjects_for_deep_link_balance(self.request.message)
+        candidates = extract_deep_link_candidates(
+            balance_sources_for_deep_links(sources, subjects), max_links=self.budget.max_deep_links
+        )
         urls = [
             candidate.url
             for candidate in candidates
@@ -1154,7 +1159,10 @@ class LeadResearchAgent:
             if not frontier or not self.ledger.can_read_more_sources() or not self.ledger.can_start_tool("read_url"):
                 break
             candidate_limit = min(self.ledger.remaining_source_reads(), max(1, self.budget.max_deep_links - len(followed)))
-            candidates = extract_deep_link_candidates(frontier, max_links=candidate_limit)
+            subjects = subjects_for_deep_link_balance(self.request.message)
+            candidates = extract_deep_link_candidates(
+                balance_sources_for_deep_links(frontier, subjects), max_links=candidate_limit
+            )
             urls = [
                 candidate.url
                 for candidate in candidates

@@ -668,6 +668,7 @@ def expand_source_graph(
     """Follow deep links from extracted sources."""
     from app.services.agent.research_synthesis import extract_deep_link_candidates
     from app.services.agent.research_synthesis import is_public_source_url
+    from app.services.agent.research_synthesis import balance_sources_for_deep_links, subjects_for_deep_link_balance
 
     visited = [*state.get("visited_nodes", []), "expand_source_graph"]
     all_sources = state.get("sources") or []
@@ -688,7 +689,10 @@ def expand_source_graph(
             "model_calls_made": 0,
         }
 
-    candidates = extract_deep_link_candidates(all_sources, max_links=4)
+    subjects = subjects_for_deep_link_balance(getattr(request, "message", "") or "")
+    candidates = extract_deep_link_candidates(
+        balance_sources_for_deep_links(all_sources, subjects), max_links=4
+    )
     urls = [
         c.url for c in candidates
         if c.url and c.url not in source_inventory and is_public_source_url(c.url)

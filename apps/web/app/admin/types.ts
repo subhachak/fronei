@@ -298,6 +298,12 @@ export type EvalCase = {
   /** Which orchestrator route this query SHOULD resolve to. Null = don't
    *  assert on routing, just grade whatever route the orchestrator picks. */
   expected_route: EvalRoute | null
+  /** v2 scoring schema's optional nested sections (routing.expected_gate_fires/
+   *  expected_gate_silent, retrieval_requirements, synthesis_requirements,
+   *  document_requirements, cost_latency_budget, adversarial_properties,
+   *  harness_integrity_checks) — see eval_case_schema.json case_template.
+   *  Permissive shape since the schema is still evolving. */
+  v2_spec: Record<string, any> | null
   notes: string | null
   is_active: boolean
   created_by: string | null
@@ -356,6 +362,76 @@ export type EvalCaseRunResult = {
   benchmarks: Record<string, EvalBenchmarkResult>
   overall_structural_pass: boolean
   overall_benchmark_pass: boolean | null
+  /** Which research tier this case resolved to (only meaningful when route
+   *  is "research" — null otherwise). */
+  research_level: string | null
+  /** scoring_spec.md §1.9 — false means the pipeline's judge_score disagreed
+   *  structurally with the actual answer (e.g. a confident score against an
+   *  empty answer). When false, this case's scores should not be trusted or
+   *  averaged into any aggregate — see overall_status. */
+  judge_structural_agreement: boolean
+  /** Rolls up judge_structural_agreement + structural/benchmark/route/gate
+   *  results. "harness_error" takes priority over pass/fail/partial — it
+   *  means the result data itself is untrustworthy, not that the product
+   *  failed. */
+  overall_status: 'pass' | 'fail' | 'partial' | 'harness_error'
+  /** scoring_spec.md §2 — true if this case is tagged is_canary in its v2_spec. */
+  is_canary: boolean
+  /** scoring_spec.md §2 — true if a canary's judge_score fell outside its
+   *  expected_judge_score_band; null if not a canary or no judge_score. A
+   *  drifted canary on a routine run (not tied to an intentional change)
+   *  signals a scoring-pipeline regression, not a product change. */
+  canary_drift: boolean | null
+  /** scoring_spec.md §1.1-1.8 — independent programmatic/narrow-judge axes,
+   *  each null if the case doesn't assert on that axis. Never collapsed
+   *  into one number (see scoring_spec.md §0 on why v1's blended
+   *  criteria.score hid real defects). */
+  scores: {
+    route_correct: boolean | null
+    gate_correct: boolean | null
+    retrieval_completeness: number | null
+    retrieval_independence: boolean | null
+    latency_pass: boolean
+    synthesis_grounding: number | null
+    gap_honesty: boolean | null
+    conflict_handling: boolean | null
+    must_not_recommend_ok: boolean | null
+    answer_length_ok: boolean | null
+    format_correct: boolean | null
+  }
+}
+
+/** scoring_spec.md §3 — one axis's pass-rate (bool axes) or mean (float
+ *  axes) for a single tier column. null if no cases in that tier asserted
+ *  on this axis at all. */
+export type EvalDashboardCell = { rate: number; n: number } | { mean: number; n: number } | null
+
+export type EvalDashboardTier =
+  | 'direct' | 'clarify' | 'research_easy' | 'research_regular' | 'research_deep'
+  | 'document' | 'research_document'
+
+export type EvalDashboardRow = {
+  label: string
+  by_tier: Record<EvalDashboardTier, EvalDashboardCell>
+}
+
+/** GET /admin/evals/runs/{run_id}/dashboard — scoring_spec.md §3/§6. Check
+ *  integrity.ok BEFORE trusting `table` at all (the spec's explicit
+ *  sequencing requirement) — a harness_error or canary drift means
+ *  something in the scoring pipeline itself is suspect for that run, and
+ *  harness_error cases are already excluded from `table`'s aggregates. */
+export type EvalDashboard = {
+  integrity: {
+    ok: boolean
+    harness_error_count: number
+    harness_error_case_ids: number[]
+    canary_drift_count: number
+    canary_drift_case_ids: number[]
+  }
+  total_cases: number
+  trustworthy_cases: number
+  tiers: EvalDashboardTier[]
+  table: Record<string, EvalDashboardRow>
 }
 
 export type LangSmithExperiment = {

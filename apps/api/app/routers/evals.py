@@ -28,6 +28,7 @@ General eval runs (both pipelines, structural + criteria scoring):
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -821,6 +822,14 @@ def _build_eval_request(query: str):
     (choose_research_level's dimension-richness signal etc.) instead of
     being hardcoded — hardcoding it here previously starved every "deep"
     shaped case to "regular" tier budget regardless of pipeline behavior.
+
+    When decide() resolves research_level="deep", Runtime.run_stream() would
+    normally pause for user confirmation before running it (requires_confirmation
+    gate at runtime.py:341 — the same "Continue with deep research?" prompt a
+    real user sees). Eval cases are pre-approved to run unattended, so
+    confirm_deep_research=True here plays the same role as a user clicking
+    "Start research": it's the documented bypass for that gate, not a
+    shortcut around it.
     """
     from app.services.agent.models import TurnRequest
     from app.services.agent.orchestrator import decide
@@ -838,7 +847,59 @@ def _build_eval_request(query: str):
         research_level=decision.research_level,
         quality_mode="standard",
         output_format="chat",
+        confirm_deep_research=True,
     )
+
+
+# configured_orchestrator()'s pipeline selection is process-wide state shared
+# with live user traffic (the same flag the admin "promote" cutover button
+# sets). Forcing a pipeline for an eval case means briefly mutating that
+# global, so this lock serializes those windows — only one forced-pipeline
+# eval case runs at a time process-wide, and concurrent real user requests
+# during that window will transiently see the eval's forced pipeline too.
+# That's an accepted tradeoff for a low-traffic admin tool; see PR discussion.
+_ORCHESTRATOR_OVERRIDE_LOCK = threading.Lock()
+
+
+@contextlib.contextmanager
+def _forced_pipeline(pipeline: str):
+    from app.services.agent.langgraph_runtime import runtime as langgraph_runtime_module
+
+    with _ORCHESTRATOR_OVERRIDE_LOCK:
+        previous = langgraph_runtime_module._RUNTIME_ORCHESTRATOR_OVERRIDE
+        langgraph_runtime_module.set_orchestrator_override(pipeline)
+        try:
+            yield
+        finally:
+            if previous is None:
+                langgraph_runtime_module.clear_orchestrator_override()
+            else:
+                langgraph_runtime_module.set_orchestrator_override(previous)
+
+
+def _run_research_subtree_blocking(request, tools) -> dict[str, Any]:
+    """Drive Runtime._run_research_subtree() to completion and return its
+    result dict — the same route-dispatch logic (langgraph vs. legacy-deep
+    vs. legacy-non-deep, see runtime.py:587) a real research-routed user turn
+    goes through, without the outer run_stream() SSE/TurnResult wrapping
+    (fast-path pre-routing and the deep-research confirmation gate don't
+    apply here: the eval already force-routes to research and pre-approves
+    confirm_deep_research, same as _build_eval_request documents)."""
+    from app.services.agent.models import ProgressEvent, new_id
+    from app.services.agent.runtime import Runtime
+
+    turn_id = new_id("turn")
+
+    def progress(stage: str, message: str, **data) -> ProgressEvent:
+        return ProgressEvent(turn_id=turn_id, stage=stage, message=message, data=data)
+
+    runtime = Runtime(tools)
+    gen = runtime._run_research_subtree(request, progress)
+    try:
+        while True:
+            next(gen)
+    except StopIteration as stop:
+        return stop.value
 
 
 def _run_one_eval_case(case_dict: dict, tools, pipeline: str = "langgraph") -> dict[str, Any]:
@@ -856,12 +917,8 @@ def _run_one_eval_case(case_dict: dict, tools, pipeline: str = "langgraph") -> d
     err = None
     result = None
     try:
-        if pipeline == "legacy":
-            from app.services.agent.research_lead import lead_research_loop
-            result = lead_research_loop(request, tools, progress=None)
-        else:
-            from app.services.agent.langgraph_runtime.runtime import run_langgraph_research
-            result = run_langgraph_research(request, tools, progress=None)
+        with _forced_pipeline(pipeline):
+            result = _run_research_subtree_blocking(request, tools)
     except Exception:
         err = tb.format_exc()
     latency_ms = int((time.perf_counter() - t0) * 1000)

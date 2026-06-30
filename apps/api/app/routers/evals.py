@@ -1410,12 +1410,18 @@ def _run_one_eval_case(case_dict: dict, tools, pipeline: str = "langgraph") -> d
     expected_route = case_dict.get("expected_route")
     route_correct = (route == expected_route) if expected_route else None
     gate_correct = score_gate_correct(case_dict, deep_research_gate)
-    retrieval_completeness = score_retrieval_completeness(case_dict, evidence_items)
-    retrieval_independence = score_retrieval_independence(case_dict, run, evidence_items)
+    # scoring_spec.md §3 n/a semantics: retrieval and synthesis axes don't apply
+    # to non-retrieval routes — direct/clarify/fixture never fetch evidence, so
+    # retrieval_completeness=0.0 would be a false failure, not a real coverage gap.
+    # These axes return None (n/a) for these routes, and the dashboard correctly
+    # shows "n/a" in the Direct/Clarify columns rather than "0%".
+    _is_retrieval_route = route in ("research", "research_document", "document")
+    retrieval_completeness = score_retrieval_completeness(case_dict, evidence_items) if _is_retrieval_route else None
+    retrieval_independence = score_retrieval_independence(case_dict, run, evidence_items) if _is_retrieval_route else None
     latency_pass = score_latency_pass(case_dict, route, decision.research_level, latency_ms)
-    synthesis_grounding = score_synthesis_grounding(graded_text, evidence_items)
-    gap_honesty = score_gap_honesty(case_dict, graded_text, evidence_items)
-    conflict_handling = score_conflict_handling(case_dict, graded_text, evidence_items)
+    synthesis_grounding = score_synthesis_grounding(graded_text, evidence_items) if _is_retrieval_route else None
+    gap_honesty = score_gap_honesty(case_dict, graded_text, evidence_items) if _is_retrieval_route else None
+    conflict_handling = score_conflict_handling(case_dict, graded_text, evidence_items) if _is_retrieval_route else None
     must_not_recommend_ok = score_must_not_recommend(case_dict, graded_text)
     answer_length_ok = score_answer_length_bounds(case_dict, len(graded_text) if document_text is not None else run["answer_length"])
     format_correct = score_format_correct(case_dict, artifacts)

@@ -129,3 +129,60 @@ def test_dashboard_document_and_research_document_are_distinct_tiers():
     table = dash["table"]["format_correct"]["by_tier"]
     assert table["document"] == {"rate": 1.0, "n": 1}
     assert table["research_document"] == {"rate": 0.0, "n": 1}
+
+
+# ── score_canary_drift — bidirectional primary-signal pattern ─────────────
+
+def test_canary_drift_primary_signal_no_drift_when_expected_value_matches():
+    """answer_length_ok=False expected, actual=False → no drift (canary healthy)."""
+    from app.routers.evals import score_canary_drift
+    case = {"v2_spec": {"harness_integrity_checks": {
+        "is_canary": True,
+        "canary_primary_signal": "answer_length_ok",
+        "canary_expected_primary_signal_value": False,
+    }}}
+    assert score_canary_drift(case, None, scores={"answer_length_ok": False}) is False
+
+
+def test_canary_drift_primary_signal_fires_when_value_differs():
+    """answer_length_ok=False expected, actual=True → drift (over-research stopped — investigate)."""
+    from app.routers.evals import score_canary_drift
+    case = {"v2_spec": {"harness_integrity_checks": {
+        "is_canary": True,
+        "canary_primary_signal": "answer_length_ok",
+        "canary_expected_primary_signal_value": False,
+    }}}
+    assert score_canary_drift(case, None, scores={"answer_length_ok": True}) is True
+
+
+def test_canary_drift_primary_signal_none_when_signal_not_computed():
+    """Signal is absent from scores dict (wrong route type, etc.) → None, not False."""
+    from app.routers.evals import score_canary_drift
+    case = {"v2_spec": {"harness_integrity_checks": {
+        "is_canary": True,
+        "canary_primary_signal": "answer_length_ok",
+        "canary_expected_primary_signal_value": False,
+    }}}
+    assert score_canary_drift(case, None, scores={"latency_pass": False}) is None
+
+
+def test_canary_drift_primary_signal_none_when_scores_not_passed():
+    """Primary-signal canary with scores=None → None (not an error)."""
+    from app.routers.evals import score_canary_drift
+    case = {"v2_spec": {"harness_integrity_checks": {
+        "is_canary": True,
+        "canary_primary_signal": "answer_length_ok",
+        "canary_expected_primary_signal_value": False,
+    }}}
+    assert score_canary_drift(case, None, scores=None) is None
+
+
+def test_canary_drift_band_pattern_still_works_alongside_primary_signal():
+    """Band-pattern canaries (know-clean-pass/fail) still work unchanged."""
+    from app.routers.evals import score_canary_drift
+    case = {"v2_spec": {"harness_integrity_checks": {
+        "is_canary": True,
+        "expected_judge_score_band": [0.95, 1.0],
+    }}}
+    assert score_canary_drift(case, 0.98) is False
+    assert score_canary_drift(case, 0.5) is True

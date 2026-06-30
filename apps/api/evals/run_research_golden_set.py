@@ -49,40 +49,42 @@ def _make_tools():
     return Tools.from_settings()
 
 
-def _resolve_research_level(message: str, forced_level: str | None) -> str:
-    """Mirror what the orchestrator would resolve research_level to.
+def _build_request(entry: dict) -> "TurnRequest":  # noqa: F821
+    """Build the request the exact way a real user turn would.
 
-    The eval harness calls the research pipelines directly, bypassing
-    orchestrator.decide(), so choose_research_level()'s dimension-richness
-    classifier never runs unless we invoke it here ourselves.
+    The pipelines (lead_research_loop / run_langgraph_research) are invoked
+    directly here, bypassing Runtime.run_stream(), but routing/tier
+    resolution must still go through the real orchestrator.decide() so this
+    eval exercises the same classification logic production uses — not a
+    hand-rolled reimplementation of it. force_route="research" mirrors what
+    happens when a user (or the UI) forces the research route; decide()
+    still resolves research_level via choose_research_level() in that case
+    (see orchestrator._normalize_research_decision).
     """
-    if forced_level in {"easy", "regular", "deep"}:
-        return forced_level
     from app.services.agent.models import TurnRequest
-    from app.services.agent.orchestrator import choose_research_level
+    from app.services.agent.orchestrator import decide
 
-    probe_request = TurnRequest(
-        message=message,
-        research_level="auto",
+    forced_level = entry["request"].get("research_level", "auto")
+    draft = TurnRequest(
+        message=entry["request"]["message"],
+        research_level=forced_level,
+        quality_mode="standard",
+        output_format="chat",
+        force_route="research",
+    )
+    decision = decide(draft)
+    return TurnRequest(
+        message=entry["request"]["message"],
+        research_level=decision.research_level,
         quality_mode="standard",
         output_format="chat",
     )
-    return choose_research_level(probe_request, "research")
 
 
 def _run_one_case(entry: dict, tools, run_id: str) -> dict:
-    from app.services.agent.models import TurnRequest
     from app.services.agent.research_lead import lead_research_loop
 
-    resolved_level = _resolve_research_level(
-        entry["request"]["message"], entry["request"].get("research_level")
-    )
-    request = TurnRequest(
-        message=entry["request"]["message"],
-        research_level=resolved_level,
-        quality_mode="standard",
-        output_format="chat",
-    )
+    request = _build_request(entry)
 
     stages: list[dict] = []
 

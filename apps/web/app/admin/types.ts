@@ -313,12 +313,17 @@ export type EvalPipelineResult = {
   } | null
 }
 
+export type EvalPipeline = 'langgraph' | 'legacy'
+
 export type EvalCaseRunResult = {
   case_id: number
   title: string
   query: string
-  legacy: EvalPipelineResult
-  langgraph: EvalPipelineResult
+  /** Which single pipeline this case ran against — regular evals run one
+   *  pipeline graded against expected_criteria (ground truth), not the other
+   *  pipeline's output. Use the parity runner to compare legacy vs langgraph. */
+  pipeline: EvalPipeline
+  run: EvalPipelineResult
   structural: Record<string, boolean>
   overall_structural_pass: boolean
 }
@@ -334,6 +339,8 @@ export type LangSmithExperiment = {
 /** Consistent envelope returned by /runs/{run_id}/result regardless of eval mode. */
 export type EvalRunResult = {
   mode: 'langsmith' | 'in_process' | 'error'
+  /** Which single pipeline this run exercised. */
+  pipeline: EvalPipeline
   /** Per-case results — populated for in_process runs; empty for LangSmith runs. */
   cases: EvalCaseRunResult[]
   /** LangSmith experiment summary — populated for LangSmith runs; null otherwise. */

@@ -23,6 +23,7 @@ import type {
   AuthorizedFetch,
   EvalCase,
   EvalCaseRunResult,
+  EvalPipeline,
   EvalRunResult,
   EvalRunSummary,
 } from '../types'
@@ -112,8 +113,8 @@ function LangSmithBanner({ authorizedFetch, onStatus }: {
 function LocalReport({ cases, runResult }: { cases: EvalCaseRunResult[]; runResult: EvalRunResult }) {
   if (!cases.length) return null
   const structPass = cases.filter(r => r.overall_structural_pass).length
-  const legAvg = avg(cases.map(r => r.legacy.criteria?.score))
-  const lgAvg = avg(cases.map(r => r.langgraph.criteria?.score))
+  const criteriaAvg = avg(cases.map(r => r.run.criteria?.score))
+  const pipelineLabel = runResult.pipeline === 'legacy' ? 'Legacy' : 'LangGraph'
   const byCategory: Record<string, EvalCaseRunResult[]> = {}
   for (const r of cases) {
     const key = (r as Record<string, unknown>)['category'] as string | null ?? 'Uncategorized'
@@ -128,8 +129,7 @@ function LocalReport({ cases, runResult }: { cases: EvalCaseRunResult[]; runResu
           {structPass}/{cases.length} structural pass
         </span>
         <div className="flex items-center gap-4 text-xs text-neutral-600 dark:text-neutral-400">
-          {legAvg != null && <span>Legacy criteria <strong>{pctStr(legAvg)}</strong></span>}
-          {lgAvg != null && <span>LG criteria <strong>{pctStr(lgAvg)}</strong></span>}
+          {criteriaAvg != null && <span>{pipelineLabel} criteria <strong>{pctStr(criteriaAvg)}</strong></span>}
         </div>
       </div>
       {Object.keys(byCategory).length > 1 && (
@@ -138,11 +138,8 @@ function LocalReport({ cases, runResult }: { cases: EvalCaseRunResult[]; runResu
             <div key={cat} className="flex items-center gap-4 px-4 py-2 bg-white dark:bg-neutral-900 text-xs">
               <span className="flex-1 font-medium text-neutral-700 dark:text-neutral-300">{cat}</span>
               <span className="text-neutral-500">{rows.filter(r => r.overall_structural_pass).length}/{rows.length} pass</span>
-              {avg(rows.map(r => r.legacy.criteria?.score)) != null && (
-                <span className="text-neutral-400">Legacy {pctStr(avg(rows.map(r => r.legacy.criteria?.score)))}</span>
-              )}
-              {avg(rows.map(r => r.langgraph.criteria?.score)) != null && (
-                <span className="text-neutral-400">LG {pctStr(avg(rows.map(r => r.langgraph.criteria?.score)))}</span>
+              {avg(rows.map(r => r.run.criteria?.score)) != null && (
+                <span className="text-neutral-400">{pipelineLabel} {pctStr(avg(rows.map(r => r.run.criteria?.score)))}</span>
               )}
             </div>
           ))}
@@ -169,13 +166,21 @@ function ScoreBadge({ score }: { score: number | null | undefined }) {
 // Case run-history panel (lazy-fetched)
 // ─────────────────────────────────────────────────────────────────────────────
 
+type CaseHistoryRun = {
+  ok: boolean | null; answer_length: number | null; evidence_count: number | null; claim_count: number | null
+  latency_ms: number | null; criteria_score: number | null; criteria_passed: string[]; criteria_failed: string[]; answer: string
+}
+
 type CaseHistoryEntry = {
   run_id: string
   status: string
   started_at: string | null
   overall_structural_pass: boolean | null
-  legacy: { ok: boolean | null; answer_length: number | null; evidence_count: number | null; claim_count: number | null; latency_ms: number | null; criteria_score: number | null; criteria_passed: string[]; criteria_failed: string[]; answer: string }
-  langgraph: { ok: boolean | null; answer_length: number | null; evidence_count: number | null; claim_count: number | null; latency_ms: number | null; criteria_score: number | null; criteria_passed: string[]; criteria_failed: string[]; answer: string }
+  /** "both" for runs predating the single-pipeline eval redesign (legacy+langgraph keys present). */
+  pipeline: EvalPipeline | 'both'
+  result?: CaseHistoryRun
+  legacy?: CaseHistoryRun
+  langgraph?: CaseHistoryRun
 }
 
 function CaseRunHistory({ caseId, authorizedFetch }: { caseId: number; authorizedFetch: AuthorizedFetch }) {
@@ -225,19 +230,31 @@ function CaseRunHistory({ caseId, authorizedFetch }: { caseId: number; authorize
               <span className={`font-semibold flex-shrink-0 ${entry.overall_structural_pass ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
                 {entry.overall_structural_pass ? '✓' : '✗'}
               </span>
-              <span className="flex-shrink-0"><ScoreBadge score={entry.legacy.criteria_score} /></span>
-              <span className="text-neutral-400 flex-shrink-0 text-[10px]">→</span>
-              <span className="flex-shrink-0"><ScoreBadge score={entry.langgraph.criteria_score} /></span>
+              {entry.pipeline === 'both' ? (
+                <>
+                  <span className="flex-shrink-0"><ScoreBadge score={entry.legacy?.criteria_score} /></span>
+                  <span className="text-neutral-400 flex-shrink-0 text-[10px]">→</span>
+                  <span className="flex-shrink-0"><ScoreBadge score={entry.langgraph?.criteria_score} /></span>
+                </>
+              ) : (
+                <>
+                  <span className="text-neutral-400 flex-shrink-0">{entry.pipeline === 'legacy' ? 'Legacy' : 'LG'}</span>
+                  <span className="flex-shrink-0"><ScoreBadge score={entry.result?.criteria_score} /></span>
+                </>
+              )}
             </button>
 
             {/* Expanded detail */}
             {isOpen && (
               <div className="border-t border-neutral-100 dark:border-neutral-800 px-3 pb-3 pt-2 bg-white dark:bg-neutral-900 space-y-3">
-                <div className="grid grid-cols-2 gap-3">
-                  {([['Legacy', entry.legacy], ['LangGraph', entry.langgraph]] as const).map(([label, data]) => (
+                <div className={entry.pipeline === 'both' ? 'grid grid-cols-2 gap-3' : ''}>
+                  {(entry.pipeline === 'both'
+                    ? ([['Legacy', entry.legacy], ['LangGraph', entry.langgraph]] as const)
+                    : ([[entry.pipeline === 'legacy' ? 'Legacy' : 'LangGraph', entry.result]] as const)
+                  ).map(([label, data]) => (
                     <div key={label} className="rounded-md border border-neutral-100 dark:border-neutral-800 p-2">
                       <p className="text-[11px] font-bold text-neutral-500 uppercase tracking-wide mb-1.5">{label}</p>
-                      {!data.ok ? (
+                      {!data?.ok ? (
                         <p className="text-[11px] text-red-500">Pipeline error</p>
                       ) : (
                         <dl className="space-y-1 text-[11px]">
@@ -277,8 +294,8 @@ function CaseRunHistory({ caseId, authorizedFetch }: { caseId: number; authorize
 function CaseResultRow({ r, authorizedFetch }: { r: EvalCaseRunResult; authorizedFetch: AuthorizedFetch }) {
   const [open, setOpen] = useState(false)
   const [tab, setTab] = useState<'current' | 'history'>('current')
-  const leg = r.legacy
-  const lg = r.langgraph
+  const data = r.run
+  const pipelineLabel = r.pipeline === 'legacy' ? 'Legacy' : 'LangGraph'
 
   return (
     <div className="border border-neutral-200 dark:border-neutral-800 rounded-xl overflow-hidden">
@@ -294,8 +311,7 @@ function CaseResultRow({ r, authorizedFetch }: { r: EvalCaseRunResult; authorize
           <span className={r.overall_structural_pass ? 'text-green-600 dark:text-green-400 font-semibold' : 'text-red-600 dark:text-red-400 font-semibold'}>
             {r.overall_structural_pass ? '✓ pass' : '✗ fail'}
           </span>
-          <span className="text-neutral-400">Legacy</span><ScoreBadge score={leg.criteria?.score} />
-          <span className="text-neutral-400">LG</span><ScoreBadge score={lg.criteria?.score} />
+          <span className="text-neutral-400">{pipelineLabel}</span><ScoreBadge score={data.criteria?.score} />
         </div>
       </button>
 
@@ -317,42 +333,38 @@ function CaseResultRow({ r, authorizedFetch }: { r: EvalCaseRunResult; authorize
           {/* Current run detail */}
           {tab === 'current' && (
             <div className="px-4 pb-4 pt-3 space-y-4">
-              {/* Side-by-side pipeline */}
-              <div className="grid grid-cols-2 gap-4">
-                {[{ label: 'Legacy', data: leg }, { label: 'LangGraph', data: lg }].map(({ label, data }) => (
-                  <div key={label} className="rounded-lg border border-neutral-100 dark:border-neutral-800 p-3">
-                    <p className="text-xs font-bold text-neutral-600 dark:text-neutral-400 mb-2">{label}</p>
-                    {!data.ok ? (
-                      <p className="text-xs text-red-600 dark:text-red-400 font-mono whitespace-pre-wrap break-words">{data.error ?? 'Error'}</p>
-                    ) : (
-                      <dl className="space-y-1.5 text-xs">
-                        <div className="flex justify-between"><dt className="text-neutral-500">Answer length</dt><dd className="font-semibold">{data.answer_length.toLocaleString()} chars</dd></div>
-                        <div className="flex justify-between"><dt className="text-neutral-500">Evidence</dt><dd className="font-semibold">{data.evidence_count} items</dd></div>
-                        <div className="flex justify-between"><dt className="text-neutral-500">Claims</dt><dd className="font-semibold">{data.claim_count}</dd></div>
-                        <div className="flex justify-between"><dt className="text-neutral-500">Latency</dt><dd className="font-semibold">{fmtMs(data.latency_ms)}</dd></div>
-                        {data.criteria && (
-                          <>
-                            <div className="flex justify-between"><dt className="text-neutral-500">Criteria score</dt><dd><ScoreBadge score={data.criteria.score} /></dd></div>
-                            {data.criteria.passed.map((p, i) => <p key={i} className="text-green-700 dark:text-green-400 text-[11px]">✓ {p}</p>)}
-                            {data.criteria.failed.map((p, i) => <p key={i} className="text-red-600 dark:text-red-400 text-[11px]">✗ {p}</p>)}
-                            {data.criteria.explanation && (
-                              <div className="pt-1 border-t border-neutral-100 dark:border-neutral-800">
-                                <dt className="text-neutral-500 mb-0.5">Explanation</dt>
-                                <dd className="text-neutral-700 dark:text-neutral-300 leading-relaxed">{data.criteria.explanation}</dd>
-                              </div>
-                            )}
-                          </>
-                        )}
-                        {data.answer && (
+              {/* Pipeline run detail — graded against this case's expected_criteria (ground truth) */}
+              <div className="rounded-lg border border-neutral-100 dark:border-neutral-800 p-3">
+                <p className="text-xs font-bold text-neutral-600 dark:text-neutral-400 mb-2">{pipelineLabel}</p>
+                {!data.ok ? (
+                  <p className="text-xs text-red-600 dark:text-red-400 font-mono whitespace-pre-wrap break-words">{data.error ?? 'Error'}</p>
+                ) : (
+                  <dl className="space-y-1.5 text-xs">
+                    <div className="flex justify-between"><dt className="text-neutral-500">Answer length</dt><dd className="font-semibold">{data.answer_length.toLocaleString()} chars</dd></div>
+                    <div className="flex justify-between"><dt className="text-neutral-500">Evidence</dt><dd className="font-semibold">{data.evidence_count} items</dd></div>
+                    <div className="flex justify-between"><dt className="text-neutral-500">Claims</dt><dd className="font-semibold">{data.claim_count}</dd></div>
+                    <div className="flex justify-between"><dt className="text-neutral-500">Latency</dt><dd className="font-semibold">{fmtMs(data.latency_ms)}</dd></div>
+                    {data.criteria && (
+                      <>
+                        <div className="flex justify-between"><dt className="text-neutral-500">Criteria score</dt><dd><ScoreBadge score={data.criteria.score} /></dd></div>
+                        {data.criteria.passed.map((p, i) => <p key={i} className="text-green-700 dark:text-green-400 text-[11px]">✓ {p}</p>)}
+                        {data.criteria.failed.map((p, i) => <p key={i} className="text-red-600 dark:text-red-400 text-[11px]">✗ {p}</p>)}
+                        {data.criteria.explanation && (
                           <div className="pt-1 border-t border-neutral-100 dark:border-neutral-800">
-                            <dt className="text-neutral-500 mb-0.5">Answer</dt>
-                            <dd className="text-neutral-700 dark:text-neutral-300 leading-relaxed whitespace-pre-wrap break-words line-clamp-6">{data.answer}</dd>
+                            <dt className="text-neutral-500 mb-0.5">Explanation</dt>
+                            <dd className="text-neutral-700 dark:text-neutral-300 leading-relaxed">{data.criteria.explanation}</dd>
                           </div>
                         )}
-                      </dl>
+                      </>
                     )}
-                  </div>
-                ))}
+                    {data.answer && (
+                      <div className="pt-1 border-t border-neutral-100 dark:border-neutral-800">
+                        <dt className="text-neutral-500 mb-0.5">Answer</dt>
+                        <dd className="text-neutral-700 dark:text-neutral-300 leading-relaxed whitespace-pre-wrap break-words line-clamp-6">{data.answer}</dd>
+                      </div>
+                    )}
+                  </dl>
+                )}
               </div>
 
               {/* Structural checks */}
@@ -710,6 +722,7 @@ export function EvalHarnessTab({ authorizedFetch }: { authorizedFetch: Authorize
   // ── Run ─────────────────────────────────────────────────────────────────────
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
   const [runMode, setRunMode] = useState<'in_process' | 'langsmith' | 'both'>('in_process')
+  const [runPipeline, setRunPipeline] = useState<EvalPipeline>('langgraph')
   const [lsConfigured, setLsConfigured] = useState(false)
   const [runStatus, setRunStatus] = useState<'idle' | 'running' | 'complete' | 'stopped' | 'error'>('idle')
   const [currentRunId, setCurrentRunId] = useState<string | null>(null)
@@ -875,10 +888,11 @@ export function EvalHarnessTab({ authorizedFetch }: { authorizedFetch: Authorize
     if (data.langsmith_links) setLangsmithLinks(data.langsmith_links as Record<string, string>)
     const progress = data.progress as EvalCaseRunResult[] | undefined
     const results = data.results as EvalRunResult | null | undefined
+    const pipeline = (data.pipeline as EvalPipeline | undefined) ?? runPipeline
     if (results?.mode) {
       setRunResult(results)
     } else if (progress?.length) {
-      setRunResult({ mode: 'in_process', cases: progress, langsmith: null })
+      setRunResult({ mode: 'in_process', pipeline, cases: progress, langsmith: null })
     }
     if (data.status === 'complete') { setRunStatus('complete'); stopPolling(); loadRuns() }
     else if (data.status === 'stopped') { setRunStatus('stopped'); stopPolling(); loadRuns() }
@@ -903,6 +917,7 @@ export function EvalHarnessTab({ authorizedFetch }: { authorizedFetch: Authorize
     setLangsmithLinks({}); setProgressTotal(null); setProgressCompleted(0); setCurrentRunId(null)
     const payload = {
       mode: runMode,
+      pipeline: runPipeline,
       ...(selectedIds.size > 0 ? { case_ids: Array.from(selectedIds) } : {}),
     }
     try {
@@ -942,12 +957,26 @@ export function EvalHarnessTab({ authorizedFetch }: { authorizedFetch: Authorize
       <div className="space-y-4">
         <LangSmithBanner authorizedFetch={authorizedFetch} onStatus={setLsConfigured} />
 
-        {/* Mode selector + run button */}
+        {/* Pipeline + mode selector + run button */}
         <div className="flex items-center gap-3 flex-wrap">
+          {/* Pipeline selector — each case is graded against its own expected_criteria
+              (ground truth) for the selected pipeline. Use the Parity tab to compare
+              legacy vs langgraph head-to-head instead. */}
+          <select
+            value={runPipeline}
+            onChange={e => setRunPipeline(e.target.value as EvalPipeline)}
+            disabled={runStatus === 'running'}
+            title="Which single pipeline to run cases through, graded against expected_criteria. For legacy-vs-langgraph comparison, use the Parity tab."
+            className="rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 px-3 py-1.5 text-xs font-semibold text-neutral-700 dark:text-neutral-300 disabled:opacity-40"
+          >
+            <option value="langgraph">LangGraph</option>
+            <option value="legacy">Legacy</option>
+          </select>
+
           {/* Segmented mode control */}
           <div className="flex rounded-lg border border-neutral-200 dark:border-neutral-700 overflow-hidden text-xs font-semibold">
             {([
-              { value: 'in_process', label: 'Local', title: 'Run both pipelines in-process; full per-case data stored locally' },
+              { value: 'in_process', label: 'Local', title: 'Run the selected pipeline in-process; full per-case data stored locally' },
               { value: 'langsmith',  label: 'LangSmith', title: lsConfigured ? 'Run via LangSmith evaluate(); per-case data in LangSmith' : 'LangSmith not configured' },
               { value: 'both',       label: 'Both', title: lsConfigured ? 'In-process first (local data), then LangSmith experiments — ~2× runtime' : 'LangSmith not configured' },
             ] as const).map(({ value, label, title }) => {

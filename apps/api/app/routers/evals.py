@@ -589,38 +589,43 @@ def get_case_run_history(case_id: int, limit: int = 20, admin: AdminPrincipal = 
             case_result = next((r for r in results_list if r.get("case_id") == case_id), None)
             if not case_result:
                 continue
-            leg = case_result.get("legacy") or {}
-            lg = case_result.get("langgraph") or {}
-            leg_crit = leg.get("criteria") or {}
-            lg_crit = lg.get("criteria") or {}
-            history.append({
-                "run_id": row.id,
-                "status": row.status,
-                "started_at": row.started_at.isoformat() if row.started_at else None,
-                "overall_structural_pass": case_result.get("overall_structural_pass"),
-                "legacy": {
-                    "ok": leg.get("ok"),
-                    "answer_length": leg.get("answer_length"),
-                    "evidence_count": leg.get("evidence_count"),
-                    "claim_count": leg.get("claim_count"),
-                    "latency_ms": leg.get("latency_ms"),
-                    "criteria_score": leg_crit.get("score"),
-                    "criteria_passed": leg_crit.get("passed") or [],
-                    "criteria_failed": leg_crit.get("failed") or [],
-                    "answer": leg.get("answer", "")[:500],
-                },
-                "langgraph": {
-                    "ok": lg.get("ok"),
-                    "answer_length": lg.get("answer_length"),
-                    "evidence_count": lg.get("evidence_count"),
-                    "claim_count": lg.get("claim_count"),
-                    "latency_ms": lg.get("latency_ms"),
-                    "criteria_score": lg_crit.get("score"),
-                    "criteria_passed": lg_crit.get("passed") or [],
-                    "criteria_failed": lg_crit.get("failed") or [],
-                    "answer": lg.get("answer", "")[:500],
-                },
-            })
+
+            def _entry_for(run: dict) -> dict:
+                crit = run.get("criteria") or {}
+                return {
+                    "ok": run.get("ok"),
+                    "answer_length": run.get("answer_length"),
+                    "evidence_count": run.get("evidence_count"),
+                    "claim_count": run.get("claim_count"),
+                    "latency_ms": run.get("latency_ms"),
+                    "criteria_score": crit.get("score"),
+                    "criteria_passed": crit.get("passed") or [],
+                    "criteria_failed": crit.get("failed") or [],
+                    "answer": run.get("answer", "")[:500],
+                }
+
+            if "pipeline" in case_result and "run" in case_result:
+                # New single-pipeline shape.
+                history.append({
+                    "run_id": row.id,
+                    "status": row.status,
+                    "started_at": row.started_at.isoformat() if row.started_at else None,
+                    "pipeline": case_result.get("pipeline"),
+                    "overall_structural_pass": case_result.get("overall_structural_pass"),
+                    "result": _entry_for(case_result.get("run") or {}),
+                })
+            else:
+                # Legacy dual-pipeline shape from runs predating the single-pipeline
+                # eval redesign — keep rendering old history entries as-is.
+                history.append({
+                    "run_id": row.id,
+                    "status": row.status,
+                    "started_at": row.started_at.isoformat() if row.started_at else None,
+                    "pipeline": "both",
+                    "overall_structural_pass": case_result.get("overall_structural_pass"),
+                    "legacy": _entry_for(case_result.get("legacy") or {}),
+                    "langgraph": _entry_for(case_result.get("langgraph") or {}),
+                })
             if len(history) >= limit:
                 break
         return {"case_id": case_id, "history": history}
@@ -808,43 +813,68 @@ def _score_criteria(query: str, response_text: str, criteria: list[str]) -> dict
     return {"score": None, "passed": [], "failed": [], "explanation": "Scoring failed."}
 
 
-def _run_one_eval_case(case_dict: dict, tools) -> dict[str, Any]:
-    """Run a single eval case through both pipelines and score it."""
+def _build_eval_request(query: str):
+    """Build the TurnRequest for an eval case the way a real user turn would.
+
+    Routes through orchestrator.decide() with force_route="research" so
+    research_level is resolved by the same classifier production uses
+    (choose_research_level's dimension-richness signal etc.) instead of
+    being hardcoded — hardcoding it here previously starved every "deep"
+    shaped case to "regular" tier budget regardless of pipeline behavior.
+    """
     from app.services.agent.models import TurnRequest
+    from app.services.agent.orchestrator import decide
+
+    draft = TurnRequest(
+        message=query,
+        research_level="auto",
+        quality_mode="standard",
+        output_format="chat",
+        force_route="research",
+    )
+    decision = decide(draft)
+    return TurnRequest(
+        message=query,
+        research_level=decision.research_level,
+        quality_mode="standard",
+        output_format="chat",
+    )
+
+
+def _run_one_eval_case(case_dict: dict, tools, pipeline: str = "langgraph") -> dict[str, Any]:
+    """Run a single eval case through ONE pipeline and grade it against the
+    case's pre-determined expected_criteria (ground truth), not against the
+    other pipeline's output. Use the parity runner (run_parity_comparator.py,
+    wired up at /admin/evals/parity/run) to compare legacy vs langgraph."""
     import traceback as tb
 
     query = case_dict["query"]
     criteria = case_dict.get("expected_criteria") or []
+    request = _build_eval_request(query)
 
-    def _run_pipeline(fn_name: str):
-        request = TurnRequest(message=query, research_level="regular", quality_mode="standard", output_format="chat")
-        t0 = time.perf_counter()
-        err = None
-        result = None
-        try:
-            if fn_name == "legacy":
-                from app.services.agent.research_lead import lead_research_loop
-                result = lead_research_loop(request, tools, progress=None)
-            else:
-                from app.services.agent.langgraph_runtime.runtime import run_langgraph_research
-                result = run_langgraph_research(request, tools, progress=None)
-        except Exception:
-            err = tb.format_exc()
-        elapsed_ms = int((time.perf_counter() - t0) * 1000)
-        return result, err, elapsed_ms
+    t0 = time.perf_counter()
+    err = None
+    result = None
+    try:
+        if pipeline == "legacy":
+            from app.services.agent.research_lead import lead_research_loop
+            result = lead_research_loop(request, tools, progress=None)
+        else:
+            from app.services.agent.langgraph_runtime.runtime import run_langgraph_research
+            result = run_langgraph_research(request, tools, progress=None)
+    except Exception:
+        err = tb.format_exc()
+    latency_ms = int((time.perf_counter() - t0) * 1000)
 
-    legacy_result, legacy_err, legacy_ms = _run_pipeline("legacy")
-    langgraph_result, langgraph_err, langgraph_ms = _run_pipeline("langgraph")
-
-    def _extract(result, err) -> dict:
-        if err or result is None:
-            return {"ok": False, "error": (err or "")[:500], "answer": "", "answer_length": 0,
-                    "evidence_count": 0, "claim_count": 0, "judge_score": None}
+    if err or result is None:
+        run = {"ok": False, "error": (err or "")[:500], "answer": "", "answer_length": 0,
+               "evidence_count": 0, "claim_count": 0, "judge_score": None}
+    else:
         response = result.get("response")
         answer = response.text if hasattr(response, "text") else str(response or "")
         evidence = result.get("evidence")
         feedback = result.get("feedback")
-        return {
+        run = {
             "ok": True,
             "error": None,
             "answer": answer[:2000],
@@ -853,41 +883,36 @@ def _run_one_eval_case(case_dict: dict, tools) -> dict[str, Any]:
             "claim_count": len(evidence.claims) if evidence and hasattr(evidence, "claims") else 0,
             "judge_score": getattr(feedback, "final_score", None) if feedback else None,
         }
+    run["latency_ms"] = latency_ms
+    run["pipeline"] = pipeline
 
-    leg = _extract(legacy_result, legacy_err)
-    lg = _extract(langgraph_result, langgraph_err)
-
-    # Structural checks
     structural = {
-        "legacy_ok": leg["ok"],
-        "langgraph_ok": lg["ok"],
-        "legacy_non_empty_answer": leg["answer_length"] > 0,
-        "langgraph_non_empty_answer": lg["answer_length"] > 0,
-        "legacy_has_evidence": leg["evidence_count"] > 0,
-        "langgraph_has_evidence": lg["evidence_count"] > 0,
+        "ok": run["ok"],
+        "non_empty_answer": run["answer_length"] > 0,
+        "has_evidence": run["evidence_count"] > 0,
     }
-
-    # Criteria scoring (score each pipeline independently)
-    legacy_criteria = _score_criteria(query, leg["answer"], criteria) if criteria and leg["ok"] else None
-    langgraph_criteria = _score_criteria(query, lg["answer"], criteria) if criteria and lg["ok"] else None
+    run["criteria"] = _score_criteria(query, run["answer"], criteria) if criteria and run["ok"] else None
 
     return {
         "case_id": case_dict["id"],
         "title": case_dict["title"],
         "query": query,
-        "legacy": {**leg, "latency_ms": legacy_ms, "criteria": legacy_criteria},
-        "langgraph": {**lg, "latency_ms": langgraph_ms, "criteria": langgraph_criteria},
+        "pipeline": pipeline,
+        "run": run,
         "structural": structural,
         "overall_structural_pass": all(structural.values()),
     }
 
 
-def _make_result_envelope(mode: str, cases: list, langsmith_summary: dict | None) -> dict:
+def _make_result_envelope(
+    mode: str, cases: list, langsmith_summary: dict | None, pipeline: str = "langgraph"
+) -> dict:
     """Consistent result envelope stored in memory and DB regardless of eval mode.
 
     Shape:
       {
         "mode": "langsmith" | "in_process",
+        "pipeline": "langgraph" | "legacy", # which single pipeline these cases ran against
         "cases": [EvalCaseRunResult, ...],  # empty for LangSmith runs (LangSmith is source of truth)
         "langsmith": { ... } | null         # LangSmith experiment summary, null for in-process
       }
@@ -895,7 +920,7 @@ def _make_result_envelope(mode: str, cases: list, langsmith_summary: dict | None
     This guarantees /runs/{run_id}/result always returns the same contract; the
     caller need not branch on mode to read per-case rows vs. a summary dict.
     """
-    return {"mode": mode, "cases": cases, "langsmith": langsmith_summary}
+    return {"mode": mode, "pipeline": pipeline, "cases": cases, "langsmith": langsmith_summary}
 
 
 def _drain_ls_events_to_run(events_q: queue.Queue, run: dict) -> None:
@@ -929,22 +954,23 @@ def _drain_ls_events_to_run(events_q: queue.Queue, run: dict) -> None:
             run["log"].append("✓ LangSmith run complete")
 
 
-def _run_in_process_core(run: dict, case_dicts: list[dict]) -> list[dict]:
-    """Run both pipelines locally for every case. Mutates run["progress"]/["log"]/["completed"].
+def _run_in_process_core(run: dict, case_dicts: list[dict], pipeline: str = "langgraph") -> list[dict]:
+    """Run ONE pipeline locally for every case, graded against each case's
+    pre-determined expected_criteria. Mutates run["progress"]/["log"]/["completed"].
     Does NOT touch run["status"] — the caller decides when to flip to "complete"/"stopped".
     Returns early (with partial results) if run["stop_requested"] is set between cases."""
     from app.services.agent.tools import Tools
     tools = Tools.from_settings()
     total = len(case_dicts)
     run["total"] = total
-    run["log"].append(f"▶ Started ({total} case{'s' if total != 1 else ''}, in-process)")
+    run["log"].append(f"▶ Started ({total} case{'s' if total != 1 else ''}, in-process, pipeline={pipeline})")
     all_results: list[dict] = []
     for idx, case_dict in enumerate(case_dicts):
         if run.get("stop_requested"):
             run["log"].append(f"⏹ Stopped after {idx} of {total} case{'s' if total != 1 else ''}.")
             break
         run["log"].append(f"  [{idx + 1}/{total}] {case_dict['title']}…")
-        result = _run_one_eval_case(case_dict, tools)
+        result = _run_one_eval_case(case_dict, tools, pipeline=pipeline)
         all_results.append(result)
         run["progress"].append(result)
         run["completed"] = idx + 1
@@ -973,15 +999,24 @@ def _run_langsmith_core(run: dict, run_id: str, case_dicts: list[dict]) -> dict 
     return ls_summary
 
 
-def _run_eval_background(run_id: str, case_dicts: list[dict], mode: str = "in_process") -> None:
+def _run_eval_background(
+    run_id: str, case_dicts: list[dict], mode: str = "in_process", pipeline: str = "langgraph"
+) -> None:
     """Runs in a daemon thread. Writes progress directly to the run dict.
 
     mode values:
-      in_process — run both pipelines locally; full per-case data stored in DB.
-      langsmith  — run via langsmith.evaluate(); per-case data lives in LangSmith.
-      both       — run in-process first (local per-case data), then run LangSmith
-                   experiments in the same thread (adds LS experiment links to the
-                   envelope). Takes in_process_time + langsmith_time total.
+      in_process — run ONE pipeline locally, graded against each case's
+                   pre-determined expected_criteria; full per-case data stored in DB.
+      langsmith  — run via langsmith.evaluate(); per-case data lives in LangSmith
+                   (LangSmith mode still runs both pipelines as separate experiments —
+                   see langsmith_evals.run_eval — that's unaffected by `pipeline` here).
+      both       — run in-process first (local per-case data, single `pipeline`), then
+                   run LangSmith experiments in the same thread (adds LS experiment
+                   links to the envelope). Takes in_process_time + langsmith_time total.
+
+    Use /admin/evals/parity/run (run_parity_comparator.py) to compare legacy vs
+    langgraph head-to-head — that's a distinct run type from these "regular" evals,
+    which grade a single pipeline against ground-truth criteria.
     """
     run = _EVAL_RUNS.get(run_id)
     if run is None:
@@ -992,7 +1027,7 @@ def _run_eval_background(run_id: str, case_dicts: list[dict], mode: str = "in_pr
             # LangSmith-only: no local per-case data.
             run["total"] = len(case_dicts)
             ls_summary = _run_langsmith_core(run, run_id, case_dicts)
-            envelope = _make_result_envelope("langsmith", [], ls_summary)
+            envelope = _make_result_envelope("langsmith", [], ls_summary, pipeline=pipeline)
             run["results"] = envelope
             run["status"] = "complete"
             run["completed_at"] = time.time()
@@ -1000,9 +1035,9 @@ def _run_eval_background(run_id: str, case_dicts: list[dict], mode: str = "in_pr
 
         elif mode == "both":
             # Phase 1 — in-process (full local per-case data)
-            all_results = _run_in_process_core(run, case_dicts)
+            all_results = _run_in_process_core(run, case_dicts, pipeline=pipeline)
             if run.get("stop_requested"):
-                envelope = _make_result_envelope("in_process", all_results, None)
+                envelope = _make_result_envelope("in_process", all_results, None, pipeline=pipeline)
                 run["results"] = envelope
                 run["status"] = "stopped"
                 run["completed_at"] = time.time()
@@ -1011,7 +1046,7 @@ def _run_eval_background(run_id: str, case_dicts: list[dict], mode: str = "in_pr
             run["log"].append("✓ In-process eval done — running LangSmith experiments…")
             # Phase 2 — LangSmith (experiment tracking; re-runs pipelines via LS)
             ls_summary = _run_langsmith_core(run, run_id, case_dicts)
-            envelope = _make_result_envelope("both", all_results, ls_summary)
+            envelope = _make_result_envelope("both", all_results, ls_summary, pipeline=pipeline)
             run["results"] = envelope
             run["status"] = "complete"
             run["completed_at"] = time.time()
@@ -1020,15 +1055,15 @@ def _run_eval_background(run_id: str, case_dicts: list[dict], mode: str = "in_pr
 
         else:
             # in_process (default)
-            all_results = _run_in_process_core(run, case_dicts)
+            all_results = _run_in_process_core(run, case_dicts, pipeline=pipeline)
             if run.get("stop_requested"):
-                envelope = _make_result_envelope("in_process", all_results, None)
+                envelope = _make_result_envelope("in_process", all_results, None, pipeline=pipeline)
                 run["results"] = envelope
                 run["status"] = "stopped"
                 run["completed_at"] = time.time()
                 _persist_eval_run(run_id, envelope, "stopped")
                 return
-            envelope = _make_result_envelope("in_process", all_results, None)
+            envelope = _make_result_envelope("in_process", all_results, None, pipeline=pipeline)
             run["results"] = envelope
             run["status"] = "complete"
             run["completed_at"] = time.time()
@@ -1066,17 +1101,26 @@ def _persist_eval_run(run_id: str, results: dict, status: str, error: str | None
 class EvalRunRequest(BaseModel):
     case_ids: list[int] | None = None  # None = all cases
     mode: str = "in_process"          # in_process | langsmith | both
+    pipeline: str = "langgraph"       # langgraph | legacy — which single pipeline to run
 
 
 @router.post("/runs", status_code=202)
 def start_eval_run(body: EvalRunRequest = Body(default=None), admin: AdminPrincipal = RequireAdmin) -> dict:
-    """Start a general eval run over selected (or all) cases — both pipelines.
+    """Start a general eval run over selected (or all) cases against ONE pipeline,
+    graded against each case's pre-determined expected_criteria (ground truth).
 
-    mode=in_process  Run locally; full per-case data stored in DB (default).
-    mode=langsmith   Run via LangSmith evaluate(); per-case data in LangSmith.
-    mode=both        In-process first then LangSmith; double runtime, both datasets.
+    pipeline=langgraph  Run the LangGraph pipeline (default).
+    pipeline=legacy      Run the legacy pipeline instead.
+    mode=in_process      Run locally; full per-case data stored in DB (default).
+    mode=langsmith       Run via LangSmith evaluate(); per-case data in LangSmith.
+    mode=both            In-process first then LangSmith; double runtime, both datasets.
+
+    To compare legacy vs langgraph head-to-head, use /admin/evals/parity/run instead —
+    that's a separate run type purpose-built for pipeline-vs-pipeline comparison.
     """
     from app.db.models import EvalCase, EvalRun, SessionLocal
+
+    pipeline = (body.pipeline if body and body.pipeline in ("langgraph", "legacy") else "langgraph")
 
     db = SessionLocal()
     try:
@@ -1106,18 +1150,19 @@ def start_eval_run(body: EvalRunRequest = Body(default=None), admin: AdminPrinci
 
     run = _make_eval_run(run_id)
     run["mode"] = mode
+    run["pipeline"] = pipeline
     with _EVAL_RUNS_LOCK:
         _EVAL_RUNS[run_id] = run
 
     thread = threading.Thread(
         target=_run_eval_background,
-        args=(run_id, case_dicts, mode),
+        args=(run_id, case_dicts, mode, pipeline),
         daemon=True,
         name=f"eval-run-{run_id}",
     )
     thread.start()
 
-    return {"run_id": run_id, "status": "running", "case_count": len(case_dicts), "mode": mode}
+    return {"run_id": run_id, "status": "running", "case_count": len(case_dicts), "mode": mode, "pipeline": pipeline}
 
 
 @router.get("/runs")
@@ -1170,6 +1215,7 @@ def get_eval_run_status(run_id: str, admin: AdminPrincipal = RequireAdmin) -> di
             "run_id": run_id,
             "status": run["status"],
             "mode": run.get("mode", "in_process"),
+            "pipeline": run.get("pipeline", "langgraph"),
             "total": run.get("total"),
             "completed": run.get("completed", 0),
             "progress": list(run.get("progress", [])),

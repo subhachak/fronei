@@ -744,7 +744,13 @@ def _normalize_v2_upload_item(raw: dict[str, Any]) -> dict[str, Any]:
         "expected_primary_role": raw.get("expected_primary_role"),
         "notes": raw.get("notes"),
         "expected_route": routing.get("expected_route"),
-        "v2_spec": {k: raw[k] for k in v2_keys if raw.get(k) is not None},
+        "v2_spec": {
+            **{k: raw[k] for k in v2_keys if raw.get(k) is not None},
+            # prior_context is a top-level case field (not a v2_keys section) but
+            # needs to be stored somewhere — no dedicated DB column, so it goes into
+            # v2_spec so _run_one_eval_case can pass it to the orchestrator.
+            **({} if raw.get("prior_context") is None else {"prior_context": raw["prior_context"]}),
+        },
     }
     retrieval = raw.get("retrieval_requirements") or {}
     if retrieval.get("min_independent_sources") is not None:
@@ -930,7 +936,24 @@ def _score_criteria(query: str, response_text: str, criteria: list[str]) -> dict
     return {"score": None, "passed": [], "failed": [], "explanation": "Scoring failed."}
 
 
-def _decide_eval_route(query: str):
+def _format_prior_context(prior_context: list[dict] | None) -> str:
+    """Format a v2_spec prior_context list into the conversation_context string
+    TurnRequest expects. The orchestrator reads conversation_context both in the
+    LLM-based decide() prompt and in _referent_resolves_from_context() for the
+    heuristic fallback — without this, multi-turn eval cases (e.g. #38, #58, #59)
+    were always routed as if they had no history, causing false clarify responses."""
+    if not prior_context:
+        return ""
+    lines = []
+    for turn in prior_context:
+        role = (turn.get("role") or "").capitalize()
+        content = (turn.get("content") or "").strip()
+        if role and content:
+            lines.append(f"{role}: {content}")
+    return "\n".join(lines)
+
+
+def _decide_eval_route(query: str, prior_context: list[dict] | None = None):
     """Get the real orchestrator decision for an eval case query — the same
     routing call a real user turn makes. No force_route: the orchestrator
     picks direct/clarify/research/document/research_document on its own,
@@ -938,15 +961,24 @@ def _decide_eval_route(query: str):
     grade routing correctness (expected_route) in addition to research-
     pipeline quality — previously every case was force-routed to "research"
     regardless of what the query actually called for.
+
+    prior_context (from the v2 case spec) is formatted into conversation_context
+    so the orchestrator sees the same conversational history it would in production.
     """
     from app.services.agent.models import TurnRequest
     from app.services.agent.orchestrator import decide
 
-    draft = TurnRequest(message=query, research_level="auto", quality_mode="standard", output_format="chat")
+    draft = TurnRequest(
+        message=query,
+        research_level="auto",
+        quality_mode="standard",
+        output_format="chat",
+        conversation_context=_format_prior_context(prior_context),
+    )
     return decide(draft)
 
 
-def _build_eval_request(query: str, decision, *, confirm_deep_research: bool):
+def _build_eval_request(query: str, decision, *, confirm_deep_research: bool, prior_context: list[dict] | None = None):
     """Build the TurnRequest to actually dispatch, given an already-computed
     `decision` (from _decide_eval_route) — never re-decides, so a case's
     routing grade and its dispatched request always agree with each other.
@@ -971,6 +1003,7 @@ def _build_eval_request(query: str, decision, *, confirm_deep_research: bool):
         quality_mode="standard",
         output_format="chat",
         confirm_deep_research=confirm_deep_research,
+        conversation_context=_format_prior_context(prior_context),
     )
 
 
@@ -1271,6 +1304,14 @@ def _run_one_eval_case(case_dict: dict, tools, pipeline: str = "langgraph") -> d
 
     query = case_dict["query"]
     criteria = case_dict.get("expected_criteria") or []
+    # Extract prior_context from v2_spec for multi-turn cases — formatted into
+    # conversation_context when building TurnRequests so both the LLM-based
+    # orchestrator path and the heuristic fallback see the same history a real
+    # user's session would provide. Without this, referential queries like
+    # "The Salesforce one" always arrived at the orchestrator as if context-free,
+    # producing false clarify responses regardless of what the case specified.
+    v2_prior = (case_dict.get("v2_spec") or {}).get("prior_context")
+    prior_context_turns: list[dict] | None = v2_prior if isinstance(v2_prior, list) else None
 
     # Fixture injection — harness integrity probe cases (eval_case_schema.json
     # case_id 120). The query starts with "[HARNESS-ONLY]" as a marker that the
@@ -1324,7 +1365,7 @@ def _run_one_eval_case(case_dict: dict, tools, pipeline: str = "langgraph") -> d
             "overall_status": overall_status,
         }
 
-    decision = _decide_eval_route(query)
+    decision = _decide_eval_route(query, prior_context=prior_context_turns)
     route = decision.route
 
     # Two-pass deep-research gate test: first prove the gate actually fires
@@ -1335,13 +1376,13 @@ def _run_one_eval_case(case_dict: dict, tools, pipeline: str = "langgraph") -> d
     deep_research_gate = None
     if route in ("research", "research_document") and decision.requires_confirmation:
         try:
-            unconfirmed_request = _build_eval_request(query, decision, confirm_deep_research=False)
+            unconfirmed_request = _build_eval_request(query, decision, confirm_deep_research=False, prior_context=prior_context_turns)
             deep_research_gate = _check_deep_research_gate(unconfirmed_request, decision, tools)
         except Exception:
             deep_research_gate = {"route": None, "has_preview": False, "resumes_research": False,
                                    "pass": False, "error": tb.format_exc()[:500]}
 
-    request = _build_eval_request(query, decision, confirm_deep_research=True)
+    request = _build_eval_request(query, decision, confirm_deep_research=True, prior_context=prior_context_turns)
 
     t0 = time.perf_counter()
     err = None

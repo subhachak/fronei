@@ -1074,6 +1074,65 @@ def _run_research_subtree_blocking(request, tools) -> dict[str, Any]:
     return _drain_generator(runtime._run_research_subtree(request, progress))
 
 
+def _run_research_document_blocking(request, tools) -> dict[str, Any]:
+    """research_document is a TWO-STAGE route in production (runtime.py:378-392):
+    research first, then _run_document writes a downloadable artifact FROM
+    that research's answer + evidence (research_answer=research["response"].text,
+    evidence=research["evidence"]). The eval harness previously dispatched
+    research_document through _run_research_subtree_blocking alone (same as
+    plain "research"), which never called _run_document at all — silently
+    testing only the research half of this route and never actually
+    producing a document artifact to grade. Fixed here to match production's
+    exact two-stage flow.
+    """
+    import types
+
+    from app.services.agent.models import Goal, ProgressEvent, new_id
+    from app.services.agent.runtime import Runtime
+
+    research = _run_research_subtree_blocking(request, tools)
+
+    turn_id = new_id("turn")
+    events: list = []
+
+    def progress(stage: str, message: str, **data) -> ProgressEvent:
+        event = ProgressEvent(turn_id=turn_id, stage=stage, message=message, data=data)
+        events.append(event)
+        return event
+
+    runtime = Runtime(tools)
+    goal = Goal(
+        user_id="eval", conversation_id=request.conversation_id,
+        objective=request.message, route="research_document", quality_mode=request.quality_mode,
+    )
+    research_response = research.get("response")
+    research_answer_text = research_response.text if hasattr(research_response, "text") else ""
+    doc_result = _drain_generator(runtime._run_document(
+        request, goal, turn_id, events, progress,
+        sources=research.get("sources") or [],
+        research_answer=research_answer_text,
+        evidence=research.get("evidence"),
+    ))
+
+    response_shim = types.SimpleNamespace(
+        text=doc_result.answer,
+        model_used=doc_result.model_used,
+        latency_ms=(getattr(research_response, "latency_ms", 0) or 0) + (doc_result.latency_ms or 0),
+        cost_usd=(getattr(research_response, "cost_usd", 0.0) or 0.0) + (doc_result.cost_usd or 0.0),
+    )
+    return {
+        "response": response_shim,
+        "sources": doc_result.sources,
+        "tool_calls": [*(research.get("tool_calls") or []), *doc_result.tool_calls],
+        "artifacts": doc_result.artifacts,
+        # Preserve the rich research evidence/judge feedback for grounding,
+        # retrieval-completeness, and gap-honesty checks — the document
+        # stage itself doesn't bind new evidence, it writes FROM this.
+        "evidence": research.get("evidence"),
+        "feedback": research.get("feedback"),
+    }
+
+
 def _run_non_research_route_blocking(request, decision, route: str, tools) -> dict[str, Any]:
     """Dispatch a direct/clarify/document-routed eval case through the same
     Runtime handler methods run_stream() uses for that route — without
@@ -1117,7 +1176,10 @@ def _run_non_research_route_blocking(request, decision, route: str, tools) -> di
     response_shim = types.SimpleNamespace(
         text=result.answer, model_used=result.model_used, latency_ms=result.latency_ms, cost_usd=result.cost_usd,
     )
-    return {"response": response_shim, "sources": result.sources, "tool_calls": result.tool_calls}
+    return {
+        "response": response_shim, "sources": result.sources, "tool_calls": result.tool_calls,
+        "artifacts": result.artifacts,
+    }
 
 
 def check_judge_structural_agreement(judge_score: float | None, answer_length: int) -> bool:
@@ -1209,8 +1271,10 @@ def _run_one_eval_case(case_dict: dict, tools, pipeline: str = "langgraph") -> d
     err = None
     result = None
     try:
-        if route in ("research", "research_document"):
+        if route == "research":
             result = _run_research_subtree_blocking(request, tools)
+        elif route == "research_document":
+            result = _run_research_document_blocking(request, tools)
         else:
             result = _run_non_research_route_blocking(request, decision, route, tools)
     except Exception:
@@ -1218,6 +1282,7 @@ def _run_one_eval_case(case_dict: dict, tools, pipeline: str = "langgraph") -> d
     latency_ms = int((time.perf_counter() - t0) * 1000)
 
     evidence_items: list = []
+    artifacts: list = []
     full_answer = ""  # untruncated — run["answer"] below is a display-length preview only
     if err or result is None:
         run = {"ok": False, "error": (err or "")[:500], "answer": "", "answer_length": 0,
@@ -1228,6 +1293,7 @@ def _run_one_eval_case(case_dict: dict, tools, pipeline: str = "langgraph") -> d
         evidence = result.get("evidence")
         feedback = result.get("feedback")
         evidence_items = list(evidence.items) if evidence and hasattr(evidence, "items") else []
+        artifacts = list(result.get("artifacts") or [])
         run = {
             "ok": True,
             "error": None,
@@ -1251,17 +1317,32 @@ def _run_one_eval_case(case_dict: dict, tools, pipeline: str = "langgraph") -> d
 
     benchmarks = _score_benchmarks(case_dict, run)
 
+    # scoring_spec.md §1.7 — for document-route cases with
+    # extract_and_grade_content=true, grade the document's ACTUAL extracted
+    # text, not the chat confirmation message ("Done. I created X.docx") —
+    # the v1 harness graded that confirmation stub and got meaningless
+    # 0.3-0.5 scores reflecting an inability to verify, not real document
+    # quality. document_text is None (not "") when extraction wasn't
+    # attempted/failed, so graded_text correctly falls back to full_answer
+    # rather than grading an artificially empty string.
+    v2_spec = case_dict.get("v2_spec") or {}
+    document_text = None
+    if route in ("document", "research_document") and (v2_spec.get("document_requirements") or {}).get("extract_and_grade_content") and artifacts:
+        document_text = _extract_artifact_text(artifacts[0])
+    graded_text = document_text if document_text is not None else full_answer
+
     expected_route = case_dict.get("expected_route")
     route_correct = (route == expected_route) if expected_route else None
     gate_correct = score_gate_correct(case_dict, deep_research_gate)
     retrieval_completeness = score_retrieval_completeness(case_dict, evidence_items)
     retrieval_independence = score_retrieval_independence(case_dict, run, evidence_items)
     latency_pass = score_latency_pass(case_dict, route, decision.research_level, latency_ms)
-    synthesis_grounding = score_synthesis_grounding(full_answer, evidence_items)
-    gap_honesty = score_gap_honesty(case_dict, full_answer, evidence_items)
-    conflict_handling = score_conflict_handling(case_dict, full_answer, evidence_items)
-    must_not_recommend_ok = score_must_not_recommend(case_dict, full_answer)
-    answer_length_ok = score_answer_length_bounds(case_dict, run["answer_length"])
+    synthesis_grounding = score_synthesis_grounding(graded_text, evidence_items)
+    gap_honesty = score_gap_honesty(case_dict, graded_text, evidence_items)
+    conflict_handling = score_conflict_handling(case_dict, graded_text, evidence_items)
+    must_not_recommend_ok = score_must_not_recommend(case_dict, graded_text)
+    answer_length_ok = score_answer_length_bounds(case_dict, len(graded_text) if document_text is not None else run["answer_length"])
+    format_correct = score_format_correct(case_dict, artifacts)
 
     overall_structural_pass = all(structural.values())
     overall_benchmark_pass = all(b["pass"] for b in benchmarks.values()) if benchmarks else None
@@ -1301,6 +1382,7 @@ def _run_one_eval_case(case_dict: dict, tools, pipeline: str = "langgraph") -> d
             "conflict_handling": conflict_handling,
             "must_not_recommend_ok": must_not_recommend_ok,
             "answer_length_ok": answer_length_ok,
+            "format_correct": format_correct,
         },
         "overall_structural_pass": overall_structural_pass,
         "overall_benchmark_pass": overall_benchmark_pass,
@@ -1604,6 +1686,61 @@ def score_answer_length_bounds(case_dict: dict, answer_length: int) -> bool | No
         return False
     if min_len is not None and answer_length < min_len:
         return False
+    return True
+
+
+def _extract_artifact_text(artifact: Any) -> str | None:
+    """scoring_spec.md §1.7 — open the generated document artifact and
+    extract its real text, via the same document_extractor.extract_text()
+    used elsewhere in the app for uploaded files. Returns None if there's no
+    artifact, no base64_data, or extraction fails — callers must treat None
+    as "couldn't verify", not as empty/failing content."""
+    import base64
+
+    from app.services.document_extractor import ExtractionError, extract_text
+
+    base64_data = getattr(artifact, "base64_data", "") or ""
+    if not base64_data:
+        return None
+    try:
+        content = base64.b64decode(base64_data)
+        filename = getattr(artifact, "filename", "") or f"document.{getattr(artifact, 'kind', 'docx')}"
+        text, _pages, _truncated, _method = extract_text(filename, content)
+        return text
+    except ExtractionError:
+        return None
+    except Exception:
+        return None
+
+
+def score_format_correct(case_dict: dict, artifacts: list) -> bool | None:
+    """scoring_spec.md §1.7 — verifies the generated artifact matches
+    expected_format, and (if expected_page_count is set) roughly matches
+    the expected length via a word-count proxy (~500 words/page, ±1 page
+    slack) — the spec's own suggested fallback. The docx/pptx text
+    extractor (document_extractor.py) doesn't compute real page counts
+    (would need actual rendering), so a true page-count check isn't
+    available; word-count is the closest honest proxy rather than a fake
+    precise number. None if the case doesn't set expected_format.
+    """
+    v2 = case_dict.get("v2_spec") or {}
+    doc_req = v2.get("document_requirements") or {}
+    expected_format = doc_req.get("expected_format")
+    if not expected_format:
+        return None
+    if not artifacts:
+        return False
+    artifact = artifacts[0]
+    if getattr(artifact, "kind", None) != expected_format:
+        return False
+    expected_pages = doc_req.get("expected_page_count")
+    if expected_pages is not None:
+        text = _extract_artifact_text(artifact)
+        if text is None:
+            return False
+        estimated_pages = max(1, round(len(text.split()) / 500))
+        if abs(estimated_pages - expected_pages) > 1:
+            return False
     return True
 
 

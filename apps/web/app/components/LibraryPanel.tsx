@@ -72,11 +72,20 @@ export function LibraryPanel({
   const [conversationSearchOpen, setConversationSearchOpen] = useState<Record<string, boolean>>({})
   const [conversationSearch, setConversationSearch] = useState<Record<string, string>>({})
   const workspaceQuery = workspaceSearch.trim().toLowerCase()
-  const visibleWorkspaces = workspaces.filter(workspace => (
-    !workspaceQuery
-    || workspace.name.toLowerCase().includes(workspaceQuery)
-    || workspace.conversations.some(conversation => conversation.title.toLowerCase().includes(workspaceQuery))
-  ))
+  // Recently-used-on-top: the backend already returns workspaces/conversations
+  // ordered by updated_at desc, but client-side mutations (appendTurn after a
+  // turn completes, optimistic createConversation/createWorkspace) only patch
+  // the matching item in place without re-sorting the array — so a workspace
+  // you just used stayed wherever it was in the list until the next full
+  // reload. Sorting at render time keeps the list self-consistent regardless
+  // of which mutation touched it last.
+  const visibleWorkspaces = workspaces
+    .filter(workspace => (
+      !workspaceQuery
+      || workspace.name.toLowerCase().includes(workspaceQuery)
+      || workspace.conversations.some(conversation => conversation.title.toLowerCase().includes(workspaceQuery))
+    ))
+    .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
 
   useEffect(() => {
     setWorkspacesTileOpen(view === 'chat')
@@ -162,11 +171,13 @@ export function LibraryPanel({
               const isActive = workspace.id === activeWorkspaceId
               const expanded = expandedWorkspaceIds[workspace.id] ?? (isActive || index === 0)
               const conversationQuery = (conversationSearch[workspace.id] || '').trim().toLowerCase()
-              const visibleConversations = workspace.conversations.filter(conversation => (
-                !conversationQuery
-                || conversation.title.toLowerCase().includes(conversationQuery)
-                || String(conversation.turnCount || conversation.turns.length).includes(conversationQuery)
-              ))
+              const visibleConversations = workspace.conversations
+                .filter(conversation => (
+                  !conversationQuery
+                  || conversation.title.toLowerCase().includes(conversationQuery)
+                  || String(conversation.turnCount || conversation.turns.length).includes(conversationQuery)
+                ))
+                .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
               const turnCount = workspace.conversations.reduce((total, conversation) => total + (conversation.turnCount || conversation.turns.length), 0)
 
               return (

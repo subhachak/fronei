@@ -39,9 +39,18 @@ const ROLE_OPTIONS = [
   'expert_opinion', 'anecdotal', 'conflicting',
 ]
 
+// Consolidated category set (see apps/api alembic d4e5f6a7b8c9 and
+// app/routers/evals.py EVAL_CASE_CATEGORIES). Cases may still carry a custom
+// category outside this list, but new/edited cases are steered toward these.
+const EVAL_CASE_CATEGORIES = [
+  'routing_classification', 'freshness_facts', 'subject_extraction',
+  'evidence_quality', 'domain_specific', 'answer_behavior',
+]
+
 const DEFAULT_FORM = {
   title: '', query: '', category: '', expected_criteria_text: '',
-  expected_primary_role: '', min_independent_sources: '', notes: '',
+  expected_primary_role: '', min_independent_sources: '',
+  min_evidence_items: '', min_criteria_score: '', notes: '',
 }
 type FormState = typeof DEFAULT_FORM
 
@@ -311,6 +320,12 @@ function CaseResultRow({ r, authorizedFetch }: { r: EvalCaseRunResult; authorize
           <span className={r.overall_structural_pass ? 'text-green-600 dark:text-green-400 font-semibold' : 'text-red-600 dark:text-red-400 font-semibold'}>
             {r.overall_structural_pass ? '✓ pass' : '✗ fail'}
           </span>
+          {r.overall_benchmark_pass != null && (
+            <span className={r.overall_benchmark_pass ? 'text-emerald-600 dark:text-emerald-400 font-semibold' : 'text-amber-600 dark:text-amber-400 font-semibold'}
+              title="Deterministic benchmark thresholds">
+              {r.overall_benchmark_pass ? '✓ benchmarks' : '✗ benchmarks'}
+            </span>
+          )}
           <span className="text-neutral-400">{pipelineLabel}</span><ScoreBadge score={data.criteria?.score} />
         </div>
       </button>
@@ -379,6 +394,22 @@ function CaseResultRow({ r, authorizedFetch }: { r: EvalCaseRunResult; authorize
                   ))}
                 </div>
               </div>
+
+              {/* Benchmark thresholds — deterministic, separate from the LLM-judged criteria above */}
+              {Object.keys(r.benchmarks ?? {}).length > 0 && (
+                <div>
+                  <p className="text-xs font-bold text-neutral-500 mb-2">Benchmarks</p>
+                  <div className="grid grid-cols-2 gap-x-4 gap-y-1">
+                    {Object.entries(r.benchmarks).map(([k, b]) => (
+                      <div key={k} className="flex items-center gap-1.5 text-xs">
+                        <span className={b.pass ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}>{b.pass ? '✓' : '✗'}</span>
+                        <span className="text-neutral-600 dark:text-neutral-400 font-mono">{k}</span>
+                        <span className="text-neutral-400 tabular-nums">({b.actual ?? '—'} / {b.target})</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -407,6 +438,8 @@ function CaseModal({ initial, onSave, onClose }: {
       expected_criteria_text: (initial.expected_criteria ?? []).join('\n'),
       expected_primary_role: initial.expected_primary_role ?? '',
       min_independent_sources: initial.min_independent_sources != null ? String(initial.min_independent_sources) : '',
+      min_evidence_items: initial.min_evidence_items != null ? String(initial.min_evidence_items) : '',
+      min_criteria_score: initial.min_criteria_score != null ? String(initial.min_criteria_score) : '',
       notes: initial.notes ?? '',
     } : DEFAULT_FORM,
   )
@@ -435,8 +468,12 @@ function CaseModal({ initial, onSave, onClose }: {
               className="w-full rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-3 py-2 text-sm text-neutral-900 dark:text-neutral-50 focus:outline-none focus:ring-2 focus:ring-neutral-400 resize-none" /></div>
           <div className="grid grid-cols-2 gap-3">
             <div><label className="block text-xs font-semibold text-neutral-500 mb-1">Category</label>
-              <input value={form.category} onChange={e => set('category', e.target.value)} placeholder="immigration_operational"
-                className="w-full rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-3 py-2 text-sm text-neutral-900 dark:text-neutral-50 focus:outline-none focus:ring-2 focus:ring-neutral-400" /></div>
+              <input value={form.category} onChange={e => set('category', e.target.value)} placeholder="routing_classification"
+                list="eval-case-categories"
+                className="w-full rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-3 py-2 text-sm text-neutral-900 dark:text-neutral-50 focus:outline-none focus:ring-2 focus:ring-neutral-400" />
+              <datalist id="eval-case-categories">
+                {EVAL_CASE_CATEGORIES.map(c => <option key={c} value={c} />)}
+              </datalist></div>
             <div><label className="block text-xs font-semibold text-neutral-500 mb-1">Expected primary role</label>
               <select value={form.expected_primary_role} onChange={e => set('expected_primary_role', e.target.value)}
                 className="w-full rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-3 py-2 text-sm text-neutral-900 dark:text-neutral-50 focus:outline-none focus:ring-2 focus:ring-neutral-400">
@@ -447,10 +484,21 @@ function CaseModal({ initial, onSave, onClose }: {
             <textarea rows={4} value={form.expected_criteria_text} onChange={e => set('expected_criteria_text', e.target.value)}
               placeholder={"Cites practitioner data\nIncludes official USCIS SLA\nGives specific time range"}
               className="w-full rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-3 py-2 text-sm font-mono text-neutral-900 dark:text-neutral-50 focus:outline-none focus:ring-2 focus:ring-neutral-400 resize-none" /></div>
-          <div className="grid grid-cols-2 gap-3">
-            <div><label className="block text-xs font-semibold text-neutral-500 mb-1">Min independent sources</label>
-              <input type="number" min={1} value={form.min_independent_sources} onChange={e => set('min_independent_sources', e.target.value)} placeholder="2"
-                className="w-full rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-3 py-2 text-sm text-neutral-900 dark:text-neutral-50 focus:outline-none focus:ring-2 focus:ring-neutral-400" /></div>
+          <div>
+            <label className="block text-xs font-semibold text-neutral-500 mb-1">
+              Benchmark thresholds <span className="font-normal text-neutral-400">(scored deterministically against the actual run, separate from the LLM-judged criteria above)</span>
+            </label>
+            <div className="grid grid-cols-3 gap-3">
+              <div><label className="block text-[11px] text-neutral-400 mb-1">Min independent sources</label>
+                <input type="number" min={1} value={form.min_independent_sources} onChange={e => set('min_independent_sources', e.target.value)} placeholder="2"
+                  className="w-full rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-3 py-2 text-sm text-neutral-900 dark:text-neutral-50 focus:outline-none focus:ring-2 focus:ring-neutral-400" /></div>
+              <div><label className="block text-[11px] text-neutral-400 mb-1">Min evidence items</label>
+                <input type="number" min={1} value={form.min_evidence_items} onChange={e => set('min_evidence_items', e.target.value)} placeholder="20"
+                  className="w-full rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-3 py-2 text-sm text-neutral-900 dark:text-neutral-50 focus:outline-none focus:ring-2 focus:ring-neutral-400" /></div>
+              <div><label className="block text-[11px] text-neutral-400 mb-1">Min criteria score</label>
+                <input type="number" min={0} max={1} step={0.05} value={form.min_criteria_score} onChange={e => set('min_criteria_score', e.target.value)} placeholder="0.8"
+                  className="w-full rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-3 py-2 text-sm text-neutral-900 dark:text-neutral-50 focus:outline-none focus:ring-2 focus:ring-neutral-400" /></div>
+            </div>
           </div>
           <div><label className="block text-xs font-semibold text-neutral-500 mb-1">Notes</label>
             <textarea rows={2} value={form.notes} onChange={e => set('notes', e.target.value)}
@@ -538,7 +586,7 @@ function UploadModal({ authorizedFetch, onDone, onClose }: {
 
 function CategoryGroup({
   category, cases, open, onOpenChange, selectedIds, onToggle, onToggleAll,
-  onEdit, onDeactivate, deactivating,
+  onEdit, onDeactivate, deactivating, onRunSingle, runningSingleId,
 }: {
   category: string
   cases: EvalCase[]
@@ -550,6 +598,8 @@ function CategoryGroup({
   onEdit: (c: EvalCase) => void
   onDeactivate: (id: number) => void
   deactivating: number | null
+  onRunSingle: (id: number) => void
+  runningSingleId: number | null
 }) {
   const ids = cases.map(c => c.id)
   const allSelected = ids.length > 0 && ids.every(id => selectedIds.has(id))
@@ -588,6 +638,10 @@ function CategoryGroup({
             )}
           </div>
           <div className="flex items-center gap-1 flex-shrink-0">
+            <button type="button" onClick={() => onRunSingle(c.id)} disabled={runningSingleId !== null} title="Run this case"
+              className="grid h-7 w-7 place-items-center rounded-lg text-neutral-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/30 hover:text-emerald-600 dark:hover:text-emerald-400 disabled:opacity-40">
+              {runningSingleId === c.id ? <Loader2 size={13} className="animate-spin" /> : <Play size={13} />}
+            </button>
             <button type="button" onClick={() => onEdit(c)} title="Edit"
               className="grid h-7 w-7 place-items-center rounded-lg text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-700 hover:text-neutral-700 dark:hover:text-neutral-200">
               <Edit2 size={13} />
@@ -616,11 +670,17 @@ function RunHistoryRow({
   featured,
   defaultOpen,
   authorizedFetch,
+  onRerun,
+  onDelete,
+  onExport,
 }: {
   run: EvalRunSummary
   featured?: boolean
   defaultOpen?: boolean
   authorizedFetch: AuthorizedFetch
+  onRerun: (runId: string) => void
+  onDelete: (runId: string) => void
+  onExport: (runId: string, format: 'json' | 'csv') => void
 }) {
   const [open, setOpen] = useState(defaultOpen ?? false)
   const [detail, setDetail] = useState<RunDetail | null>(null)
@@ -659,25 +719,40 @@ function RunHistoryRow({
   return (
     <div className={`overflow-hidden ${featured ? 'rounded-xl border-2 border-neutral-300 dark:border-neutral-600' : 'rounded-xl border border-neutral-200 dark:border-neutral-800'}`}>
       {/* Header row */}
-      <button type="button" onClick={toggle}
-        className={`w-full flex items-center gap-3 px-4 py-3 text-left transition-colors
+      <div className={`w-full flex items-center gap-1 pr-2 transition-colors
           ${featured ? 'bg-neutral-50 dark:bg-neutral-800/60 hover:bg-neutral-100 dark:hover:bg-neutral-800'
             : 'bg-white dark:bg-neutral-900 hover:bg-neutral-50 dark:hover:bg-neutral-800'}`}>
-        {open
-          ? <ChevronDown size={13} className="text-neutral-400 flex-shrink-0" />
-          : <ChevronRight size={13} className="text-neutral-400 flex-shrink-0" />}
-        <span className={`h-2 w-2 rounded-full flex-shrink-0 ${statusColor}`} />
-        {featured && <span className="text-[10px] font-bold uppercase tracking-widest text-neutral-400 flex-shrink-0">Latest</span>}
-        <span className="flex-1 font-mono text-xs text-neutral-500 truncate">{run.run_id}</span>
-        <span className="text-xs text-neutral-400 flex-shrink-0 tabular-nums">{run.case_count} case{run.case_count !== 1 ? 's' : ''}</span>
-        <span className={`text-xs font-semibold flex-shrink-0 ${statusText}`}>{run.status}</span>
-        {run.started_at && (
-          <span className="text-xs text-neutral-400 flex-shrink-0 hidden sm:block">
-            {new Date(run.started_at).toLocaleString()}
-          </span>
-        )}
-        {loading && <Loader2 size={13} className="text-neutral-400 animate-spin flex-shrink-0" />}
-      </button>
+        <button type="button" onClick={toggle} className="flex-1 min-w-0 flex items-center gap-3 px-4 py-3 text-left">
+          {open
+            ? <ChevronDown size={13} className="text-neutral-400 flex-shrink-0" />
+            : <ChevronRight size={13} className="text-neutral-400 flex-shrink-0" />}
+          <span className={`h-2 w-2 rounded-full flex-shrink-0 ${statusColor}`} />
+          {featured && <span className="text-[10px] font-bold uppercase tracking-widest text-neutral-400 flex-shrink-0">Latest</span>}
+          <span className="flex-1 font-mono text-xs text-neutral-500 truncate">{run.run_id}</span>
+          <span className="text-xs text-neutral-400 flex-shrink-0 tabular-nums">{run.case_count} case{run.case_count !== 1 ? 's' : ''}</span>
+          <span className={`text-xs font-semibold flex-shrink-0 ${statusText}`}>{run.status}</span>
+          {run.started_at && (
+            <span className="text-xs text-neutral-400 flex-shrink-0 hidden sm:block">
+              {new Date(run.started_at).toLocaleString()}
+            </span>
+          )}
+          {loading && <Loader2 size={13} className="text-neutral-400 animate-spin flex-shrink-0" />}
+        </button>
+        <div className="flex items-center gap-0.5 flex-shrink-0">
+          <button type="button" onClick={() => onRerun(run.run_id)} disabled={run.status === 'running'} title="Re-run with the same cases/pipeline"
+            className="grid h-7 w-7 place-items-center rounded-lg text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-700 hover:text-neutral-700 dark:hover:text-neutral-200 disabled:opacity-40">
+            <RotateCcw size={13} />
+          </button>
+          <button type="button" onClick={() => onExport(run.run_id, 'json')} title="Download JSON"
+            className="grid h-7 w-7 place-items-center rounded-lg text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-700 hover:text-neutral-700 dark:hover:text-neutral-200">
+            <Download size={13} />
+          </button>
+          <button type="button" onClick={() => onDelete(run.run_id)} disabled={run.status === 'running'} title="Delete run"
+            className="grid h-7 w-7 place-items-center rounded-lg text-neutral-400 hover:bg-red-50 dark:hover:bg-red-950/30 hover:text-red-600 dark:hover:text-red-400 disabled:opacity-40">
+            <X size={13} />
+          </button>
+        </div>
+      </div>
 
       {/* Expanded content */}
       {open && (
@@ -723,6 +798,7 @@ export function EvalHarnessTab({ authorizedFetch }: { authorizedFetch: Authorize
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
   const [runMode, setRunMode] = useState<'in_process' | 'langsmith' | 'both'>('in_process')
   const [runPipeline, setRunPipeline] = useState<EvalPipeline>('langgraph')
+  const [runningSingleId, setRunningSingleId] = useState<number | null>(null)
   const [lsConfigured, setLsConfigured] = useState(false)
   const [runStatus, setRunStatus] = useState<'idle' | 'running' | 'complete' | 'stopped' | 'error'>('idle')
   const [currentRunId, setCurrentRunId] = useState<string | null>(null)
@@ -813,6 +889,8 @@ export function EvalHarnessTab({ authorizedFetch }: { authorizedFetch: Authorize
       expected_criteria: form.expected_criteria_text.split('\n').map(s => s.trim()).filter(Boolean),
       expected_primary_role: form.expected_primary_role || null,
       min_independent_sources: form.min_independent_sources ? Number(form.min_independent_sources) : null,
+      min_evidence_items: form.min_evidence_items ? Number(form.min_evidence_items) : null,
+      min_criteria_score: form.min_criteria_score ? Number(form.min_criteria_score) : null,
       notes: form.notes || null,
     }
     const url = existing ? `/admin/evals/cases/${existing.id}` : '/admin/evals/cases'
@@ -912,13 +990,14 @@ export function EvalHarnessTab({ authorizedFetch }: { authorizedFetch: Authorize
   useEffect(() => () => stopPolling(), [])
 
   // ── Start run ────────────────────────────────────────────────────────────────
-  async function startRun() {
+  async function startRun(caseIdsOverride?: number[]) {
     setRunStatus('running'); setLog([]); setRunResult(null); setRunError('')
     setLangsmithLinks({}); setProgressTotal(null); setProgressCompleted(0); setCurrentRunId(null)
+    const ids = caseIdsOverride ?? Array.from(selectedIds)
     const payload = {
       mode: runMode,
       pipeline: runPipeline,
-      ...(selectedIds.size > 0 ? { case_ids: Array.from(selectedIds) } : {}),
+      ...(ids.length > 0 ? { case_ids: ids } : {}),
     }
     try {
       const startResp = await authorizedFetch('/admin/evals/runs', {
@@ -933,6 +1012,69 @@ export function EvalHarnessTab({ authorizedFetch }: { authorizedFetch: Authorize
     } catch (err: unknown) {
       setRunError(err instanceof Error ? err.message : 'Failed to start run'); setRunStatus('error')
     }
+  }
+
+  async function runSingleCase(caseId: number) {
+    if (runStatus === 'running') return
+    setRunningSingleId(caseId)
+    await startRun([caseId])
+  }
+
+  // Clear the per-row spinner once the (possibly single-case) run reaches a terminal state.
+  useEffect(() => {
+    if (runningSingleId !== null && runStatus !== 'running') setRunningSingleId(null)
+  }, [runStatus, runningSingleId])
+
+  async function rerunFromHistory(runId: string) {
+    try {
+      const resp = await authorizedFetch(`/admin/evals/runs/${runId}/rerun`, { method: 'POST' })
+      if (!resp.ok) throw new Error(await readErrorBody(resp, 'Failed to start re-run'))
+      const { run_id } = await resp.json()
+      setRunStatus('running'); setLog([]); setRunResult(null); setRunError('')
+      setLangsmithLinks({}); setProgressTotal(null); setProgressCompleted(0)
+      setCurrentRunId(run_id)
+      startPolling(run_id)
+      await loadRuns()
+    } catch (err: unknown) {
+      setRunError(err instanceof Error ? err.message : 'Failed to start re-run'); setRunStatus('error')
+    }
+  }
+
+  async function deleteRun(runId: string) {
+    if (!confirm('Delete this run permanently? This cannot be undone.')) return
+    try {
+      const resp = await authorizedFetch(`/admin/evals/runs/${runId}`, { method: 'DELETE' })
+      if (!resp.ok) throw new Error(await readErrorBody(resp, 'Failed to delete run'))
+      await loadRuns()
+    } catch (err: unknown) {
+      setRunError(err instanceof Error ? err.message : 'Failed to delete run')
+    }
+  }
+
+  async function cleanupOldRuns() {
+    if (!confirm('Delete all but the 20 most recent runs? This cannot be undone.')) return
+    try {
+      const resp = await authorizedFetch('/admin/evals/runs/cleanup', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ keep_latest: 20 }),
+      })
+      if (!resp.ok) throw new Error(await readErrorBody(resp, 'Cleanup failed'))
+      await loadRuns()
+    } catch (err: unknown) {
+      setRunError(err instanceof Error ? err.message : 'Cleanup failed')
+    }
+  }
+
+  function exportRun(runId: string, format: 'json' | 'csv') {
+    authorizedFetch(`/admin/evals/runs/${runId}/export?format=${format}`)
+      .then(async resp => {
+        if (!resp.ok) throw new Error(await readErrorBody(resp, 'Export failed'))
+        const blob = await resp.blob()
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url; a.download = `${runId}.${format}`; a.click()
+        URL.revokeObjectURL(url)
+      })
+      .catch((err: unknown) => setRunError(err instanceof Error ? err.message : 'Export failed'))
   }
 
   async function stopRun() {
@@ -951,278 +1093,305 @@ export function EvalHarnessTab({ authorizedFetch }: { authorizedFetch: Authorize
 
   // ── Render ───────────────────────────────────────────────────────────────────
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
+      <LangSmithBanner authorizedFetch={authorizedFetch} onStatus={setLsConfigured} />
 
-      {/* ═══ RUN SECTION ══════════════════════════════════════════════════════ */}
-      <div className="space-y-4">
-        <LangSmithBanner authorizedFetch={authorizedFetch} onStatus={setLsConfigured} />
+      <div className="grid grid-cols-1 lg:grid-cols-[420px_1fr] gap-6 items-start">
 
-        {/* Pipeline + mode selector + run button */}
-        <div className="flex items-center gap-3 flex-wrap">
-          {/* Pipeline selector — each case is graded against its own expected_criteria
-              (ground truth) for the selected pipeline. Use the Parity tab to compare
-              legacy vs langgraph head-to-head instead. */}
-          <select
-            value={runPipeline}
-            onChange={e => setRunPipeline(e.target.value as EvalPipeline)}
-            disabled={runStatus === 'running'}
-            title="Which single pipeline to run cases through, graded against expected_criteria. For legacy-vs-langgraph comparison, use the Parity tab."
-            className="rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 px-3 py-1.5 text-xs font-semibold text-neutral-700 dark:text-neutral-300 disabled:opacity-40"
-          >
-            <option value="langgraph">LangGraph</option>
-            <option value="legacy">Legacy</option>
-          </select>
-
-          {/* Segmented mode control */}
-          <div className="flex rounded-lg border border-neutral-200 dark:border-neutral-700 overflow-hidden text-xs font-semibold">
-            {([
-              { value: 'in_process', label: 'Local', title: 'Run the selected pipeline in-process; full per-case data stored locally' },
-              { value: 'langsmith',  label: 'LangSmith', title: lsConfigured ? 'Run via LangSmith evaluate(); per-case data in LangSmith' : 'LangSmith not configured' },
-              { value: 'both',       label: 'Both', title: lsConfigured ? 'In-process first (local data), then LangSmith experiments — ~2× runtime' : 'LangSmith not configured' },
-            ] as const).map(({ value, label, title }) => {
-              const disabled = !lsConfigured && value !== 'in_process'
-              const active = runMode === value
-              return (
-                <button key={value} type="button"
-                  disabled={disabled || runStatus === 'running'}
-                  title={title}
-                  onClick={() => setRunMode(value)}
-                  className={`px-3 py-1.5 transition-colors border-r border-neutral-200 dark:border-neutral-700 last:border-0
-                    ${active
-                      ? 'bg-neutral-900 dark:bg-white text-white dark:text-neutral-900'
-                      : disabled
-                        ? 'text-neutral-300 dark:text-neutral-600 cursor-not-allowed bg-white dark:bg-neutral-900'
-                        : 'text-neutral-600 dark:text-neutral-400 bg-white dark:bg-neutral-900 hover:bg-neutral-50 dark:hover:bg-neutral-800'
-                    }`}>
-                  {label}
+        {/* ═══ LEFT COLUMN — case list ═════════════════════════════════════════ */}
+        <div>
+          <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+            <div className="flex items-center gap-3">
+              <h3 className="text-sm font-bold text-neutral-900 dark:text-neutral-50">
+                Eval cases <span className="font-normal text-neutral-400">({cases.length})</span>
+              </h3>
+              {sortedCategories.length > 1 && (
+                <button type="button" onClick={toggleAllGroups}
+                  className="flex items-center gap-1 text-xs text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300 transition-colors"
+                  title={allOpen ? 'Collapse all' : 'Expand all'}>
+                  {allOpen
+                    ? <><ChevronsDownUp size={13} /> Collapse</>
+                    : <><ChevronsUpDown size={13} /> Expand</>}
                 </button>
-              )
-            })}
-          </div>
-
-          <button type="button" disabled={!canRun} onClick={startRun}
-            className="flex items-center gap-1.5 rounded-lg bg-neutral-900 dark:bg-white px-4 py-2 text-sm font-semibold text-white dark:text-neutral-900 hover:bg-neutral-700 dark:hover:bg-neutral-200 disabled:opacity-40">
-            <Play size={13} />
-            {runLabel}
-          </button>
-          {runStatus === 'running' && (
-            <button type="button" onClick={stopRun}
-              title="Stop after current case finishes"
-              className="flex items-center gap-1.5 rounded-lg border border-red-300 dark:border-red-700 px-3 py-2 text-sm font-semibold text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20">
-              <Square size={12} />
-              Stop
-            </button>
-          )}
-          {runStatus === 'running' && progressTotal != null && (
-            <div className="flex items-center gap-2 flex-1">
-              <div className="flex-1 h-1.5 rounded-full bg-neutral-200 dark:bg-neutral-800 overflow-hidden">
-                <div className="h-full bg-blue-500 transition-all duration-500"
-                  style={{ width: `${(progressCompleted / progressTotal) * 100}%` }} />
-              </div>
-              <span className="text-xs text-neutral-500 tabular-nums flex-shrink-0">{progressCompleted}/{progressTotal}</span>
+              )}
             </div>
-          )}
-        </div>
-
-        {(log.length > 0 || runStatus === 'running') && (
-          <div ref={logRef}
-            className="rounded-xl bg-neutral-950 text-green-300 font-mono text-xs p-4 max-h-44 overflow-y-auto space-y-0.5">
-            {log.map((line, i) => <div key={i}>{line}</div>)}
-            {runStatus === 'running' && <div className="animate-pulse text-neutral-500">⋯ polling…</div>}
-          </div>
-        )}
-        {runStatus === 'stopped' && (
-          <p className="text-xs text-amber-600 dark:text-amber-400">
-            ⏹ Run stopped — partial results shown below.
-          </p>
-        )}
-        {runError && <p className="text-xs text-red-600 dark:text-red-400">{runError}</p>}
-
-        {Object.keys(langsmithLinks).length > 0 && (
-          <div className="rounded-xl border border-emerald-200 dark:border-emerald-900 bg-emerald-50 dark:bg-emerald-950/30 px-4 py-3 space-y-1">
-            <p className="text-xs font-bold text-emerald-800 dark:text-emerald-300 mb-2">LangSmith experiments</p>
-            {Object.entries(langsmithLinks).map(([pipeline, url]) => (
-              <a key={pipeline} href={url} target="_blank" rel="noopener noreferrer"
-                className="flex items-center gap-1.5 text-xs text-emerald-700 dark:text-emerald-400 hover:underline">
-                <ExternalLink size={11} /> {pipeline} pipeline experiment
-              </a>
-            ))}
-          </div>
-        )}
-
-        {runResult && (runStatus === 'complete' || runStatus === 'stopped') && (
-          <LocalReport cases={runResult.cases ?? []} runResult={runResult} />
-        )}
-
-        {(runResult?.cases?.length ?? 0) > 0 && (
-          <div>
-            <p className="text-xs font-bold text-neutral-500 mb-2">Per-case results ({runResult!.cases.length})</p>
-            <div className="space-y-2">
-              {runResult!.cases.map(r => (
-                <CaseResultRow key={r.case_id} r={r} authorizedFetch={authorizedFetch} />
-              ))}
-            </div>
-          </div>
-        )}
-        {runResult?.mode === 'langsmith' && runStatus === 'complete' && (runResult.cases?.length ?? 0) === 0 && (
-          <p className="text-xs text-neutral-500 italic">Per-case rows are in LangSmith. Use the experiment links above.</p>
-        )}
-
-        {runs.length > 0 && (
-          <div>
-            {/* Collapsible header */}
-            <button type="button" onClick={() => setRunsOpen(o => !o)}
-              className="flex items-center gap-1.5 w-full text-left mb-2 group">
-              {runsOpen
-                ? <ChevronDown size={13} className="text-neutral-400" />
-                : <ChevronRight size={13} className="text-neutral-400" />}
-              <span className="text-xs font-bold text-neutral-500 group-hover:text-neutral-700 dark:group-hover:text-neutral-300">
-                Run history
-              </span>
-              <span className="text-[11px] text-neutral-400 tabular-nums ml-1">({runs.length}{runsHasMore ? '+' : ''})</span>
-            </button>
-
-            {runsOpen && (
-              <div className="space-y-2">
-                {/* Latest run — featured at top */}
-                <RunHistoryRow
-                  key={runs[0].run_id}
-                  run={runs[0]}
-                  featured
-                  authorizedFetch={authorizedFetch}
-                />
-
-                {/* Older runs — collapsed by default */}
-                {runs.slice(1).map(r => (
-                  <RunHistoryRow key={r.run_id} run={r} authorizedFetch={authorizedFetch} />
-                ))}
-
-                {/* Load more */}
-                {runsHasMore && (
-                  <button type="button" onClick={loadMoreRuns} disabled={runsLoadingMore}
-                    className="text-xs text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300 flex items-center gap-1.5 py-1 disabled:opacity-50">
-                    {runsLoadingMore ? <Loader2 size={12} className="animate-spin" /> : <ChevronDown size={12} />}
-                    {runsLoadingMore ? 'Loading…' : 'Load more runs'}
-                  </button>
-                )}
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-
-      {/* ═══ CASES SECTION ══════════════════════════════════════════════════════ */}
-      <div>
-        <div className="flex items-center justify-between mb-3">
-          <div className="flex items-center gap-3">
-            <h3 className="text-sm font-bold text-neutral-900 dark:text-neutral-50">
-              Eval cases <span className="font-normal text-neutral-400">({cases.length} active)</span>
-            </h3>
-            {cases.length > 0 && (() => {
-              const allSelected = cases.length > 0 && cases.every(c => selectedIds.has(c.id))
-              const someSelected = cases.some(c => selectedIds.has(c.id))
-              return (
-                <label className="flex items-center gap-1.5 cursor-pointer select-none">
-                  <input type="checkbox"
-                    checked={allSelected}
-                    ref={el => { if (el) el.indeterminate = someSelected && !allSelected }}
-                    onChange={e => {
-                      const ids = cases.map(c => c.id)
-                      setSelectedIds(prev => {
-                        const next = new Set(prev)
-                        ids.forEach(id => e.target.checked ? next.add(id) : next.delete(id))
-                        return next
-                      })
-                    }}
-                    className="rounded border-neutral-300 dark:border-neutral-600"
-                  />
-                  <span className="text-xs text-neutral-400">
-                    {someSelected ? `${selectedIds.size} selected` : 'Select all'}
-                  </span>
-                </label>
-              )
-            })()}
-            {sortedCategories.length > 1 && (
-              <button type="button" onClick={toggleAllGroups}
-                className="flex items-center gap-1 text-xs text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300 transition-colors"
-                title={allOpen ? 'Collapse all' : 'Expand all'}>
-                {allOpen
-                  ? <><ChevronsDownUp size={13} /> Collapse all</>
-                  : <><ChevronsUpDown size={13} /> Expand all</>}
+            <div className="flex items-center gap-1">
+              <button type="button" onClick={downloadJSON} disabled={cases.length === 0} title="Download cases as JSON"
+                className="grid h-7 w-7 place-items-center rounded-lg text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800 hover:text-neutral-700 dark:hover:text-neutral-200 disabled:opacity-40">
+                <Download size={13} />
               </button>
-            )}
+              <button type="button" onClick={() => setModal('upload')} title="Upload cases JSON"
+                className="grid h-7 w-7 place-items-center rounded-lg text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800 hover:text-neutral-700 dark:hover:text-neutral-200">
+                <Upload size={13} />
+              </button>
+              <button type="button" onClick={() => setModal('create')} title="New case"
+                className="grid h-7 w-7 place-items-center rounded-lg bg-neutral-900 dark:bg-white text-white dark:text-neutral-900 hover:bg-neutral-700 dark:hover:bg-neutral-200">
+                <Plus size={14} />
+              </button>
+            </div>
           </div>
-          <div className="flex items-center gap-2">
-            <button type="button" onClick={downloadJSON} disabled={cases.length === 0}
-              className="flex items-center gap-1.5 rounded-lg border border-neutral-200 dark:border-neutral-700 px-3 py-2 text-xs font-semibold text-neutral-600 dark:text-neutral-400 hover:bg-neutral-50 dark:hover:bg-neutral-800 disabled:opacity-40">
-              <Download size={12} /> Download JSON
-            </button>
-            <button type="button" onClick={() => setModal('upload')}
-              className="flex items-center gap-1.5 rounded-lg border border-neutral-200 dark:border-neutral-700 px-3 py-2 text-xs font-semibold text-neutral-600 dark:text-neutral-400 hover:bg-neutral-50 dark:hover:bg-neutral-800">
-              <Upload size={12} /> Upload JSON
-            </button>
-            <button type="button" onClick={() => setModal('create')}
-              className="flex items-center gap-1.5 rounded-lg bg-neutral-900 dark:bg-white px-3 py-2 text-xs font-semibold text-white dark:text-neutral-900 hover:bg-neutral-700 dark:hover:bg-neutral-200">
-              <Plus size={13} /> New case
-            </button>
-          </div>
+
+          {cases.length > 0 && (() => {
+            const allSelected = cases.length > 0 && cases.every(c => selectedIds.has(c.id))
+            const someSelected = cases.some(c => selectedIds.has(c.id))
+            return (
+              <label className="flex items-center gap-1.5 cursor-pointer select-none mb-2">
+                <input type="checkbox"
+                  checked={allSelected}
+                  ref={el => { if (el) el.indeterminate = someSelected && !allSelected }}
+                  onChange={e => {
+                    const ids = cases.map(c => c.id)
+                    setSelectedIds(prev => {
+                      const next = new Set(prev)
+                      ids.forEach(id => e.target.checked ? next.add(id) : next.delete(id))
+                      return next
+                    })
+                  }}
+                  className="rounded border-neutral-300 dark:border-neutral-600"
+                />
+                <span className="text-xs text-neutral-400">
+                  {someSelected ? `${selectedIds.size} selected` : 'Select all'}
+                </span>
+              </label>
+            )
+          })()}
+
+          {casesError && <p className="mb-3 text-xs text-red-600 dark:text-red-400">{casesError}</p>}
+
+          {loadingCases ? (
+            <p className="text-sm text-neutral-400">Loading…</p>
+          ) : cases.length === 0 && inactiveCases.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-neutral-300 dark:border-neutral-700 p-8 text-center">
+              <p className="text-sm text-neutral-500">No eval cases yet.</p>
+              <button type="button" onClick={() => setModal('create')}
+                className="mt-3 text-xs font-semibold text-neutral-700 dark:text-neutral-300 underline underline-offset-2">Create the first one</button>
+            </div>
+          ) : (
+            <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 overflow-hidden divide-y divide-neutral-200 dark:divide-neutral-800 max-h-[calc(100vh-220px)] overflow-y-auto">
+              {sortedCategories.map(cat => (
+                <CategoryGroup
+                  key={cat}
+                  category={cat}
+                  cases={categoryGroups[cat]}
+                  open={groupsOpen[cat] !== false}
+                  onOpenChange={v => setGroupsOpen(prev => ({ ...prev, [cat]: v }))}
+                  selectedIds={selectedIds}
+                  onToggle={toggleCase}
+                  onToggleAll={toggleAll}
+                  onEdit={c => setModal(c)}
+                  onDeactivate={handleDeactivate}
+                  deactivating={deactivating}
+                  onRunSingle={runSingleCase}
+                  runningSingleId={runningSingleId}
+                />
+              ))}
+
+              {inactiveCases.length > 0 && (
+                <>
+                  <button type="button" onClick={() => setShowInactive(s => !s)}
+                    className="w-full flex items-center gap-2 px-4 py-2 text-xs font-semibold text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300 bg-neutral-50 dark:bg-neutral-950 hover:bg-neutral-100 dark:hover:bg-neutral-900 transition-colors">
+                    {showInactive ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                    {inactiveCases.length} inactive case{inactiveCases.length !== 1 ? 's' : ''}
+                  </button>
+                  {showInactive && inactiveCases.map(c => (
+                    <div key={c.id} className="flex items-start gap-3 px-4 py-3 bg-neutral-50 dark:bg-neutral-900/50 opacity-60 border-b border-neutral-100 dark:border-neutral-800 last:border-0">
+                      <div className="w-4 flex-shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-semibold text-neutral-500 truncate line-through">{c.title}</span>
+                          <span className="text-[10px] font-semibold text-neutral-400 bg-neutral-200 dark:bg-neutral-700 rounded px-1.5 py-0.5">inactive</span>
+                        </div>
+                        {c.category && <p className="text-xs text-neutral-400 mt-0.5">{c.category}</p>}
+                      </div>
+                      <button type="button" onClick={() => handleRestore(c.id)} disabled={restoring === c.id}
+                        className="flex items-center gap-1 h-7 px-2 rounded-lg text-xs font-semibold text-neutral-400 hover:bg-neutral-200 dark:hover:bg-neutral-700 hover:text-neutral-700 dark:hover:text-neutral-200 disabled:opacity-40">
+                        <RotateCcw size={12} /> Restore
+                      </button>
+                    </div>
+                  ))}
+                </>
+              )}
+            </div>
+          )}
         </div>
 
-        {casesError && <p className="mb-3 text-xs text-red-600 dark:text-red-400">{casesError}</p>}
+        {/* ═══ RIGHT COLUMN — current run (top) + history (bottom) ════════════ */}
+        <div className="space-y-6">
 
-        {loadingCases ? (
-          <p className="text-sm text-neutral-400">Loading…</p>
-        ) : cases.length === 0 && inactiveCases.length === 0 ? (
-          <div className="rounded-xl border border-dashed border-neutral-300 dark:border-neutral-700 p-8 text-center">
-            <p className="text-sm text-neutral-500">No eval cases yet.</p>
-            <button type="button" onClick={() => setModal('create')}
-              className="mt-3 text-xs font-semibold text-neutral-700 dark:text-neutral-300 underline underline-offset-2">Create the first one</button>
-          </div>
-        ) : (
-          <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 overflow-hidden divide-y divide-neutral-200 dark:divide-neutral-800">
-            {sortedCategories.map(cat => (
-              <CategoryGroup
-                key={cat}
-                category={cat}
-                cases={categoryGroups[cat]}
-                open={groupsOpen[cat] !== false}
-                onOpenChange={v => setGroupsOpen(prev => ({ ...prev, [cat]: v }))}
-                selectedIds={selectedIds}
-                onToggle={toggleCase}
-                onToggleAll={toggleAll}
-                onEdit={c => setModal(c)}
-                onDeactivate={handleDeactivate}
-                deactivating={deactivating}
-              />
-            ))}
+          {/* ── Current run status ──────────────────────────────────────────── */}
+          <div className="space-y-4">
+            <div className="flex items-center gap-3 flex-wrap">
+              {/* Pipeline selector — each case is graded against its own expected_criteria
+                  (ground truth) for the selected pipeline. Use the Parity tab to compare
+                  legacy vs langgraph head-to-head instead. */}
+              <select
+                value={runPipeline}
+                onChange={e => setRunPipeline(e.target.value as EvalPipeline)}
+                disabled={runStatus === 'running'}
+                title="Which single pipeline to run cases through, graded against expected_criteria. For legacy-vs-langgraph comparison, use the Parity tab."
+                className="rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 px-3 py-1.5 text-xs font-semibold text-neutral-700 dark:text-neutral-300 disabled:opacity-40"
+              >
+                <option value="langgraph">LangGraph</option>
+                <option value="legacy">Legacy</option>
+              </select>
 
-            {inactiveCases.length > 0 && (
-              <>
-                <button type="button" onClick={() => setShowInactive(s => !s)}
-                  className="w-full flex items-center gap-2 px-4 py-2 text-xs font-semibold text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300 bg-neutral-50 dark:bg-neutral-950 hover:bg-neutral-100 dark:hover:bg-neutral-900 transition-colors">
-                  {showInactive ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-                  {inactiveCases.length} inactive case{inactiveCases.length !== 1 ? 's' : ''}
-                </button>
-                {showInactive && inactiveCases.map(c => (
-                  <div key={c.id} className="flex items-start gap-3 px-4 py-3 bg-neutral-50 dark:bg-neutral-900/50 opacity-60 border-b border-neutral-100 dark:border-neutral-800 last:border-0">
-                    <div className="w-4 flex-shrink-0" />
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm font-semibold text-neutral-500 truncate line-through">{c.title}</span>
-                        <span className="text-[10px] font-semibold text-neutral-400 bg-neutral-200 dark:bg-neutral-700 rounded px-1.5 py-0.5">inactive</span>
-                      </div>
-                      {c.category && <p className="text-xs text-neutral-400 mt-0.5">{c.category}</p>}
-                    </div>
-                    <button type="button" onClick={() => handleRestore(c.id)} disabled={restoring === c.id}
-                      className="flex items-center gap-1 h-7 px-2 rounded-lg text-xs font-semibold text-neutral-400 hover:bg-neutral-200 dark:hover:bg-neutral-700 hover:text-neutral-700 dark:hover:text-neutral-200 disabled:opacity-40">
-                      <RotateCcw size={12} /> Restore
+              {/* Segmented mode control */}
+              <div className="flex rounded-lg border border-neutral-200 dark:border-neutral-700 overflow-hidden text-xs font-semibold">
+                {([
+                  { value: 'in_process', label: 'Local', title: 'Run the selected pipeline in-process; full per-case data stored locally' },
+                  { value: 'langsmith',  label: 'LangSmith', title: lsConfigured ? 'Run via LangSmith evaluate(); per-case data in LangSmith' : 'LangSmith not configured' },
+                  { value: 'both',       label: 'Both', title: lsConfigured ? 'In-process first (local data), then LangSmith experiments — ~2× runtime' : 'LangSmith not configured' },
+                ] as const).map(({ value, label, title }) => {
+                  const disabled = !lsConfigured && value !== 'in_process'
+                  const active = runMode === value
+                  return (
+                    <button key={value} type="button"
+                      disabled={disabled || runStatus === 'running'}
+                      title={title}
+                      onClick={() => setRunMode(value)}
+                      className={`px-3 py-1.5 transition-colors border-r border-neutral-200 dark:border-neutral-700 last:border-0
+                        ${active
+                          ? 'bg-neutral-900 dark:bg-white text-white dark:text-neutral-900'
+                          : disabled
+                            ? 'text-neutral-300 dark:text-neutral-600 cursor-not-allowed bg-white dark:bg-neutral-900'
+                            : 'text-neutral-600 dark:text-neutral-400 bg-white dark:bg-neutral-900 hover:bg-neutral-50 dark:hover:bg-neutral-800'
+                        }`}>
+                      {label}
                     </button>
+                  )
+                })}
+              </div>
+
+              <button type="button" disabled={!canRun} onClick={() => startRun()}
+                className="flex items-center gap-1.5 rounded-lg bg-neutral-900 dark:bg-white px-4 py-2 text-sm font-semibold text-white dark:text-neutral-900 hover:bg-neutral-700 dark:hover:bg-neutral-200 disabled:opacity-40">
+                <Play size={13} />
+                {runLabel}
+              </button>
+              {runStatus === 'running' && (
+                <button type="button" onClick={stopRun}
+                  title="Stop after current case finishes"
+                  className="flex items-center gap-1.5 rounded-lg border border-red-300 dark:border-red-700 px-3 py-2 text-sm font-semibold text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20">
+                  <Square size={12} />
+                  Stop
+                </button>
+              )}
+              {runStatus === 'running' && progressTotal != null && (
+                <div className="flex items-center gap-2 flex-1 min-w-[120px]">
+                  <div className="flex-1 h-1.5 rounded-full bg-neutral-200 dark:bg-neutral-800 overflow-hidden">
+                    <div className="h-full bg-blue-500 transition-all duration-500"
+                      style={{ width: `${(progressCompleted / progressTotal) * 100}%` }} />
                   </div>
+                  <span className="text-xs text-neutral-500 tabular-nums flex-shrink-0">{progressCompleted}/{progressTotal}</span>
+                </div>
+              )}
+            </div>
+
+            {(log.length > 0 || runStatus === 'running') && (
+              <div ref={logRef}
+                className="rounded-xl bg-neutral-950 text-green-300 font-mono text-xs p-4 max-h-44 overflow-y-auto space-y-0.5">
+                {log.map((line, i) => <div key={i}>{line}</div>)}
+                {runStatus === 'running' && <div className="animate-pulse text-neutral-500">⋯ polling…</div>}
+              </div>
+            )}
+            {runStatus === 'stopped' && (
+              <p className="text-xs text-amber-600 dark:text-amber-400">
+                ⏹ Run stopped — partial results shown below.
+              </p>
+            )}
+            {runError && <p className="text-xs text-red-600 dark:text-red-400">{runError}</p>}
+
+            {Object.keys(langsmithLinks).length > 0 && (
+              <div className="rounded-xl border border-emerald-200 dark:border-emerald-900 bg-emerald-50 dark:bg-emerald-950/30 px-4 py-3 space-y-1">
+                <p className="text-xs font-bold text-emerald-800 dark:text-emerald-300 mb-2">LangSmith experiments</p>
+                {Object.entries(langsmithLinks).map(([pipeline, url]) => (
+                  <a key={pipeline} href={url} target="_blank" rel="noopener noreferrer"
+                    className="flex items-center gap-1.5 text-xs text-emerald-700 dark:text-emerald-400 hover:underline">
+                    <ExternalLink size={11} /> {pipeline} pipeline experiment
+                  </a>
                 ))}
-              </>
+              </div>
+            )}
+
+            {runResult && (runStatus === 'complete' || runStatus === 'stopped') && (
+              <LocalReport cases={runResult.cases ?? []} runResult={runResult} />
+            )}
+
+            {(runResult?.cases?.length ?? 0) > 0 && (
+              <div>
+                <p className="text-xs font-bold text-neutral-500 mb-2">Per-case results ({runResult!.cases.length})</p>
+                <div className="space-y-2 max-h-[480px] overflow-y-auto pr-1">
+                  {runResult!.cases.map(r => (
+                    <CaseResultRow key={r.case_id} r={r} authorizedFetch={authorizedFetch} />
+                  ))}
+                </div>
+              </div>
+            )}
+            {runResult?.mode === 'langsmith' && runStatus === 'complete' && (runResult.cases?.length ?? 0) === 0 && (
+              <p className="text-xs text-neutral-500 italic">Per-case rows are in LangSmith. Use the experiment links above.</p>
+            )}
+            {runStatus === 'idle' && !runResult && (
+              <p className="text-xs text-neutral-400 italic">No run in progress. Pick cases on the left and hit Run, or click the ▶ icon next to a single case.</p>
             )}
           </div>
-        )}
+
+          {/* ── Run history ──────────────────────────────────────────────────── */}
+          {runs.length > 0 && (
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <button type="button" onClick={() => setRunsOpen(o => !o)}
+                  className="flex items-center gap-1.5 text-left group">
+                  {runsOpen
+                    ? <ChevronDown size={13} className="text-neutral-400" />
+                    : <ChevronRight size={13} className="text-neutral-400" />}
+                  <span className="text-xs font-bold text-neutral-500 group-hover:text-neutral-700 dark:group-hover:text-neutral-300">
+                    Run history
+                  </span>
+                  <span className="text-[11px] text-neutral-400 tabular-nums ml-1">({runs.length}{runsHasMore ? '+' : ''})</span>
+                </button>
+                <button type="button" onClick={cleanupOldRuns}
+                  className="text-[11px] text-neutral-400 hover:text-red-600 dark:hover:text-red-400 transition-colors">
+                  Clean up old runs
+                </button>
+              </div>
+
+              {runsOpen && (
+                <div className="space-y-2">
+                  {/* Latest run — featured at top */}
+                  <RunHistoryRow
+                    key={runs[0].run_id}
+                    run={runs[0]}
+                    featured
+                    authorizedFetch={authorizedFetch}
+                    onRerun={rerunFromHistory}
+                    onDelete={deleteRun}
+                    onExport={exportRun}
+                  />
+
+                  {/* Older runs — collapsed by default */}
+                  {runs.slice(1).map(r => (
+                    <RunHistoryRow
+                      key={r.run_id}
+                      run={r}
+                      authorizedFetch={authorizedFetch}
+                      onRerun={rerunFromHistory}
+                      onDelete={deleteRun}
+                      onExport={exportRun}
+                    />
+                  ))}
+
+                  {/* Load more */}
+                  {runsHasMore && (
+                    <button type="button" onClick={loadMoreRuns} disabled={runsLoadingMore}
+                      className="text-xs text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300 flex items-center gap-1.5 py-1 disabled:opacity-50">
+                      {runsLoadingMore ? <Loader2 size={12} className="animate-spin" /> : <ChevronDown size={12} />}
+                      {runsLoadingMore ? 'Loading…' : 'Load more runs'}
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* ═══ MODALS ════════════════════════════════════════════════════════════ */}

@@ -41,7 +41,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, HTTPException, Response
 from fastapi.responses import StreamingResponse  # still used by eval-runs stream
 from pydantic import BaseModel, Field
 
@@ -419,6 +419,20 @@ def get_orchestrator_status(admin: AdminPrincipal = RequireAdmin) -> dict:
 # Eval case CRUD
 # ===========================================================================
 
+# Consolidated category set (see alembic d4e5f6a7b8c9 for the migration that
+# rewrote pre-existing case rows into these buckets). Cases may still carry a
+# category outside this list (e.g. freeform values from /cases/upload), but
+# the admin UI groups by these first.
+EVAL_CASE_CATEGORIES = [
+    "routing_classification",
+    "freshness_facts",
+    "subject_extraction",
+    "evidence_quality",
+    "domain_specific",
+    "answer_behavior",
+]
+
+
 class EvalCaseCreate(BaseModel):
     title: str = Field(min_length=1, max_length=256)
     query: str = Field(min_length=1)
@@ -427,6 +441,9 @@ class EvalCaseCreate(BaseModel):
     expected_criteria: list[str] = Field(default_factory=list)
     expected_primary_role: str | None = Field(default=None, max_length=64)
     min_independent_sources: int | None = Field(default=None, ge=1)
+    # Structured benchmark thresholds — scored deterministically, not by the LLM judge.
+    min_evidence_items: int | None = Field(default=None, ge=1)
+    min_criteria_score: float | None = Field(default=None, ge=0.0, le=1.0)
     notes: str | None = None
 
 
@@ -437,6 +454,8 @@ class EvalCaseUpdate(BaseModel):
     expected_criteria: list[str] | None = None
     expected_primary_role: str | None = None
     min_independent_sources: int | None = Field(default=None, ge=1)
+    min_evidence_items: int | None = Field(default=None, ge=1)
+    min_criteria_score: float | None = Field(default=None, ge=0.0, le=1.0)
     notes: str | None = None
 
 
@@ -449,6 +468,8 @@ def _case_out(c) -> dict:
         "expected_criteria": json.loads(c.expected_criteria_json or "[]"),
         "expected_primary_role": c.expected_primary_role,
         "min_independent_sources": c.min_independent_sources,
+        "min_evidence_items": getattr(c, "min_evidence_items", None),
+        "min_criteria_score": getattr(c, "min_criteria_score", None),
         "notes": c.notes,
         "is_active": c.is_active,
         "created_by": c.created_by,
@@ -487,6 +508,8 @@ def create_eval_case(body: EvalCaseCreate, admin: AdminPrincipal = RequireAdmin)
             expected_criteria_json=json.dumps(body.expected_criteria),
             expected_primary_role=body.expected_primary_role,
             min_independent_sources=body.min_independent_sources,
+            min_evidence_items=body.min_evidence_items,
+            min_criteria_score=body.min_criteria_score,
             notes=body.notes,
             created_by=admin.user_id,
             created_at=now,
@@ -533,6 +556,10 @@ def update_eval_case(case_id: int, body: EvalCaseUpdate, admin: AdminPrincipal =
             case.expected_primary_role = body.expected_primary_role
         if body.min_independent_sources is not None:
             case.min_independent_sources = body.min_independent_sources
+        if body.min_evidence_items is not None:
+            case.min_evidence_items = body.min_evidence_items
+        if body.min_criteria_score is not None:
+            case.min_criteria_score = body.min_criteria_score
         if body.notes is not None:
             case.notes = body.notes
         case.updated_at = datetime.now(timezone.utc)
@@ -659,6 +686,8 @@ class EvalCaseUploadItem(BaseModel):
     expected_criteria: list[str] = Field(default_factory=list)
     expected_primary_role: str | None = None
     min_independent_sources: int | None = Field(default=None, ge=1)
+    min_evidence_items: int | None = Field(default=None, ge=1)
+    min_criteria_score: float | None = Field(default=None, ge=0.0, le=1.0)
     notes: str | None = None
 
 
@@ -698,6 +727,8 @@ def upload_eval_cases(
                     case.expected_criteria_json = json.dumps(item.expected_criteria)
                     case.expected_primary_role = item.expected_primary_role
                     case.min_independent_sources = item.min_independent_sources
+                    case.min_evidence_items = item.min_evidence_items
+                    case.min_criteria_score = item.min_criteria_score
                     case.notes = item.notes
                     case.is_active = True
                     case.updated_at = now
@@ -713,6 +744,8 @@ def upload_eval_cases(
                         expected_criteria_json=json.dumps(item.expected_criteria),
                         expected_primary_role=item.expected_primary_role,
                         min_independent_sources=item.min_independent_sources,
+                        min_evidence_items=item.min_evidence_items,
+                        min_criteria_score=item.min_criteria_score,
                         notes=item.notes,
                         created_by=admin.user_id,
                         is_active=True,
@@ -906,7 +939,16 @@ def _run_one_eval_case(case_dict: dict, tools, pipeline: str = "langgraph") -> d
     """Run a single eval case through ONE pipeline and grade it against the
     case's pre-determined expected_criteria (ground truth), not against the
     other pipeline's output. Use the parity runner (run_parity_comparator.py,
-    wired up at /admin/evals/parity/run) to compare legacy vs langgraph."""
+    wired up at /admin/evals/parity/run) to compare legacy vs langgraph.
+
+    Assumes the caller already holds the pipeline override for the duration
+    of the whole batch (see _run_in_process_core) — this function does NOT
+    acquire _forced_pipeline itself. Cases in a run are dispatched
+    concurrently (see _run_in_process_core); acquiring the override lock
+    per-case here would re-serialize every case on that lock and defeat
+    parallelization entirely, since all cases in one run share one pipeline
+    anyway.
+    """
     import traceback as tb
 
     query = case_dict["query"]
@@ -917,8 +959,7 @@ def _run_one_eval_case(case_dict: dict, tools, pipeline: str = "langgraph") -> d
     err = None
     result = None
     try:
-        with _forced_pipeline(pipeline):
-            result = _run_research_subtree_blocking(request, tools)
+        result = _run_research_subtree_blocking(request, tools)
     except Exception:
         err = tb.format_exc()
     latency_ms = int((time.perf_counter() - t0) * 1000)
@@ -938,6 +979,7 @@ def _run_one_eval_case(case_dict: dict, tools, pipeline: str = "langgraph") -> d
             "answer_length": len(answer),
             "evidence_count": len(evidence.items) if evidence and hasattr(evidence, "items") else 0,
             "claim_count": len(evidence.claims) if evidence and hasattr(evidence, "claims") else 0,
+            "independent_source_count": getattr(evidence, "independent_source_count", None) if evidence else None,
             "judge_score": getattr(feedback, "final_score", None) if feedback else None,
         }
     run["latency_ms"] = latency_ms
@@ -950,6 +992,8 @@ def _run_one_eval_case(case_dict: dict, tools, pipeline: str = "langgraph") -> d
     }
     run["criteria"] = _score_criteria(query, run["answer"], criteria) if criteria and run["ok"] else None
 
+    benchmarks = _score_benchmarks(case_dict, run)
+
     return {
         "case_id": case_dict["id"],
         "title": case_dict["title"],
@@ -957,8 +1001,45 @@ def _run_one_eval_case(case_dict: dict, tools, pipeline: str = "langgraph") -> d
         "pipeline": pipeline,
         "run": run,
         "structural": structural,
+        "benchmarks": benchmarks,
         "overall_structural_pass": all(structural.values()),
+        "overall_benchmark_pass": all(b["pass"] for b in benchmarks.values()) if benchmarks else None,
     }
+
+
+def _score_benchmarks(case_dict: dict, run: dict) -> dict[str, dict[str, Any]]:
+    """Deterministic pass/fail against a case's structured benchmark
+    thresholds (min_evidence_items, min_independent_sources,
+    min_criteria_score) — distinct from _score_criteria's LLM judgment.
+    Only thresholds the case actually sets are scored; an empty dict means
+    the case has no structured benchmarks defined."""
+    benchmarks: dict[str, dict[str, Any]] = {}
+
+    min_evidence = case_dict.get("min_evidence_items")
+    if min_evidence is not None:
+        actual = run.get("evidence_count") or 0
+        benchmarks["min_evidence_items"] = {"target": min_evidence, "actual": actual, "pass": actual >= min_evidence}
+
+    min_sources = case_dict.get("min_independent_sources")
+    if min_sources is not None:
+        actual = run.get("independent_source_count")
+        benchmarks["min_independent_sources"] = {
+            "target": min_sources,
+            "actual": actual,
+            "pass": actual is not None and actual >= min_sources,
+        }
+
+    min_score = case_dict.get("min_criteria_score")
+    if min_score is not None:
+        criteria = run.get("criteria") or {}
+        actual = criteria.get("score")
+        benchmarks["min_criteria_score"] = {
+            "target": min_score,
+            "actual": actual,
+            "pass": actual is not None and actual >= min_score,
+        }
+
+    return benchmarks
 
 
 def _make_result_envelope(
@@ -1011,26 +1092,63 @@ def _drain_ls_events_to_run(events_q: queue.Queue, run: dict) -> None:
             run["log"].append("✓ LangSmith run complete")
 
 
+# Eval cases within a single run share one pipeline (and one orchestrator-
+# override lock acquisition for the whole batch — see _run_one_eval_case's
+# docstring), so concurrency is bounded by external API/LLM rate limits, not
+# by that lock. Scale with selection size so small runs (2-3 cases) get full
+# parallelism while large runs don't fire off dozens of simultaneous search/
+# LLM calls at once.
+_MAX_EVAL_CASE_CONCURRENCY = 10
+
+
 def _run_in_process_core(run: dict, case_dicts: list[dict], pipeline: str = "langgraph") -> list[dict]:
     """Run ONE pipeline locally for every case, graded against each case's
     pre-determined expected_criteria. Mutates run["progress"]/["log"]/["completed"].
     Does NOT touch run["status"] — the caller decides when to flip to "complete"/"stopped".
-    Returns early (with partial results) if run["stop_requested"] is set between cases."""
+    Returns early (with partial results already collected) if run["stop_requested"]
+    is set — in-flight cases in the current batch are allowed to finish (no
+    hard cancellation), but no new batch is dispatched after a stop request."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
     from app.services.agent.tools import Tools
+
     tools = Tools.from_settings()
     total = len(case_dicts)
     run["total"] = total
-    run["log"].append(f"▶ Started ({total} case{'s' if total != 1 else ''}, in-process, pipeline={pipeline})")
+    max_workers = min(total, _MAX_EVAL_CASE_CONCURRENCY) or 1
+    run["log"].append(
+        f"▶ Started ({total} case{'s' if total != 1 else ''}, in-process, "
+        f"pipeline={pipeline}, concurrency={max_workers})"
+    )
     all_results: list[dict] = []
-    for idx, case_dict in enumerate(case_dicts):
-        if run.get("stop_requested"):
-            run["log"].append(f"⏹ Stopped after {idx} of {total} case{'s' if total != 1 else ''}.")
-            break
-        run["log"].append(f"  [{idx + 1}/{total}] {case_dict['title']}…")
+    progress_lock = threading.Lock()
+
+    def _run_case(idx: int, case_dict: dict) -> dict:
+        with progress_lock:
+            run["log"].append(f"  [{idx + 1}/{total}] {case_dict['title']}…")
         result = _run_one_eval_case(case_dict, tools, pipeline=pipeline)
-        all_results.append(result)
-        run["progress"].append(result)
-        run["completed"] = idx + 1
+        with progress_lock:
+            all_results.append(result)
+            run["progress"].append(result)
+            run["completed"] = len(all_results)
+            run["log"].append(f"  [{idx + 1}/{total}] {case_dict['title']} — done.")
+        return result
+
+    with _forced_pipeline(pipeline):
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(_run_case, idx, case_dict): idx
+                for idx, case_dict in enumerate(case_dicts)
+                if not run.get("stop_requested")
+            }
+            for future in as_completed(futures):
+                future.result()  # surface exceptions; _run_one_eval_case already catches its own
+                if run.get("stop_requested"):
+                    for pending in futures:
+                        pending.cancel()
+                    break
+
+    if run.get("stop_requested") and len(all_results) < total:
+        run["log"].append(f"⏹ Stopped after {len(all_results)} of {total} case(s).")
     return all_results
 
 
@@ -1346,6 +1464,144 @@ def get_eval_run_result(run_id: str, admin: AdminPrincipal = RequireAdmin) -> di
         return {"status": row.status, "run_id": run_id, "results": results, "error": row.error}
     finally:
         db.close()
+
+
+def _get_run_for_export(run_id: str) -> tuple[str, dict, list[int]]:
+    """Return (status, results_envelope, case_ids) for a run, checking
+    in-process memory then DB. Raises HTTPException(404) if not found."""
+    with _EVAL_RUNS_LOCK:
+        run = _EVAL_RUNS.get(run_id)
+    if run:
+        results = run.get("results") or _make_result_envelope("in_process", list(run.get("progress", [])), None)
+        case_ids = [c["case_id"] for c in results.get("cases", [])] if isinstance(results, dict) else []
+        return run["status"], results, case_ids
+
+    from app.db.models import EvalRun, SessionLocal
+    db = SessionLocal()
+    try:
+        row = db.query(EvalRun).filter(EvalRun.id == run_id).first()
+        if not row:
+            raise HTTPException(status_code=404, detail=f"Eval run {run_id!r} not found.")
+        raw = json.loads(row.results_json or "null")
+        if isinstance(raw, list):
+            results = _make_result_envelope("in_process", raw, None)
+        elif isinstance(raw, dict):
+            results = raw
+        else:
+            results = _make_result_envelope("in_process", [], None)
+        case_ids = json.loads(row.case_ids_json or "[]")
+        return row.status, results, case_ids
+    finally:
+        db.close()
+
+
+@router.get("/runs/{run_id}/export")
+def export_eval_run(
+    run_id: str, format: str = "json", admin: AdminPrincipal = RequireAdmin
+) -> Response:
+    """Download a run's full results for offline analysis.
+
+    format=json (default) — the full results envelope, pretty-printed.
+    format=csv — one row per case with the key scored fields flattened out
+    (criteria/benchmark detail is summarized, not fully expanded, to keep
+    the CSV tabular).
+    """
+    status, results, _ = _get_run_for_export(run_id)
+    cases = results.get("cases", []) if isinstance(results, dict) else []
+
+    if format == "csv":
+        import csv
+        import io
+
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow([
+            "case_id", "title", "pipeline", "ok", "answer_length", "evidence_count",
+            "claim_count", "independent_source_count", "latency_ms", "criteria_score",
+            "criteria_passed_count", "criteria_failed_count", "overall_structural_pass",
+            "overall_benchmark_pass", "error",
+        ])
+        for c in cases:
+            run = c.get("run", {})
+            criteria = run.get("criteria") or {}
+            writer.writerow([
+                c.get("case_id"), c.get("title"), c.get("pipeline"), run.get("ok"),
+                run.get("answer_length"), run.get("evidence_count"), run.get("claim_count"),
+                run.get("independent_source_count"), run.get("latency_ms"), criteria.get("score"),
+                len(criteria.get("passed") or []), len(criteria.get("failed") or []),
+                c.get("overall_structural_pass"), c.get("overall_benchmark_pass"), run.get("error"),
+            ])
+        return Response(
+            content=buf.getvalue(),
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{run_id}.csv"'},
+        )
+
+    payload = {"run_id": run_id, "status": status, "results": results}
+    return Response(
+        content=json.dumps(payload, indent=2, ensure_ascii=False),
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="{run_id}.json"'},
+    )
+
+
+@router.delete("/runs/{run_id}", status_code=204)
+def delete_eval_run(run_id: str, admin: AdminPrincipal = RequireAdmin) -> None:
+    """Permanently delete a single eval run (DB row + in-process state if live)."""
+    with _EVAL_RUNS_LOCK:
+        run = _EVAL_RUNS.get(run_id)
+        if run and run["status"] == "running":
+            raise HTTPException(status_code=409, detail="Cannot delete a run that is still in progress. Stop it first.")
+        _EVAL_RUNS.pop(run_id, None)
+
+    from app.db.models import EvalRun, SessionLocal
+    db = SessionLocal()
+    try:
+        row = db.query(EvalRun).filter(EvalRun.id == run_id).first()
+        if row:
+            db.delete(row)
+            db.commit()
+    finally:
+        db.close()
+
+
+class EvalRunCleanupRequest(BaseModel):
+    keep_latest: int = Field(default=20, ge=0)
+
+
+@router.post("/runs/cleanup")
+def cleanup_eval_runs(
+    body: EvalRunCleanupRequest = Body(default=None), admin: AdminPrincipal = RequireAdmin
+) -> dict:
+    """Delete all but the `keep_latest` most recent eval runs (default 20).
+    Never deletes a run that's currently in progress."""
+    keep_latest = body.keep_latest if body else 20
+    from app.db.models import EvalRun, SessionLocal
+    db = SessionLocal()
+    try:
+        rows = db.query(EvalRun).order_by(EvalRun.started_at.desc()).all()
+        with _EVAL_RUNS_LOCK:
+            running_ids = {rid for rid, r in _EVAL_RUNS.items() if r["status"] == "running"}
+        to_delete = [r for r in rows[keep_latest:] if r.id not in running_ids]
+        for row in to_delete:
+            db.delete(row)
+        db.commit()
+        return {"deleted": len(to_delete), "kept": len(rows) - len(to_delete)}
+    finally:
+        db.close()
+
+
+@router.post("/runs/{run_id}/rerun", status_code=202)
+def rerun_eval_run(run_id: str, admin: AdminPrincipal = RequireAdmin) -> dict:
+    """Start a new run with the same case selection, pipeline, and mode as
+    an existing run — one click instead of re-selecting cases manually."""
+    _, results, case_ids = _get_run_for_export(run_id)
+    pipeline = results.get("pipeline", "langgraph") if isinstance(results, dict) else "langgraph"
+    mode = results.get("mode", "in_process") if isinstance(results, dict) else "in_process"
+    if mode not in ("in_process", "langsmith", "both"):
+        mode = "in_process"
+    body = EvalRunRequest(case_ids=case_ids or None, mode=mode, pipeline=pipeline)
+    return start_eval_run(body=body, admin=admin)
 
 
 @router.post("/runs/{run_id}/stop", status_code=200)

@@ -1181,6 +1181,28 @@ export function EvalHarnessTab({ authorizedFetch }: { authorizedFetch: Authorize
     startPolling(liveRun.run_id)
   }, [runs, currentRunId, authorizedFetch, applySnapshot])
 
+  // Browsers throttle (or fully suspend) setInterval timers in background
+  // tabs — switching away from the tab and back doesn't kill the interval
+  // outright, but its next tick can be delayed by a long time, and any poll
+  // that failed while backgrounded (auth token refresh hiccup, network
+  // blip) was silently swallowed by startPolling's empty .catch, with
+  // nothing forcing a retry. Net effect: status looked frozen until the
+  // user manually reloaded. Force an immediate refetch on visibility
+  // regain whenever a run is still supposed to be live.
+  useEffect(() => {
+    function onVisibilityChange() {
+      if (document.visibilityState !== 'visible') return
+      if (!currentRunId || runStatus !== 'running') return
+      authorizedFetch(`/admin/evals/runs/${currentRunId}/status`)
+        .then(resp => (resp.ok ? resp.json() : null))
+        .then(data => { if (data) applySnapshot(data) })
+        .catch(() => {})
+      startPolling(currentRunId)
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    return () => document.removeEventListener('visibilitychange', onVisibilityChange)
+  }, [currentRunId, runStatus, authorizedFetch, applySnapshot])
+
   // ── Start run ────────────────────────────────────────────────────────────────
   async function startRun(caseIdsOverride?: number[]) {
     setRunStatus('running'); setLog([]); setRunResult(null); setRunError('')

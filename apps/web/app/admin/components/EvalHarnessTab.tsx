@@ -902,8 +902,8 @@ function RunHistoryRow({
             className="grid h-7 w-7 place-items-center rounded-lg text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-700 hover:text-neutral-700 dark:hover:text-neutral-200">
             <Download size={13} />
           </button>
-          <button type="button" onClick={() => onDelete(run.run_id)} disabled={run.status === 'running'} title="Delete run"
-            className="grid h-7 w-7 place-items-center rounded-lg text-neutral-400 hover:bg-red-50 dark:hover:bg-red-950/30 hover:text-red-600 dark:hover:text-red-400 disabled:opacity-40">
+          <button type="button" onClick={() => onDelete(run.run_id)} title={run.status === 'running' ? 'Delete run (will request it to stop)' : 'Delete run'}
+            className="grid h-7 w-7 place-items-center rounded-lg text-neutral-400 hover:bg-red-50 dark:hover:bg-red-950/30 hover:text-red-600 dark:hover:text-red-400">
             <X size={13} />
           </button>
         </div>

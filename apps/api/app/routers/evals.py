@@ -1438,7 +1438,20 @@ def _run_one_eval_case(case_dict: dict, tools, pipeline: str = "langgraph") -> d
         deep_research_gate=deep_research_gate,
         scores=scores_for_rollup,
     )
-    canary_drift = score_canary_drift(case_dict, run.get("judge_score"))
+    all_scores = {
+        "route_correct": route_correct,
+        "gate_correct": gate_correct,
+        "retrieval_completeness": retrieval_completeness,
+        "retrieval_independence": retrieval_independence,
+        "latency_pass": latency_pass,
+        "synthesis_grounding": synthesis_grounding,
+        "gap_honesty": gap_honesty,
+        "conflict_handling": conflict_handling,
+        "must_not_recommend_ok": must_not_recommend_ok,
+        "answer_length_ok": answer_length_ok,
+        "format_correct": format_correct,
+    }
+    canary_drift = score_canary_drift(case_dict, run.get("judge_score"), scores=all_scores)
     is_canary = bool(((v2_spec.get("harness_integrity_checks") or {}).get("is_canary")))
 
     return {
@@ -1456,22 +1469,10 @@ def _run_one_eval_case(case_dict: dict, tools, pipeline: str = "langgraph") -> d
         "run": run,
         "structural": structural,
         "benchmarks": benchmarks,
-        "scores": {
-            # scoring_spec.md §3 axis names — independent of overall_status,
-            # never collapsed into one number (see §0 on why v1's blended
-            # criteria.score hid the judge-decoupling and retrieval defects).
-            "route_correct": route_correct,
-            "gate_correct": gate_correct,
-            "retrieval_completeness": retrieval_completeness,
-            "retrieval_independence": retrieval_independence,
-            "latency_pass": latency_pass,
-            "synthesis_grounding": synthesis_grounding,
-            "gap_honesty": gap_honesty,
-            "conflict_handling": conflict_handling,
-            "must_not_recommend_ok": must_not_recommend_ok,
-            "answer_length_ok": answer_length_ok,
-            "format_correct": format_correct,
-        },
+        # scoring_spec.md §3 axis names — independent of overall_status,
+        # never collapsed into one number (see §0 on why v1's blended
+        # criteria.score hid the judge-decoupling and retrieval defects).
+        "scores": all_scores,
         "overall_structural_pass": overall_structural_pass,
         "overall_benchmark_pass": overall_benchmark_pass,
         "judge_structural_agreement": judge_structural_agreement,
@@ -1865,22 +1866,50 @@ def score_format_correct(case_dict: dict, artifacts: list) -> bool | None:
     return True
 
 
-def score_canary_drift(case_dict: dict, judge_score: float | None) -> bool | None:
-    """scoring_spec.md §2 — canary calibration check. If a case is tagged
-    is_canary with an expected_judge_score_band and the actual judge_score
-    falls outside that band on a routine run not tied to an intentional
-    change, that's a scoring-pipeline regression to investigate before
-    trusting any other result in the run (§2's explicit framing).
+def score_canary_drift(
+    case_dict: dict,
+    judge_score: float | None,
+    scores: dict[str, Any] | None = None,
+) -> bool | None:
+    """scoring_spec.md §2 — canary calibration check.
 
-    Returns True if drifted (something to flag), False if within band,
-    None if the case isn't a canary, has no band set, or judge_score is
-    unavailable (e.g. non-research routes never produce a judge_score —
-    not drift, just not applicable).
+    Supports two canary patterns:
+
+    1. Band check (old pattern, most canaries): `expected_judge_score_band`
+       set, judge_score outside the band → drift. Used for known-pass and
+       known-fail canaries that are calibrated against expected judge output.
+       Returns None when judge_score unavailable (non-research routes).
+
+    2. Primary-signal check (new pattern, inverted canaries): `canary_primary_signal`
+       names a key in `scores` (e.g. "answer_length_ok"), and
+       `canary_expected_primary_signal_value` is the EXPECTED value for that
+       signal — e.g. False means "this canary is EXPECTED to fail this check."
+       Drift fires when the actual signal value DIFFERS from the expected value,
+       i.e. when the case unexpectedly PASSES a check it should fail (the
+       over-research canary) or unexpectedly FAILS one it should pass. This is
+       the inverse of the band pattern: the canary exists to catch the pipeline
+       STOPPING to over-research, not to catch it starting to over-research.
+
+    Returns True (drifted — investigate), False (within spec), or None (this
+    case isn't a canary, or the relevant signal isn't available for this run).
     """
     v2 = case_dict.get("v2_spec") or {}
     checks = v2.get("harness_integrity_checks") or {}
     if not checks.get("is_canary"):
         return None
+
+    # Pattern 2: primary-signal canary (bidirectional, judge-independent)
+    primary_signal = checks.get("canary_primary_signal")
+    if primary_signal is not None:
+        if scores is None:
+            return None
+        expected_value = checks.get("canary_expected_primary_signal_value")
+        actual_value = scores.get(primary_signal)
+        if actual_value is None:
+            return None  # signal not computed this run (wrong route type etc.)
+        return actual_value != expected_value
+
+    # Pattern 1: judge score band check (original pattern)
     band = checks.get("expected_judge_score_band")
     if not band or judge_score is None:
         return None

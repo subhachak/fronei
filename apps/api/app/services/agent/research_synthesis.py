@@ -176,6 +176,19 @@ def judge_research(request: TurnRequest, plan: ResearchPlan, evidence: EvidenceP
     if evidence.gaps:
         score -= 0.08
         issues.extend(evidence.gaps)
+    missing_subjects = _missing_named_subjects(request, answer)
+    if missing_subjects:
+        # Global confidence-sorted claim selection can starve one subject's
+        # coverage even when the evidence pack has plenty of items overall —
+        # evidence.gaps only tracks item-count shortfalls, not which named
+        # subjects the synthesized answer actually discusses. A multi-subject
+        # comparison that drops a subject entirely is a real quality failure
+        # the item-count check can't see, so penalize it here explicitly.
+        score -= min(0.4, 0.15 * len(missing_subjects))
+        issues.append(
+            f"Answer omits or barely mentions: {', '.join(missing_subjects)} — "
+            "requested subjects must each be addressed."
+        )
     owner_reliability_issues = _owner_reliability_answer_issues(request, answer)
     if owner_reliability_issues:
         score -= min(0.35, 0.16 * len(owner_reliability_issues))
@@ -202,6 +215,26 @@ def judge_research(request: TurnRequest, plan: ResearchPlan, evidence: EvidenceP
         repair_instruction="Redo the research plan with better source coverage.",
         can_publish=False,
     )
+
+
+def _missing_named_subjects(request: TurnRequest, answer: str) -> list[str]:
+    """Return named comparison subjects (e.g. vendors in a multi-subject
+    comparison) that the synthesized answer never substantively mentions.
+
+    A subject counted as "covered" if it's mentioned at least twice — once
+    is typically just the framing/title line (e.g. a "X vs Y vs Z" heading)
+    rather than actual discussion.
+    """
+    try:
+        from app.services.agent.research_contracts import _extract_named_comparison_subjects
+    except Exception:
+        return []
+    subjects = _extract_named_comparison_subjects(request.message or "")
+    if len(subjects) < 2:
+        return []
+    text = (answer or "").lower()
+    missing = [s for s in subjects if text.count(s.lower()) < 2]
+    return missing
 
 
 def _owner_reliability_answer_issues(request: TurnRequest, answer: str) -> list[str]:

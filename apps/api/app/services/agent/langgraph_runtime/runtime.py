@@ -94,21 +94,23 @@ def run_langgraph_research(request: Any, tools: Any, progress: Any = None) -> di
         # blank response silently presented as a perfect one. Surface it
         # honestly instead.
         budget_decision = final_state.get("budget_decision")
-        evidence_count = len((final_state.get("evidence") or EvidencePack()).items)
         pause_contract = final_state.get("pause_contract") or {}
         if budget_decision == BudgetDecision.REQUIRE_HUMAN_APPROVAL:
             reason = pause_contract.get("pause_reason") or "Cost budget exceeded before synthesis could run."
-            answer = (
-                f"Research was interrupted before an answer could be synthesized: {reason} "
-                f"{evidence_count} source item(s) were collected but not yet written into an answer."
-            )
         else:
             reason = f"Graph ended without running synthesis (budget_decision={budget_decision!r})."
-            answer = "Research did not complete: the pipeline ended before an answer could be synthesized."
         logger.warning(
             "langgraph research ended without judge_result: %s (visited_nodes=%s)",
             reason, final_state.get("visited_nodes"),
         )
+        # answer must be "" here — NOT the interrupt reason string. The error
+        # belongs in judge_result.issues (and the harness's run.error field).
+        # Writing str(reason) into answer produced exactly 190-char stub strings
+        # that passed judge_structural_agreement (non_empty_answer=True) while
+        # being entirely ungraded content. Empty string correctly surfaces as
+        # non_empty_answer=False → overall_status=fail/partial, which is the
+        # right signal for a budget-interrupted run.
+        answer = ""
         judge_result = ResearchJudgeResult(
             status="fail", score=0.0, issues=[reason], can_publish=False,
         )

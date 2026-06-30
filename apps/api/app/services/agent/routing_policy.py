@@ -218,12 +218,62 @@ BOOTSTRAP_SIGNAL_GROUPS: tuple[SignalGroup, ...] = (
 _GROUPS_BY_ID = {group.id: group for group in BOOTSTRAP_SIGNAL_GROUPS}
 
 
+# Subjects that are immutable regardless of freshness-keyword phrasing.
+# "Latest value of pi" or "current speed of light" contain freshness keywords
+# but the subject never changes — forcing research wastes time and cost and
+# produces a worse answer than a direct response from model knowledge.
+# This list doesn't need to be exhaustive: the fallback is still research,
+# which is safe. It only needs to cover cases where research is clearly wrong.
+# Expand as new false-positives appear in eval runs.
+_TIMELESS_SUBJECT_PATTERNS: tuple[re.Pattern, ...] = tuple(
+    re.compile(p, re.IGNORECASE)
+    for p in [
+        # Mathematical constants & expressions
+        r"\bpi\b",
+        r"\beuler(?:'s)? number\b",
+        r"\bgolden ratio\b",
+        r"\bsqrt\b",
+        r"\bsquare root\b",
+        r"\bfibonacci\b",
+        r"\bprime number",
+        r"\bmathematical constant",
+        # Physical constants
+        r"\bspeed of light\b",
+        r"\bplanck(?:'s)? constant\b",
+        r"\bavogadro",
+        r"\bgravitational constant\b",
+        r"\belectron (mass|charge)\b",
+        # Historical / definitional
+        r"\bwhat does .{1,40} stand for\b",
+        r"\bdefinition of\b",
+        r"\bwhat is the meaning of\b",
+        r"\bboding point of water\b",
+        r"\bboiling point\b",
+        r"\bfreezing point\b",
+        r"\bmelting point\b",
+    ]
+)
+
+
+def _is_timeless_subject(message: str) -> bool:
+    """Return True if the message subject is immutable regardless of
+    freshness-keyword phrasing — these should route direct, not research."""
+    msg = message.lower()
+    return any(p.search(msg) for p in _TIMELESS_SUBJECT_PATTERNS)
+
+
 def evaluate_routing_signals(message: str) -> RoutingSignalDecision:
     text = _normalize(message)
     if not text:
         return RoutingSignalDecision()
 
     matches = _bootstrap_matches(text)
+    # Remove "currentness" matches when the subject is a timeless fact so
+    # freshness keywords don't force unnecessary research. Other signal groups
+    # are unaffected — e.g. a timeless constant asked in a product-catalog
+    # context can still match volatile_product_catalog if applicable.
+    if _is_timeless_subject(message):
+        matches = [m for m in matches if m.signal_group != "currentness"]
     matches.extend(_approved_candidate_matches(text))
     suggested_route = _most_restrictive_route(matches)
     return RoutingSignalDecision(matched_signals=matches, suggested_route=suggested_route)

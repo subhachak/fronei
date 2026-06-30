@@ -1,0 +1,152 @@
+[
+  {
+    "title": "Boiling point of water (direct route)",
+    "query": "What is the boiling point of water in Celsius at sea level?",
+    "category": "routing_classification",
+    "expected_criteria": [
+      "States 100°C (or equivalent) as the answer",
+      "Concise, direct answer with no unnecessary research framing or hedging",
+      "Does not cite external sources for a fact this basic"
+    ],
+    "expected_route": "direct",
+    "notes": "Live-verified via orchestrator.decide(): resolves to route=direct. Baseline anchor for the simplest possible direct-route case."
+  },
+  {
+    "title": "API acronym definition (direct route)",
+    "query": "What does API stand for?",
+    "category": "routing_classification",
+    "expected_criteria": [
+      "Correctly expands to Application Programming Interface",
+      "Brief, no unnecessary research framing"
+    ],
+    "expected_route": "direct",
+    "notes": "Live-verified: route=direct."
+  },
+  {
+    "title": "Ambiguous account help request (clarify route)",
+    "query": "Can you help me with my account?",
+    "category": "routing_classification",
+    "expected_criteria": [
+      "Asks a clarifying question rather than guessing what kind of help is needed",
+      "Does not fabricate account details or assume a specific service/platform",
+      "Identifies what's ambiguous (which account, what kind of help)"
+    ],
+    "expected_route": "clarify",
+    "notes": "Live-verified: route=clarify. No prior conversation context, so the request is genuinely underspecified."
+  },
+  {
+    "title": "Vague continuation with no context (clarify route)",
+    "query": "Can you go deeper on that?",
+    "category": "routing_classification",
+    "expected_criteria": [
+      "Asks what 'that' refers to, since there is no prior conversation context",
+      "Does not guess at a topic and answer anyway"
+    ],
+    "expected_route": "clarify",
+    "notes": "Live-verified: route=clarify. Tests that a referential/continuation-shaped query without prior turns correctly triggers clarification instead of hallucinating context."
+  },
+  {
+    "title": "Freshness signal redirects direct question to research",
+    "query": "What are the newest features announced in the latest iOS release?",
+    "category": "routing_classification",
+    "expected_criteria": [
+      "Cites a dated/sourced answer rather than relying on stale training-data recall",
+      "References official Apple sources or recent news coverage",
+      "Does not present outdated iOS version info as current"
+    ],
+    "expected_route": "research",
+    "min_independent_sources": 1,
+    "notes": "Live-verified: route=research (research_level=easy). Tests routing_policy.evaluate_routing_signals' freshness-signal redirect — a 'newest/latest' query should force research over a stale direct-from-training answer even though it superficially looks like a simple question."
+  },
+  {
+    "title": "Business memo formatted as a document (document route)",
+    "query": "Write a one-page business memo announcing our new return policy, formatted as a downloadable document.",
+    "category": "routing_classification",
+    "expected_criteria": [
+      "Produces a structured, one-page memo",
+      "Professional business-memo tone and formatting",
+      "Does not require external research/sourcing"
+    ],
+    "expected_route": "document",
+    "notes": "Live-verified: route=document, output_format=docx. No research needed — pure composition/formatting intent."
+  },
+  {
+    "title": "Cover letter as a Word document (document route)",
+    "query": "Write a cover letter for a marketing manager position and give it to me as a Word document.",
+    "category": "routing_classification",
+    "expected_criteria": [
+      "Produces a complete, usable cover letter",
+      "Addresses a marketing manager role specifically",
+      "Delivered/described as a document artifact, not just chat text"
+    ],
+    "expected_route": "document",
+    "notes": "Live-verified: route=document, output_format=docx."
+  },
+  {
+    "title": "Research-backed comparison document (research_document route)",
+    "query": "Research the top 3 CRM platforms for small businesses and put together a one-page comparison document I can share with my team.",
+    "category": "routing_classification",
+    "expected_criteria": [
+      "Includes researched, sourced comparison data for at least 3 named CRM platforms",
+      "Delivered as a structured document artifact, not a plain chat answer",
+      "Comparison is organized (e.g. table or clear sections), not just prose"
+    ],
+    "expected_route": "research_document",
+    "min_independent_sources": 3,
+    "notes": "Live-verified: route=research_document. Tests the combined research+document path — distinct from both 'research' (no artifact) and 'document' (no sourcing)."
+  },
+  {
+    "title": "High-stakes investment term triggers deep tier",
+    "query": "Conduct a thorough investment risk analysis comparing three publicly traded REIT funds.",
+    "category": "routing_classification",
+    "expected_criteria": [
+      "Treats this as deep research given the 'investment'/'thorough' high-stakes framing",
+      "Covers risk analysis across at least 3 named REIT funds",
+      "Cites financial data sources, not just general knowledge"
+    ],
+    "expected_route": "research",
+    "min_independent_sources": 6,
+    "notes": "Live-verified: route=research, research_level=deep, requires_confirmation=true. Tests choose_research_level()'s high_stakes_terms keyword path ('investment', 'thorough') as a distinct deep-research trigger from the multi-subject+dimension signal tested by the cloud-storage and privacy-regulation anchor cases. This case also exercises deep_research_gate (the confirmation-gate two-pass check)."
+  },
+  {
+    "title": "Simple current-fact lookup needing freshness (regular/easy tier research)",
+    "query": "What is the current federal funds interest rate set by the Federal Reserve?",
+    "category": "routing_classification",
+    "expected_criteria": [
+      "Cites a current, sourced figure rather than a stale or guessed number",
+      "References the Federal Reserve as the authoritative source",
+      "Does not over-elaborate with unnecessary multi-dimension research depth"
+    ],
+    "expected_route": "research",
+    "min_independent_sources": 1,
+    "notes": "Live-verified: route=research, research_level=easy. Single-subject factual lookup needing freshness but not deep multi-dimension research — tests the low end of the tier spectrum, distinct from the deep-tier anchor cases."
+  },
+  {
+    "title": "Quick current-conditions lookup (research, low tier)",
+    "query": "What's the weather like in Tokyo right now?",
+    "category": "routing_classification",
+    "expected_criteria": [
+      "Provides current weather conditions, not a generic/seasonal answer",
+      "Cites a live/current source",
+      "Concise — does not over-research a simple lookup"
+    ],
+    "expected_route": "research",
+    "min_independent_sources": 1,
+    "notes": "Live-verified: route=research, research_level=regular. Another low-tier research anchor — needs live data so can't be 'direct', but doesn't warrant deep multi-dimension treatment."
+  },
+  {
+    "title": "Multi-jurisdiction privacy regulation comparison (second deep-tier anchor)",
+    "query": "Compare data privacy regulations between GDPR, CCPA, and PIPEDA across consent requirements, breach notification timelines, and enforcement penalties.",
+    "category": "routing_classification",
+    "expected_criteria": [
+      "Classifies as deep research (3 subjects x 3 dimensions, same structural shape as the cloud-storage anchor case)",
+      "Covers GDPR, CCPA, and PIPEDA individually across all three dimensions",
+      "Cites official regulatory text or government sources for each",
+      "Does not synthesize a single 'best' regulation or rank them — descriptive comparison only"
+    ],
+    "expected_route": "research",
+    "min_independent_sources": 6,
+    "min_evidence_items": 20,
+    "notes": "Live-verified: route=research, research_level=deep, requires_confirmation=true. A second dimension-richness deep-tier anchor case outside the cloud/tech domain, to diversify deep_research_gate and subject-coverage-balancing test coverage (see #23, #26) beyond the existing cloud_storage_no_recommendation_multi_dimension case."
+  }
+]

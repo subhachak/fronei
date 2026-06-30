@@ -433,6 +433,9 @@ EVAL_CASE_CATEGORIES = [
 ]
 
 
+EVAL_CASE_ROUTES = ["direct", "clarify", "research", "document", "research_document"]
+
+
 class EvalCaseCreate(BaseModel):
     title: str = Field(min_length=1, max_length=256)
     query: str = Field(min_length=1)
@@ -444,6 +447,9 @@ class EvalCaseCreate(BaseModel):
     # Structured benchmark thresholds — scored deterministically, not by the LLM judge.
     min_evidence_items: int | None = Field(default=None, ge=1)
     min_criteria_score: float | None = Field(default=None, ge=0.0, le=1.0)
+    # Which orchestrator route this query SHOULD resolve to. Null = don't
+    # assert on routing, just grade whatever route the orchestrator picks.
+    expected_route: str | None = Field(default=None, max_length=32)
     notes: str | None = None
 
 
@@ -456,6 +462,7 @@ class EvalCaseUpdate(BaseModel):
     min_independent_sources: int | None = Field(default=None, ge=1)
     min_evidence_items: int | None = Field(default=None, ge=1)
     min_criteria_score: float | None = Field(default=None, ge=0.0, le=1.0)
+    expected_route: str | None = Field(default=None, max_length=32)
     notes: str | None = None
 
 
@@ -470,6 +477,7 @@ def _case_out(c) -> dict:
         "min_independent_sources": c.min_independent_sources,
         "min_evidence_items": getattr(c, "min_evidence_items", None),
         "min_criteria_score": getattr(c, "min_criteria_score", None),
+        "expected_route": getattr(c, "expected_route", None),
         "notes": c.notes,
         "is_active": c.is_active,
         "created_by": c.created_by,
@@ -510,6 +518,7 @@ def create_eval_case(body: EvalCaseCreate, admin: AdminPrincipal = RequireAdmin)
             min_independent_sources=body.min_independent_sources,
             min_evidence_items=body.min_evidence_items,
             min_criteria_score=body.min_criteria_score,
+            expected_route=body.expected_route,
             notes=body.notes,
             created_by=admin.user_id,
             created_at=now,
@@ -560,6 +569,8 @@ def update_eval_case(case_id: int, body: EvalCaseUpdate, admin: AdminPrincipal =
             case.min_evidence_items = body.min_evidence_items
         if body.min_criteria_score is not None:
             case.min_criteria_score = body.min_criteria_score
+        if body.expected_route is not None:
+            case.expected_route = body.expected_route
         if body.notes is not None:
             case.notes = body.notes
         case.updated_at = datetime.now(timezone.utc)
@@ -688,6 +699,7 @@ class EvalCaseUploadItem(BaseModel):
     min_independent_sources: int | None = Field(default=None, ge=1)
     min_evidence_items: int | None = Field(default=None, ge=1)
     min_criteria_score: float | None = Field(default=None, ge=0.0, le=1.0)
+    expected_route: str | None = Field(default=None, max_length=32)
     notes: str | None = None
 
 
@@ -729,6 +741,7 @@ def upload_eval_cases(
                     case.min_independent_sources = item.min_independent_sources
                     case.min_evidence_items = item.min_evidence_items
                     case.min_criteria_score = item.min_criteria_score
+                    case.expected_route = item.expected_route
                     case.notes = item.notes
                     case.is_active = True
                     case.updated_at = now
@@ -746,6 +759,7 @@ def upload_eval_cases(
                         min_independent_sources=item.min_independent_sources,
                         min_evidence_items=item.min_evidence_items,
                         min_criteria_score=item.min_criteria_score,
+                        expected_route=item.expected_route,
                         notes=item.notes,
                         created_by=admin.user_id,
                         is_active=True,
@@ -848,21 +862,30 @@ def _score_criteria(query: str, response_text: str, criteria: list[str]) -> dict
 
 
 def _build_eval_request(query: str):
-    """Build the TurnRequest for an eval case the way a real user turn would.
+    """Build the TurnRequest AND get the real orchestrator decision for an
+    eval case — the same routing call a real user turn makes.
 
-    Routes through orchestrator.decide() with force_route="research" so
-    research_level is resolved by the same classifier production uses
-    (choose_research_level's dimension-richness signal etc.) instead of
-    being hardcoded — hardcoding it here previously starved every "deep"
-    shaped case to "regular" tier budget regardless of pipeline behavior.
+    No force_route: the orchestrator picks direct/clarify/research/document/
+    research_document on its own, exactly like Runtime.run_stream() does.
+    This is what lets the harness grade routing correctness (expected_route)
+    in addition to research-pipeline quality — previously every case was
+    force-routed to "research" regardless of what the query actually called
+    for, so a query that should get a direct answer or hit clarify was never
+    actually tested as such.
 
-    When decide() resolves research_level="deep", Runtime.run_stream() would
-    normally pause for user confirmation before running it (requires_confirmation
-    gate at runtime.py:341 — the same "Continue with deep research?" prompt a
-    real user sees). Eval cases are pre-approved to run unattended, so
+    research_level is resolved by choose_research_level() (via decide()'s
+    normal path) whenever the decision lands on research/research_document —
+    same dimension-richness classifier production uses, not hardcoded.
+
+    When research_level="deep", Runtime.run_stream() would normally pause for
+    user confirmation before running it (requires_confirmation gate at
+    runtime.py:341 — the same "Continue with deep research?" prompt a real
+    user sees). Eval cases are pre-approved to run unattended, so
     confirm_deep_research=True here plays the same role as a user clicking
     "Start research": it's the documented bypass for that gate, not a
     shortcut around it.
+
+    Returns (request, decision).
     """
     from app.services.agent.models import TurnRequest
     from app.services.agent.orchestrator import decide
@@ -872,16 +895,17 @@ def _build_eval_request(query: str):
         research_level="auto",
         quality_mode="standard",
         output_format="chat",
-        force_route="research",
     )
     decision = decide(draft)
-    return TurnRequest(
+    research_level = decision.research_level if decision.route in ("research", "research_document") else "auto"
+    request = TurnRequest(
         message=query,
-        research_level=decision.research_level,
+        research_level=research_level,
         quality_mode="standard",
         output_format="chat",
         confirm_deep_research=True,
     )
+    return request, decision
 
 
 # configured_orchestrator()'s pipeline selection is process-wide state shared
@@ -910,14 +934,24 @@ def _forced_pipeline(pipeline: str):
                 langgraph_runtime_module.set_orchestrator_override(previous)
 
 
+def _drain_generator(gen) -> Any:
+    """Drive a generator-based Runtime route handler to completion and
+    return its StopIteration.value (the handler's actual return value)."""
+    try:
+        while True:
+            next(gen)
+    except StopIteration as stop:
+        return stop.value
+
+
 def _run_research_subtree_blocking(request, tools) -> dict[str, Any]:
     """Drive Runtime._run_research_subtree() to completion and return its
     result dict — the same route-dispatch logic (langgraph vs. legacy-deep
     vs. legacy-non-deep, see runtime.py:587) a real research-routed user turn
     goes through, without the outer run_stream() SSE/TurnResult wrapping
     (fast-path pre-routing and the deep-research confirmation gate don't
-    apply here: the eval already force-routes to research and pre-approves
-    confirm_deep_research, same as _build_eval_request documents)."""
+    apply here: the eval already pre-approves confirm_deep_research, same as
+    _build_eval_request documents)."""
     from app.services.agent.models import ProgressEvent, new_id
     from app.services.agent.runtime import Runtime
 
@@ -927,12 +961,53 @@ def _run_research_subtree_blocking(request, tools) -> dict[str, Any]:
         return ProgressEvent(turn_id=turn_id, stage=stage, message=message, data=data)
 
     runtime = Runtime(tools)
-    gen = runtime._run_research_subtree(request, progress)
-    try:
-        while True:
-            next(gen)
-    except StopIteration as stop:
-        return stop.value
+    return _drain_generator(runtime._run_research_subtree(request, progress))
+
+
+def _run_non_research_route_blocking(request, decision, route: str, tools) -> dict[str, Any]:
+    """Dispatch a direct/clarify/document-routed eval case through the same
+    Runtime handler methods run_stream() uses for that route — without
+    re-deciding the route (that would risk a second, possibly different,
+    LLM routing call disagreeing with the `decision` already used for
+    expected_route grading) and without run_stream()'s fast-path pre-check
+    (which doesn't apply: the route is already decided).
+
+    Returns a dict shaped like _run_research_subtree_blocking's — a
+    {"response": <has .text/.model_used/.latency_ms/.cost_usd>, "sources": [...],
+    "tool_calls": [...]} — so _run_one_eval_case's extraction code (written
+    for the research path's response shape) works unchanged for every route.
+    research_document still goes through the research path entirely; this
+    only handles direct/clarify/document.
+    """
+    import types
+
+    from app.services.agent.models import Goal, ProgressEvent, new_id
+    from app.services.agent.runtime import Runtime
+
+    turn_id = new_id("turn")
+    events: list = []
+
+    def progress(stage: str, message: str, **data) -> ProgressEvent:
+        event = ProgressEvent(turn_id=turn_id, stage=stage, message=message, data=data)
+        events.append(event)
+        return event
+
+    runtime = Runtime(tools)
+    goal = Goal(user_id="eval", conversation_id=request.conversation_id, objective=request.message, route=route, quality_mode=request.quality_mode)
+
+    if route == "clarify":
+        result = runtime._run_clarify(request, goal, turn_id, events, decision)
+    elif route == "direct":
+        result = _drain_generator(runtime._run_direct(request, goal, turn_id, events, progress))
+    elif route == "document":
+        result = _drain_generator(runtime._run_document(request, goal, turn_id, events, progress, sources=[]))
+    else:
+        raise ValueError(f"_run_non_research_route_blocking does not handle route={route!r}")
+
+    response_shim = types.SimpleNamespace(
+        text=result.answer, model_used=result.model_used, latency_ms=result.latency_ms, cost_usd=result.cost_usd,
+    )
+    return {"response": response_shim, "sources": result.sources, "tool_calls": result.tool_calls}
 
 
 def _run_one_eval_case(case_dict: dict, tools, pipeline: str = "langgraph") -> dict[str, Any]:
@@ -953,13 +1028,17 @@ def _run_one_eval_case(case_dict: dict, tools, pipeline: str = "langgraph") -> d
 
     query = case_dict["query"]
     criteria = case_dict.get("expected_criteria") or []
-    request = _build_eval_request(query)
+    request, decision = _build_eval_request(query)
+    route = decision.route
 
     t0 = time.perf_counter()
     err = None
     result = None
     try:
-        result = _run_research_subtree_blocking(request, tools)
+        if route in ("research", "research_document"):
+            result = _run_research_subtree_blocking(request, tools)
+        else:
+            result = _run_non_research_route_blocking(request, decision, route, tools)
     except Exception:
         err = tb.format_exc()
     latency_ms = int((time.perf_counter() - t0) * 1000)
@@ -985,20 +1064,27 @@ def _run_one_eval_case(case_dict: dict, tools, pipeline: str = "langgraph") -> d
     run["latency_ms"] = latency_ms
     run["pipeline"] = pipeline
 
-    structural = {
-        "ok": run["ok"],
-        "non_empty_answer": run["answer_length"] > 0,
-        "has_evidence": run["evidence_count"] > 0,
-    }
+    structural = {"ok": run["ok"], "non_empty_answer": run["answer_length"] > 0}
+    if route in ("research", "research_document"):
+        # has_evidence only makes sense (and is only required) for routes
+        # that actually do research — a direct/clarify/document answer
+        # correctly has zero evidence items, that's not a structural failure.
+        structural["has_evidence"] = run["evidence_count"] > 0
     run["criteria"] = _score_criteria(query, run["answer"], criteria) if criteria and run["ok"] else None
 
     benchmarks = _score_benchmarks(case_dict, run)
+
+    expected_route = case_dict.get("expected_route")
+    route_correct = (route == expected_route) if expected_route else None
 
     return {
         "case_id": case_dict["id"],
         "title": case_dict["title"],
         "query": query,
         "pipeline": pipeline,
+        "route": route,
+        "expected_route": expected_route,
+        "route_correct": route_correct,
         "run": run,
         "structural": structural,
         "benchmarks": benchmarks,

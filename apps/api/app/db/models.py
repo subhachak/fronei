@@ -137,6 +137,10 @@ class EvalCase(Base):
     # against the actual run's evidence_count and criteria.score.
     min_evidence_items: Mapped[int | None] = mapped_column(Integer, nullable=True)
     min_criteria_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Expected orchestrator route ("direct"|"clarify"|"research"|"document"|
+    # "research_document"); null means the case doesn't assert on routing
+    # (only graded on its answer once a route is whatever it is).
+    expected_route: Mapped[str | None] = mapped_column(String(32), nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
     # Soft-delete: False = deactivated (hidden from normal queries, never erased).

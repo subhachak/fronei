@@ -203,3 +203,114 @@ def test_synthesis_grounding_dedupes_repeated_citation_markers():
     items = [SimpleNamespace(source_id="S1")]
     answer = "Point one [S1]. Point two, same source [S1]. Point three, same source again [S1]."
     assert score_synthesis_grounding(answer, items) == 1.0
+
+
+# ── Issue 3 fixes: retrieval_completeness computation ────────────────────────
+
+def test_retrieval_completeness_includes_item_question_in_matching():
+    """item.question (the targeted research question for this item) often
+    directly names the subject when url/title/body might not — e.g. Amazon
+    docs say 'Amazon S3' but the research question says 'AWS S3'. Adding
+    item.question to the text string fixes the 0.0 on cases like #40."""
+    from types import SimpleNamespace
+    from app.routers.evals import score_retrieval_completeness
+    case = {"v2_spec": {"retrieval_requirements": {
+        "required_subjects": ["AWS S3"],
+        "required_dimensions": ["durability"],
+    }}}
+    # item.evidence says "Amazon S3" (common in AWS docs), NOT "AWS S3"
+    # but item.question contains "AWS S3" — should now match
+    items = [SimpleNamespace(
+        url="https://docs.aws.amazon.com/AmazonS3/latest/userguide/",
+        title="Amazon S3 durability guarantees",
+        evidence="Amazon S3 is designed for 99.999999999% (11 nines) of data durability.",
+        query="",
+        question="What is the data durability guarantee for AWS S3?",
+    )]
+    result = score_retrieval_completeness(case, items)
+    assert result == 1.0, f"Expected 1.0 (matched via item.question), got {result}"
+
+
+def test_retrieval_completeness_returns_none_for_placeholder_subjects():
+    """'CRM platform 1', 'REIT fund 1', etc. are abstract placeholders that
+    can never appear verbatim in evidence text — the v2 starter set uses them
+    for cases where the researched entities are determined at runtime. These
+    cases should return None (not 0.0) so the dashboard doesn't surface a
+    misleading 0.0 or cause a valid run to downgrade to partial."""
+    from app.routers.evals import score_retrieval_completeness
+    case = {"v2_spec": {"retrieval_requirements": {
+        "required_subjects": ["CRM platform 1", "CRM platform 2", "CRM platform 3"],
+        "required_dimensions": ["pricing", "features"],
+    }}}
+    items = [SimpleNamespace(
+        url="https://salesforce.com/pricing", title="Salesforce Pricing",
+        evidence="Salesforce offers enterprise CRM solutions...",
+        query="CRM platform pricing comparison", question="",
+    )]
+    result = score_retrieval_completeness(case, items)
+    assert result is None, (
+        f"Placeholder subjects must return None (not {result!r}) — 0.0 would be a "
+        "computation artifact, not a real coverage signal"
+    )
+
+
+# ── Issue 4 fix: rollup logic ────────────────────────────────────────────────
+
+def test_overall_status_partial_when_retrieval_completeness_below_threshold():
+    """A case with retrieval_completeness=0.0 must not resolve to overall_status='pass'
+    even when every structural/benchmark check passes — confirmed failure mode in
+    evalrun_34691bb17fdf.json cases #40, #34, #33, #45."""
+    from app.routers.evals import compute_overall_status
+    status = compute_overall_status(
+        judge_structural_agreement=True,
+        overall_structural_pass=True,
+        overall_benchmark_pass=True,
+        route_correct=True,
+        deep_research_gate=None,
+        scores={"retrieval_completeness": 0.0, "format_correct": None,
+                "must_not_recommend_ok": None, "gap_honesty": None, "conflict_handling": None},
+    )
+    assert status == "partial"
+
+
+def test_overall_status_partial_when_format_correct_false():
+    from app.routers.evals import compute_overall_status
+    status = compute_overall_status(
+        judge_structural_agreement=True, overall_structural_pass=True,
+        overall_benchmark_pass=True, route_correct=True, deep_research_gate=None,
+        scores={"retrieval_completeness": None, "format_correct": False,
+                "must_not_recommend_ok": None, "gap_honesty": None, "conflict_handling": None},
+    )
+    assert status == "partial"
+
+
+def test_overall_status_partial_when_must_not_recommend_violated():
+    from app.routers.evals import compute_overall_status
+    status = compute_overall_status(
+        judge_structural_agreement=True, overall_structural_pass=True,
+        overall_benchmark_pass=True, route_correct=True, deep_research_gate=None,
+        scores={"retrieval_completeness": None, "format_correct": None,
+                "must_not_recommend_ok": False, "gap_honesty": None, "conflict_handling": None},
+    )
+    assert status == "partial"
+
+
+def test_overall_status_pass_when_retrieval_completeness_above_threshold():
+    """0.8 is exactly the threshold — should pass."""
+    from app.routers.evals import compute_overall_status
+    status = compute_overall_status(
+        judge_structural_agreement=True, overall_structural_pass=True,
+        overall_benchmark_pass=True, route_correct=True, deep_research_gate=None,
+        scores={"retrieval_completeness": 0.8, "format_correct": None,
+                "must_not_recommend_ok": None, "gap_honesty": None, "conflict_handling": None},
+    )
+    assert status == "pass"
+
+
+def test_overall_status_backwards_compat_no_scores_arg():
+    """Existing tests/callers that don't pass scores= must still work — None default."""
+    from app.routers.evals import compute_overall_status
+    assert compute_overall_status(
+        judge_structural_agreement=True, overall_structural_pass=True,
+        overall_benchmark_pass=True, route_correct=True, deep_research_gate=None,
+    ) == "pass"

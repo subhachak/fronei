@@ -33,6 +33,7 @@ import json
 import logging
 import os
 import queue
+import re
 import sys
 import threading
 import time
@@ -1217,20 +1218,21 @@ def _run_one_eval_case(case_dict: dict, tools, pipeline: str = "langgraph") -> d
     latency_ms = int((time.perf_counter() - t0) * 1000)
 
     evidence_items: list = []
+    full_answer = ""  # untruncated — run["answer"] below is a display-length preview only
     if err or result is None:
         run = {"ok": False, "error": (err or "")[:500], "answer": "", "answer_length": 0,
                "evidence_count": 0, "claim_count": 0, "judge_score": None}
     else:
         response = result.get("response")
-        answer = response.text if hasattr(response, "text") else str(response or "")
+        full_answer = response.text if hasattr(response, "text") else str(response or "")
         evidence = result.get("evidence")
         feedback = result.get("feedback")
         evidence_items = list(evidence.items) if evidence and hasattr(evidence, "items") else []
         run = {
             "ok": True,
             "error": None,
-            "answer": answer[:2000],
-            "answer_length": len(answer),
+            "answer": full_answer[:2000],
+            "answer_length": len(full_answer),
             "evidence_count": len(evidence_items),
             "claim_count": len(evidence.claims) if evidence and hasattr(evidence, "claims") else 0,
             "independent_source_count": getattr(evidence, "independent_source_count", None) if evidence else None,
@@ -1255,6 +1257,7 @@ def _run_one_eval_case(case_dict: dict, tools, pipeline: str = "langgraph") -> d
     retrieval_completeness = score_retrieval_completeness(case_dict, evidence_items)
     retrieval_independence = score_retrieval_independence(case_dict, run, evidence_items)
     latency_pass = score_latency_pass(case_dict, route, decision.research_level, latency_ms)
+    synthesis_grounding = score_synthesis_grounding(full_answer, evidence_items)
 
     overall_structural_pass = all(structural.values())
     overall_benchmark_pass = all(b["pass"] for b in benchmarks.values()) if benchmarks else None
@@ -1289,6 +1292,7 @@ def _run_one_eval_case(case_dict: dict, tools, pipeline: str = "langgraph") -> d
             "retrieval_completeness": retrieval_completeness,
             "retrieval_independence": retrieval_independence,
             "latency_pass": latency_pass,
+            "synthesis_grounding": synthesis_grounding,
         },
         "overall_structural_pass": overall_structural_pass,
         "overall_benchmark_pass": overall_benchmark_pass,
@@ -1401,6 +1405,33 @@ def score_latency_pass(case_dict: dict, route: str, research_level: str | None, 
         key = f"research_{research_level}" if route in ("research",) and research_level else route
         ceiling = _TIER_CEILING_MS.get(key, _TIER_CEILING_MS.get(route, 60000))
     return latency_ms <= ceiling
+
+
+def score_synthesis_grounding(answer: str, evidence_items: list) -> float | None:
+    """scoring_spec.md §1.5 — citation marker [S#] cross-check against the
+    actual evidence manifest for this run, not an LLM judge reading prose in
+    isolation (which can't reliably catch fabricated-but-plausible citations
+    since it has no evidence pack to cross-check against).
+
+    EvidenceItem.source_id is assigned sequentially as "S1", "S2", ... during
+    bind_evidence (research_evidence.py:406) — the [S#] bracket marker IS the
+    source_id, so this is an exact membership check, not fuzzy matching.
+
+    "claims" here means distinct citation markers used in the answer, not
+    sentence-level claim segmentation (open question — true claim→citation
+    mapping would need parsing each sentence's citations individually; this
+    is the citation-index-validity subset of §1.5, which is what catches the
+    fabricated-citation failure mode the section is primarily about).
+
+    Returns None if the answer has no citation markers at all — distinct
+    from 0.0, which means citations exist but are ALL invalid (fabricated).
+    """
+    cited_indices = set(re.findall(r"\[S(\d+)\]", answer or ""))
+    if not cited_indices:
+        return None
+    valid_source_ids = {getattr(item, "source_id", "") for item in evidence_items}
+    valid = sum(1 for idx in cited_indices if f"S{idx}" in valid_source_ids)
+    return valid / len(cited_indices)
 
 
 def _score_benchmarks(case_dict: dict, run: dict) -> dict[str, dict[str, Any]]:

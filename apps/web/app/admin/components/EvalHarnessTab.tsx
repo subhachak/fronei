@@ -675,7 +675,15 @@ function UploadModal({ authorizedFetch, onDone, onClose }: {
     setError('')
     let parsed: unknown
     try { parsed = JSON.parse(text) } catch { setError('Invalid JSON — must be a valid JSON array.'); return }
-    if (!Array.isArray(parsed)) { setError('JSON must be an array of case objects.'); return }
+    // Accept both a bare array and the v2 starter-set wrapper shape
+    // ({"$schema": ..., "cases": [...]}) — the backend's upload endpoint
+    // already normalizes either via _normalize_v2_upload_item, but this
+    // client-side check was only ever updated for the bare-array case,
+    // rejecting valid v2 files before they reached the server at all.
+    if (!Array.isArray(parsed) && parsed && typeof parsed === 'object' && Array.isArray((parsed as { cases?: unknown }).cases)) {
+      parsed = (parsed as { cases: unknown[] }).cases
+    }
+    if (!Array.isArray(parsed)) { setError('JSON must be an array of case objects, or an object with a "cases" array.'); return }
     setUploading(true)
     try {
       const resp = await authorizedFetch('/admin/evals/cases/upload', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(parsed) })

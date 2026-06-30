@@ -3,8 +3,8 @@
 Parity routes (legacy vs LangGraph golden-set comparison):
   POST   /admin/evals/parity/run              Start parity run (background)
   GET    /admin/evals/parity/runs             List recent in-process parity runs
-  GET    /admin/evals/parity/{run_id}/stream  SSE per-case progress
-  GET    /admin/evals/parity/{run_id}/result  Full ParityReport
+  GET    /admin/evals/parity/{run_id}/status  Poll for live progress + final report
+  GET    /admin/evals/parity/{run_id}/result  Full ParityReport (alias for /status)
   GET    /admin/evals/parity/orchestrator     Current effective orchestrator
   POST   /admin/evals/parity/promote          Flip to langgraph (requires passing run)
   DELETE /admin/evals/parity/promote          Revert to env/config default
@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Body, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse  # still used by eval-runs stream
 from pydantic import BaseModel, Field
 
 from app.auth import AdminPrincipal, RequireAdmin
@@ -58,8 +58,11 @@ _MAX_STORED_RUNS = 20  # keep at most N completed runs in memory
 def _make_run(run_id: str) -> dict[str, Any]:
     return {
         "run_id": run_id,
-        "status": "running",       # running | complete | error
-        "events": queue.Queue(),
+        "status": "running",    # running | complete | error
+        "total": None,          # set once golden set is loaded
+        "completed": 0,         # incremented after each case finishes
+        "progress": [],         # list of per-case result dicts (poll to watch growth)
+        "log": [],              # human-readable progress lines for the UI log panel
         "report": None,
         "error": None,
         "started_at": time.time(),
@@ -111,9 +114,12 @@ def _load_parity_comparator_module():
 
 
 def _run_parity_background(run_id: str, case_ids: list[str] | None) -> None:
-    """Runs in a daemon thread; emits SSE events via the per-run queue."""
+    """Runs in a daemon thread. Writes progress directly to the run dict so the
+    polling endpoint can serve a consistent snapshot without an SSE connection."""
     run = _get_run(run_id)
-    events: queue.Queue = run["events"]
+
+    def _log(msg: str) -> None:
+        run["log"].append(msg)
 
     try:
         from app.services.agent.langgraph_runtime.comparators import (
@@ -129,21 +135,15 @@ def _run_parity_background(run_id: str, case_ids: list[str] | None) -> None:
         tools = Tools.from_settings()
         golden_set = _load_golden_set(case_ids)
         total = len(golden_set)
+        run["total"] = total
 
-        events.put({"type": "started", "total": total, "run_id": run_id})
+        _log(f"▶ Started ({total} cases)")
 
         per_case_results = []
 
         for idx, entry in enumerate(golden_set):
             case_id = entry["id"]
-
-            events.put({
-                "type": "case_start",
-                "case_id": case_id,
-                "index": idx,
-                "total": total,
-                "query": entry["request"]["message"][:100],
-            })
+            _log(f"  [{idx + 1}/{total}] Running {case_id}…")
 
             t0 = time.perf_counter()
             legacy_result, legacy_err = _run_legacy(entry, tools)
@@ -166,13 +166,16 @@ def _run_parity_background(run_id: str, case_ids: list[str] | None) -> None:
             result_dict["legacy_ms"] = legacy_ms
             result_dict["langgraph_ms"] = langgraph_ms
 
-            events.put({
-                "type": "case_result",
-                "case_id": case_id,
-                "index": idx,
-                "total": total,
-                "result": result_dict,
-            })
+            icon = "✓" if pr.overall_pass else "✗"
+            _log(
+                f"  {icon} {case_id} — ans={result_dict.get('answer_length_ratio', '–'):.2f}"
+                f" evid={result_dict.get('evidence_count_ratio', '–'):.2f}"
+                f" claims={result_dict.get('claim_count_ratio', '–'):.2f}"
+            )
+
+            # Append to progress list and bump counter atomically (CPython GIL).
+            run["progress"].append(result_dict)
+            run["completed"] = idx + 1
 
         report = aggregate_parity_results(per_case_results)
         report_dict = report.to_dict()
@@ -181,13 +184,13 @@ def _run_parity_background(run_id: str, case_ids: list[str] | None) -> None:
         run["status"] = "complete"
         run["completed_at"] = time.time()
 
-        # Persist to filesystem alongside other parity results
+        verdict = "✅ CUTOVER RECOMMENDED" if report.cutover_recommended else "❌ NOT READY"
+        _log(f"{verdict} — {report.overall_pass}/{total} cases pass all gates")
+
         try:
             _save_report(run_id, report_dict)
         except Exception as save_exc:
             logger.warning("evals: could not save parity report to disk: %s", save_exc)
-
-        events.put({"type": "complete", "report": report_dict, "run_id": run_id})
 
     except Exception as exc:
         import traceback
@@ -196,10 +199,7 @@ def _run_parity_background(run_id: str, case_ids: list[str] | None) -> None:
         run["error"] = err
         run["status"] = "error"
         run["completed_at"] = time.time()
-        events.put({"type": "error", "error": str(exc), "run_id": run_id})
-
-    finally:
-        events.put(None)  # Sentinel — SSE generator stops
+        _log(f"❌ Error: {exc}")
 
 
 def _save_report(run_id: str, report_dict: dict) -> None:
@@ -272,41 +272,39 @@ def list_parity_runs(admin: AdminPrincipal = RequireAdmin) -> dict:
     }
 
 
-@router.get("/parity/{run_id}/stream")
-def stream_parity_run(
+@router.get("/parity/{run_id}/status")
+def get_parity_status(
     run_id: str,
     admin: AdminPrincipal = RequireAdmin,
-) -> StreamingResponse:
-    """SSE stream of per-case progress events for a parity run."""
+) -> dict:
+    """Poll for live run progress and final report.
+
+    Returns a consistent snapshot regardless of whether the run is still in
+    progress or complete.  The UI polls this every 3 s while status == 'running'.
+
+    Shape:
+      {
+        run_id, status, total, completed,
+        progress: [ParityCaseResult, ...],   # grows as cases finish
+        log: [str, ...],                     # human-readable progress lines
+        report: ParityReport | null,         # populated on completion
+        error: str | null,
+        started_at, completed_at
+      }
+    """
     run = _get_run(run_id)
-    events: queue.Queue = run["events"]
-
-    def generate():
-        # Tell browser to reconnect after 3s if the connection drops.
-        yield "retry: 3000\n\n"
-        while True:
-            try:
-                # Short timeout so heartbeats fire frequently — keeps Railway/nginx
-                # proxy from closing the connection on its idle-TCP timeout (often
-                # 60–120s). A 25-case parity run takes ~12 min; we must keep the
-                # connection alive for the full duration.
-                event = events.get(timeout=10)
-            except queue.Empty:
-                yield ": heartbeat\n\n"  # SSE comment — no event fired client-side
-                continue
-            if event is None:
-                yield "event: close\ndata: {}\n\n"
-                break
-            yield f"data: {json.dumps(event, default=str)}\n\n"
-
-    return StreamingResponse(
-        generate(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        },
-    )
+    return {
+        "run_id": run_id,
+        "status": run["status"],
+        "total": run["total"],
+        "completed": run["completed"],
+        "progress": list(run["progress"]),   # snapshot copy
+        "log": list(run["log"]),
+        "report": run["report"],
+        "error": run["error"],
+        "started_at": run["started_at"],
+        "completed_at": run["completed_at"],
+    }
 
 
 @router.get("/parity/{run_id}/result")
@@ -314,13 +312,8 @@ def get_parity_result(
     run_id: str,
     admin: AdminPrincipal = RequireAdmin,
 ) -> dict:
-    """Return the full ParityReport for a completed run."""
-    run = _get_run(run_id)
-    if run["status"] == "running":
-        return {"status": "running", "run_id": run_id}
-    if run["status"] == "error":
-        return {"status": "error", "run_id": run_id, "error": run.get("error", "")}
-    return {"status": "complete", "run_id": run_id, "report": run["report"]}
+    """Alias for /status — kept for backward compatibility."""
+    return get_parity_status(run_id, admin)
 
 
 @router.post("/parity/promote")

@@ -13,6 +13,8 @@ import {
   XCircle,
 } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
+
+const POLL_INTERVAL_MS = 3000
 import { readErrorBody } from '../../lib/api'
 import type {
   AuthorizedFetch,
@@ -44,6 +46,21 @@ function GateIcon({ pass }: { pass: boolean | null }) {
   return pass
     ? <CheckCircle2 size={14} className="text-emerald-500" />
     : <XCircle size={14} className="text-red-500" />
+}
+
+/** Derive a concise gate-diagnosis label for the row header. */
+function gateDiagnosis(result: ParityCaseResult): { label: string; color: string } {
+  if (!result.passes_structural_gate) return { label: 'Blocked: structural', color: 'text-red-600 dark:text-red-400' }
+  if (!result.passes_answer_length_gate) return { label: 'Blocked: answer length', color: 'text-red-600 dark:text-red-400' }
+  if (!result.passes_evidence_gate) return { label: 'Blocked: evidence', color: 'text-red-600 dark:text-red-400' }
+  if (!result.passes_claim_gate) return { label: 'Blocked: claims', color: 'text-red-600 dark:text-red-400' }
+  if (!result.passes_budget_gate) return { label: 'Blocked: budget', color: 'text-red-600 dark:text-red-400' }
+  if (result.judge_verdict_agrees) return { label: 'Pass', color: 'text-emerald-600 dark:text-emerald-400' }
+  if (result.langgraph_judge_verdict === 'pass' && result.legacy_judge_verdict !== 'pass')
+    return { label: 'Pass · LG better', color: 'text-emerald-600 dark:text-emerald-400' }
+  if (result.legacy_judge_verdict === 'pass' && result.langgraph_judge_verdict !== 'pass')
+    return { label: 'Pass · LG worse', color: 'text-amber-600 dark:text-amber-400' }
+  return { label: 'Pass · verdict differs', color: 'text-amber-600 dark:text-amber-400' }
 }
 
 function RatioBadge({ value, threshold, invert = false }: { value: number | null; threshold: number; invert?: boolean }) {
@@ -99,36 +116,33 @@ function CaseRow({ result }: { result: ParityCaseResult }) {
         <span className="flex-1 text-sm font-mono text-neutral-700 dark:text-neutral-300 truncate">
           {result.case_id}
         </span>
-        <div className="flex items-center gap-4 text-xs text-neutral-500">
-          <span title="Answer length ratio">ans {fmtRatio(result.answer_length_ratio)}</span>
-          <span title="Evidence count ratio">evid {fmtRatio(result.evidence_count_ratio)}</span>
-          <span title="Claim count ratio">claims {fmtRatio(result.claim_count_ratio)}</span>
-          <span title={
-            result.judge_verdict_agrees
-              ? `Both agree: ${result.legacy_judge_verdict}`
-              : `Disagree — legacy: ${result.legacy_judge_verdict}, LG: ${result.langgraph_judge_verdict}`
-          }>
-            {result.judge_verdict_agrees
-              ? `✓ ${result.legacy_judge_verdict}`
-              : result.langgraph_judge_verdict === 'pass' && result.legacy_judge_verdict !== 'pass'
-                ? '↑ LG better'
-                : result.legacy_judge_verdict === 'pass' && result.langgraph_judge_verdict !== 'pass'
-                  ? '↓ LG worse'
-                  : '≠ verdict'}
+        <div className="flex items-center gap-4 text-xs">
+          {/* Ratios — coloured by gate pass/fail */}
+          <span title="Answer length ratio (≥0.70)" className={result.passes_answer_length_gate ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}>
+            ans {fmtRatio(result.answer_length_ratio)}
           </span>
+          <span title="Evidence count ratio (≥0.80)" className={result.passes_evidence_gate ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}>
+            evid {fmtRatio(result.evidence_count_ratio)}
+          </span>
+          <span title="Claim count ratio (≥0.60)" className={result.passes_claim_gate ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}>
+            claims {fmtRatio(result.claim_count_ratio)}
+          </span>
+          {/* Gate diagnosis replaces ambiguous binary icon */}
+          {(() => { const d = gateDiagnosis(result); return <span className={`font-medium ${d.color}`}>{d.label}</span> })()}
         </div>
         {open ? <ChevronDown size={14} className="text-neutral-400 flex-shrink-0" /> : <ChevronRight size={14} className="text-neutral-400 flex-shrink-0" />}
       </button>
 
       {open && (
-        <div className="border-t border-neutral-100 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-950 px-4 py-3">
+        <div className="border-t border-neutral-100 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-950 px-4 py-3 space-y-4">
           {(result.legacy_error || result.langgraph_error) && (
-            <div className="mb-3 rounded-md bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 p-3 text-xs font-mono text-red-700 dark:text-red-400 whitespace-pre-wrap">
+            <div className="rounded-md bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 p-3 text-xs font-mono text-red-700 dark:text-red-400 whitespace-pre-wrap">
               {result.legacy_error && <p><strong>Legacy error:</strong> {result.legacy_error.slice(0, 400)}</p>}
               {result.langgraph_error && <p className="mt-1"><strong>LangGraph error:</strong> {result.langgraph_error.slice(0, 400)}</p>}
             </div>
           )}
 
+          {/* Pipeline side-by-side */}
           <div className="grid grid-cols-2 gap-4 text-xs">
             <div>
               <p className="font-semibold text-neutral-500 uppercase tracking-wider mb-1.5">Legacy</p>
@@ -136,7 +150,12 @@ function CaseRow({ result }: { result: ParityCaseResult }) {
                 <div className="flex justify-between"><dt className="text-neutral-500">Answer length</dt><dd className="font-mono">{result.legacy_answer_length} chars</dd></div>
                 <div className="flex justify-between"><dt className="text-neutral-500">Evidence items</dt><dd className="font-mono">{result.legacy_evidence_count}</dd></div>
                 <div className="flex justify-between"><dt className="text-neutral-500">Claims</dt><dd className="font-mono">{result.legacy_claim_count}</dd></div>
-                <div className="flex justify-between"><dt className="text-neutral-500">Judge verdict</dt><dd className="font-mono">{result.legacy_judge_verdict}</dd></div>
+                <div className="flex justify-between">
+                  <dt className="text-neutral-500">Judge verdict</dt>
+                  <dd className={`font-mono ${result.legacy_judge_verdict === 'pass' ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}>
+                    {result.legacy_judge_verdict}
+                  </dd>
+                </div>
                 <div className="flex justify-between"><dt className="text-neutral-500">Latency</dt><dd className="font-mono">{fmtMs(result.legacy_ms)}</dd></div>
               </dl>
             </div>
@@ -146,25 +165,55 @@ function CaseRow({ result }: { result: ParityCaseResult }) {
                 <div className="flex justify-between"><dt className="text-neutral-500">Answer length</dt><dd className="font-mono">{result.langgraph_answer_length} chars</dd></div>
                 <div className="flex justify-between"><dt className="text-neutral-500">Evidence items</dt><dd className="font-mono">{result.langgraph_evidence_count}</dd></div>
                 <div className="flex justify-between"><dt className="text-neutral-500">Claims</dt><dd className="font-mono">{result.langgraph_claim_count}</dd></div>
-                <div className="flex justify-between"><dt className="text-neutral-500">Judge verdict</dt><dd className="font-mono">{result.langgraph_judge_verdict}</dd></div>
+                <div className="flex justify-between">
+                  <dt className="text-neutral-500">Judge verdict</dt>
+                  <dd className={`font-mono ${result.langgraph_judge_verdict === 'pass' ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}>
+                    {result.langgraph_judge_verdict}
+                  </dd>
+                </div>
                 <div className="flex justify-between"><dt className="text-neutral-500">Latency</dt><dd className="font-mono">{fmtMs(result.langgraph_ms)}</dd></div>
               </dl>
             </div>
           </div>
 
-          <div className="mt-3 grid grid-cols-3 gap-2">
+          {/* All 6 gates */}
+          <div className="grid grid-cols-3 gap-2">
             {[
-              { label: 'Ans ratio ≥0.70', value: result.answer_length_ratio, threshold: 0.70, pass: result.passes_answer_length_gate },
-              { label: 'Evid ratio ≥0.80', value: result.evidence_count_ratio, threshold: 0.80, pass: result.passes_evidence_gate },
-              { label: 'Claim ratio ≥0.70', value: result.claim_count_ratio, threshold: 0.70, pass: result.passes_claim_gate },
-            ].map(g => (
-              <div key={g.label} className={`rounded-md p-2 text-center text-xs border ${g.pass ? 'bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-900' : 'bg-red-50 dark:bg-red-950/30 border-red-200 dark:border-red-900'}`}>
-                <div className={`font-mono font-bold text-sm ${g.pass ? 'text-emerald-700 dark:text-emerald-400' : 'text-red-700 dark:text-red-400'}`}>
-                  {fmtRatio(g.value)}
+              { label: 'Structural', pass: result.passes_structural_gate, value: null, suffix: '' },
+              { label: 'Ans ≥0.70', pass: result.passes_answer_length_gate, value: result.answer_length_ratio, suffix: '' },
+              { label: 'Evid ≥0.80', pass: result.passes_evidence_gate, value: result.evidence_count_ratio, suffix: '' },
+              { label: 'Claims ≥0.60', pass: result.passes_claim_gate, value: result.claim_count_ratio, suffix: '' },
+              { label: 'Budget ≤1.50×', pass: result.passes_budget_gate, value: result.cost_ratio, suffix: '×' },
+              {
+                label: result.judge_verdict_agrees ? 'Verdict agree' : 'Verdict differ',
+                pass: result.judge_verdict_agrees ?? null,
+                value: null,
+                suffix: '',
+                note: result.judge_verdict_agrees ? undefined :
+                  result.langgraph_judge_verdict === 'pass' ? 'LG better' :
+                  result.legacy_judge_verdict === 'pass' ? 'LG worse' : undefined,
+                amber: !result.judge_verdict_agrees && result.overall_pass,
+              },
+            ].map(g => {
+              const baseGreen = 'bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-900'
+              const baseRed = 'bg-red-50 dark:bg-red-950/30 border-red-200 dark:border-red-900'
+              const baseAmber = 'bg-amber-50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-900'
+              const bg = g.pass === null || g.pass
+                ? (g.amber ? baseAmber : baseGreen)
+                : baseRed
+              const textColor = g.pass === null || g.pass
+                ? (g.amber ? 'text-amber-700 dark:text-amber-400' : 'text-emerald-700 dark:text-emerald-400')
+                : 'text-red-700 dark:text-red-400'
+              return (
+                <div key={g.label} className={`rounded-md p-2 text-center text-xs border ${bg}`}>
+                  <div className={`font-mono font-bold text-sm ${textColor}`}>
+                    {g.value != null ? `${fmtRatio(g.value)}${g.suffix}` : (g.pass ? '✓' : g.pass === false ? '✗' : '–')}
+                  </div>
+                  <div className="text-neutral-500 mt-0.5">{g.label}</div>
+                  {g.note && <div className={`text-[10px] mt-0.5 ${textColor}`}>{g.note}</div>}
                 </div>
-                <div className="text-neutral-500 mt-0.5">{g.label}</div>
-              </div>
-            ))}
+              )
+            })}
           </div>
         </div>
       )}
@@ -183,11 +232,56 @@ function ParitySubTab({ authorizedFetch }: { authorizedFetch: AuthorizedFetch })
   const [runStatus, setRunStatus] = useState<'idle' | 'running' | 'complete' | 'error'>('idle')
   const [report, setReport] = useState<ParityReport | null>(null)
   const [caseResults, setCaseResults] = useState<ParityCaseResult[]>([])
-  const [streamLog, setStreamLog] = useState<string[]>([])
+  const [progressLog, setProgressLog] = useState<string[]>([])
+  const [progressTotal, setProgressTotal] = useState<number | null>(null)
+  const [progressCompleted, setProgressCompleted] = useState(0)
   const [promoting, setPromoting] = useState(false)
   const [reverting, setReverting] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const eventSourceRef = useRef<EventSource | null>(null)
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const logRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight
+  }, [progressLog])
+
+  function stopPolling() {
+    if (pollRef.current != null) {
+      clearInterval(pollRef.current)
+      pollRef.current = null
+    }
+  }
+
+  const applyPollSnapshot = useCallback((data: Record<string, unknown>) => {
+    setCaseResults((data.progress as ParityCaseResult[]) ?? [])
+    setProgressLog((data.log as string[]) ?? [])
+    setProgressTotal((data.total as number | null) ?? null)
+    setProgressCompleted((data.completed as number) ?? 0)
+
+    if (data.status === 'complete') {
+      setReport(data.report as ParityReport)
+      setRunStatus('complete')
+      stopPolling()
+      // Refresh orchestrator status + run list
+      authorizedFetch('/admin/evals/parity/orchestrator').then(r => { if (r.ok) r.json().then(setOrchestrator) })
+      authorizedFetch('/admin/evals/parity/runs').then(r => { if (r.ok) r.json().then((d) => setRuns(d.runs ?? [])) })
+    } else if (data.status === 'error') {
+      setError((data.error as string) ?? 'Unknown error')
+      setRunStatus('error')
+      stopPolling()
+    }
+  }, [authorizedFetch])
+
+  function startPolling(runId: string) {
+    stopPolling()
+    pollRef.current = setInterval(async () => {
+      try {
+        const resp = await authorizedFetch(`/admin/evals/parity/${runId}/status`)
+        if (!resp.ok) return
+        applyPollSnapshot(await resp.json())
+      } catch { /* network hiccup — retry next interval */ }
+    }, POLL_INTERVAL_MS)
+  }
 
   const loadStatus = useCallback(async () => {
     try {
@@ -199,11 +293,11 @@ function ParitySubTab({ authorizedFetch }: { authorizedFetch: AuthorizedFetch })
       if (runsResp.ok) {
         const data = await runsResp.json()
         setRuns(data.runs ?? [])
-        const active = data.runs?.find((r: ParityRunSummary) => r.status === 'running')
+        const active = (data.runs as ParityRunSummary[])?.find(r => r.status === 'running')
         if (active && !activeRunId) {
           setActiveRunId(active.run_id)
           setRunStatus('running')
-          startSSE(active.run_id)
+          startPolling(active.run_id)
         }
       }
     } catch { /* ignore on mount */ }
@@ -211,90 +305,16 @@ function ParitySubTab({ authorizedFetch }: { authorizedFetch: AuthorizedFetch })
 
   useEffect(() => {
     loadStatus()
+    return () => stopPolling()
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
-
-  function startSSE(runId: string) {
-    if (eventSourceRef.current) {
-      eventSourceRef.current.close()
-    }
-    const controller = new AbortController()
-
-    async function streamViaFetch() {
-      try {
-        const resp = await authorizedFetch(`/admin/evals/parity/${runId}/stream`, {
-          signal: controller.signal,
-        })
-        if (!resp.ok || !resp.body) return
-        const reader = resp.body.getReader()
-        const decoder = new TextDecoder()
-        let buf = ''
-        while (true) {
-          const { done, value } = await reader.read()
-          if (done) break
-          buf += decoder.decode(value, { stream: true })
-          const parts = buf.split('\n\n')
-          buf = parts.pop() ?? ''
-          for (const part of parts) {
-            const line = part.trim()
-            if (line.startsWith('event: close')) {
-              reader.cancel()
-              break
-            }
-            if (line.startsWith('event: heartbeat')) continue
-            if (line.startsWith('data: ')) {
-              try {
-                const event = JSON.parse(line.slice(6))
-                handleSSEEvent(event)
-              } catch { /* malformed */ }
-            }
-          }
-        }
-      } catch (err: unknown) {
-        if ((err as Error)?.name !== 'AbortError') {
-          setRunStatus('error')
-          setError('Lost connection to parity run stream.')
-        }
-      }
-    }
-
-    streamViaFetch()
-    eventSourceRef.current = { close: () => controller.abort() } as unknown as EventSource
-  }
-
-  function handleSSEEvent(event: Record<string, unknown>) {
-    const type = event.type as string
-    if (type === 'started') {
-      setStreamLog(l => [...l, `▶ Run started — ${event.total} case(s)`])
-    } else if (type === 'case_start') {
-      setStreamLog(l => [...l, `  [${(event.index as number) + 1}/${event.total}] Running ${event.case_id}…`])
-    } else if (type === 'case_result') {
-      const r = event.result as ParityCaseResult
-      setCaseResults(prev => [...prev, r])
-      const icon = r.overall_pass ? '✓' : '✗'
-      setStreamLog(l => [...l, `  ${icon} ${event.case_id} — ans=${fmtRatio(r.answer_length_ratio)} evid=${fmtRatio(r.evidence_count_ratio)}`])
-    } else if (type === 'complete') {
-      setReport(event.report as ParityReport)
-      setRunStatus('complete')
-      setStreamLog(l => [...l, `✅ Run complete`])
-      loadStatus()
-    } else if (type === 'error') {
-      setError(String(event.error))
-      setRunStatus('error')
-      setStreamLog(l => [...l, `❌ Error: ${event.error}`])
-    }
-  }
-
-  useEffect(() => {
-    return () => {
-      eventSourceRef.current?.close()
-    }
-  }, [])
 
   async function handleStartRun() {
     setError(null)
     setReport(null)
     setCaseResults([])
-    setStreamLog([])
+    setProgressLog([])
+    setProgressTotal(null)
+    setProgressCompleted(0)
     setRunStatus('running')
 
     try {
@@ -303,12 +323,10 @@ function ParitySubTab({ authorizedFetch }: { authorizedFetch: AuthorizedFetch })
       const data = await resp.json()
       const runId = data.run_id as string
       setActiveRunId(runId)
-      if (data.status === 'already_running') {
-        setStreamLog([`⚠ A run is already in progress (${runId}), attaching…`])
-      } else {
-        setStreamLog([`▶ Started run ${runId}`])
-      }
-      startSSE(runId)
+      startPolling(runId)
+      // Fetch initial snapshot immediately (don't wait for first interval)
+      const snapResp = await authorizedFetch(`/admin/evals/parity/${runId}/status`)
+      if (snapResp.ok) applyPollSnapshot(await snapResp.json())
     } catch (err: unknown) {
       setRunStatus('error')
       setError(err instanceof Error ? err.message : 'Failed to start parity run')
@@ -432,16 +450,34 @@ function ParitySubTab({ authorizedFetch }: { authorizedFetch: AuthorizedFetch })
         )}
       </div>
 
-      {streamLog.length > 0 && (
-        <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-neutral-950 p-4 font-mono text-xs text-neutral-300 max-h-48 overflow-y-auto space-y-0.5">
-          {streamLog.map((line, i) => (
-            <div key={i}>{line}</div>
-          ))}
-          {runStatus === 'running' && (
-            <div className="flex items-center gap-1.5 text-neutral-500 mt-1">
-              <Loader2 size={10} className="animate-spin" /> processing…
+      {(progressLog.length > 0 || runStatus === 'running') && (
+        <div>
+          {runStatus === 'running' && progressTotal != null && (
+            <div className="flex items-center gap-3 mb-2">
+              <div className="flex-1 h-1.5 rounded-full bg-neutral-200 dark:bg-neutral-800 overflow-hidden">
+                <div
+                  className="h-full bg-blue-500 transition-all duration-500"
+                  style={{ width: `${(progressCompleted / progressTotal) * 100}%` }}
+                />
+              </div>
+              <span className="text-xs text-neutral-500 tabular-nums">
+                {progressCompleted}/{progressTotal}
+              </span>
             </div>
           )}
+          <div
+            ref={logRef}
+            className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-neutral-950 p-4 font-mono text-xs text-neutral-300 max-h-48 overflow-y-auto space-y-0.5"
+          >
+            {progressLog.map((line, i) => (
+              <div key={i}>{line}</div>
+            ))}
+            {runStatus === 'running' && (
+              <div className="flex items-center gap-1.5 text-neutral-500 mt-1">
+                <Loader2 size={10} className="animate-spin" /> polling…
+              </div>
+            )}
+          </div>
         </div>
       )}
 

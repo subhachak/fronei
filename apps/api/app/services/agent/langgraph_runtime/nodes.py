@@ -762,6 +762,7 @@ def bind(
     evidence = bind_evidence(
         merged_sources,
         research_plan,
+        max_items=bind_ledger.budget.max_sources,
         contract=coverage_contract,
         overrides=getattr(request, "model_overrides", None),
         ledger=bind_ledger,

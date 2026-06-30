@@ -230,7 +230,11 @@ def plan_from_contract(
             max_workers=budget.max_search_workers,
         )
     elif anchor_workers or phase6_workers:
-        workers = _dedupe_workers((anchor_workers + phase6_workers)[:2] + workers)[:budget.max_search_workers]
+        # Phase 6 fix: do NOT cap phase6_workers at [:2] here — each named subject gets
+        # one per-entity anchor query, so capping at 2 starves all subjects beyond the
+        # first two of domain-targeted queries.  budget.max_search_workers is the correct
+        # ceiling (already applied by the final slice).
+        workers = _dedupe_workers((anchor_workers + phase6_workers) + workers)[:budget.max_search_workers]
 
     return ResearchPlan(
         research_profile=profile,

@@ -1258,6 +1258,10 @@ def _run_one_eval_case(case_dict: dict, tools, pipeline: str = "langgraph") -> d
     retrieval_independence = score_retrieval_independence(case_dict, run, evidence_items)
     latency_pass = score_latency_pass(case_dict, route, decision.research_level, latency_ms)
     synthesis_grounding = score_synthesis_grounding(full_answer, evidence_items)
+    gap_honesty = score_gap_honesty(case_dict, full_answer, evidence_items)
+    conflict_handling = score_conflict_handling(case_dict, full_answer, evidence_items)
+    must_not_recommend_ok = score_must_not_recommend(case_dict, full_answer)
+    answer_length_ok = score_answer_length_bounds(case_dict, run["answer_length"])
 
     overall_structural_pass = all(structural.values())
     overall_benchmark_pass = all(b["pass"] for b in benchmarks.values()) if benchmarks else None
@@ -1293,6 +1297,10 @@ def _run_one_eval_case(case_dict: dict, tools, pipeline: str = "langgraph") -> d
             "retrieval_independence": retrieval_independence,
             "latency_pass": latency_pass,
             "synthesis_grounding": synthesis_grounding,
+            "gap_honesty": gap_honesty,
+            "conflict_handling": conflict_handling,
+            "must_not_recommend_ok": must_not_recommend_ok,
+            "answer_length_ok": answer_length_ok,
         },
         "overall_structural_pass": overall_structural_pass,
         "overall_benchmark_pass": overall_benchmark_pass,
@@ -1328,6 +1336,33 @@ def score_gate_correct(case_dict: dict, deep_research_gate: dict[str, Any] | Non
     return None
 
 
+def _coverage_by_subject(case_dict: dict, evidence_items: list) -> dict[str, float] | None:
+    """Per-subject fill ratio across required_dimensions — shared by
+    score_retrieval_completeness (the aggregate) and score_gap_honesty
+    (which needs to know WHICH subjects are incomplete, not just the
+    overall ratio, to know which subjects' gap-disclosure to check)."""
+    v2 = case_dict.get("v2_spec") or {}
+    req = v2.get("retrieval_requirements") or {}
+    subjects = req.get("required_subjects")
+    dimensions = req.get("required_dimensions")
+    if not subjects or not dimensions:
+        return None
+    haystacks = [
+        f"{getattr(item, 'url', '')} {getattr(item, 'title', '')} "
+        f"{getattr(item, 'evidence', '')} {getattr(item, 'query', '')}".lower()
+        for item in evidence_items
+    ]
+    result: dict[str, float] = {}
+    for subject in subjects:
+        subject_l = subject.lower()
+        filled = sum(
+            1 for dimension in dimensions
+            if any(subject_l in h and dimension.lower() in h for h in haystacks)
+        )
+        result[subject] = filled / len(dimensions) if dimensions else 0.0
+    return result
+
+
 def score_retrieval_completeness(case_dict: dict, evidence_items: list) -> float | None:
     """scoring_spec.md §1.2 — coverage_cells_filled / coverage_cells_required.
 
@@ -1336,28 +1371,17 @@ def score_retrieval_completeness(case_dict: dict, evidence_items: list) -> float
     which can claim coverage it doesn't have. None if the case doesn't set
     required_subjects/required_dimensions.
     """
+    by_subject = _coverage_by_subject(case_dict, evidence_items)
+    if by_subject is None:
+        return None
     v2 = case_dict.get("v2_spec") or {}
-    req = v2.get("retrieval_requirements") or {}
-    subjects = req.get("required_subjects")
-    dimensions = req.get("required_dimensions")
-    if not subjects or not dimensions:
+    dimensions = (v2.get("retrieval_requirements") or {}).get("required_dimensions") or []
+    if not by_subject or not dimensions:
         return None
-    required_cells = len(subjects) * len(dimensions)
-    if required_cells == 0:
-        return None
-    haystacks = [
-        f"{getattr(item, 'url', '')} {getattr(item, 'title', '')} "
-        f"{getattr(item, 'evidence', '')} {getattr(item, 'query', '')}".lower()
-        for item in evidence_items
-    ]
-    filled = 0
-    for subject in subjects:
-        subject_l = subject.lower()
-        for dimension in dimensions:
-            dimension_l = dimension.lower()
-            if any(subject_l in h and dimension_l in h for h in haystacks):
-                filled += 1
-    return filled / required_cells
+    # Each subject's ratio is filled_dims/len(dimensions); the aggregate is
+    # total filled cells / total required cells, i.e. the mean of per-subject
+    # ratios weighted equally since every subject has the same dimension count.
+    return sum(by_subject.values()) / len(by_subject)
 
 
 def score_retrieval_independence(case_dict: dict, run: dict, evidence_items: list) -> bool | None:
@@ -1432,6 +1456,155 @@ def score_synthesis_grounding(answer: str, evidence_items: list) -> float | None
     valid_source_ids = {getattr(item, "source_id", "") for item in evidence_items}
     valid = sum(1 for idx in cited_indices if f"S{idx}" in valid_source_ids)
     return valid / len(cited_indices)
+
+
+def _render_evidence_manifest(evidence_items: list, max_items: int = 25) -> str:
+    """Compact text rendering of the evidence pack for judge prompts —
+    scoring_spec.md §1.6's "feed the judge the evidence pack alongside the
+    answer, not just the answer text in isolation." Without this, a gap-
+    honesty or conflict-handling judgment is just trusting the answer's own
+    self-report; with it, the judge can verify a claimed gap is real (or a
+    claimed conflict actually exists in the sources) rather than taking the
+    answer's word for it."""
+    if not evidence_items:
+        return "(no evidence items in this run)"
+    lines = []
+    for item in evidence_items[:max_items]:
+        source_id = getattr(item, "source_id", "?")
+        title = (getattr(item, "title", "") or "")[:80]
+        url = getattr(item, "url", "")
+        snippet = (getattr(item, "evidence", "") or "")[:200].replace("\n", " ")
+        lines.append(f"[{source_id}] {title} ({url})\n  {snippet}")
+    if len(evidence_items) > max_items:
+        lines.append(f"... and {len(evidence_items) - max_items} more evidence item(s) not shown.")
+    return "\n".join(lines)
+
+
+def _binary_judge_call(question: str, answer: str, evidence_items: list) -> bool | None:
+    """scoring_spec.md §1.6 — narrow, single-question yes/no judge call,
+    evidence pack included. Binary-per-subject judge calls are more reliable
+    than one holistic 0-1 score over a whole multi-thousand-word answer
+    (the open-ended expected_criteria approach this is replacing for
+    gap-honesty/conflict-handling specifically — other axes still use the
+    broader criteria judge where a narrow yes/no doesn't fit).
+
+    Returns None on a judge call failure (distinct from False — a failed
+    judge call is a harness issue, not a "no" answer) so callers can avoid
+    treating an infrastructure failure as a confident negative finding.
+    """
+    if not answer:
+        return None
+    prompt = (
+        f"Evidence available to the research system for this answer:\n{_render_evidence_manifest(evidence_items)}\n\n"
+        f"Answer to evaluate:\n{answer[:4000]}\n\n"
+        f"Question: {question}\n\n"
+        'Answer with exactly one word, "YES" or "NO", on its own — no explanation.'
+    )
+    try:
+        from app.services.agent import model_client
+        result = model_client.simple_completion(
+            system=(
+                "You are a narrow, binary evaluation judge. You will be given the evidence a research "
+                "system had access to and the answer it produced, then asked one yes/no question. "
+                "Cross-check the answer against the evidence — don't just trust the answer's own claims. "
+                "Respond with exactly YES or NO."
+            ),
+            user=prompt,
+            max_tokens=10,
+            role="direct_answer",
+        )
+        text = (result.text or "").strip().upper()
+        if "YES" in text:
+            return True
+        if "NO" in text:
+            return False
+        return None
+    except Exception:
+        return None
+
+
+def score_gap_honesty(case_dict: dict, answer: str, evidence_items: list) -> bool | None:
+    """scoring_spec.md §1.6 — for each required_subject whose
+    retrieval_completeness is < 1.0, the answer must explicitly disclose
+    that gap rather than omitting it silently. Returns True/False (all
+    incomplete subjects' gaps disclosed, or not) — None if the case doesn't
+    set synthesis_requirements.must_disclose_gaps, or if every subject's
+    coverage is already complete (no gaps to disclose)."""
+    v2 = case_dict.get("v2_spec") or {}
+    if not (v2.get("synthesis_requirements") or {}).get("must_disclose_gaps"):
+        return None
+    by_subject = _coverage_by_subject(case_dict, evidence_items)
+    if not by_subject:
+        return None
+    incomplete = [subject for subject, ratio in by_subject.items() if ratio < 1.0]
+    if not incomplete:
+        return None  # nothing incomplete, so nothing to check disclosure of
+    results = [
+        _binary_judge_call(
+            f'Does the answer explicitly state that evidence/coverage for "{subject}" is incomplete, '
+            f"missing, or thin — rather than silently omitting that gap?",
+            answer, evidence_items,
+        )
+        for subject in incomplete
+    ]
+    if any(r is None for r in results):
+        return None  # a judge call failed — don't report a confident result
+    return all(results)
+
+
+def score_conflict_handling(case_dict: dict, answer: str, evidence_items: list) -> bool | None:
+    """scoring_spec.md §1.6 — if sources disagree, the answer must name the
+    disagreement by source position (official vs. practitioner, vendor A vs.
+    vendor B) rather than silently averaging or picking one. None if the
+    case doesn't set synthesis_requirements.must_surface_conflicts."""
+    v2 = case_dict.get("v2_spec") or {}
+    if not (v2.get("synthesis_requirements") or {}).get("must_surface_conflicts"):
+        return None
+    return _binary_judge_call(
+        "If the evidence contains disagreeing sources (e.g. official guidance vs. practitioner reports, "
+        "or different vendors/sources giving different figures), does the answer name that disagreement "
+        "explicitly by source position, rather than silently merging/averaging the figures or picking one "
+        "without acknowledging the conflict? (If the evidence has no real disagreement, answer YES — there's "
+        "nothing to suppress.)",
+        answer, evidence_items,
+    )
+
+
+def score_must_not_recommend(case_dict: dict, answer: str) -> bool | None:
+    """scoring_spec.md §1.6/eval_case_schema.json — formal version of the
+    adversarial-phrasing gap: a query that doesn't itself ask for a
+    recommendation shouldn't volunteer one unprompted. Programmatic keyword
+    check, not LLM — same rationale as the citation-marker regex in
+    score_synthesis_grounding: cheap, deterministic, no judge-prompt
+    variance for something this mechanically checkable."""
+    v2 = case_dict.get("v2_spec") or {}
+    if not (v2.get("synthesis_requirements") or {}).get("must_not_recommend"):
+        return None
+    text = (answer or "").lower()
+    recommend_terms = (
+        "i recommend", "we recommend", "recommended choice", "recommended option",
+        "best choice", "best option", "you should choose", "you should pick",
+        "the best provider", "the best platform", "the best framework", "the best service",
+    )
+    return not any(term in text for term in recommend_terms)
+
+
+def score_answer_length_bounds(case_dict: dict, answer_length: int) -> bool | None:
+    """eval_case_schema.json synthesis_requirements.max_answer_length/
+    min_answer_length — flags over-research/over-verbosity on simple
+    lookups (max) or suspiciously thin answers (min). None if the case
+    sets neither bound."""
+    v2 = case_dict.get("v2_spec") or {}
+    req = v2.get("synthesis_requirements") or {}
+    max_len = req.get("max_answer_length")
+    min_len = req.get("min_answer_length")
+    if max_len is None and min_len is None:
+        return None
+    if max_len is not None and answer_length > max_len:
+        return False
+    if min_len is not None and answer_length < min_len:
+        return False
+    return True
 
 
 def _score_benchmarks(case_dict: dict, run: dict) -> dict[str, dict[str, Any]]:

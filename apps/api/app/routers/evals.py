@@ -21,8 +21,8 @@ Eval case CRUD:
 General eval runs (both pipelines, structural + criteria scoring):
   POST   /admin/evals/runs                    Start a run over selected (or all) cases
   GET    /admin/evals/runs                    List recent runs
-  GET    /admin/evals/runs/{run_id}/stream    SSE per-case progress
-  GET    /admin/evals/runs/{run_id}/result    Full results
+  GET    /admin/evals/runs/{run_id}/status    Poll for live progress + final results
+  GET    /admin/evals/runs/{run_id}/result    Full results (alias; checks memory then DB)
 """
 from __future__ import annotations
 
@@ -670,9 +670,12 @@ _EVAL_RUNS_LOCK = threading.Lock()
 def _make_eval_run(run_id: str) -> dict[str, Any]:
     return {
         "run_id": run_id,
-        "status": "running",
-        "events": queue.Queue(),
-        "results": [],
+        "status": "running",    # running | complete | error
+        "total": None,          # set once case list is loaded
+        "completed": 0,         # incremented after each case finishes
+        "progress": [],         # list of per-case result dicts (poll to watch growth)
+        "log": [],              # human-readable lines for the UI log panel
+        "results": None,        # final envelope (set on completion)
         "error": None,
         "started_at": time.time(),
         "completed_at": None,
@@ -822,50 +825,88 @@ def _make_result_envelope(mode: str, cases: list, langsmith_summary: dict | None
     return {"mode": mode, "cases": cases, "langsmith": langsmith_summary}
 
 
+def _drain_ls_events_to_run(events_q: queue.Queue, run: dict) -> None:
+    """Drain LangSmith event queue into run['log'] in real-time. Runs in a daemon thread."""
+    while True:
+        try:
+            ev = events_q.get(timeout=2)
+        except queue.Empty:
+            continue
+        if ev is None:
+            break
+        t = ev.get("type", "")
+        if t == "started":
+            run["log"].append(f"▶ LangSmith run started ({ev.get('total')} cases)")
+        elif t == "langsmith_sync":
+            run["log"].append(f"  ⟳ {ev.get('message', 'Syncing dataset…')}")
+        elif t == "langsmith_sync_done":
+            run["log"].append("  ✓ Dataset synced")
+        elif t == "langsmith_pipeline_start":
+            run["log"].append(f"  ▶ Running {ev.get('pipeline')} pipeline via LangSmith…")
+        elif t == "langsmith_pipeline_done":
+            url = ev.get("experiment_url")
+            elapsed = f" ({ev.get('elapsed_s')}s)" if ev.get("elapsed_s") else ""
+            ready = " — experiment ready" if url else ""
+            run["log"].append(f"  ✓ {ev.get('pipeline')} done{elapsed}{ready}")
+            if url:
+                run.setdefault("langsmith_links", {})[ev.get("pipeline", "pipeline")] = url
+        elif t == "langsmith_pipeline_error":
+            run["log"].append(f"  ✗ {ev.get('pipeline')} error: {ev.get('error', '')}")
+        elif t == "complete":
+            run["log"].append("✓ LangSmith run complete")
+
+
 def _run_eval_background(run_id: str, case_dicts: list[dict]) -> None:
+    """Runs in a daemon thread. Writes progress directly to the run dict so the
+    polling endpoint can serve a consistent snapshot without an SSE connection."""
     run = _EVAL_RUNS.get(run_id)
     if run is None:
         return
-    events: queue.Queue = run["events"]
 
     try:
         from app.services.langsmith_evals import is_configured as ls_configured, run_eval as ls_run_eval
 
         if ls_configured():
             # --- LangSmith path ---
-            # Per-case rows are not available in-process; LangSmith holds them.
-            # Store an empty cases list and put the experiment summary in "langsmith".
-            events.put({"type": "started", "total": len(case_dicts), "run_id": run_id, "mode": "langsmith"})
-            ls_summary = ls_run_eval(run_id, case_dicts, events)
+            # Per-case rows live in LangSmith; drain its event queue into the run log.
+            run["total"] = len(case_dicts)
+            ls_events: queue.Queue = queue.Queue()
+            drainer = threading.Thread(
+                target=_drain_ls_events_to_run, args=(ls_events, run), daemon=True,
+                name=f"eval-ls-drain-{run_id}",
+            )
+            drainer.start()
+            ls_summary = ls_run_eval(run_id, case_dicts, ls_events)
+            ls_events.put(None)  # signal drainer to exit
+            drainer.join(timeout=10)
             envelope = _make_result_envelope("langsmith", [], ls_summary)
             run["results"] = envelope
             run["status"] = "complete"
             run["completed_at"] = time.time()
             _persist_eval_run(run_id, envelope, "complete")
-            events.put({"type": "complete", "results": envelope, "run_id": run_id})
 
         else:
             # --- In-process fallback path ---
             from app.services.agent.tools import Tools
             tools = Tools.from_settings()
             total = len(case_dicts)
-            events.put({"type": "started", "total": total, "run_id": run_id, "mode": "in_process"})
+            run["total"] = total
+            run["log"].append(f"▶ Started ({total} cases)")
 
             all_results = []
             for idx, case_dict in enumerate(case_dicts):
-                events.put({"type": "case_start", "case_id": case_dict["id"], "title": case_dict["title"],
-                            "index": idx, "total": total})
+                run["log"].append(f"  [{idx+1}/{total}] {case_dict['title']}…")
                 result = _run_one_eval_case(case_dict, tools)
                 all_results.append(result)
-                events.put({"type": "case_result", "case_id": case_dict["id"], "index": idx,
-                            "total": total, "result": result})
+                run["progress"].append(result)
+                run["completed"] = idx + 1
 
             envelope = _make_result_envelope("in_process", all_results, None)
             run["results"] = envelope
             run["status"] = "complete"
             run["completed_at"] = time.time()
+            run["log"].append("✓ Run complete")
             _persist_eval_run(run_id, envelope, "complete")
-            events.put({"type": "complete", "results": envelope, "run_id": run_id})
 
     except Exception as exc:
         import traceback
@@ -873,10 +914,8 @@ def _run_eval_background(run_id: str, case_dicts: list[dict]) -> None:
         run["error"] = err
         run["status"] = "error"
         run["completed_at"] = time.time()
+        run["log"].append(f"✗ Error: {str(exc)[:200]}")
         _persist_eval_run(run_id, _make_result_envelope("error", [], None), "error", error=err)
-        events.put({"type": "error", "error": str(exc), "run_id": run_id})
-    finally:
-        events.put(None)
 
 
 def _persist_eval_run(run_id: str, results: dict, status: str, error: str | None = None) -> None:
@@ -972,29 +1011,55 @@ def list_eval_runs(admin: AdminPrincipal = RequireAdmin) -> dict:
         db.close()
 
 
-@router.get("/runs/{run_id}/stream")
-def stream_eval_run(run_id: str, admin: AdminPrincipal = RequireAdmin) -> StreamingResponse:
-    run = _get_eval_run(run_id)
-    events: queue.Queue = run["events"]
-
-    def generate():
-        yield "retry: 3000\n\n"
-        while True:
-            try:
-                event = events.get(timeout=10)
-            except queue.Empty:
-                yield ": heartbeat\n\n"  # SSE comment keeps proxy alive without firing client events
-                continue
-            if event is None:
-                yield "event: close\ndata: {}\n\n"
-                break
-            yield f"data: {json.dumps(event, default=str)}\n\n"
-
-    return StreamingResponse(
-        generate(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
+@router.get("/runs/{run_id}/status")
+def get_eval_run_status(run_id: str, admin: AdminPrincipal = RequireAdmin) -> dict:
+    """Poll for live progress and final results. Checks in-process memory, then DB."""
+    with _EVAL_RUNS_LOCK:
+        run = _EVAL_RUNS.get(run_id)
+    if run:
+        return {
+            "run_id": run_id,
+            "status": run["status"],
+            "total": run.get("total"),
+            "completed": run.get("completed", 0),
+            "progress": list(run.get("progress", [])),
+            "log": list(run.get("log", [])),
+            "results": run.get("results"),
+            "langsmith_links": run.get("langsmith_links"),
+            "error": run.get("error"),
+            "started_at": run.get("started_at"),
+            "completed_at": run.get("completed_at"),
+        }
+    # Fall through to DB for historical runs
+    from app.db.models import EvalRun, SessionLocal
+    db = SessionLocal()
+    try:
+        row = db.query(EvalRun).filter(EvalRun.id == run_id).first()
+        if not row:
+            raise HTTPException(status_code=404, detail=f"Eval run {run_id!r} not found.")
+        raw = json.loads(row.results_json or "null")
+        if isinstance(raw, list):
+            results = _make_result_envelope("in_process", raw, None)
+        elif isinstance(raw, dict):
+            results = raw
+        else:
+            results = _make_result_envelope("in_process", [], None)
+        progress = results.get("cases", []) if isinstance(results, dict) else []
+        return {
+            "run_id": run_id,
+            "status": row.status,
+            "total": len(progress) or None,
+            "completed": len(progress),
+            "progress": progress,
+            "log": [],
+            "results": results,
+            "langsmith_links": None,
+            "error": row.error,
+            "started_at": row.started_at.timestamp() if row.started_at else None,
+            "completed_at": row.completed_at.timestamp() if row.completed_at else None,
+        }
+    finally:
+        db.close()
 
 
 @router.get("/runs/{run_id}/result")

@@ -431,6 +431,52 @@ def _select_diverse_ranked_sources(
     return [item.source for item in selected[:limit]]
 
 
+def subjects_for_deep_link_balance(message: str) -> list[str]:
+    """Named comparison subjects (e.g. vendors) for a query, or [] if not a
+    multi-subject comparison. Used to keep deep-link extraction from letting
+    one subject's link-rich sources crowd out the others."""
+    try:
+        from app.services.agent.research_contracts import _extract_named_comparison_subjects
+    except Exception:
+        return []
+    subjects = _extract_named_comparison_subjects(message or "")
+    return subjects if len(subjects) >= 2 else []
+
+
+def balance_sources_for_deep_links(sources: list[Source], subjects: list[str]) -> list[Source]:
+    """Reorder sources so extract_deep_link_candidates' first-come-first-served
+    cut doesn't let one subject's sources crowd out the others before the
+    shared max_links budget runs out.
+
+    extract_deep_link_candidates stops as soon as it hits max_links, walking
+    `sources` in list order. In a multi-subject comparison, sources for the
+    first-mentioned subject are typically link-rich (official docs cross-link
+    heavily) and consistently appear first in the accumulated source list, so
+    a flat cut can spend the entire deep-link budget on one subject and leave
+    the others with zero — exactly the kind of evidence-coverage skew fixed
+    for claim selection in _balance_claims_across_cells. Round-robin by
+    subject (matched against source.query/title/url) before the caller's cut.
+    """
+    if len(subjects) < 2:
+        return sources
+    buckets: dict[str, list[Source]] = {s: [] for s in subjects}
+    unmatched: list[Source] = []
+    for source in sources:
+        haystack = f"{source.query} {source.title} {source.url}".lower()
+        matched = next((s for s in subjects if s.lower() in haystack), None)
+        (buckets[matched] if matched else unmatched).append(source)
+    balanced: list[Source] = []
+    queues = [q for q in buckets.values() if q]
+    idx = 0
+    while any(queues):
+        queue = queues[idx % len(queues)]
+        if queue:
+            balanced.append(queue.pop(0))
+        idx += 1
+    balanced.extend(unmatched)
+    return balanced
+
+
 def extract_deep_link_candidates(sources: list[Source], *, max_links: int = 4) -> list[DeepLinkCandidate]:
     candidates: list[DeepLinkCandidate] = []
     seen: set[str] = set()

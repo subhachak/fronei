@@ -1,6 +1,7 @@
 'use client'
 
 import {
+  BarChart3,
   ChevronDown,
   ChevronRight,
   ChevronsDownUp,
@@ -23,6 +24,9 @@ import type {
   AuthorizedFetch,
   EvalCase,
   EvalCaseRunResult,
+  EvalDashboard,
+  EvalDashboardCell,
+  EvalDashboardTier,
   EvalPipeline,
   EvalRoute,
   EvalRunResult,
@@ -174,6 +178,116 @@ function ScoreBadge({ score }: { score: number | null | undefined }) {
     : v >= 50 ? 'bg-yellow-50 text-yellow-700 dark:bg-yellow-950/40 dark:text-yellow-400'
     : 'bg-red-50 text-red-700 dark:bg-red-950/40 dark:text-red-400'
   return <span className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-semibold tabular-nums ${cls}`}>{v}%</span>
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Dashboard — axis x tier rollup + Harness Integrity panel (scoring_spec.md §3/§6)
+// Sequencing matters: the integrity panel renders FIRST and is visually
+// distinct (red/green banner) — if it's red, the axis table below it
+// shouldn't be trusted for that run, per the spec's explicit instruction.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const DASHBOARD_TIER_LABELS: Record<EvalDashboardTier, string> = {
+  direct: 'Direct', clarify: 'Clarify', research_easy: 'Research (easy)',
+  research_regular: 'Research (regular)', research_deep: 'Research (deep)',
+  document: 'Document', research_document: 'Research+Doc',
+}
+
+function DashboardCellValue({ cell }: { cell: EvalDashboardCell }) {
+  if (cell == null) return <span className="text-neutral-300 dark:text-neutral-700">n/a</span>
+  if ('rate' in cell) {
+    const pct = Math.round(cell.rate * 100)
+    const cls = pct >= 80 ? 'text-green-600 dark:text-green-400' : pct >= 50 ? 'text-amber-600 dark:text-amber-400' : 'text-red-600 dark:text-red-400'
+    return <span className={cls}>{pct}% <span className="text-neutral-400">(n={cell.n})</span></span>
+  }
+  const pct = Math.round(cell.mean * 100)
+  const cls = pct >= 80 ? 'text-green-600 dark:text-green-400' : pct >= 50 ? 'text-amber-600 dark:text-amber-400' : 'text-red-600 dark:text-red-400'
+  return <span className={cls}>{cell.mean.toFixed(2)} <span className="text-neutral-400">(n={cell.n})</span></span>
+}
+
+function EvalDashboardPanel({ runId, authorizedFetch, onClose }: {
+  runId: string; authorizedFetch: AuthorizedFetch; onClose?: () => void
+}) {
+  const [dashboard, setDashboard] = useState<EvalDashboard | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true); setError(''); setDashboard(null)
+    authorizedFetch(`/admin/evals/runs/${runId}/dashboard`)
+      .then(async resp => {
+        if (!resp.ok) throw new Error(await readErrorBody(resp, 'Failed to load dashboard'))
+        return resp.json()
+      })
+      .then(data => { if (!cancelled) setDashboard(data) })
+      .catch((err: unknown) => { if (!cancelled) setError(err instanceof Error ? err.message : 'Load failed') })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [runId, authorizedFetch])
+
+  if (loading) return <p className="text-xs text-neutral-400 py-2">Loading dashboard…</p>
+  if (error) return <p className="text-xs text-red-500 py-2">{error}</p>
+  if (!dashboard) return null
+
+  const tiers = dashboard.tiers
+  const rows = Object.entries(dashboard.table)
+
+  return (
+    <div className="space-y-3">
+      {/* Harness Integrity panel — reviewed BEFORE the axis table below */}
+      <div className={`rounded-xl border px-4 py-3 ${dashboard.integrity.ok
+        ? 'border-emerald-200 dark:border-emerald-900 bg-emerald-50 dark:bg-emerald-950/30'
+        : 'border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-950/30'}`}>
+        <div className="flex items-center justify-between">
+          <p className={`text-xs font-bold ${dashboard.integrity.ok ? 'text-emerald-800 dark:text-emerald-300' : 'text-red-800 dark:text-red-300'}`}>
+            {dashboard.integrity.ok ? '✓ Harness integrity OK' : '✗ Harness integrity issues — do not trust the table below'}
+          </p>
+          {onClose && (
+            <button type="button" onClick={onClose} className="text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200"><X size={14} /></button>
+          )}
+        </div>
+        <p className="text-xs text-neutral-500 mt-1">
+          {dashboard.trustworthy_cases}/{dashboard.total_cases} case(s) trustworthy
+          {dashboard.integrity.harness_error_count > 0 && (
+            <> · <span className="text-red-600 dark:text-red-400 font-semibold">{dashboard.integrity.harness_error_count} harness_error</span> (case_ids: {dashboard.integrity.harness_error_case_ids.join(', ')})</>
+          )}
+          {dashboard.integrity.canary_drift_count > 0 && (
+            <> · <span className="text-amber-600 dark:text-amber-400 font-semibold">{dashboard.integrity.canary_drift_count} canary drift</span> (case_ids: {dashboard.integrity.canary_drift_case_ids.join(', ')})</>
+          )}
+        </p>
+      </div>
+
+      {/* Axis x tier rollup */}
+      <div className="overflow-x-auto rounded-xl border border-neutral-200 dark:border-neutral-800">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="bg-neutral-50 dark:bg-neutral-900 border-b border-neutral-200 dark:border-neutral-800">
+              <th className="text-left font-bold text-neutral-500 px-3 py-2 whitespace-nowrap">Axis</th>
+              {tiers.map(tier => (
+                <th key={tier} className="text-left font-bold text-neutral-500 px-3 py-2 whitespace-nowrap">{DASHBOARD_TIER_LABELS[tier]}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(([axisKey, row]) => (
+              <tr key={axisKey} className="border-b border-neutral-100 dark:border-neutral-800 last:border-0">
+                <td className="px-3 py-2 font-semibold text-neutral-700 dark:text-neutral-300 whitespace-nowrap">{row.label}</td>
+                {tiers.map(tier => (
+                  <td key={tier} className="px-3 py-2 tabular-nums whitespace-nowrap">
+                    <DashboardCellValue cell={row.by_tier[tier]} />
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="text-[11px] text-neutral-400">
+        Cost band distribution not shown — per-call token/dollar capture isn't wired up at the pipeline level yet (scoring_spec.md open question #4).
+      </p>
+    </div>
+  )
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -714,6 +828,7 @@ function RunHistoryRow({
   const [detail, setDetail] = useState<RunDetail | null>(null)
   const [loading, setLoading] = useState(false)
   const [fetchError, setFetchError] = useState('')
+  const [showDashboard, setShowDashboard] = useState(false)
 
   async function toggle() {
     const next = !open
@@ -767,6 +882,10 @@ function RunHistoryRow({
           {loading && <Loader2 size={13} className="text-neutral-400 animate-spin flex-shrink-0" />}
         </button>
         <div className="flex items-center gap-0.5 flex-shrink-0">
+          <button type="button" onClick={() => setShowDashboard(d => !d)} title="View axis × tier dashboard"
+            className={`grid h-7 w-7 place-items-center rounded-lg ${showDashboard ? 'bg-neutral-100 dark:bg-neutral-700 text-neutral-700 dark:text-neutral-200' : 'text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-700 hover:text-neutral-700 dark:hover:text-neutral-200'}`}>
+            <BarChart3 size={13} />
+          </button>
           <button type="button" onClick={() => onRerun(run.run_id)} disabled={run.status === 'running'} title="Re-run with the same cases/pipeline"
             className="grid h-7 w-7 place-items-center rounded-lg text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-700 hover:text-neutral-700 dark:hover:text-neutral-200 disabled:opacity-40">
             <RotateCcw size={13} />
@@ -781,6 +900,13 @@ function RunHistoryRow({
           </button>
         </div>
       </div>
+
+      {/* Dashboard — independent of the expand/collapse toggle above */}
+      {showDashboard && (
+        <div className="border-t border-neutral-100 dark:border-neutral-800 bg-white dark:bg-neutral-900 px-4 py-3">
+          <EvalDashboardPanel runId={run.run_id} authorizedFetch={authorizedFetch} onClose={() => setShowDashboard(false)} />
+        </div>
+      )}
 
       {/* Expanded content */}
       {open && (
@@ -830,6 +956,7 @@ export function EvalHarnessTab({ authorizedFetch }: { authorizedFetch: Authorize
   const [lsConfigured, setLsConfigured] = useState(false)
   const [runStatus, setRunStatus] = useState<'idle' | 'running' | 'complete' | 'stopped' | 'error'>('idle')
   const [currentRunId, setCurrentRunId] = useState<string | null>(null)
+  const [showDashboard, setShowDashboard] = useState(false)
   const [runsOpen, setRunsOpen] = useState(true)
   const [log, setLog] = useState<string[]>([])
   const [progressTotal, setProgressTotal] = useState<number | null>(null)
@@ -1022,6 +1149,7 @@ export function EvalHarnessTab({ authorizedFetch }: { authorizedFetch: Authorize
   async function startRun(caseIdsOverride?: number[]) {
     setRunStatus('running'); setLog([]); setRunResult(null); setRunError('')
     setLangsmithLinks({}); setProgressTotal(null); setProgressCompleted(0); setCurrentRunId(null)
+    setShowDashboard(false)
     const ids = caseIdsOverride ?? Array.from(selectedIds)
     const payload = {
       mode: runMode,
@@ -1348,6 +1476,19 @@ export function EvalHarnessTab({ authorizedFetch }: { authorizedFetch: Authorize
 
             {runResult && (runStatus === 'complete' || runStatus === 'stopped') && (
               <LocalReport cases={runResult.cases ?? []} runResult={runResult} />
+            )}
+
+            {currentRunId && (runStatus === 'complete' || runStatus === 'stopped') && (runResult?.cases?.length ?? 0) > 0 && (
+              <div>
+                {!showDashboard ? (
+                  <button type="button" onClick={() => setShowDashboard(true)}
+                    className="text-xs font-semibold text-neutral-600 dark:text-neutral-300 underline underline-offset-2 hover:text-neutral-900 dark:hover:text-white">
+                    View dashboard (axis × tier rollup + harness integrity)
+                  </button>
+                ) : (
+                  <EvalDashboardPanel runId={currentRunId} authorizedFetch={authorizedFetch} onClose={() => setShowDashboard(false)} />
+                )}
+              </div>
             )}
 
             {(runResult?.cases?.length ?? 0) > 0 && (

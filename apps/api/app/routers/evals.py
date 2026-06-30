@@ -1354,6 +1354,8 @@ def _run_one_eval_case(case_dict: dict, tools, pipeline: str = "langgraph") -> d
         route_correct=route_correct,
         deep_research_gate=deep_research_gate,
     )
+    canary_drift = score_canary_drift(case_dict, run.get("judge_score"))
+    is_canary = bool(((v2_spec.get("harness_integrity_checks") or {}).get("is_canary")))
 
     return {
         "case_id": case_dict["id"],
@@ -1365,6 +1367,8 @@ def _run_one_eval_case(case_dict: dict, tools, pipeline: str = "langgraph") -> d
         "expected_route": expected_route,
         "route_correct": route_correct,
         "deep_research_gate": deep_research_gate,
+        "is_canary": is_canary,
+        "canary_drift": canary_drift,
         "run": run,
         "structural": structural,
         "benchmarks": benchmarks,
@@ -1744,6 +1748,29 @@ def score_format_correct(case_dict: dict, artifacts: list) -> bool | None:
     return True
 
 
+def score_canary_drift(case_dict: dict, judge_score: float | None) -> bool | None:
+    """scoring_spec.md §2 — canary calibration check. If a case is tagged
+    is_canary with an expected_judge_score_band and the actual judge_score
+    falls outside that band on a routine run not tied to an intentional
+    change, that's a scoring-pipeline regression to investigate before
+    trusting any other result in the run (§2's explicit framing).
+
+    Returns True if drifted (something to flag), False if within band,
+    None if the case isn't a canary, has no band set, or judge_score is
+    unavailable (e.g. non-research routes never produce a judge_score —
+    not drift, just not applicable).
+    """
+    v2 = case_dict.get("v2_spec") or {}
+    checks = v2.get("harness_integrity_checks") or {}
+    if not checks.get("is_canary"):
+        return None
+    band = checks.get("expected_judge_score_band")
+    if not band or judge_score is None:
+        return None
+    lo, hi = band[0], band[1]
+    return not (lo <= judge_score <= hi)
+
+
 def _score_benchmarks(case_dict: dict, run: dict) -> dict[str, dict[str, Any]]:
     """Deterministic pass/fail against a case's structured benchmark
     thresholds (min_evidence_items, min_independent_sources,
@@ -1777,6 +1804,89 @@ def _score_benchmarks(case_dict: dict, run: dict) -> dict[str, dict[str, Any]]:
         }
 
     return benchmarks
+
+
+# scoring_spec.md §3 — axis x tier dashboard columns. research_level splits
+# "research" into three columns since tier (easy/regular/deep) materially
+# changes what's expected (budget, depth, latency ceiling) — collapsing
+# them would hide exactly the kind of tier-specific regression the v1
+# harness couldn't see at all.
+_DASHBOARD_TIERS = [
+    "direct", "clarify", "research_easy", "research_regular", "research_deep",
+    "document", "research_document",
+]
+
+# (axis_key in the per-case "scores" dict, display label, "bool" | "float")
+_DASHBOARD_AXES = [
+    ("route_correct", "Route accuracy", "bool"),
+    ("gate_correct", "Gate accuracy", "bool"),
+    ("retrieval_completeness", "Retrieval completeness", "float"),
+    ("retrieval_independence", "Retrieval independence", "bool"),
+    ("synthesis_grounding", "Synthesis grounding", "float"),
+    ("gap_honesty", "Gap honesty", "bool"),
+    ("conflict_handling", "Conflict handling", "bool"),
+    ("format_correct", "Format correctness", "bool"),
+    ("latency_pass", "Latency SLA pass rate", "bool"),
+]
+
+
+def _dashboard_tier_key(case: dict) -> str:
+    route = case.get("route")
+    if route == "research":
+        return f"research_{case.get('research_level') or 'regular'}"
+    return route or "unknown"
+
+
+def compute_dashboard(cases: list[dict]) -> dict:
+    """scoring_spec.md §3 — axis x tier rollup + Harness Integrity panel.
+
+    Purely a presentation-layer aggregation over already-computed per-case
+    "scores" dicts — no new scoring logic, no model calls. Sequencing
+    matters per the spec ("if integrity panel is red, don't read the rest
+    of the dashboard"): cases with overall_status=="harness_error" are
+    EXCLUDED from the table's aggregates entirely, not silently averaged
+    in — folding a structurally-disagreeing result into an aggregate would
+    dilute a real defect into a misleadingly decent-looking number instead
+    of surfacing it in the integrity panel where it belongs.
+    """
+    harness_error_cases = [c for c in cases if c.get("overall_status") == "harness_error"]
+    canary_drift_cases = [c for c in cases if c.get("canary_drift")]
+    trustworthy_cases = [c for c in cases if c.get("overall_status") != "harness_error"]
+
+    table: dict[str, dict[str, Any]] = {}
+    for axis_key, axis_label, value_type in _DASHBOARD_AXES:
+        by_tier: dict[str, Any] = {}
+        for tier in _DASHBOARD_TIERS:
+            values = [
+                c["scores"][axis_key]
+                for c in trustworthy_cases
+                if _dashboard_tier_key(c) == tier and (c.get("scores") or {}).get(axis_key) is not None
+            ]
+            if not values:
+                by_tier[tier] = None
+            elif value_type == "bool":
+                by_tier[tier] = {"rate": sum(1 for v in values if v) / len(values), "n": len(values)}
+            else:
+                by_tier[tier] = {"mean": sum(values) / len(values), "n": len(values)}
+        table[axis_key] = {"label": axis_label, "by_tier": by_tier}
+
+    return {
+        "integrity": {
+            "ok": not harness_error_cases and not canary_drift_cases,
+            "harness_error_count": len(harness_error_cases),
+            "harness_error_case_ids": [c["case_id"] for c in harness_error_cases],
+            "canary_drift_count": len(canary_drift_cases),
+            "canary_drift_case_ids": [c["case_id"] for c in canary_drift_cases],
+        },
+        "total_cases": len(cases),
+        "trustworthy_cases": len(trustworthy_cases),
+        "tiers": _DASHBOARD_TIERS,
+        "table": table,
+        # Cost band distribution (spec §1.8/§3) intentionally omitted — open
+        # question #4: per-call token/dollar capture isn't wired up at the
+        # LangGraph node level yet. Flagged as a prerequisite, not stubbed
+        # with fake data.
+    }
 
 
 def _make_result_envelope(
@@ -2262,6 +2372,17 @@ def _get_run_for_export(run_id: str) -> tuple[str, dict, list[int]]:
         return row.status, results, case_ids
     finally:
         db.close()
+
+
+@router.get("/runs/{run_id}/dashboard")
+def get_eval_run_dashboard(run_id: str, admin: AdminPrincipal = RequireAdmin) -> dict:
+    """scoring_spec.md §3/§6 — axis x tier rollup + Harness Integrity panel
+    for a run. Check `integrity.ok` before trusting `table` at all (the spec's
+    explicit sequencing requirement) — a harness_error or canary drift means
+    something in the scoring pipeline itself is suspect that run."""
+    _, results, _ = _get_run_for_export(run_id)
+    cases = results.get("cases", []) if isinstance(results, dict) else []
+    return compute_dashboard(cases)
 
 
 @router.get("/runs/{run_id}/export")

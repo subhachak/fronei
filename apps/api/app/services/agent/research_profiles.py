@@ -280,7 +280,7 @@ def research_budget_for(request: TurnRequest) -> ResearchBudget:
             # Phase 10 — easy tier: 6 (brief + claim_classifier + citation_verifier + synthesis + 2 spare)
             # Phase 12 — no repair reserved slot on easy tier (repair_iterations=0)
             max_model_calls=6,
-            max_cost_usd=0.01,
+            max_cost_usd=0.05,  # raised from 0.01 — back-calculated from run data; $0.01 interrupted any easy case that fetched even 1-2 sources (produced 190-char stub answers)
             max_elapsed_ms=15_000,
             max_deep_links=0,
             reserved_synthesis_model_calls=2,
@@ -308,7 +308,7 @@ def research_budget_for(request: TurnRequest) -> ResearchBudget:
             # Phase 12 — raised to 38 to keep effective gathering capacity unchanged
             # after adding reserved_repair_model_calls=2.
             max_model_calls=38,
-            max_cost_usd=1.25,
+            max_cost_usd=0.50,  # lowered from 1.25 — back-calculated from completed deep cases; $1.25 was over-provisioned for the typical deep run
             max_elapsed_ms=600_000,
             max_deep_links=28,
             reserved_synthesis_model_calls=3,
@@ -351,7 +351,7 @@ def research_budget_for(request: TurnRequest) -> ResearchBudget:
         # + citation-verifier + synthesis + 1 repair + spare). Pre-Phase-1 was 4.
         # Phase 12 — raised to 14 to preserve gathering capacity after adding repair reservation.
         max_model_calls=14,
-        max_cost_usd=0.08,
+        max_cost_usd=0.15,  # raised from 0.08 — back-calculated from completed regular cases
         max_elapsed_ms=90_000,
         max_deep_links=2,
         reserved_synthesis_model_calls=2,

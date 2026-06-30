@@ -23,8 +23,7 @@ import type {
   ParityReport,
   ParityRunSummary,
 } from '../types'
-import { EvalsCasesTab } from './EvalsCasesTab'
-import { EvalsRunsTab } from './EvalsRunsTab'
+import { EvalHarnessTab } from './EvalHarnessTab'
 
 // ---------------------------------------------------------------------------
 // Shared helpers (parity sub-tab)
@@ -572,19 +571,18 @@ function ParitySubTab({ authorizedFetch }: { authorizedFetch: AuthorizedFetch })
 }
 
 // ---------------------------------------------------------------------------
-// Top-level EvalsTab — three sub-tabs
+// Top-level EvalsTab — two sub-tabs: Eval Harness | Parity
 // ---------------------------------------------------------------------------
 
-type EvalsSubTab = 'cases' | 'runs' | 'parity'
+type EvalsSubTab = 'harness' | 'parity'
 
 const SUB_TABS: { id: EvalsSubTab; label: string }[] = [
-  { id: 'cases', label: 'Cases' },
-  { id: 'runs', label: 'Runs' },
+  { id: 'harness', label: 'Eval Harness' },
   { id: 'parity', label: 'Parity' },
 ]
 
 export function EvalsTab({ authorizedFetch }: { authorizedFetch: AuthorizedFetch }) {
-  const [subTab, setSubTab] = useState<EvalsSubTab>('cases')
+  const [subTab, setSubTab] = useState<EvalsSubTab>('harness')
 
   return (
     <div className="space-y-5 max-w-4xl">
@@ -592,7 +590,7 @@ export function EvalsTab({ authorizedFetch }: { authorizedFetch: AuthorizedFetch
       <div>
         <h2 className="text-base font-bold text-neutral-900 dark:text-neutral-50">Evals</h2>
         <p className="mt-0.5 text-xs text-neutral-500">
-          Manage eval cases, run both pipelines, and track parity for the LangGraph migration gate.
+          Manage eval cases, trigger runs, and track parity for the LangGraph migration gate.
         </p>
       </div>
 
@@ -616,8 +614,7 @@ export function EvalsTab({ authorizedFetch }: { authorizedFetch: AuthorizedFetch
 
       {/* Sub-tab content */}
       <div>
-        {subTab === 'cases' && <EvalsCasesTab authorizedFetch={authorizedFetch} />}
-        {subTab === 'runs' && <EvalsRunsTab authorizedFetch={authorizedFetch} />}
+        {subTab === 'harness' && <EvalHarnessTab authorizedFetch={authorizedFetch} />}
         {subTab === 'parity' && <ParitySubTab authorizedFetch={authorizedFetch} />}
       </div>
     </div>

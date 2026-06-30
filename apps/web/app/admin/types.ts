@@ -290,6 +290,7 @@ export type EvalCase = {
   expected_primary_role: string | null
   min_independent_sources: number | null
   notes: string | null
+  is_active: boolean
   created_by: string | null
   created_at: string | null
   updated_at: string | null

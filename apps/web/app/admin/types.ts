@@ -342,7 +342,7 @@ export type EvalRunResult = {
 
 export type EvalRunSummary = {
   run_id: string
-  status: 'running' | 'complete' | 'error'
+  status: 'running' | 'complete' | 'stopped' | 'error'
   started_by: string | null
   case_count: number
   started_at: string | null

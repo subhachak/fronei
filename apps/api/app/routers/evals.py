@@ -24,6 +24,7 @@ General eval runs (both pipelines, structural + criteria scoring):
   GET    /admin/evals/runs                    List recent runs
   GET    /admin/evals/runs/{run_id}/status    Poll for live progress + final results
   GET    /admin/evals/runs/{run_id}/result    Full results (alias; checks memory then DB)
+  POST   /admin/evals/runs/{run_id}/stop      Request early termination of a running eval
 """
 from __future__ import annotations
 
@@ -741,13 +742,14 @@ _EVAL_RUNS_LOCK = threading.Lock()
 def _make_eval_run(run_id: str) -> dict[str, Any]:
     return {
         "run_id": run_id,
-        "status": "running",    # running | complete | error
+        "status": "running",    # running | complete | stopped | error
         "total": None,          # set once case list is loaded
         "completed": 0,         # incremented after each case finishes
         "progress": [],         # list of per-case result dicts (poll to watch growth)
         "log": [],              # human-readable lines for the UI log panel
         "results": None,        # final envelope (set on completion)
         "error": None,
+        "stop_requested": False,  # set by POST /runs/{id}/stop
         "started_at": time.time(),
         "completed_at": None,
     }
@@ -929,7 +931,8 @@ def _drain_ls_events_to_run(events_q: queue.Queue, run: dict) -> None:
 
 def _run_in_process_core(run: dict, case_dicts: list[dict]) -> list[dict]:
     """Run both pipelines locally for every case. Mutates run["progress"]/["log"]/["completed"].
-    Does NOT touch run["status"] — the caller decides when to flip to "complete"."""
+    Does NOT touch run["status"] — the caller decides when to flip to "complete"/"stopped".
+    Returns early (with partial results) if run["stop_requested"] is set between cases."""
     from app.services.agent.tools import Tools
     tools = Tools.from_settings()
     total = len(case_dicts)
@@ -937,6 +940,9 @@ def _run_in_process_core(run: dict, case_dicts: list[dict]) -> list[dict]:
     run["log"].append(f"▶ Started ({total} case{'s' if total != 1 else ''}, in-process)")
     all_results: list[dict] = []
     for idx, case_dict in enumerate(case_dicts):
+        if run.get("stop_requested"):
+            run["log"].append(f"⏹ Stopped after {idx} of {total} case{'s' if total != 1 else ''}.")
+            break
         run["log"].append(f"  [{idx + 1}/{total}] {case_dict['title']}…")
         result = _run_one_eval_case(case_dict, tools)
         all_results.append(result)
@@ -995,6 +1001,13 @@ def _run_eval_background(run_id: str, case_dicts: list[dict], mode: str = "in_pr
         elif mode == "both":
             # Phase 1 — in-process (full local per-case data)
             all_results = _run_in_process_core(run, case_dicts)
+            if run.get("stop_requested"):
+                envelope = _make_result_envelope("in_process", all_results, None)
+                run["results"] = envelope
+                run["status"] = "stopped"
+                run["completed_at"] = time.time()
+                _persist_eval_run(run_id, envelope, "stopped")
+                return
             run["log"].append("✓ In-process eval done — running LangSmith experiments…")
             # Phase 2 — LangSmith (experiment tracking; re-runs pipelines via LS)
             ls_summary = _run_langsmith_core(run, run_id, case_dicts)
@@ -1008,6 +1021,13 @@ def _run_eval_background(run_id: str, case_dicts: list[dict], mode: str = "in_pr
         else:
             # in_process (default)
             all_results = _run_in_process_core(run, case_dicts)
+            if run.get("stop_requested"):
+                envelope = _make_result_envelope("in_process", all_results, None)
+                run["results"] = envelope
+                run["status"] = "stopped"
+                run["completed_at"] = time.time()
+                _persist_eval_run(run_id, envelope, "stopped")
+                return
             envelope = _make_result_envelope("in_process", all_results, None)
             run["results"] = envelope
             run["status"] = "complete"
@@ -1223,3 +1243,22 @@ def get_eval_run_result(run_id: str, admin: AdminPrincipal = RequireAdmin) -> di
         return {"status": row.status, "run_id": run_id, "results": results, "error": row.error}
     finally:
         db.close()
+
+
+@router.post("/runs/{run_id}/stop", status_code=200)
+def stop_eval_run(run_id: str, admin: AdminPrincipal = RequireAdmin) -> dict:
+    """Request early termination of a running eval.
+
+    Sets stop_requested=True on the in-process run dict. The background thread
+    checks this flag between cases and exits cleanly, persisting partial results
+    with status="stopped". If the run is already complete or not found, this is a no-op.
+    """
+    with _EVAL_RUNS_LOCK:
+        run = _EVAL_RUNS.get(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"Eval run {run_id!r} not found or already completed.")
+    if run["status"] != "running":
+        return {"run_id": run_id, "status": run["status"], "message": "Run is not active."}
+    run["stop_requested"] = True
+    run["log"].append("⏹ Stop requested — will halt after current case finishes.")
+    return {"run_id": run_id, "status": "stopping", "message": "Stop requested."}

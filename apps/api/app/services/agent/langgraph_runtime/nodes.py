@@ -497,7 +497,11 @@ def read(
         }
 
     batch_size = 4
-    batches = [ranked_urls[i:i + batch_size] for i in range(0, len(ranked_urls), batch_size)][:2]
+    # ranked_urls is already bounded by research_plan.max_sources (set in rank node).
+    # No batch cap here — [:2] was written when max_sources was always 6, but
+    # multi-subject queries now correctly budget max_sources=18+ and the old cap
+    # silently discards the majority of ranked sources for 5-subject comparisons.
+    batches = [ranked_urls[i:i + batch_size] for i in range(0, len(ranked_urls), batch_size)]
 
     extracted_sources = []
     new_tool_calls = []

@@ -13,6 +13,7 @@ import {
   Play,
   Plus,
   RotateCcw,
+  Square,
   Upload,
   X,
 } from 'lucide-react'
@@ -636,10 +637,12 @@ function RunHistoryRow({
 
   const statusColor = run.status === 'complete'
     ? 'bg-green-500' : run.status === 'error'
-    ? 'bg-red-500' : 'bg-yellow-400 animate-pulse'
+    ? 'bg-red-500' : run.status === 'stopped'
+    ? 'bg-amber-400' : 'bg-yellow-400 animate-pulse'
   const statusText = run.status === 'complete'
     ? 'text-green-700 dark:text-green-400' : run.status === 'error'
-    ? 'text-red-600 dark:text-red-400' : 'text-yellow-600 dark:text-yellow-400'
+    ? 'text-red-600 dark:text-red-400' : run.status === 'stopped'
+    ? 'text-amber-600 dark:text-amber-400' : 'text-yellow-600 dark:text-yellow-400'
 
   return (
     <div className={`overflow-hidden ${featured ? 'rounded-xl border-2 border-neutral-300 dark:border-neutral-600' : 'rounded-xl border border-neutral-200 dark:border-neutral-800'}`}>
@@ -708,7 +711,9 @@ export function EvalHarnessTab({ authorizedFetch }: { authorizedFetch: Authorize
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
   const [runMode, setRunMode] = useState<'in_process' | 'langsmith' | 'both'>('in_process')
   const [lsConfigured, setLsConfigured] = useState(false)
-  const [runStatus, setRunStatus] = useState<'idle' | 'running' | 'complete' | 'error'>('idle')
+  const [runStatus, setRunStatus] = useState<'idle' | 'running' | 'complete' | 'stopped' | 'error'>('idle')
+  const [currentRunId, setCurrentRunId] = useState<string | null>(null)
+  const [runsOpen, setRunsOpen] = useState(true)
   const [log, setLog] = useState<string[]>([])
   const [progressTotal, setProgressTotal] = useState<number | null>(null)
   const [progressCompleted, setProgressCompleted] = useState(0)
@@ -876,6 +881,7 @@ export function EvalHarnessTab({ authorizedFetch }: { authorizedFetch: Authorize
       setRunResult({ mode: 'in_process', cases: progress, langsmith: null })
     }
     if (data.status === 'complete') { setRunStatus('complete'); stopPolling(); loadRuns() }
+    else if (data.status === 'stopped') { setRunStatus('stopped'); stopPolling(); loadRuns() }
     else if (data.status === 'error') { setRunError((data.error as string) ?? 'Unknown error'); setRunStatus('error'); stopPolling() }
   }, [loadRuns]) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -894,7 +900,7 @@ export function EvalHarnessTab({ authorizedFetch }: { authorizedFetch: Authorize
   // ── Start run ────────────────────────────────────────────────────────────────
   async function startRun() {
     setRunStatus('running'); setLog([]); setRunResult(null); setRunError('')
-    setLangsmithLinks({}); setProgressTotal(null); setProgressCompleted(0)
+    setLangsmithLinks({}); setProgressTotal(null); setProgressCompleted(0); setCurrentRunId(null)
     const payload = {
       mode: runMode,
       ...(selectedIds.size > 0 ? { case_ids: Array.from(selectedIds) } : {}),
@@ -905,6 +911,7 @@ export function EvalHarnessTab({ authorizedFetch }: { authorizedFetch: Authorize
       })
       if (!startResp.ok) throw new Error(await readErrorBody(startResp, 'Failed to start eval run'))
       const { run_id } = await startResp.json()
+      setCurrentRunId(run_id)
       const snap = await authorizedFetch(`/admin/evals/runs/${run_id}/status`)
       if (snap.ok) applySnapshot(await snap.json())
       startPolling(run_id)
@@ -913,11 +920,19 @@ export function EvalHarnessTab({ authorizedFetch }: { authorizedFetch: Authorize
     }
   }
 
+  async function stopRun() {
+    if (!currentRunId) return
+    try {
+      await authorizedFetch(`/admin/evals/runs/${currentRunId}/stop`, { method: 'POST' })
+    } catch {}
+  }
+
   // ── Category groups ──────────────────────────────────────────────────────────
   const categoryGroups: Record<string, EvalCase[]> = {}
   for (const c of cases) { const key = c.category || 'Uncategorized'; (categoryGroups[key] ??= []).push(c) }
   const canRun = cases.length > 0 && runStatus !== 'running'
-  const runLabel = selectedIds.size > 0 ? `Run selected (${selectedIds.size})` : `Run all ${cases.length}`
+  const runLabel = runStatus === 'running' ? 'Running…'
+    : selectedIds.size > 0 ? `Run selected (${selectedIds.size})` : `Run all ${cases.length}`
 
   // ── Render ───────────────────────────────────────────────────────────────────
   return (
@@ -959,8 +974,16 @@ export function EvalHarnessTab({ authorizedFetch }: { authorizedFetch: Authorize
           <button type="button" disabled={!canRun} onClick={startRun}
             className="flex items-center gap-1.5 rounded-lg bg-neutral-900 dark:bg-white px-4 py-2 text-sm font-semibold text-white dark:text-neutral-900 hover:bg-neutral-700 dark:hover:bg-neutral-200 disabled:opacity-40">
             <Play size={13} />
-            {runStatus === 'running' ? 'Running…' : runLabel}
+            {runLabel}
           </button>
+          {runStatus === 'running' && (
+            <button type="button" onClick={stopRun}
+              title="Stop after current case finishes"
+              className="flex items-center gap-1.5 rounded-lg border border-red-300 dark:border-red-700 px-3 py-2 text-sm font-semibold text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20">
+              <Square size={12} />
+              Stop
+            </button>
+          )}
           {runStatus === 'running' && progressTotal != null && (
             <div className="flex items-center gap-2 flex-1">
               <div className="flex-1 h-1.5 rounded-full bg-neutral-200 dark:bg-neutral-800 overflow-hidden">
@@ -979,6 +1002,11 @@ export function EvalHarnessTab({ authorizedFetch }: { authorizedFetch: Authorize
             {runStatus === 'running' && <div className="animate-pulse text-neutral-500">⋯ polling…</div>}
           </div>
         )}
+        {runStatus === 'stopped' && (
+          <p className="text-xs text-amber-600 dark:text-amber-400">
+            ⏹ Run stopped — partial results shown below.
+          </p>
+        )}
         {runError && <p className="text-xs text-red-600 dark:text-red-400">{runError}</p>}
 
         {Object.keys(langsmithLinks).length > 0 && (
@@ -993,7 +1021,7 @@ export function EvalHarnessTab({ authorizedFetch }: { authorizedFetch: Authorize
           </div>
         )}
 
-        {runResult && runStatus !== 'running' && (
+        {runResult && (runStatus === 'complete' || runStatus === 'stopped') && (
           <LocalReport cases={runResult.cases ?? []} runResult={runResult} />
         )}
 
@@ -1012,29 +1040,43 @@ export function EvalHarnessTab({ authorizedFetch }: { authorizedFetch: Authorize
         )}
 
         {runs.length > 0 && (
-          <div className="space-y-2">
-            <p className="text-xs font-bold text-neutral-500">Run history</p>
+          <div>
+            {/* Collapsible header */}
+            <button type="button" onClick={() => setRunsOpen(o => !o)}
+              className="flex items-center gap-1.5 w-full text-left mb-2 group">
+              {runsOpen
+                ? <ChevronDown size={13} className="text-neutral-400" />
+                : <ChevronRight size={13} className="text-neutral-400" />}
+              <span className="text-xs font-bold text-neutral-500 group-hover:text-neutral-700 dark:group-hover:text-neutral-300">
+                Run history
+              </span>
+              <span className="text-[11px] text-neutral-400 tabular-nums ml-1">({runs.length}{runsHasMore ? '+' : ''})</span>
+            </button>
 
-            {/* Latest run — featured at top */}
-            <RunHistoryRow
-              key={runs[0].run_id}
-              run={runs[0]}
-              featured
-              authorizedFetch={authorizedFetch}
-            />
+            {runsOpen && (
+              <div className="space-y-2">
+                {/* Latest run — featured at top */}
+                <RunHistoryRow
+                  key={runs[0].run_id}
+                  run={runs[0]}
+                  featured
+                  authorizedFetch={authorizedFetch}
+                />
 
-            {/* Older runs — collapsed by default */}
-            {runs.slice(1).map(r => (
-              <RunHistoryRow key={r.run_id} run={r} authorizedFetch={authorizedFetch} />
-            ))}
+                {/* Older runs — collapsed by default */}
+                {runs.slice(1).map(r => (
+                  <RunHistoryRow key={r.run_id} run={r} authorizedFetch={authorizedFetch} />
+                ))}
 
-            {/* Load more */}
-            {runsHasMore && (
-              <button type="button" onClick={loadMoreRuns} disabled={runsLoadingMore}
-                className="text-xs text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300 flex items-center gap-1.5 py-1 disabled:opacity-50">
-                {runsLoadingMore ? <Loader2 size={12} className="animate-spin" /> : <ChevronDown size={12} />}
-                {runsLoadingMore ? 'Loading…' : 'Load more runs'}
-              </button>
+                {/* Load more */}
+                {runsHasMore && (
+                  <button type="button" onClick={loadMoreRuns} disabled={runsLoadingMore}
+                    className="text-xs text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300 flex items-center gap-1.5 py-1 disabled:opacity-50">
+                    {runsLoadingMore ? <Loader2 size={12} className="animate-spin" /> : <ChevronDown size={12} />}
+                    {runsLoadingMore ? 'Loading…' : 'Load more runs'}
+                  </button>
+                )}
+              </div>
             )}
           </div>
         )}
@@ -1047,6 +1089,30 @@ export function EvalHarnessTab({ authorizedFetch }: { authorizedFetch: Authorize
             <h3 className="text-sm font-bold text-neutral-900 dark:text-neutral-50">
               Eval cases <span className="font-normal text-neutral-400">({cases.length} active)</span>
             </h3>
+            {cases.length > 0 && (() => {
+              const allSelected = cases.length > 0 && cases.every(c => selectedIds.has(c.id))
+              const someSelected = cases.some(c => selectedIds.has(c.id))
+              return (
+                <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                  <input type="checkbox"
+                    checked={allSelected}
+                    ref={el => { if (el) el.indeterminate = someSelected && !allSelected }}
+                    onChange={e => {
+                      const ids = cases.map(c => c.id)
+                      setSelectedIds(prev => {
+                        const next = new Set(prev)
+                        ids.forEach(id => e.target.checked ? next.add(id) : next.delete(id))
+                        return next
+                      })
+                    }}
+                    className="rounded border-neutral-300 dark:border-neutral-600"
+                  />
+                  <span className="text-xs text-neutral-400">
+                    {someSelected ? `${selectedIds.size} selected` : 'Select all'}
+                  </span>
+                </label>
+              )
+            })()}
             {sortedCategories.length > 1 && (
               <button type="button" onClick={toggleAllGroups}
                 className="flex items-center gap-1 text-xs text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300 transition-colors"

@@ -47,14 +47,38 @@ def _make_tools():
     return Tools.from_settings()
 
 
+def _resolve_research_level(message: str, forced_level: str | None) -> str:
+    """Mirror what the orchestrator would resolve research_level to.
+
+    Both pipelines here are invoked directly, bypassing orchestrator.decide(),
+    so choose_research_level()'s dimension-richness classifier never runs
+    unless we invoke it here ourselves.
+    """
+    if forced_level in {"easy", "regular", "deep"}:
+        return forced_level
+    from app.services.agent.models import TurnRequest
+    from app.services.agent.orchestrator import choose_research_level
+
+    probe_request = TurnRequest(
+        message=message,
+        research_level="auto",
+        quality_mode="standard",
+        output_format="chat",
+    )
+    return choose_research_level(probe_request, "research")
+
+
 def _run_legacy(entry: dict, tools) -> tuple[dict | None, str | None]:
     """Run one case through the legacy pipeline. Returns (result, error)."""
     from app.services.agent.models import TurnRequest
     from app.services.agent.research_lead import lead_research_loop
 
+    resolved_level = _resolve_research_level(
+        entry["request"]["message"], entry["request"].get("research_level")
+    )
     request = TurnRequest(
         message=entry["request"]["message"],
-        research_level=entry["request"].get("research_level", "auto"),
+        research_level=resolved_level,
         quality_mode="standard",
         output_format="chat",
     )
@@ -70,9 +94,12 @@ def _run_langgraph(entry: dict, tools) -> tuple[dict | None, str | None]:
     from app.services.agent.models import TurnRequest
     from app.services.agent.langgraph_runtime.runtime import run_langgraph_research
 
+    resolved_level = _resolve_research_level(
+        entry["request"]["message"], entry["request"].get("research_level")
+    )
     request = TurnRequest(
         message=entry["request"]["message"],
-        research_level=entry["request"].get("research_level", "auto"),
+        research_level=resolved_level,
         quality_mode="standard",
         output_format="chat",
     )

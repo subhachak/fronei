@@ -927,51 +927,87 @@ def _drain_ls_events_to_run(events_q: queue.Queue, run: dict) -> None:
             run["log"].append("✓ LangSmith run complete")
 
 
-def _run_eval_background(run_id: str, case_dicts: list[dict]) -> None:
-    """Runs in a daemon thread. Writes progress directly to the run dict so the
-    polling endpoint can serve a consistent snapshot without an SSE connection."""
+def _run_in_process_core(run: dict, case_dicts: list[dict]) -> list[dict]:
+    """Run both pipelines locally for every case. Mutates run["progress"]/["log"]/["completed"].
+    Does NOT touch run["status"] — the caller decides when to flip to "complete"."""
+    from app.services.agent.tools import Tools
+    tools = Tools.from_settings()
+    total = len(case_dicts)
+    run["total"] = total
+    run["log"].append(f"▶ Started ({total} case{'s' if total != 1 else ''}, in-process)")
+    all_results: list[dict] = []
+    for idx, case_dict in enumerate(case_dicts):
+        run["log"].append(f"  [{idx + 1}/{total}] {case_dict['title']}…")
+        result = _run_one_eval_case(case_dict, tools)
+        all_results.append(result)
+        run["progress"].append(result)
+        run["completed"] = idx + 1
+    return all_results
+
+
+def _run_langsmith_core(run: dict, run_id: str, case_dicts: list[dict]) -> dict | None:
+    """Run both pipelines via LangSmith evaluate(). Drains events into run["log"].
+    Returns the LangSmith summary dict, or None if LS is not configured."""
+    from app.services.langsmith_evals import is_configured as ls_configured, run_eval as ls_run_eval
+    if not ls_configured():
+        run["log"].append("⚠ LangSmith not configured — skipping LangSmith experiment.")
+        return None
+    run["log"].append(f"▶ Syncing to LangSmith dataset and running experiments…")
+    ls_events: queue.Queue = queue.Queue()
+    drainer = threading.Thread(
+        target=_drain_ls_events_to_run, args=(ls_events, run), daemon=True,
+        name=f"eval-ls-drain-{run_id}",
+    )
+    drainer.start()
+    try:
+        ls_summary = ls_run_eval(run_id, case_dicts, ls_events)
+    finally:
+        ls_events.put(None)
+        drainer.join(timeout=10)
+    return ls_summary
+
+
+def _run_eval_background(run_id: str, case_dicts: list[dict], mode: str = "in_process") -> None:
+    """Runs in a daemon thread. Writes progress directly to the run dict.
+
+    mode values:
+      in_process — run both pipelines locally; full per-case data stored in DB.
+      langsmith  — run via langsmith.evaluate(); per-case data lives in LangSmith.
+      both       — run in-process first (local per-case data), then run LangSmith
+                   experiments in the same thread (adds LS experiment links to the
+                   envelope). Takes in_process_time + langsmith_time total.
+    """
     run = _EVAL_RUNS.get(run_id)
     if run is None:
         return
 
     try:
-        from app.services.langsmith_evals import is_configured as ls_configured, run_eval as ls_run_eval
-
-        if ls_configured():
-            # --- LangSmith path ---
-            # Per-case rows live in LangSmith; drain its event queue into the run log.
+        if mode == "langsmith":
+            # LangSmith-only: no local per-case data.
             run["total"] = len(case_dicts)
-            ls_events: queue.Queue = queue.Queue()
-            drainer = threading.Thread(
-                target=_drain_ls_events_to_run, args=(ls_events, run), daemon=True,
-                name=f"eval-ls-drain-{run_id}",
-            )
-            drainer.start()
-            ls_summary = ls_run_eval(run_id, case_dicts, ls_events)
-            ls_events.put(None)  # signal drainer to exit
-            drainer.join(timeout=10)
+            ls_summary = _run_langsmith_core(run, run_id, case_dicts)
             envelope = _make_result_envelope("langsmith", [], ls_summary)
             run["results"] = envelope
             run["status"] = "complete"
             run["completed_at"] = time.time()
             _persist_eval_run(run_id, envelope, "complete")
 
+        elif mode == "both":
+            # Phase 1 — in-process (full local per-case data)
+            all_results = _run_in_process_core(run, case_dicts)
+            run["log"].append("✓ In-process eval done — running LangSmith experiments…")
+            # Phase 2 — LangSmith (experiment tracking; re-runs pipelines via LS)
+            ls_summary = _run_langsmith_core(run, run_id, case_dicts)
+            envelope = _make_result_envelope("both", all_results, ls_summary)
+            run["results"] = envelope
+            run["status"] = "complete"
+            run["completed_at"] = time.time()
+            run["log"].append("✓ Run complete (local + LangSmith)")
+            _persist_eval_run(run_id, envelope, "complete")
+
         else:
-            # --- In-process fallback path ---
-            from app.services.agent.tools import Tools
-            tools = Tools.from_settings()
-            total = len(case_dicts)
-            run["total"] = total
-            run["log"].append(f"▶ Started ({total} cases)")
-
-            all_results = []
-            for idx, case_dict in enumerate(case_dicts):
-                run["log"].append(f"  [{idx+1}/{total}] {case_dict['title']}…")
-                result = _run_one_eval_case(case_dict, tools)
-                all_results.append(result)
-                run["progress"].append(result)
-                run["completed"] = idx + 1
-
+            # in_process (default)
+            all_results = _run_in_process_core(run, case_dicts)
             envelope = _make_result_envelope("in_process", all_results, None)
             run["results"] = envelope
             run["status"] = "complete"
@@ -1009,11 +1045,17 @@ def _persist_eval_run(run_id: str, results: dict, status: str, error: str | None
 
 class EvalRunRequest(BaseModel):
     case_ids: list[int] | None = None  # None = all cases
+    mode: str = "in_process"          # in_process | langsmith | both
 
 
 @router.post("/runs", status_code=202)
 def start_eval_run(body: EvalRunRequest = Body(default=None), admin: AdminPrincipal = RequireAdmin) -> dict:
-    """Start a general eval run over selected (or all) cases — both pipelines."""
+    """Start a general eval run over selected (or all) cases — both pipelines.
+
+    mode=in_process  Run locally; full per-case data stored in DB (default).
+    mode=langsmith   Run via LangSmith evaluate(); per-case data in LangSmith.
+    mode=both        In-process first then LangSmith; double runtime, both datasets.
+    """
     from app.db.models import EvalCase, EvalRun, SessionLocal
 
     db = SessionLocal()
@@ -1040,19 +1082,22 @@ def start_eval_run(body: EvalRunRequest = Body(default=None), admin: AdminPrinci
     finally:
         db.close()
 
+    mode = (body.mode if body and body.mode in ("in_process", "langsmith", "both") else "in_process")
+
     run = _make_eval_run(run_id)
+    run["mode"] = mode
     with _EVAL_RUNS_LOCK:
         _EVAL_RUNS[run_id] = run
 
     thread = threading.Thread(
         target=_run_eval_background,
-        args=(run_id, case_dicts),
+        args=(run_id, case_dicts, mode),
         daemon=True,
         name=f"eval-run-{run_id}",
     )
     thread.start()
 
-    return {"run_id": run_id, "status": "running", "case_count": len(case_dicts)}
+    return {"run_id": run_id, "status": "running", "case_count": len(case_dicts), "mode": mode}
 
 
 @router.get("/runs")
@@ -1104,6 +1149,7 @@ def get_eval_run_status(run_id: str, admin: AdminPrincipal = RequireAdmin) -> di
         return {
             "run_id": run_id,
             "status": run["status"],
+            "mode": run.get("mode", "in_process"),
             "total": run.get("total"),
             "completed": run.get("completed", 0),
             "progress": list(run.get("progress", [])),

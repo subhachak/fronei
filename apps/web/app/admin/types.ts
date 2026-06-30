@@ -341,6 +341,13 @@ export type EvalCaseRunResult = {
   expected_route: EvalRoute | null
   /** null if the case didn't set expected_route (no routing assertion made). */
   route_correct: boolean | null
+  /** Two-pass deep-research confirmation gate check — null unless this case's
+   *  route required confirmation. Verifies the gate fires correctly (the
+   *  unconfirmed first pass returns route=clarify with a real preview)
+   *  BEFORE the confirmed second pass (graded under `run`) actually runs
+   *  research. See ResearchPlanCard.tsx for the user-facing timed version
+   *  of the same "Start research" follow-up this checks for. */
+  deep_research_gate: { route: string | null; has_preview: boolean; resumes_research: boolean; pass: boolean; error?: string } | null
   run: EvalPipelineResult
   structural: Record<string, boolean>
   /** Deterministic pass/fail against the case's structured benchmark

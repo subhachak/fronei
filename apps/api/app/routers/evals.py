@@ -444,9 +444,9 @@ class EvalCaseCreate(BaseModel):
     # List of natural-language criteria strings, e.g. ["mentions official SLA", "cites practitioner data"]
     expected_criteria: list[str] = Field(default_factory=list)
     expected_primary_role: str | None = Field(default=None, max_length=64)
-    min_independent_sources: int | None = Field(default=None, ge=1)
+    min_independent_sources: int | None = Field(default=None, ge=0)
     # Structured benchmark thresholds — scored deterministically, not by the LLM judge.
-    min_evidence_items: int | None = Field(default=None, ge=1)
+    min_evidence_items: int | None = Field(default=None, ge=0)
     min_criteria_score: float | None = Field(default=None, ge=0.0, le=1.0)
     # Which orchestrator route this query SHOULD resolve to. Null = don't
     # assert on routing, just grade whatever route the orchestrator picks.
@@ -467,8 +467,8 @@ class EvalCaseUpdate(BaseModel):
     category: str | None = None
     expected_criteria: list[str] | None = None
     expected_primary_role: str | None = None
-    min_independent_sources: int | None = Field(default=None, ge=1)
-    min_evidence_items: int | None = Field(default=None, ge=1)
+    min_independent_sources: int | None = Field(default=None, ge=0)
+    min_evidence_items: int | None = Field(default=None, ge=0)
     min_criteria_score: float | None = Field(default=None, ge=0.0, le=1.0)
     expected_route: str | None = Field(default=None, max_length=32)
     v2_spec: dict[str, Any] | None = None
@@ -709,8 +709,8 @@ class EvalCaseUploadItem(BaseModel):
     category: str | None = None
     expected_criteria: list[str] = Field(default_factory=list)
     expected_primary_role: str | None = None
-    min_independent_sources: int | None = Field(default=None, ge=1)
-    min_evidence_items: int | None = Field(default=None, ge=1)
+    min_independent_sources: int | None = Field(default=None, ge=0)
+    min_evidence_items: int | None = Field(default=None, ge=0)
     min_criteria_score: float | None = Field(default=None, ge=0.0, le=1.0)
     expected_route: str | None = Field(default=None, max_length=32)
     v2_spec: dict[str, Any] | None = None

@@ -966,6 +966,13 @@ export function EvalHarnessTab({ authorizedFetch }: { authorizedFetch: Authorize
   const [runsHasMore, setRunsHasMore] = useState(false)
   const [runsLoadingMore, setRunsLoadingMore] = useState(false)
   const [runError, setRunError] = useState('')
+  // Separate from runError: runError renders inside the "current run" panel
+  // at the top of the page, far from the Run History list at the bottom —
+  // a delete/rerun/cleanup failure triggered from a history row was
+  // silently appearing somewhere the user wasn't looking ("that does
+  // nothing"). historyError renders directly under the Run History header
+  // instead, next to the actions that can produce it.
+  const [historyError, setHistoryError] = useState('')
   const [langsmithLinks, setLangsmithLinks] = useState<Record<string, string>>({})
   const logRef = useRef<HTMLDivElement>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -1183,6 +1190,7 @@ export function EvalHarnessTab({ authorizedFetch }: { authorizedFetch: Authorize
   }, [runStatus, runningSingleId])
 
   async function rerunFromHistory(runId: string) {
+    setHistoryError('')
     try {
       const resp = await authorizedFetch(`/admin/evals/runs/${runId}/rerun`, { method: 'POST' })
       if (!resp.ok) throw new Error(await readErrorBody(resp, 'Failed to start re-run'))
@@ -1199,17 +1207,19 @@ export function EvalHarnessTab({ authorizedFetch }: { authorizedFetch: Authorize
 
   async function deleteRun(runId: string) {
     if (!confirm('Delete this run permanently? This cannot be undone.')) return
+    setHistoryError('')
     try {
       const resp = await authorizedFetch(`/admin/evals/runs/${runId}`, { method: 'DELETE' })
       if (!resp.ok) throw new Error(await readErrorBody(resp, 'Failed to delete run'))
       await loadRuns()
     } catch (err: unknown) {
-      setRunError(err instanceof Error ? err.message : 'Failed to delete run')
+      setHistoryError(err instanceof Error ? err.message : 'Failed to delete run')
     }
   }
 
   async function cleanupOldRuns() {
     if (!confirm('Delete all but the 20 most recent runs? This cannot be undone.')) return
+    setHistoryError('')
     try {
       const resp = await authorizedFetch('/admin/evals/runs/cleanup', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ keep_latest: 20 }),
@@ -1217,11 +1227,12 @@ export function EvalHarnessTab({ authorizedFetch }: { authorizedFetch: Authorize
       if (!resp.ok) throw new Error(await readErrorBody(resp, 'Cleanup failed'))
       await loadRuns()
     } catch (err: unknown) {
-      setRunError(err instanceof Error ? err.message : 'Cleanup failed')
+      setHistoryError(err instanceof Error ? err.message : 'Cleanup failed')
     }
   }
 
   function exportRun(runId: string, format: 'json' | 'csv') {
+    setHistoryError('')
     authorizedFetch(`/admin/evals/runs/${runId}/export?format=${format}`)
       .then(async resp => {
         if (!resp.ok) throw new Error(await readErrorBody(resp, 'Export failed'))
@@ -1231,7 +1242,7 @@ export function EvalHarnessTab({ authorizedFetch }: { authorizedFetch: Authorize
         a.href = url; a.download = `${runId}.${format}`; a.click()
         URL.revokeObjectURL(url)
       })
-      .catch((err: unknown) => setRunError(err instanceof Error ? err.message : 'Export failed'))
+      .catch((err: unknown) => setHistoryError(err instanceof Error ? err.message : 'Export failed'))
   }
 
   async function stopRun() {
@@ -1512,6 +1523,9 @@ export function EvalHarnessTab({ authorizedFetch }: { authorizedFetch: Authorize
           {/* ── Run history ──────────────────────────────────────────────────── */}
           {runs.length > 0 && (
             <div>
+              {historyError && (
+                <p className="mb-2 text-xs text-red-600 dark:text-red-400 break-words">{historyError}</p>
+              )}
               <div className="flex items-center justify-between mb-2">
                 <button type="button" onClick={() => setRunsOpen(o => !o)}
                   className="flex items-center gap-1.5 text-left group">

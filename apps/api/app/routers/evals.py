@@ -1200,6 +1200,9 @@ def check_judge_structural_agreement(judge_score: float | None, answer_length: i
     return not (judge_score is not None and judge_score > 0.5 and not non_empty_answer)
 
 
+_RETRIEVAL_COMPLETENESS_PASS_THRESHOLD = 0.8  # scoring_spec.md §1.2 default
+
+
 def compute_overall_status(
     *,
     judge_structural_agreement: bool,
@@ -1207,6 +1210,7 @@ def compute_overall_status(
     overall_benchmark_pass: bool | None,
     route_correct: bool | None,
     deep_research_gate: dict[str, Any] | None,
+    scores: dict[str, Any] | None = None,
 ) -> str:
     """Roll up a case's independent axis results into one of
     pass | fail | partial | harness_error (eval_case_schema.json's
@@ -1216,15 +1220,34 @@ def compute_overall_status(
     failure means the result data itself is untrustworthy, so the case can't be
     meaningfully scored pass/fail/partial at all — it must never be averaged into
     product-quality dashboards alongside genuine pass/fail/partial results.
+
+    v2 axes (retrieval_completeness, format_correct, must_not_recommend_ok) now
+    contribute to the rollup — previously they were computed and surfaced in
+    `scores` but never fed into overall_status, which let cases with
+    retrieval_completeness=0.0 on a 36-item research result resolve to "pass".
     """
     if not judge_structural_agreement:
         return "harness_error"
     if not overall_structural_pass:
         return "fail"
+    sc = scores or {}
+    v2_partial = (
+        # retrieval_completeness below threshold is a genuine coverage failure
+        (sc.get("retrieval_completeness") is not None
+         and sc["retrieval_completeness"] < _RETRIEVAL_COMPLETENESS_PASS_THRESHOLD)
+        # format_correct=False means the document artifact doesn't meet spec
+        or sc.get("format_correct") is False
+        # must_not_recommend_ok=False is a hard quality rule violation
+        or sc.get("must_not_recommend_ok") is False
+        # gap_honesty and conflict_handling failures are quality findings
+        or sc.get("gap_honesty") is False
+        or sc.get("conflict_handling") is False
+    )
     if (
         overall_benchmark_pass is False
         or route_correct is False
         or (deep_research_gate is not None and not deep_research_gate.get("pass"))
+        or v2_partial
     ):
         return "partial"
     return "pass"
@@ -1248,6 +1271,59 @@ def _run_one_eval_case(case_dict: dict, tools, pipeline: str = "langgraph") -> d
 
     query = case_dict["query"]
     criteria = case_dict.get("expected_criteria") or []
+
+    # Fixture injection — harness integrity probe cases (eval_case_schema.json
+    # case_id 120). The query starts with "[HARNESS-ONLY]" as a marker that the
+    # case must NOT touch the model. Instead, inject answer="" and judge_score=1.0
+    # directly into a canned result record so the judge_structural_agreement gate
+    # (§1.9) is exercised against known-synthetic data. If this case ever reaches
+    # the model, the probe is broken — as confirmed in evalrun_34691bb17fdf.json
+    # where case #47 returned a live clarify response instead of harness_error.
+    if query.strip().startswith("[HARNESS-ONLY]"):
+        v2_fi = case_dict.get("v2_spec") or {}
+        expected_route_fi = (v2_fi.get("routing") or {}).get("expected_route") or case_dict.get("expected_route")
+        injected_run = {
+            "ok": True, "error": None, "answer": "", "answer_length": 0,
+            "evidence_count": 0, "claim_count": 0, "independent_source_count": 0,
+            "judge_score": 1.0, "latency_ms": 0, "pipeline": pipeline,
+            "criteria": {"score": 0.0, "feedback": "fixture injection — model not called"},
+        }
+        injected_structural = {"non_empty_answer": False}
+        judge_structural_agreement = check_judge_structural_agreement(1.0, 0)
+        overall_status = compute_overall_status(
+            judge_structural_agreement=judge_structural_agreement,
+            overall_structural_pass=False,
+            overall_benchmark_pass=None,
+            route_correct=None,
+            deep_research_gate=None,
+        )
+        return {
+            "case_id": case_dict["id"],
+            "title": case_dict["title"],
+            "query": query,
+            "pipeline": pipeline,
+            "route": "fixture",
+            "research_level": None,
+            "expected_route": expected_route_fi,
+            "route_correct": None,
+            "deep_research_gate": None,
+            "is_canary": bool((v2_fi.get("harness_integrity_checks") or {}).get("is_canary")),
+            "canary_drift": None,
+            "run": injected_run,
+            "structural": injected_structural,
+            "benchmarks": {},
+            "scores": {k: None for k in (
+                "route_correct", "gate_correct", "retrieval_completeness",
+                "retrieval_independence", "latency_pass", "synthesis_grounding",
+                "gap_honesty", "conflict_handling", "must_not_recommend_ok",
+                "answer_length_ok", "format_correct",
+            )},
+            "overall_structural_pass": False,
+            "overall_benchmark_pass": None,
+            "judge_structural_agreement": judge_structural_agreement,
+            "overall_status": overall_status,
+        }
+
     decision = _decide_eval_route(query)
     route = decision.route
 
@@ -1347,12 +1423,20 @@ def _run_one_eval_case(case_dict: dict, tools, pipeline: str = "langgraph") -> d
     overall_structural_pass = all(structural.values())
     overall_benchmark_pass = all(b["pass"] for b in benchmarks.values()) if benchmarks else None
     judge_structural_agreement = check_judge_structural_agreement(run.get("judge_score"), run["answer_length"])
+    scores_for_rollup = {
+        "retrieval_completeness": retrieval_completeness,
+        "format_correct": format_correct,
+        "must_not_recommend_ok": must_not_recommend_ok,
+        "gap_honesty": gap_honesty,
+        "conflict_handling": conflict_handling,
+    }
     overall_status = compute_overall_status(
         judge_structural_agreement=judge_structural_agreement,
         overall_structural_pass=overall_structural_pass,
         overall_benchmark_pass=overall_benchmark_pass,
         route_correct=route_correct,
         deep_research_gate=deep_research_gate,
+        scores=scores_for_rollup,
     )
     canary_drift = score_canary_drift(case_dict, run.get("judge_score"))
     is_canary = bool(((v2_spec.get("harness_integrity_checks") or {}).get("is_canary")))
@@ -1433,9 +1517,17 @@ def _coverage_by_subject(case_dict: dict, evidence_items: list) -> dict[str, flo
     dimensions = req.get("required_dimensions")
     if not subjects or not dimensions:
         return None
+    # Build one searchable string per evidence item. Include item.question
+    # (the targeted research question for this item) because it's specifically
+    # generated against named subjects — "What is the data durability of AWS S3?"
+    # — and is more reliable than hoping the product name appears verbatim in
+    # scraped URL/title/body text (which often says "Amazon S3" not "AWS S3",
+    # or abbreviates product names). item.query is the raw search-engine query
+    # and also subject-targeted; both are included for coverage.
     haystacks = [
         f"{getattr(item, 'url', '')} {getattr(item, 'title', '')} "
-        f"{getattr(item, 'evidence', '')} {getattr(item, 'query', '')}".lower()
+        f"{getattr(item, 'evidence', '')} {getattr(item, 'query', '')} "
+        f"{getattr(item, 'question', '')}".lower()
         for item in evidence_items
     ]
     result: dict[str, float] = {}
@@ -1449,6 +1541,20 @@ def _coverage_by_subject(case_dict: dict, evidence_items: list) -> dict[str, flo
     return result
 
 
+_PLACEHOLDER_SUBJECT_RE = re.compile(
+    r"^(crm|ehr|reit|fund|platform|vendor|tool|framework|provider|service|system)\s+(platform|fund|vendor|tool|framework|provider|service|system)?\s*\d+$",
+    re.IGNORECASE,
+)
+
+
+def _has_placeholder_subjects(subjects: list[str]) -> bool:
+    """Return True if required_subjects look like runtime placeholders
+    ('CRM platform 1', 'REIT fund 1', etc.) that can never appear verbatim
+    in evidence text and would always produce retrieval_completeness=0.0
+    for any real run, making the score meaningless rather than informative."""
+    return any(_PLACEHOLDER_SUBJECT_RE.match(s.strip()) for s in subjects)
+
+
 def score_retrieval_completeness(case_dict: dict, evidence_items: list) -> float | None:
     """scoring_spec.md §1.2 — coverage_cells_filled / coverage_cells_required.
 
@@ -1456,9 +1562,20 @@ def score_retrieval_completeness(case_dict: dict, evidence_items: list) -> float
     each required (subject, dimension) pair — not the rendered answer's prose,
     which can claim coverage it doesn't have. None if the case doesn't set
     required_subjects/required_dimensions.
+
+    Also returns None (not 0.0) when required_subjects contains placeholders
+    like 'CRM platform 1' / 'REIT fund 1' — those can never appear verbatim in
+    evidence text, so 0.0 would be a misleading computation artifact, not a real
+    coverage signal. The v2 starter set uses placeholders for cases where the
+    researched subjects are determined at runtime (e.g. "compare any three CRM
+    platforms") rather than pre-specified. Those cases need a different coverage
+    strategy (entity-extraction after the run) that's not yet implemented.
     """
     by_subject = _coverage_by_subject(case_dict, evidence_items)
     if by_subject is None:
+        return None
+    subjects = list(by_subject.keys())
+    if _has_placeholder_subjects(subjects):
         return None
     v2 = case_dict.get("v2_spec") or {}
     dimensions = (v2.get("retrieval_requirements") or {}).get("required_dimensions") or []

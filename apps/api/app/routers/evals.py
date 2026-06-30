@@ -2437,11 +2437,23 @@ def export_eval_run(
 
 @router.delete("/runs/{run_id}", status_code=204)
 def delete_eval_run(run_id: str, admin: AdminPrincipal = RequireAdmin) -> None:
-    """Permanently delete a single eval run (DB row + in-process state if live)."""
+    """Permanently delete a single eval run (DB row + in-process state if live).
+
+    If the run is still actively running, this requests it to stop
+    (best-effort — in-flight LLM/search calls aren't forcibly killed, just
+    no new cases get dispatched after the current batch) and deletes
+    anyway, rather than blocking. Safe to do: _persist_eval_run no-ops if
+    its row no longer exists by the time the background thread eventually
+    finishes or errors (`if row:` guard) — it never recreates a deleted
+    row. Previously this raised 409 and left genuinely-stuck runs (e.g. an
+    in-memory entry orphaned by a server restart that somehow still looked
+    "running", or a thread truly hung on a call with no timeout)
+    permanently undeletable from the UI, with no way to force-stop them.
+    """
     with _EVAL_RUNS_LOCK:
         run = _EVAL_RUNS.get(run_id)
-        if run and run["status"] == "running":
-            raise HTTPException(status_code=409, detail="Cannot delete a run that is still in progress. Stop it first.")
+        if run:
+            run["stop_requested"] = True
         _EVAL_RUNS.pop(run_id, None)
 
     from app.db.models import EvalRun, SessionLocal

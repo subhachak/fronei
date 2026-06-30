@@ -1160,6 +1160,27 @@ export function EvalHarnessTab({ authorizedFetch }: { authorizedFetch: Authorize
 
   useEffect(() => () => stopPolling(), [])
 
+  // Reattach the live progress view (log, progress bar, per-case results) to
+  // a run that's still in flight on the backend after a page refresh — the
+  // in-process run keeps going regardless, but currentRunId/log/progress
+  // were plain React state, wiped on reload, leaving a refreshed page with
+  // no way to see it was even watching anything. Runs once per page load,
+  // the moment loadRuns() first resolves with a "running" entry.
+  const autoResumedRef = useRef(false)
+  useEffect(() => {
+    if (autoResumedRef.current || runs.length === 0 || currentRunId) return
+    const liveRun = runs.find(r => r.status === 'running')
+    if (!liveRun) return
+    autoResumedRef.current = true
+    setCurrentRunId(liveRun.run_id)
+    setRunStatus('running')
+    authorizedFetch(`/admin/evals/runs/${liveRun.run_id}/status`)
+      .then(resp => (resp.ok ? resp.json() : null))
+      .then(data => { if (data) applySnapshot(data) })
+      .catch(() => {})
+    startPolling(liveRun.run_id)
+  }, [runs, currentRunId, authorizedFetch, applySnapshot])
+
   // ── Start run ────────────────────────────────────────────────────────────────
   async function startRun(caseIdsOverride?: number[]) {
     setRunStatus('running'); setLog([]); setRunResult(null); setRunError('')

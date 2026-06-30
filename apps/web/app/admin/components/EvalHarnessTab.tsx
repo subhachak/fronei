@@ -1,23 +1,30 @@
 'use client'
 
 /**
- * EvalHarnessTab — unified "Eval Harness" tab merging case management + eval runs.
+ * EvalHarnessTab — unified eval harness: run controls at top, cases grouped by
+ * category with collapsible sections, local report after each run.
  *
  * Layout:
- *   ┌─ Cases ────────────────────────────────── [+ Add] [↑ Upload JSON] ─┐
- *   │  Checkbox list — select to run or run all. Deactivate/edit inline.  │
- *   │  [Show N inactive ▾]                                                │
- *   └─────────────────────────────────────────────────────────────────────┘
- *   ┌─ Run ─────────────────────────────────────────────────────────────┐
- *   │  LangSmith banner                                                 │
- *   │  [▶ Run selected (N)] / [▶ Run all N]                            │
- *   │  Progress log  →  per-case results  →  run history               │
- *   └───────────────────────────────────────────────────────────────────┘
+ *   ┌─ Run ─────────────────────────────────────────────────────────────────┐
+ *   │  LangSmith banner                                                     │
+ *   │  [▶ Run selected (N)] / [▶ Run all N]   progress bar + log           │
+ *   │  Local report (after completion)                                      │
+ *   │  Per-case results (expandable)                                        │
+ *   │  Run history                                                          │
+ *   └───────────────────────────────────────────────────────────────────────┘
+ *   ┌─ Eval Cases (N active) ──── [↓ Download JSON] [↑ Upload] [+ Add] ────┐
+ *   │  ▾ Immigration Operational (7)  [select all]                         │
+ *   │      ☑ h4_ead_anchor …  [edit] [deactivate]                          │
+ *   │  ▾ Benefits (3)                                                       │
+ *   │      ☐ cobra_qualifying …                                             │
+ *   │  [Show N inactive ▾]                                                  │
+ *   └───────────────────────────────────────────────────────────────────────┘
  */
 
 import {
   ChevronDown,
   ChevronRight,
+  Download,
   Edit2,
   ExternalLink,
   EyeOff,
@@ -38,8 +45,10 @@ import type {
 } from '../types'
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Constants + shared helpers
+// Constants
 // ─────────────────────────────────────────────────────────────────────────────
+
+const POLL_MS = 3000
 
 const ROLE_OPTIONS = [
   '', 'official_policy', 'operational_reality', 'statistical_data',
@@ -57,7 +66,17 @@ const DEFAULT_FORM = {
 }
 type FormState = typeof DEFAULT_FORM
 
-function pct(v: number | null | undefined) {
+// ─────────────────────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+function avg(nums: (number | null | undefined)[]): number | null {
+  const valid = nums.filter((n): n is number => n != null)
+  if (!valid.length) return null
+  return valid.reduce((a, b) => a + b, 0) / valid.length
+}
+
+function pctStr(v: number | null | undefined) {
   if (v == null) return '—'
   return `${Math.round(v * 100)}%`
 }
@@ -67,15 +86,11 @@ function pct(v: number | null | undefined) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 type LangSmithStatus = {
-  configured: boolean
-  project: string | null
-  tracing_on: boolean
-  dataset_name: string
+  configured: boolean; project: string | null; tracing_on: boolean; dataset_name: string
 }
 
 function LangSmithBanner({ authorizedFetch }: { authorizedFetch: AuthorizedFetch }) {
   const [status, setStatus] = useState<LangSmithStatus | null>(null)
-
   useEffect(() => {
     authorizedFetch('/admin/evals/langsmith/status')
       .then(r => r.ok ? r.json() : null)
@@ -88,8 +103,9 @@ function LangSmithBanner({ authorizedFetch }: { authorizedFetch: AuthorizedFetch
     return (
       <div className="rounded-lg border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-900 px-4 py-3 text-xs text-neutral-500">
         <span className="font-semibold text-neutral-700 dark:text-neutral-300">LangSmith not configured</span>
-        {' — '}set <code className="bg-neutral-100 dark:bg-neutral-800 px-1 rounded">LANGSMITH_API_KEY</code> to enable experiment tracking.
-        Runs use the in-process scorer.
+        {' — set '}
+        <code className="bg-neutral-100 dark:bg-neutral-800 px-1 rounded">LANGSMITH_API_KEY</code>
+        {' to enable experiment tracking. Runs use the in-process scorer.'}
       </div>
     )
   }
@@ -113,302 +129,89 @@ function LangSmithBanner({ authorizedFetch }: { authorizedFetch: AuthorizedFetch
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Case form modal
+// Local report
 // ─────────────────────────────────────────────────────────────────────────────
 
-function CaseModal({
-  initial,
-  onSave,
-  onClose,
-}: {
-  initial?: EvalCase
-  onSave: (data: FormState) => Promise<void>
-  onClose: () => void
-}) {
-  const [form, setForm] = useState<FormState>(
-    initial
-      ? {
-          title: initial.title,
-          query: initial.query,
-          category: initial.category ?? '',
-          expected_criteria_text: (initial.expected_criteria ?? []).join('\n'),
-          expected_primary_role: initial.expected_primary_role ?? '',
-          min_independent_sources: initial.min_independent_sources != null
-            ? String(initial.min_independent_sources) : '',
-          notes: initial.notes ?? '',
-        }
-      : DEFAULT_FORM,
-  )
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState('')
+function LocalReport({ cases, runResult }: { cases: EvalCaseRunResult[]; runResult: EvalRunResult }) {
+  if (!cases.length) return null
 
-  function set(k: keyof FormState, v: string) { setForm(f => ({ ...f, [k]: v })) }
+  const structPass = cases.filter(r => r.overall_structural_pass).length
+  const legCriteria = avg(cases.map(r => r.legacy.criteria?.score))
+  const lgCriteria = avg(cases.map(r => r.langgraph.criteria?.score))
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault()
-    setSaving(true)
-    setError('')
-    try {
-      await onSave(form)
-      onClose()
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Save failed')
-    } finally {
-      setSaving(false)
-    }
+  // Group by category
+  const byCategory: Record<string, EvalCaseRunResult[]> = {}
+  for (const r of cases) {
+    const cat = (r as Record<string, unknown>)['category'] as string | null | undefined
+    const key = cat || 'Uncategorized'
+    ;(byCategory[key] ??= []).push(r)
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="w-full max-w-xl rounded-2xl bg-white dark:bg-neutral-900 shadow-2xl flex flex-col max-h-[90vh]">
-        <div className="flex items-center justify-between px-5 py-4 border-b border-neutral-200 dark:border-neutral-800 flex-shrink-0">
-          <h3 className="text-sm font-bold text-neutral-900 dark:text-neutral-50">
-            {initial ? 'Edit eval case' : 'New eval case'}
-          </h3>
-          <button type="button" onClick={onClose} className="text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200">
-            <X size={16} />
-          </button>
+    <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 overflow-hidden">
+      {/* Header */}
+      <div className={`flex items-center justify-between px-4 py-3 border-b border-neutral-200 dark:border-neutral-800 ${
+        runResult.mode === 'langsmith'
+          ? 'bg-emerald-50 dark:bg-emerald-950/20'
+          : structPass === cases.length
+            ? 'bg-emerald-50 dark:bg-emerald-950/20'
+            : 'bg-amber-50 dark:bg-amber-950/20'
+      }`}>
+        <div className="text-sm font-bold text-neutral-900 dark:text-neutral-50">
+          {runResult.mode === 'langsmith'
+            ? 'LangSmith run complete — see experiment links above'
+            : `${structPass}/${cases.length} structural pass`}
         </div>
-
-        <form onSubmit={handleSubmit} className="overflow-y-auto flex-1 px-5 py-4 space-y-4">
-          <div>
-            <label className="block text-xs font-semibold text-neutral-500 mb-1">Title *</label>
-            <input required value={form.title} onChange={e => set('title', e.target.value)}
-              placeholder="H-4 EAD processing time anchor"
-              className="w-full rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-3 py-2 text-sm text-neutral-900 dark:text-neutral-50 focus:outline-none focus:ring-2 focus:ring-neutral-400" />
-          </div>
-
-          <div>
-            <label className="block text-xs font-semibold text-neutral-500 mb-1">Query *</label>
-            <textarea required rows={3} value={form.query} onChange={e => set('query', e.target.value)}
-              placeholder="How long is H-4 EAD currently taking when filed with H-1B renewal on premium processing?"
-              className="w-full rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-3 py-2 text-sm text-neutral-900 dark:text-neutral-50 focus:outline-none focus:ring-2 focus:ring-neutral-400 resize-none" />
-          </div>
-
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-semibold text-neutral-500 mb-1">Category</label>
-              <input value={form.category} onChange={e => set('category', e.target.value)}
-                placeholder="immigration_operational"
-                className="w-full rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-3 py-2 text-sm text-neutral-900 dark:text-neutral-50 focus:outline-none focus:ring-2 focus:ring-neutral-400" />
-            </div>
-            <div>
-              <label className="block text-xs font-semibold text-neutral-500 mb-1">Expected primary role</label>
-              <select value={form.expected_primary_role} onChange={e => set('expected_primary_role', e.target.value)}
-                className="w-full rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-3 py-2 text-sm text-neutral-900 dark:text-neutral-50 focus:outline-none focus:ring-2 focus:ring-neutral-400">
-                {ROLE_OPTIONS.map(r => <option key={r} value={r}>{r || '—'}</option>)}
-              </select>
-            </div>
-          </div>
-
-          <div>
-            <label className="block text-xs font-semibold text-neutral-500 mb-1">
-              Expected criteria <span className="font-normal text-neutral-400">(one per line — scored by LLM judge)</span>
-            </label>
-            <textarea rows={4} value={form.expected_criteria_text} onChange={e => set('expected_criteria_text', e.target.value)}
-              placeholder={"Cites practitioner data as primary evidence\nIncludes official USCIS SLA as context\nGives a specific time range (not just 'varies')"}
-              className="w-full rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-3 py-2 text-sm font-mono text-neutral-900 dark:text-neutral-50 focus:outline-none focus:ring-2 focus:ring-neutral-400 resize-none" />
-          </div>
-
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-semibold text-neutral-500 mb-1">Min independent sources</label>
-              <input type="number" min={1} value={form.min_independent_sources}
-                onChange={e => set('min_independent_sources', e.target.value)}
-                placeholder="2"
-                className="w-full rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-3 py-2 text-sm text-neutral-900 dark:text-neutral-50 focus:outline-none focus:ring-2 focus:ring-neutral-400" />
-            </div>
-          </div>
-
-          <div>
-            <label className="block text-xs font-semibold text-neutral-500 mb-1">Notes</label>
-            <textarea rows={2} value={form.notes} onChange={e => set('notes', e.target.value)}
-              className="w-full rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-3 py-2 text-sm text-neutral-900 dark:text-neutral-50 focus:outline-none focus:ring-2 focus:ring-neutral-400 resize-none" />
-          </div>
-
-          {error && <p className="text-xs text-red-600 dark:text-red-400">{error}</p>}
-        </form>
-
-        <div className="flex justify-end gap-2 px-5 py-4 border-t border-neutral-200 dark:border-neutral-800 flex-shrink-0">
-          <button type="button" onClick={onClose}
-            className="rounded-lg border border-neutral-200 dark:border-neutral-700 px-4 py-2 text-sm font-semibold text-neutral-600 dark:text-neutral-400 hover:bg-neutral-50 dark:hover:bg-neutral-800">
-            Cancel
-          </button>
-          <button type="button" disabled={saving} onClick={handleSubmit as unknown as React.MouseEventHandler}
-            className="rounded-lg bg-neutral-900 dark:bg-white px-4 py-2 text-sm font-semibold text-white dark:text-neutral-900 hover:bg-neutral-700 dark:hover:bg-neutral-200 disabled:opacity-50">
-            {saving ? 'Saving…' : 'Save'}
-          </button>
+        <div className="flex items-center gap-4 text-xs text-neutral-600 dark:text-neutral-400">
+          {legCriteria != null && <span>Legacy criteria <strong>{pctStr(legCriteria)}</strong></span>}
+          {lgCriteria != null && <span>LG criteria <strong>{pctStr(lgCriteria)}</strong></span>}
         </div>
       </div>
+
+      {/* Per-category breakdown */}
+      {Object.keys(byCategory).length > 1 && (
+        <div className="divide-y divide-neutral-100 dark:divide-neutral-800">
+          {Object.entries(byCategory).map(([cat, rows]) => {
+            const catPass = rows.filter(r => r.overall_structural_pass).length
+            const catLegAvg = avg(rows.map(r => r.legacy.criteria?.score))
+            const catLgAvg = avg(rows.map(r => r.langgraph.criteria?.score))
+            return (
+              <div key={cat} className="flex items-center gap-4 px-4 py-2 bg-white dark:bg-neutral-900 text-xs">
+                <span className="flex-1 font-medium text-neutral-700 dark:text-neutral-300">{cat}</span>
+                <span className="text-neutral-500">{catPass}/{rows.length} pass</span>
+                {catLegAvg != null && <span className="text-neutral-400">Legacy {pctStr(catLegAvg)}</span>}
+                {catLgAvg != null && <span className="text-neutral-400">LG {pctStr(catLgAvg)}</span>}
+              </div>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// JSON upload modal
-// ─────────────────────────────────────────────────────────────────────────────
-
-function UploadModal({
-  authorizedFetch,
-  onDone,
-  onClose,
-}: {
-  authorizedFetch: AuthorizedFetch
-  onDone: () => void
-  onClose: () => void
-}) {
-  const [text, setText] = useState('')
-  const [uploading, setUploading] = useState(false)
-  const [result, setResult] = useState<{ created: number; updated: number; reactivated: number; errors: { title: string; error: string }[] } | null>(null)
-  const [error, setError] = useState('')
-
-  const EXAMPLE = JSON.stringify([
-    {
-      title: "Example case title",
-      query: "What is the current processing time for X?",
-      category: "immigration_operational",
-      expected_criteria: ["Cites practitioner data", "Gives specific time range"],
-      expected_primary_role: "operational_reality",
-      min_independent_sources: 2,
-      notes: "Optional notes",
-    }
-  ], null, 2)
-
-  async function handleUpload() {
-    setError('')
-    let parsed: unknown
-    try {
-      parsed = JSON.parse(text)
-    } catch {
-      setError('Invalid JSON — must be a valid JSON array.')
-      return
-    }
-    if (!Array.isArray(parsed)) {
-      setError('JSON must be an array of case objects.')
-      return
-    }
-    setUploading(true)
-    try {
-      const resp = await authorizedFetch('/admin/evals/cases/upload', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(parsed),
-      })
-      if (!resp.ok) throw new Error(await readErrorBody(resp, 'Upload failed'))
-      setResult(await resp.json())
-      onDone()
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Upload failed')
-    } finally {
-      setUploading(false)
-    }
-  }
-
-  function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0]
-    if (!file) return
-    const reader = new FileReader()
-    reader.onload = ev => setText(ev.target?.result as string ?? '')
-    reader.readAsText(file)
-  }
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="w-full max-w-2xl rounded-2xl bg-white dark:bg-neutral-900 shadow-2xl flex flex-col max-h-[90vh]">
-        <div className="flex items-center justify-between px-5 py-4 border-b border-neutral-200 dark:border-neutral-800 flex-shrink-0">
-          <h3 className="text-sm font-bold text-neutral-900 dark:text-neutral-50">Upload cases — JSON</h3>
-          <button type="button" onClick={onClose} className="text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200">
-            <X size={16} />
-          </button>
-        </div>
-
-        <div className="overflow-y-auto flex-1 px-5 py-4 space-y-4">
-          <div className="text-xs text-neutral-500">
-            Paste a JSON array of case objects, or select a <code>.json</code> file.
-            Existing cases matched by title are updated; inactive cases are reactivated.
-          </div>
-
-          {/* File picker */}
-          <div>
-            <label className="inline-flex items-center gap-2 cursor-pointer rounded-lg border border-neutral-200 dark:border-neutral-700 px-3 py-2 text-xs font-semibold text-neutral-600 dark:text-neutral-400 hover:bg-neutral-50 dark:hover:bg-neutral-800">
-              <Upload size={13} /> Choose .json file
-              <input type="file" accept=".json,application/json" className="hidden" onChange={handleFile} />
-            </label>
-          </div>
-
-          {/* Textarea */}
-          <textarea
-            rows={12}
-            value={text}
-            onChange={e => setText(e.target.value)}
-            placeholder={EXAMPLE}
-            className="w-full rounded-lg border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800 px-3 py-2 text-xs font-mono text-neutral-900 dark:text-neutral-50 focus:outline-none focus:ring-2 focus:ring-neutral-400 resize-y"
-          />
-
-          {error && <p className="text-xs text-red-600 dark:text-red-400">{error}</p>}
-
-          {result && (
-            <div className="rounded-lg border border-emerald-200 dark:border-emerald-900 bg-emerald-50 dark:bg-emerald-950/30 px-4 py-3 text-xs">
-              <span className="font-semibold text-emerald-800 dark:text-emerald-300">Done —</span>
-              {' '}{result.created} created, {result.updated} updated, {result.reactivated} reactivated
-              {result.errors.length > 0 && (
-                <div className="mt-2 space-y-0.5">
-                  {result.errors.map((e, i) => (
-                    <p key={i} className="text-red-600 dark:text-red-400">✗ {e.title}: {e.error}</p>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-
-        <div className="flex justify-end gap-2 px-5 py-4 border-t border-neutral-200 dark:border-neutral-800 flex-shrink-0">
-          <button type="button" onClick={onClose}
-            className="rounded-lg border border-neutral-200 dark:border-neutral-700 px-4 py-2 text-sm font-semibold text-neutral-600 dark:text-neutral-400 hover:bg-neutral-50 dark:hover:bg-neutral-800">
-            {result ? 'Close' : 'Cancel'}
-          </button>
-          {!result && (
-            <button type="button" disabled={uploading || !text.trim()} onClick={handleUpload}
-              className="rounded-lg bg-neutral-900 dark:bg-white px-4 py-2 text-sm font-semibold text-white dark:text-neutral-900 hover:bg-neutral-700 dark:hover:bg-neutral-200 disabled:opacity-50">
-              {uploading ? 'Uploading…' : 'Upload'}
-            </button>
-          )}
-        </div>
-      </div>
-    </div>
-  )
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Eval run result — case result row (expandable)
+// Per-case result row (expandable)
 // ─────────────────────────────────────────────────────────────────────────────
 
 function ScoreBadge({ score }: { score: number | null | undefined }) {
   if (score == null) return <span className="text-neutral-400 text-[11px]">—</span>
-  const pctVal = Math.round(score * 100)
-  const cls =
-    pctVal >= 80 ? 'bg-green-50 text-green-700 dark:bg-green-950/40 dark:text-green-400'
-    : pctVal >= 50 ? 'bg-yellow-50 text-yellow-700 dark:bg-yellow-950/40 dark:text-yellow-400'
+  const v = Math.round(score * 100)
+  const cls = v >= 80 ? 'bg-green-50 text-green-700 dark:bg-green-950/40 dark:text-green-400'
+    : v >= 50 ? 'bg-yellow-50 text-yellow-700 dark:bg-yellow-950/40 dark:text-yellow-400'
     : 'bg-red-50 text-red-700 dark:bg-red-950/40 dark:text-red-400'
-  return (
-    <span className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-semibold tabular-nums ${cls}`}>
-      {pctVal}%
-    </span>
-  )
+  return <span className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-semibold tabular-nums ${cls}`}>{v}%</span>
 }
 
 function CaseResultRow({ r }: { r: EvalCaseRunResult }) {
   const [open, setOpen] = useState(false)
   const leg = r.legacy
   const lg = r.langgraph
-
   return (
     <div className="border border-neutral-200 dark:border-neutral-800 rounded-xl overflow-hidden">
       <button type="button" onClick={() => setOpen(o => !o)}
         className="w-full flex items-center gap-3 px-4 py-3 text-left bg-white dark:bg-neutral-900 hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors">
-        <span className="flex-shrink-0 text-neutral-400">
-          {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-        </span>
+        <span className="flex-shrink-0 text-neutral-400">{open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</span>
         <span className="flex-1 min-w-0">
           <span className="text-sm font-semibold text-neutral-900 dark:text-neutral-50 truncate block">{r.title}</span>
           <span className="text-xs text-neutral-400 truncate block">{r.query}</span>
@@ -441,7 +244,7 @@ function CaseResultRow({ r }: { r: EvalCaseRunResult }) {
                         <div className="flex justify-between"><dt className="text-neutral-500">Criteria score</dt><dd><ScoreBadge score={data.criteria.score} /></dd></div>
                         {data.criteria.passed.map((p, i) => <p key={i} className="text-green-700 dark:text-green-400 text-[11px]">✓ {p}</p>)}
                         {data.criteria.failed.map((p, i) => <p key={i} className="text-red-600 dark:text-red-400 text-[11px]">✗ {p}</p>)}
-                        <div><dt className="text-neutral-500">Explanation</dt><dd className="text-neutral-700 dark:text-neutral-300 mt-0.5">{data.criteria.explanation}</dd></div>
+                        {data.criteria.explanation && <div><dt className="text-neutral-500">Explanation</dt><dd className="text-neutral-700 dark:text-neutral-300 mt-0.5">{data.criteria.explanation}</dd></div>}
                       </>
                     )}
                   </dl>
@@ -467,11 +270,236 @@ function CaseResultRow({ r }: { r: EvalCaseRunResult }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Main: EvalHarnessTab
+// Case form modal
+// ─────────────────────────────────────────────────────────────────────────────
+
+function CaseModal({ initial, onSave, onClose }: {
+  initial?: EvalCase; onSave: (data: FormState) => Promise<void>; onClose: () => void
+}) {
+  const [form, setForm] = useState<FormState>(
+    initial ? {
+      title: initial.title,
+      query: initial.query,
+      category: initial.category ?? '',
+      expected_criteria_text: (initial.expected_criteria ?? []).join('\n'),
+      expected_primary_role: initial.expected_primary_role ?? '',
+      min_independent_sources: initial.min_independent_sources != null ? String(initial.min_independent_sources) : '',
+      notes: initial.notes ?? '',
+    } : DEFAULT_FORM,
+  )
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  function set(k: keyof FormState, v: string) { setForm(f => ({ ...f, [k]: v })) }
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault(); setSaving(true); setError('')
+    try { await onSave(form); onClose() }
+    catch (err: unknown) { setError(err instanceof Error ? err.message : 'Save failed') }
+    finally { setSaving(false) }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="w-full max-w-xl rounded-2xl bg-white dark:bg-neutral-900 shadow-2xl flex flex-col max-h-[90vh]">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-neutral-200 dark:border-neutral-800 flex-shrink-0">
+          <h3 className="text-sm font-bold text-neutral-900 dark:text-neutral-50">{initial ? 'Edit eval case' : 'New eval case'}</h3>
+          <button type="button" onClick={onClose} className="text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200"><X size={16} /></button>
+        </div>
+        <form onSubmit={handleSubmit} className="overflow-y-auto flex-1 px-5 py-4 space-y-4">
+          <div><label className="block text-xs font-semibold text-neutral-500 mb-1">Title *</label>
+            <input required value={form.title} onChange={e => set('title', e.target.value)}
+              placeholder="H-4 EAD processing time anchor"
+              className="w-full rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-3 py-2 text-sm text-neutral-900 dark:text-neutral-50 focus:outline-none focus:ring-2 focus:ring-neutral-400" /></div>
+          <div><label className="block text-xs font-semibold text-neutral-500 mb-1">Query *</label>
+            <textarea required rows={3} value={form.query} onChange={e => set('query', e.target.value)}
+              placeholder="How long is H-4 EAD currently taking when filed with H-1B renewal on premium processing?"
+              className="w-full rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-3 py-2 text-sm text-neutral-900 dark:text-neutral-50 focus:outline-none focus:ring-2 focus:ring-neutral-400 resize-none" /></div>
+          <div className="grid grid-cols-2 gap-3">
+            <div><label className="block text-xs font-semibold text-neutral-500 mb-1">Category</label>
+              <input value={form.category} onChange={e => set('category', e.target.value)}
+                placeholder="immigration_operational"
+                className="w-full rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-3 py-2 text-sm text-neutral-900 dark:text-neutral-50 focus:outline-none focus:ring-2 focus:ring-neutral-400" /></div>
+            <div><label className="block text-xs font-semibold text-neutral-500 mb-1">Expected primary role</label>
+              <select value={form.expected_primary_role} onChange={e => set('expected_primary_role', e.target.value)}
+                className="w-full rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-3 py-2 text-sm text-neutral-900 dark:text-neutral-50 focus:outline-none focus:ring-2 focus:ring-neutral-400">
+                {ROLE_OPTIONS.map(r => <option key={r} value={r}>{r || '—'}</option>)}
+              </select></div>
+          </div>
+          <div><label className="block text-xs font-semibold text-neutral-500 mb-1">Expected criteria <span className="font-normal text-neutral-400">(one per line)</span></label>
+            <textarea rows={4} value={form.expected_criteria_text} onChange={e => set('expected_criteria_text', e.target.value)}
+              placeholder={"Cites practitioner data as primary evidence\nIncludes official USCIS SLA as context\nGives a specific time range (not just 'varies')"}
+              className="w-full rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-3 py-2 text-sm font-mono text-neutral-900 dark:text-neutral-50 focus:outline-none focus:ring-2 focus:ring-neutral-400 resize-none" /></div>
+          <div className="grid grid-cols-2 gap-3">
+            <div><label className="block text-xs font-semibold text-neutral-500 mb-1">Min independent sources</label>
+              <input type="number" min={1} value={form.min_independent_sources} onChange={e => set('min_independent_sources', e.target.value)}
+                placeholder="2"
+                className="w-full rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-3 py-2 text-sm text-neutral-900 dark:text-neutral-50 focus:outline-none focus:ring-2 focus:ring-neutral-400" /></div>
+          </div>
+          <div><label className="block text-xs font-semibold text-neutral-500 mb-1">Notes</label>
+            <textarea rows={2} value={form.notes} onChange={e => set('notes', e.target.value)}
+              className="w-full rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-3 py-2 text-sm text-neutral-900 dark:text-neutral-50 focus:outline-none focus:ring-2 focus:ring-neutral-400 resize-none" /></div>
+          {error && <p className="text-xs text-red-600 dark:text-red-400">{error}</p>}
+        </form>
+        <div className="flex justify-end gap-2 px-5 py-4 border-t border-neutral-200 dark:border-neutral-800 flex-shrink-0">
+          <button type="button" onClick={onClose} className="rounded-lg border border-neutral-200 dark:border-neutral-700 px-4 py-2 text-sm font-semibold text-neutral-600 dark:text-neutral-400 hover:bg-neutral-50 dark:hover:bg-neutral-800">Cancel</button>
+          <button type="button" disabled={saving} onClick={handleSubmit as unknown as React.MouseEventHandler}
+            className="rounded-lg bg-neutral-900 dark:bg-white px-4 py-2 text-sm font-semibold text-white dark:text-neutral-900 hover:bg-neutral-700 dark:hover:bg-neutral-200 disabled:opacity-50">
+            {saving ? 'Saving…' : 'Save'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Upload modal
+// ─────────────────────────────────────────────────────────────────────────────
+
+function UploadModal({ authorizedFetch, onDone, onClose }: {
+  authorizedFetch: AuthorizedFetch; onDone: () => void; onClose: () => void
+}) {
+  const [text, setText] = useState('')
+  const [uploading, setUploading] = useState(false)
+  const [result, setResult] = useState<{ created: number; updated: number; reactivated: number; errors: { title: string; error: string }[] } | null>(null)
+  const [error, setError] = useState('')
+
+  const EXAMPLE = JSON.stringify([{ title: "Example case", query: "What is the current processing time for X?", category: "immigration", expected_criteria: ["Cites practitioner data", "Gives specific time range"], expected_primary_role: "operational_reality", min_independent_sources: 2, notes: "Optional" }], null, 2)
+
+  async function handleUpload() {
+    setError('')
+    let parsed: unknown
+    try { parsed = JSON.parse(text) } catch { setError('Invalid JSON — must be a valid JSON array.'); return }
+    if (!Array.isArray(parsed)) { setError('JSON must be an array of case objects.'); return }
+    setUploading(true)
+    try {
+      const resp = await authorizedFetch('/admin/evals/cases/upload', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(parsed) })
+      if (!resp.ok) throw new Error(await readErrorBody(resp, 'Upload failed'))
+      setResult(await resp.json()); onDone()
+    } catch (err: unknown) { setError(err instanceof Error ? err.message : 'Upload failed') }
+    finally { setUploading(false) }
+  }
+
+  function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]; if (!file) return
+    const reader = new FileReader()
+    reader.onload = ev => setText(ev.target?.result as string ?? '')
+    reader.readAsText(file)
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="w-full max-w-2xl rounded-2xl bg-white dark:bg-neutral-900 shadow-2xl flex flex-col max-h-[90vh]">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-neutral-200 dark:border-neutral-800 flex-shrink-0">
+          <h3 className="text-sm font-bold text-neutral-900 dark:text-neutral-50">Upload cases — JSON</h3>
+          <button type="button" onClick={onClose} className="text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200"><X size={16} /></button>
+        </div>
+        <div className="overflow-y-auto flex-1 px-5 py-4 space-y-4">
+          <p className="text-xs text-neutral-500">Paste a JSON array or select a .json file. Existing cases matched by title are updated; inactive cases are reactivated.</p>
+          <label className="inline-flex items-center gap-2 cursor-pointer rounded-lg border border-neutral-200 dark:border-neutral-700 px-3 py-2 text-xs font-semibold text-neutral-600 dark:text-neutral-400 hover:bg-neutral-50 dark:hover:bg-neutral-800">
+            <Upload size={13} /> Choose .json file
+            <input type="file" accept=".json,application/json" className="hidden" onChange={handleFile} />
+          </label>
+          <textarea rows={12} value={text} onChange={e => setText(e.target.value)} placeholder={EXAMPLE}
+            className="w-full rounded-lg border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800 px-3 py-2 text-xs font-mono text-neutral-900 dark:text-neutral-50 focus:outline-none focus:ring-2 focus:ring-neutral-400 resize-y" />
+          {error && <p className="text-xs text-red-600 dark:text-red-400">{error}</p>}
+          {result && (
+            <div className="rounded-lg border border-emerald-200 dark:border-emerald-900 bg-emerald-50 dark:bg-emerald-950/30 px-4 py-3 text-xs">
+              <span className="font-semibold text-emerald-800 dark:text-emerald-300">Done — </span>
+              {result.created} created, {result.updated} updated, {result.reactivated} reactivated
+              {result.errors.map((e, i) => <p key={i} className="text-red-600 dark:text-red-400 mt-1">✗ {e.title}: {e.error}</p>)}
+            </div>
+          )}
+        </div>
+        <div className="flex justify-end gap-2 px-5 py-4 border-t border-neutral-200 dark:border-neutral-800 flex-shrink-0">
+          <button type="button" onClick={onClose} className="rounded-lg border border-neutral-200 dark:border-neutral-700 px-4 py-2 text-sm font-semibold text-neutral-600 dark:text-neutral-400 hover:bg-neutral-50 dark:hover:bg-neutral-800">{result ? 'Close' : 'Cancel'}</button>
+          {!result && <button type="button" disabled={uploading || !text.trim()} onClick={handleUpload}
+            className="rounded-lg bg-neutral-900 dark:bg-white px-4 py-2 text-sm font-semibold text-white dark:text-neutral-900 hover:bg-neutral-700 dark:hover:bg-neutral-200 disabled:opacity-50">{uploading ? 'Uploading…' : 'Upload'}</button>}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Category group (collapsible)
+// ─────────────────────────────────────────────────────────────────────────────
+
+function CategoryGroup({
+  category, cases, selectedIds, onToggle, onToggleAll, onEdit, onDeactivate, deactivating,
+}: {
+  category: string
+  cases: EvalCase[]
+  selectedIds: Set<number>
+  onToggle: (id: number) => void
+  onToggleAll: (ids: number[], checked: boolean) => void
+  onEdit: (c: EvalCase) => void
+  onDeactivate: (id: number) => void
+  deactivating: number | null
+}) {
+  const [open, setOpen] = useState(true)
+  const ids = cases.map(c => c.id)
+  const allSelected = ids.every(id => selectedIds.has(id))
+  const someSelected = ids.some(id => selectedIds.has(id))
+
+  return (
+    <div>
+      {/* Group header */}
+      <button type="button" onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center gap-2 px-3 py-2 bg-neutral-50 dark:bg-neutral-950 hover:bg-neutral-100 dark:hover:bg-neutral-900 transition-colors border-b border-neutral-100 dark:border-neutral-800">
+        {open ? <ChevronDown size={12} className="text-neutral-400 flex-shrink-0" /> : <ChevronRight size={12} className="text-neutral-400 flex-shrink-0" />}
+        <span className="flex-1 text-xs font-semibold text-neutral-700 dark:text-neutral-300 text-left">{category}</span>
+        <span className="text-[11px] text-neutral-400 tabular-nums">{cases.length}</span>
+        <label className="flex items-center gap-1 ml-2 cursor-pointer" onClick={e => e.stopPropagation()}>
+          <input type="checkbox"
+            checked={allSelected}
+            ref={el => { if (el) el.indeterminate = someSelected && !allSelected }}
+            onChange={e => onToggleAll(ids, e.target.checked)}
+            className="rounded border-neutral-300 dark:border-neutral-600"
+          />
+          <span className="text-[11px] text-neutral-400 select-none">all</span>
+        </label>
+      </button>
+
+      {/* Cases */}
+      {open && cases.map(c => (
+        <div key={c.id} className="flex items-start gap-3 px-4 py-3 bg-white dark:bg-neutral-900 hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors border-b border-neutral-100 dark:border-neutral-800 last:border-0">
+          <input type="checkbox" checked={selectedIds.has(c.id)} onChange={() => onToggle(c.id)}
+            className="mt-0.5 rounded border-neutral-300 dark:border-neutral-600 text-neutral-900" />
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-sm font-semibold text-neutral-900 dark:text-neutral-50 truncate">{c.title}</span>
+              {c.expected_primary_role && (
+                <span className="text-[10px] font-semibold uppercase tracking-wider bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400 rounded px-1.5 py-0.5">{c.expected_primary_role}</span>
+              )}
+            </div>
+            <p className="text-xs text-neutral-500 mt-0.5 line-clamp-1">{c.query}</p>
+            {c.expected_criteria.length > 0 && (
+              <p className="text-xs text-neutral-400 mt-0.5">{c.expected_criteria.length} criteria</p>
+            )}
+          </div>
+          <div className="flex items-center gap-1 flex-shrink-0">
+            <button type="button" onClick={() => onEdit(c)} title="Edit"
+              className="grid h-7 w-7 place-items-center rounded-lg text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-700 hover:text-neutral-700 dark:hover:text-neutral-200">
+              <Edit2 size={13} />
+            </button>
+            <button type="button" onClick={() => onDeactivate(c.id)} disabled={deactivating === c.id} title="Deactivate"
+              className="grid h-7 w-7 place-items-center rounded-lg text-neutral-400 hover:bg-amber-50 dark:hover:bg-amber-950/30 hover:text-amber-600 dark:hover:text-amber-400 disabled:opacity-40">
+              <EyeOff size={13} />
+            </button>
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Main component
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function EvalHarnessTab({ authorizedFetch }: { authorizedFetch: AuthorizedFetch }) {
-  // ── Cases state ────────────────────────────────────────────────────────────
+  // ── Cases ───────────────────────────────────────────────────────────────────
   const [cases, setCases] = useState<EvalCase[]>([])
   const [inactiveCases, setInactiveCases] = useState<EvalCase[]>([])
   const [showInactive, setShowInactive] = useState(false)
@@ -481,23 +509,25 @@ export function EvalHarnessTab({ authorizedFetch }: { authorizedFetch: Authorize
   const [deactivating, setDeactivating] = useState<number | null>(null)
   const [restoring, setRestoring] = useState<number | null>(null)
 
-  // ── Run state ──────────────────────────────────────────────────────────────
+  // ── Run ─────────────────────────────────────────────────────────────────────
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
   const [runStatus, setRunStatus] = useState<'idle' | 'running' | 'complete' | 'error'>('idle')
   const [log, setLog] = useState<string[]>([])
+  const [progressTotal, setProgressTotal] = useState<number | null>(null)
+  const [progressCompleted, setProgressCompleted] = useState(0)
   const [runResult, setRunResult] = useState<EvalRunResult | null>(null)
   const [runs, setRuns] = useState<EvalRunSummary[]>([])
   const [runError, setRunError] = useState('')
-  const [langsmithLinks, setLangsmithLinks] = useState<{ legacy?: string; langgraph?: string }>({})
+  const [langsmithLinks, setLangsmithLinks] = useState<Record<string, string>>({})
   const logRef = useRef<HTMLDivElement>(null)
-  const abortRef = useRef<AbortController | null>(null)
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const activeRunIdRef = useRef<string | null>(null)
 
-  // ── Auto-scroll log ────────────────────────────────────────────────────────
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight
   }, [log])
 
-  // ── Load cases ─────────────────────────────────────────────────────────────
+  // ── Load ─────────────────────────────────────────────────────────────────────
   const loadCases = useCallback(async () => {
     setLoadingCases(true)
     try {
@@ -510,8 +540,7 @@ export function EvalHarnessTab({ authorizedFetch }: { authorizedFetch: Authorize
       setCases(activeData.items ?? [])
       if (allResp.ok) {
         const allData = await allResp.json()
-        const allItems: EvalCase[] = allData.items ?? []
-        setInactiveCases(allItems.filter(c => !c.is_active))
+        setInactiveCases((allData.items ?? []).filter((c: EvalCase) => !c.is_active))
       }
       setCasesError('')
     } catch (err: unknown) {
@@ -525,51 +554,37 @@ export function EvalHarnessTab({ authorizedFetch }: { authorizedFetch: Authorize
     try {
       const resp = await authorizedFetch('/admin/evals/runs')
       if (!resp.ok) return
-      const data = await resp.json()
-      setRuns(data.runs ?? [])
+      setRuns((await resp.json()).runs ?? [])
     } catch {}
   }, [authorizedFetch])
 
-  useEffect(() => {
-    loadCases()
-    loadRuns()
-  }, [loadCases, loadRuns])
+  useEffect(() => { loadCases(); loadRuns() }, [loadCases, loadRuns])
 
-  // ── Case CRUD ──────────────────────────────────────────────────────────────
+  // ── Case CRUD ────────────────────────────────────────────────────────────────
   async function handleSave(form: FormState, existing?: EvalCase) {
     const payload = {
-      title: form.title,
-      query: form.query,
-      category: form.category || null,
+      title: form.title, query: form.query, category: form.category || null,
       expected_criteria: form.expected_criteria_text.split('\n').map(s => s.trim()).filter(Boolean),
       expected_primary_role: form.expected_primary_role || null,
       min_independent_sources: form.min_independent_sources ? Number(form.min_independent_sources) : null,
       notes: form.notes || null,
     }
     const url = existing ? `/admin/evals/cases/${existing.id}` : '/admin/evals/cases'
-    const method = existing ? 'PUT' : 'POST'
-    const resp = await authorizedFetch(url, {
-      method,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    })
+    const resp = await authorizedFetch(url, { method: existing ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
     if (!resp.ok) throw new Error(await readErrorBody(resp, 'Save failed'))
     await loadCases()
   }
 
   async function handleDeactivate(id: number) {
-    if (!confirm('Deactivate this eval case? It will be hidden from runs but not deleted.')) return
+    if (!confirm('Deactivate this case? It will be hidden from runs but not deleted.')) return
     setDeactivating(id)
     try {
       const resp = await authorizedFetch(`/admin/evals/cases/${id}`, { method: 'DELETE' })
       if (!resp.ok) throw new Error(await readErrorBody(resp, 'Deactivate failed'))
       setSelectedIds(prev => { const next = new Set(prev); next.delete(id); return next })
       await loadCases()
-    } catch (err: unknown) {
-      setCasesError(err instanceof Error ? err.message : 'Deactivate failed')
-    } finally {
-      setDeactivating(null)
-    }
+    } catch (err: unknown) { setCasesError(err instanceof Error ? err.message : 'Deactivate failed') }
+    finally { setDeactivating(null) }
   }
 
   async function handleRestore(id: number) {
@@ -578,153 +593,215 @@ export function EvalHarnessTab({ authorizedFetch }: { authorizedFetch: Authorize
       const resp = await authorizedFetch(`/admin/evals/cases/${id}/restore`, { method: 'POST' })
       if (!resp.ok) throw new Error(await readErrorBody(resp, 'Restore failed'))
       await loadCases()
-    } catch (err: unknown) {
-      setCasesError(err instanceof Error ? err.message : 'Restore failed')
-    } finally {
-      setRestoring(null)
-    }
+    } catch (err: unknown) { setCasesError(err instanceof Error ? err.message : 'Restore failed') }
+    finally { setRestoring(null) }
   }
 
-  // ── Selection helpers ──────────────────────────────────────────────────────
+  // ── Download JSON ────────────────────────────────────────────────────────────
+  function downloadJSON() {
+    const data = cases.map(c => ({
+      title: c.title, query: c.query, category: c.category,
+      expected_criteria: c.expected_criteria,
+      expected_primary_role: c.expected_primary_role,
+      min_independent_sources: c.min_independent_sources,
+      notes: c.notes,
+    }))
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a'); a.href = url; a.download = 'eval_cases.json'; a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  // ── Selection ────────────────────────────────────────────────────────────────
   function toggleCase(id: number) {
+    setSelectedIds(prev => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next })
+  }
+
+  function toggleAll(ids: number[], checked: boolean) {
     setSelectedIds(prev => {
       const next = new Set(prev)
-      next.has(id) ? next.delete(id) : next.add(id)
+      ids.forEach(id => checked ? next.add(id) : next.delete(id))
       return next
     })
   }
 
-  function toggleAll() {
-    if (selectedIds.size === cases.length) {
-      setSelectedIds(new Set())
-    } else {
-      setSelectedIds(new Set(cases.map(c => c.id)))
-    }
+  // ── Polling ──────────────────────────────────────────────────────────────────
+  function stopPolling() {
+    if (pollRef.current != null) { clearInterval(pollRef.current); pollRef.current = null }
   }
 
-  // ── Run ────────────────────────────────────────────────────────────────────
+  const applySnapshot = useCallback((data: Record<string, unknown>) => {
+    setLog((data.log as string[]) ?? [])
+    setProgressTotal((data.total as number | null) ?? null)
+    setProgressCompleted((data.completed as number) ?? 0)
+    if (data.langsmith_links) setLangsmithLinks(data.langsmith_links as Record<string, string>)
+
+    // progress[] is the live list during a run; results is the final envelope
+    const progress = data.progress as EvalCaseRunResult[] | undefined
+    const results = data.results as EvalRunResult | null | undefined
+    if (results && results.mode) {
+      setRunResult(results)
+    } else if (progress && progress.length > 0) {
+      setRunResult({ mode: 'in_process', cases: progress, langsmith: null })
+    }
+
+    if (data.status === 'complete') {
+      setRunStatus('complete'); stopPolling()
+      loadRuns()
+    } else if (data.status === 'error') {
+      setRunError((data.error as string) ?? 'Unknown error'); setRunStatus('error'); stopPolling()
+    }
+  }, [loadRuns]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  function startPolling(runId: string) {
+    stopPolling()
+    pollRef.current = setInterval(async () => {
+      try {
+        const resp = await authorizedFetch(`/admin/evals/runs/${runId}/status`)
+        if (!resp.ok) return
+        applySnapshot(await resp.json())
+      } catch {}
+    }, POLL_MS)
+  }
+
+  useEffect(() => () => stopPolling(), [])
+
+  // ── Start run ────────────────────────────────────────────────────────────────
   async function startRun() {
-    setRunStatus('running')
-    setLog([])
-    setRunResult(null)
-    setRunError('')
-    setLangsmithLinks({})
+    setRunStatus('running'); setLog([]); setRunResult(null); setRunError('')
+    setLangsmithLinks({}); setProgressTotal(null); setProgressCompleted(0)
 
     const payload = selectedIds.size > 0 ? { case_ids: Array.from(selectedIds) } : {}
-    const startResp = await authorizedFetch('/admin/evals/runs', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    })
-    if (!startResp.ok) {
-      const msg = await readErrorBody(startResp, 'Failed to start eval run')
-      setRunError(msg)
-      setRunStatus('error')
-      return
-    }
-    const { run_id } = await startResp.json()
-    const abort = new AbortController()
-    abortRef.current = abort
-    const streamResp = await authorizedFetch(`/admin/evals/runs/${run_id}/stream`, { signal: abort.signal })
-    if (!streamResp.ok || !streamResp.body) {
-      setRunError('Could not open SSE stream')
-      setRunStatus('error')
-      return
-    }
-    const reader = streamResp.body.getReader()
-    const decoder = new TextDecoder()
-    let buf = ''
     try {
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buf += decoder.decode(value, { stream: true })
-        const parts = buf.split('\n\n')
-        buf = parts.pop() ?? ''
-        for (const part of parts) {
-          const dataLine = part.split('\n').find(l => l.startsWith('data:'))
-          if (!dataLine) continue
-          const payload = dataLine.slice('data:'.length).trim()
-          if (!payload || payload === '{}') continue
-          try { handleSSEEvent(JSON.parse(payload)) } catch {}
-        }
-      }
+      const startResp = await authorizedFetch('/admin/evals/runs', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+      })
+      if (!startResp.ok) throw new Error(await readErrorBody(startResp, 'Failed to start eval run'))
+      const { run_id } = await startResp.json()
+      activeRunIdRef.current = run_id
+      // Get initial snapshot immediately, then poll
+      const snap = await authorizedFetch(`/admin/evals/runs/${run_id}/status`)
+      if (snap.ok) applySnapshot(await snap.json())
+      startPolling(run_id)
     } catch (err: unknown) {
-      if ((err as Error)?.name !== 'AbortError') {
-        setRunError('Stream interrupted')
-        setRunStatus('error')
-      }
+      setRunError(err instanceof Error ? err.message : 'Failed to start run'); setRunStatus('error')
     }
-    await loadRuns()
   }
 
-  function handleSSEEvent(ev: Record<string, unknown>) {
-    switch (ev.type) {
-      case 'started':
-        setLog(l => [...l, `▶ Run started — ${ev.total} case(s)${ev.mode === 'langsmith' ? ' [LangSmith]' : ''}`])
-        break
-      case 'case_start':
-        setLog(l => [...l, `  [${(ev.index as number) + 1}/${ev.total}] ${ev.title}`])
-        break
-      case 'case_result': {
-        const r = ev.result as EvalCaseRunResult
-        const legScore = pct(r.legacy.criteria?.score)
-        const lgScore = pct(r.langgraph.criteria?.score)
-        setLog(l => [...l, `  → Legacy ${r.legacy.ok ? '✓' : '✗'} (${legScore})  LG ${r.langgraph.ok ? '✓' : '✗'} (${lgScore})`])
-        setRunResult(prev => ({ mode: 'in_process', cases: [...(prev?.cases ?? []), r], langsmith: null }))
-        break
-      }
-      case 'langsmith_sync':
-        setLog(l => [...l, `  ⟳ ${ev.message}`])
-        break
-      case 'langsmith_sync_done':
-        setLog(l => [...l, `  ✓ Dataset synced`])
-        break
-      case 'langsmith_pipeline_start':
-        setLog(l => [...l, `  ▶ Running ${ev.pipeline} pipeline via LangSmith…`])
-        break
-      case 'langsmith_pipeline_done': {
-        const url = ev.experiment_url as string | undefined
-        if (url) setLangsmithLinks(prev => ({ ...prev, [ev.pipeline as string]: url }))
-        setLog(l => [...l, `  ✓ ${ev.pipeline} done${ev.elapsed_s ? ` (${ev.elapsed_s}s)` : ''}${url ? ' — experiment ready' : ''}`])
-        break
-      }
-      case 'langsmith_pipeline_error':
-        setLog(l => [...l, `  ✗ ${ev.pipeline} error: ${ev.error}`])
-        break
-      case 'complete': {
-        const envelope = ev.results as EvalRunResult | undefined
-        if (envelope) setRunResult(envelope)
-        setLog(l => [...l, '✓ Run complete'])
-        setRunStatus('complete')
-        break
-      }
-      case 'error':
-        setLog(l => [...l, `✗ Error: ${ev.error}`])
-        setRunStatus('error')
-        break
-    }
+  // ── Category groups ──────────────────────────────────────────────────────────
+  const categoryGroups: Record<string, EvalCase[]> = {}
+  for (const c of cases) {
+    const key = c.category || 'Uncategorized'
+    ;(categoryGroups[key] ??= []).push(c)
   }
+  const sortedCategories = Object.keys(categoryGroups).sort((a, b) =>
+    a === 'Uncategorized' ? 1 : b === 'Uncategorized' ? -1 : a.localeCompare(b)
+  )
 
   const canRun = cases.length > 0 && runStatus !== 'running'
-  const runLabel = selectedIds.size > 0
-    ? `Run selected (${selectedIds.size})`
-    : `Run all ${cases.length}`
+  const runLabel = selectedIds.size > 0 ? `Run selected (${selectedIds.size})` : `Run all ${cases.length}`
 
-  // ── Render ─────────────────────────────────────────────────────────────────
+  // ── Render ───────────────────────────────────────────────────────────────────
   return (
     <div className="space-y-6">
 
-      {/* ─── Cases section ─────────────────────────────────────────────────── */}
+      {/* ═══ RUN SECTION (top) ═══════════════════════════════════════════════ */}
+      <div className="space-y-4">
+        <LangSmithBanner authorizedFetch={authorizedFetch} />
+
+        {/* Trigger */}
+        <div className="flex items-center gap-3">
+          <button type="button" disabled={!canRun} onClick={startRun}
+            className="flex items-center gap-1.5 rounded-lg bg-neutral-900 dark:bg-white px-4 py-2 text-sm font-semibold text-white dark:text-neutral-900 hover:bg-neutral-700 dark:hover:bg-neutral-200 disabled:opacity-40">
+            <Play size={13} />
+            {runStatus === 'running' ? 'Running…' : runLabel}
+          </button>
+          {runStatus === 'running' && progressTotal != null && (
+            <div className="flex items-center gap-2 flex-1">
+              <div className="flex-1 h-1.5 rounded-full bg-neutral-200 dark:bg-neutral-800 overflow-hidden">
+                <div className="h-full bg-blue-500 transition-all duration-500"
+                  style={{ width: `${(progressCompleted / progressTotal) * 100}%` }} />
+              </div>
+              <span className="text-xs text-neutral-500 tabular-nums flex-shrink-0">{progressCompleted}/{progressTotal}</span>
+            </div>
+          )}
+        </div>
+
+        {/* Log console */}
+        {(log.length > 0 || runStatus === 'running') && (
+          <div>
+            <div ref={logRef}
+              className="rounded-xl bg-neutral-950 text-green-300 font-mono text-xs p-4 max-h-44 overflow-y-auto space-y-0.5">
+              {log.map((line, i) => <div key={i}>{line}</div>)}
+              {runStatus === 'running' && <div className="animate-pulse text-neutral-500">⋯ polling…</div>}
+            </div>
+            {runError && <p className="mt-1.5 text-xs text-red-600 dark:text-red-400">{runError}</p>}
+          </div>
+        )}
+
+        {/* LangSmith experiment links */}
+        {Object.keys(langsmithLinks).length > 0 && (
+          <div className="rounded-xl border border-emerald-200 dark:border-emerald-900 bg-emerald-50 dark:bg-emerald-950/30 px-4 py-3 space-y-1">
+            <p className="text-xs font-bold text-emerald-800 dark:text-emerald-300 mb-2">LangSmith experiments</p>
+            {Object.entries(langsmithLinks).map(([pipeline, url]) => (
+              <a key={pipeline} href={url} target="_blank" rel="noopener noreferrer"
+                className="flex items-center gap-1.5 text-xs text-emerald-700 dark:text-emerald-400 hover:underline">
+                <ExternalLink size={11} /> {pipeline} pipeline experiment
+              </a>
+            ))}
+          </div>
+        )}
+
+        {/* Local report */}
+        {runResult && runStatus !== 'running' && (
+          <LocalReport cases={runResult.cases ?? []} runResult={runResult} />
+        )}
+
+        {/* Per-case results */}
+        {(runResult?.cases?.length ?? 0) > 0 && (
+          <div>
+            <p className="text-xs font-bold text-neutral-500 mb-2">
+              Per-case results ({runResult!.cases.length})
+            </p>
+            <div className="space-y-2">
+              {runResult!.cases.map(r => <CaseResultRow key={r.case_id} r={r} />)}
+            </div>
+          </div>
+        )}
+        {runResult?.mode === 'langsmith' && runStatus === 'complete' && (runResult.cases?.length ?? 0) === 0 && (
+          <p className="text-xs text-neutral-500 italic">Per-case rows are in LangSmith. Use the experiment links above.</p>
+        )}
+
+        {/* Run history */}
+        {runs.length > 0 && runStatus === 'idle' && (
+          <div>
+            <p className="text-xs font-bold text-neutral-500 mb-2">Recent runs</p>
+            <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 overflow-hidden divide-y divide-neutral-100 dark:divide-neutral-800">
+              {runs.slice(0, 8).map(r => (
+                <div key={r.run_id} className="flex items-center gap-3 px-4 py-2.5 bg-white dark:bg-neutral-900 text-xs">
+                  <span className={`h-2 w-2 rounded-full flex-shrink-0 ${r.status === 'complete' ? 'bg-green-500' : r.status === 'error' ? 'bg-red-500' : 'bg-yellow-400 animate-pulse'}`} />
+                  <span className="flex-1 font-mono text-neutral-500 truncate">{r.run_id}</span>
+                  <span className="text-neutral-500">{r.case_count} case(s)</span>
+                  <span className={`font-semibold ${r.status === 'complete' ? 'text-green-700 dark:text-green-400' : r.status === 'error' ? 'text-red-600 dark:text-red-400' : 'text-yellow-600 dark:text-yellow-400'}`}>{r.status}</span>
+                  {r.started_at && <span className="text-neutral-400">{new Date(r.started_at).toLocaleString()}</span>}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* ═══ CASES SECTION ══════════════════════════════════════════════════════ */}
       <div>
         <div className="flex items-center justify-between mb-3">
-          <div>
-            <h3 className="text-sm font-bold text-neutral-900 dark:text-neutral-50">
-              Eval cases <span className="font-normal text-neutral-400">({cases.length} active)</span>
-            </h3>
-            <p className="text-xs text-neutral-500 mt-0.5">Select cases to run, or leave all unselected to run everything.</p>
-          </div>
+          <h3 className="text-sm font-bold text-neutral-900 dark:text-neutral-50">
+            Eval cases <span className="font-normal text-neutral-400">({cases.length} active)</span>
+          </h3>
           <div className="flex items-center gap-2">
+            <button type="button" onClick={downloadJSON} disabled={cases.length === 0}
+              className="flex items-center gap-1.5 rounded-lg border border-neutral-200 dark:border-neutral-700 px-3 py-2 text-xs font-semibold text-neutral-600 dark:text-neutral-400 hover:bg-neutral-50 dark:hover:bg-neutral-800 disabled:opacity-40">
+              <Download size={12} /> Download JSON
+            </button>
             <button type="button" onClick={() => setModal('upload')}
               className="flex items-center gap-1.5 rounded-lg border border-neutral-200 dark:border-neutral-700 px-3 py-2 text-xs font-semibold text-neutral-600 dark:text-neutral-400 hover:bg-neutral-50 dark:hover:bg-neutral-800">
               <Upload size={12} /> Upload JSON
@@ -749,54 +826,22 @@ export function EvalHarnessTab({ authorizedFetch }: { authorizedFetch: Authorize
             </button>
           </div>
         ) : (
-          <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 overflow-hidden divide-y divide-neutral-100 dark:divide-neutral-800">
-            {/* Select-all header */}
-            {cases.length > 0 && (
-              <div className="flex items-center gap-3 px-4 py-2 bg-neutral-50 dark:bg-neutral-950 text-xs text-neutral-500">
-                <input type="checkbox"
-                  checked={selectedIds.size === cases.length && cases.length > 0}
-                  onChange={toggleAll}
-                  className="rounded border-neutral-300 dark:border-neutral-600" />
-                <span>{selectedIds.size > 0 ? `${selectedIds.size} selected` : 'Select all'}</span>
-              </div>
-            )}
-
-            {/* Active cases */}
-            {cases.map(c => (
-              <div key={c.id} className="flex items-start gap-3 px-4 py-3 bg-white dark:bg-neutral-900 hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors">
-                <input type="checkbox" checked={selectedIds.has(c.id)} onChange={() => toggleCase(c.id)}
-                  className="mt-0.5 rounded border-neutral-300 dark:border-neutral-600 text-neutral-900" />
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-sm font-semibold text-neutral-900 dark:text-neutral-50 truncate">{c.title}</span>
-                    {c.category && (
-                      <span className="text-[10px] font-semibold uppercase tracking-wider bg-neutral-100 dark:bg-neutral-800 text-neutral-500 rounded px-1.5 py-0.5">{c.category}</span>
-                    )}
-                    {c.expected_primary_role && (
-                      <span className="text-[10px] font-semibold uppercase tracking-wider bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400 rounded px-1.5 py-0.5">{c.expected_primary_role}</span>
-                    )}
-                  </div>
-                  <p className="text-xs text-neutral-500 mt-0.5 line-clamp-1">{c.query}</p>
-                  {c.expected_criteria.length > 0 && (
-                    <p className="text-xs text-neutral-400 mt-0.5">{c.expected_criteria.length} criteria</p>
-                  )}
-                </div>
-                <div className="flex items-center gap-1 flex-shrink-0">
-                  <button type="button" onClick={() => setModal(c)}
-                    className="grid h-7 w-7 place-items-center rounded-lg text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-700 hover:text-neutral-700 dark:hover:text-neutral-200"
-                    title="Edit">
-                    <Edit2 size={13} />
-                  </button>
-                  <button type="button" onClick={() => handleDeactivate(c.id)} disabled={deactivating === c.id}
-                    className="grid h-7 w-7 place-items-center rounded-lg text-neutral-400 hover:bg-amber-50 dark:hover:bg-amber-950/30 hover:text-amber-600 dark:hover:text-amber-400 disabled:opacity-40"
-                    title="Deactivate (soft delete)">
-                    <EyeOff size={13} />
-                  </button>
-                </div>
-              </div>
+          <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 overflow-hidden divide-y divide-neutral-200 dark:divide-neutral-800">
+            {sortedCategories.map(cat => (
+              <CategoryGroup
+                key={cat}
+                category={cat}
+                cases={categoryGroups[cat]}
+                selectedIds={selectedIds}
+                onToggle={toggleCase}
+                onToggleAll={toggleAll}
+                onEdit={c => setModal(c)}
+                onDeactivate={handleDeactivate}
+                deactivating={deactivating}
+              />
             ))}
 
-            {/* Inactive toggle + rows */}
+            {/* Inactive toggle */}
             {inactiveCases.length > 0 && (
               <>
                 <button type="button" onClick={() => setShowInactive(s => !s)}
@@ -804,20 +849,18 @@ export function EvalHarnessTab({ authorizedFetch }: { authorizedFetch: Authorize
                   {showInactive ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                   {inactiveCases.length} inactive case{inactiveCases.length !== 1 ? 's' : ''}
                 </button>
-
                 {showInactive && inactiveCases.map(c => (
-                  <div key={c.id} className="flex items-start gap-3 px-4 py-3 bg-neutral-50 dark:bg-neutral-900/50 opacity-60">
-                    <div className="w-4 flex-shrink-0" /> {/* spacer for checkbox column */}
+                  <div key={c.id} className="flex items-start gap-3 px-4 py-3 bg-neutral-50 dark:bg-neutral-900/50 opacity-60 border-b border-neutral-100 dark:border-neutral-800 last:border-0">
+                    <div className="w-4 flex-shrink-0" />
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
                         <span className="text-sm font-semibold text-neutral-500 truncate line-through">{c.title}</span>
                         <span className="text-[10px] font-semibold text-neutral-400 bg-neutral-200 dark:bg-neutral-700 rounded px-1.5 py-0.5">inactive</span>
                       </div>
-                      <p className="text-xs text-neutral-400 mt-0.5 line-clamp-1">{c.query}</p>
+                      {c.category && <p className="text-xs text-neutral-400 mt-0.5">{c.category}</p>}
                     </div>
                     <button type="button" onClick={() => handleRestore(c.id)} disabled={restoring === c.id}
-                      className="flex items-center gap-1 h-7 px-2 rounded-lg text-xs font-semibold text-neutral-400 hover:bg-neutral-200 dark:hover:bg-neutral-700 hover:text-neutral-700 dark:hover:text-neutral-200 disabled:opacity-40"
-                      title="Restore">
+                      className="flex items-center gap-1 h-7 px-2 rounded-lg text-xs font-semibold text-neutral-400 hover:bg-neutral-200 dark:hover:bg-neutral-700 hover:text-neutral-700 dark:hover:text-neutral-200 disabled:opacity-40">
                       <RotateCcw size={12} /> Restore
                     </button>
                   </div>
@@ -828,120 +871,15 @@ export function EvalHarnessTab({ authorizedFetch }: { authorizedFetch: Authorize
         )}
       </div>
 
-      {/* ─── Run section ───────────────────────────────────────────────────── */}
-      <div className="space-y-4">
-        <LangSmithBanner authorizedFetch={authorizedFetch} />
-
-        <div className="flex items-center gap-3">
-          <button type="button" disabled={!canRun} onClick={startRun}
-            className="flex items-center gap-1.5 rounded-lg bg-neutral-900 dark:bg-white px-4 py-2 text-sm font-semibold text-white dark:text-neutral-900 hover:bg-neutral-700 dark:hover:bg-neutral-200 disabled:opacity-40">
-            <Play size={13} />
-            {runStatus === 'running' ? 'Running…' : runLabel}
-          </button>
-          {selectedIds.size > 0 && (
-            <button type="button" onClick={() => setSelectedIds(new Set())}
-              className="text-xs text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300 underline underline-offset-2">
-              Clear selection
-            </button>
-          )}
-        </div>
-
-        {/* Progress log */}
-        {(log.length > 0 || runStatus === 'running') && (
-          <div>
-            <p className="text-xs font-bold text-neutral-500 mb-2">Progress</p>
-            <div ref={logRef}
-              className="rounded-xl bg-neutral-950 text-green-300 font-mono text-xs p-4 max-h-52 overflow-y-auto space-y-0.5">
-              {log.map((line, i) => <div key={i}>{line}</div>)}
-              {runStatus === 'running' && <div className="animate-pulse">⋯</div>}
-            </div>
-            {runError && <p className="mt-2 text-xs text-red-600 dark:text-red-400">{runError}</p>}
-          </div>
-        )}
-
-        {/* LangSmith experiment links */}
-        {(langsmithLinks.legacy || langsmithLinks.langgraph) && (
-          <div className="rounded-xl border border-emerald-200 dark:border-emerald-900 bg-emerald-50 dark:bg-emerald-950/30 px-4 py-3 space-y-1">
-            <p className="text-xs font-bold text-emerald-800 dark:text-emerald-300 mb-2">LangSmith experiments</p>
-            {langsmithLinks.legacy && (
-              <a href={langsmithLinks.legacy} target="_blank" rel="noopener noreferrer"
-                className="flex items-center gap-1.5 text-xs text-emerald-700 dark:text-emerald-400 hover:underline">
-                <ExternalLink size={11} /> Legacy pipeline experiment
-              </a>
-            )}
-            {langsmithLinks.langgraph && (
-              <a href={langsmithLinks.langgraph} target="_blank" rel="noopener noreferrer"
-                className="flex items-center gap-1.5 text-xs text-emerald-700 dark:text-emerald-400 hover:underline">
-                <ExternalLink size={11} /> LangGraph pipeline experiment
-              </a>
-            )}
-          </div>
-        )}
-
-        {/* Per-case results */}
-        {(runResult?.cases?.length ?? 0) > 0 && (
-          <div>
-            <p className="text-xs font-bold text-neutral-500 mb-2">
-              Results — {runResult!.cases.filter(r => r.overall_structural_pass).length}/{runResult!.cases.length} structural pass
-            </p>
-            <div className="space-y-2">
-              {runResult!.cases.map(r => <CaseResultRow key={r.case_id} r={r} />)}
-            </div>
-          </div>
-        )}
-        {runResult?.mode === 'langsmith' && runStatus === 'complete' && (
-          <p className="text-xs text-neutral-500 italic">
-            Per-case rows are in LangSmith. Use the experiment links above to view detailed results.
-          </p>
-        )}
-
-        {/* Run history */}
-        {runs.length > 0 && (
-          <div>
-            <p className="text-xs font-bold text-neutral-500 mb-2">Run history</p>
-            <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 overflow-hidden divide-y divide-neutral-100 dark:divide-neutral-800">
-              {runs.map(r => (
-                <div key={r.run_id} className="flex items-center gap-3 px-4 py-3 bg-white dark:bg-neutral-900 text-xs">
-                  <span className={`h-2 w-2 rounded-full flex-shrink-0 ${
-                    r.status === 'complete' ? 'bg-green-500'
-                    : r.status === 'error' ? 'bg-red-500'
-                    : 'bg-yellow-400 animate-pulse'
-                  }`} />
-                  <span className="flex-1 font-mono text-neutral-500 truncate">{r.run_id}</span>
-                  <span className="text-neutral-500">{r.case_count} case(s)</span>
-                  <span className={`font-semibold ${
-                    r.status === 'complete' ? 'text-green-700 dark:text-green-400'
-                    : r.status === 'error' ? 'text-red-600 dark:text-red-400'
-                    : 'text-yellow-600 dark:text-yellow-400'
-                  }`}>{r.status}</span>
-                  {r.started_at && <span className="text-neutral-400">{new Date(r.started_at).toLocaleString()}</span>}
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* ─── Modals ─────────────────────────────────────────────────────────── */}
+      {/* ═══ MODALS ════════════════════════════════════════════════════════════ */}
       {modal === 'create' && (
-        <CaseModal
-          onSave={form => handleSave(form)}
-          onClose={() => setModal(null)}
-        />
+        <CaseModal onSave={form => handleSave(form)} onClose={() => setModal(null)} />
       )}
       {modal === 'upload' && (
-        <UploadModal
-          authorizedFetch={authorizedFetch}
-          onDone={loadCases}
-          onClose={() => setModal(null)}
-        />
+        <UploadModal authorizedFetch={authorizedFetch} onDone={loadCases} onClose={() => setModal(null)} />
       )}
       {modal !== null && modal !== 'create' && modal !== 'upload' && (
-        <CaseModal
-          initial={modal as EvalCase}
-          onSave={form => handleSave(form, modal as EvalCase)}
-          onClose={() => setModal(null)}
-        />
+        <CaseModal initial={modal as EvalCase} onSave={form => handleSave(form, modal as EvalCase)} onClose={() => setModal(null)} />
       )}
     </div>
   )

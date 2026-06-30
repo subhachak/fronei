@@ -21,6 +21,7 @@ from app.routers.evals import (  # noqa: E402
     score_latency_pass,
     score_retrieval_completeness,
     score_retrieval_independence,
+    score_synthesis_grounding,
 )
 
 
@@ -162,3 +163,43 @@ def test_latency_pass_case_override_takes_priority():
     case = {"v2_spec": {"cost_latency_budget": {"latency_ms_ceiling": 1000}}}
     assert score_latency_pass(case, "research", "deep", 999) is True
     assert score_latency_pass(case, "research", "deep", 1001) is False
+
+
+# ── score_synthesis_grounding (Step 3, scoring_spec.md §1.5) ────────────────
+# EvidenceItem.source_id is assigned sequentially as "S1","S2",... during
+# bind_evidence (research_evidence.py:406) — the [S#] marker IS the source_id,
+# confirmed live: a real GPT-4o-latency run cited [S2][S3][S4] and scored 1.0.
+
+def test_synthesis_grounding_none_with_no_citations():
+    items = [_evidence_item()]
+    assert score_synthesis_grounding("No citations here at all.", items) is None
+
+
+def test_synthesis_grounding_full_when_all_citations_valid():
+    items = [SimpleNamespace(source_id=f"S{i}") for i in range(1, 5)]
+    answer = "AWS S3 has high durability [S1]. It also offers tiered pricing [S2][S3]."
+    assert score_synthesis_grounding(answer, items) == 1.0
+
+
+def test_synthesis_grounding_catches_fabricated_out_of_range_citations():
+    """The exact adversarial shape §1.5 calls out: plausible-looking but
+    fabricated citation indices that don't correspond to any real source in
+    this run's evidence pack."""
+    items = [SimpleNamespace(source_id=f"S{i}") for i in range(1, 4)]
+    answer = "Durability is high [S1]. Pricing is tiered [S2]. Industry experts agree [S47] this is the best choice [S99]."
+    assert score_synthesis_grounding(answer, items) == 0.5
+
+
+def test_synthesis_grounding_zero_when_all_citations_fabricated():
+    items = [SimpleNamespace(source_id="S1")]
+    answer = "This claim is well-sourced [S5][S9]."
+    assert score_synthesis_grounding(answer, items) == 0.0
+
+
+def test_synthesis_grounding_dedupes_repeated_citation_markers():
+    """A citation index repeated multiple times counts once, not once per
+    occurrence — grounding measures distinct citation validity, not citation
+    density."""
+    items = [SimpleNamespace(source_id="S1")]
+    answer = "Point one [S1]. Point two, same source [S1]. Point three, same source again [S1]."
+    assert score_synthesis_grounding(answer, items) == 1.0

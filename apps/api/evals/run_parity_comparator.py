@@ -54,7 +54,7 @@ def _run_legacy(entry: dict, tools) -> tuple[dict | None, str | None]:
 
     request = TurnRequest(
         message=entry["request"]["message"],
-        research_level="regular",
+        research_level=entry["request"].get("research_level", "auto"),
         quality_mode="standard",
         output_format="chat",
     )
@@ -72,7 +72,7 @@ def _run_langgraph(entry: dict, tools) -> tuple[dict | None, str | None]:
 
     request = TurnRequest(
         message=entry["request"]["message"],
-        research_level="regular",
+        research_level=entry["request"].get("research_level", "auto"),
         quality_mode="standard",
         output_format="chat",
     )

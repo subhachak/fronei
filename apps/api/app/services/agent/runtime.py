@@ -494,6 +494,11 @@ class Runtime:
         yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
         return response
 
+    # Tuning for _emit_buffered_answer's replay pacing — see its docstring.
+    _BUFFERED_REPLAY_CHUNK_CHARS = 120
+    _BUFFERED_REPLAY_CHUNK_DELAY_S = 0.03
+    _BUFFERED_REPLAY_MAX_TOTAL_DELAY_S = 6.0
+
     def _emit_buffered_answer(self, response: model_client.ModelResponse, progress) -> Iterator[StreamEnvelope]:
         """Emit answer stream events for non-streaming synthesis paths.
 
@@ -501,13 +506,29 @@ class Runtime:
         repair, so there is no token stream to forward live. Replay the final answer in
         chunks before the result event so clients that render answer_delta/answer_complete
         do not appear to stall at the research ledger.
+
+        The client (useTurnRunner.ts) buffers incoming deltas and drains them on its own
+        steady-cadence timer to produce a typing animation — but it flushes that buffer
+        immediately when answer_complete arrives. Since the full answer text already
+        exists here (this is a non-streaming synthesis path), emitting every chunk plus
+        answer_complete back-to-back with no delay means the whole burst lands within the
+        same tick on the client and the animation never gets a chance to run before the
+        flush empties it. A small per-chunk sleep gives genuine wall-clock spacing between
+        deltas, matching what the live-streaming legacy path produces naturally. Total
+        added delay is capped so very long reports don't make users wait artificially long.
         """
         text = response.text or ""
         if not text:
             return
+        chunk_chars = self._BUFFERED_REPLAY_CHUNK_CHARS
+        max_chunks = max(1, len(text) // chunk_chars + 1)
+        delay_s = min(
+            self._BUFFERED_REPLAY_CHUNK_DELAY_S,
+            self._BUFFERED_REPLAY_MAX_TOTAL_DELAY_S / max_chunks,
+        )
         char_count = 0
-        for start in range(0, len(text), 900):
-            delta = text[start : start + 900]
+        for start in range(0, len(text), chunk_chars):
+            delta = text[start : start + chunk_chars]
             char_count += len(delta)
             event = progress(
                 "answer_delta",
@@ -517,6 +538,8 @@ class Runtime:
                 ephemeral_ui=True,
             )
             yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
+            if delay_s > 0:
+                time.sleep(delay_s)
         event = progress(
             "answer_complete",
             "Answer stream complete.",

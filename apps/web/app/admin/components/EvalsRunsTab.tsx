@@ -3,7 +3,7 @@
 import { ChevronDown, ChevronRight, ExternalLink, Play } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { readErrorBody } from '../../lib/api'
-import type { AuthorizedFetch, EvalCase, EvalCaseRunResult, EvalRunResult, EvalRunSummary } from '../types'
+import type { AuthorizedFetch, EvalCase, EvalCaseRunResult, EvalPipeline, EvalRunResult, EvalRunSummary } from '../types'
 
 type LangSmithStatus = {
   configured: boolean
@@ -92,8 +92,8 @@ function Pass({ ok }: { ok: boolean | undefined }) {
 
 function CaseResultRow({ r }: { r: EvalCaseRunResult }) {
   const [open, setOpen] = useState(false)
-  const leg = r.legacy
-  const lg = r.langgraph
+  const data = r.run
+  const pipelineLabel = r.pipeline === 'legacy' ? 'Legacy' : 'LangGraph'
 
   return (
     <div className="border border-neutral-200 dark:border-neutral-800 rounded-xl overflow-hidden">
@@ -112,81 +112,72 @@ function CaseResultRow({ r }: { r: EvalCaseRunResult }) {
         </span>
         <div className="flex items-center gap-3 flex-shrink-0">
           <Pass ok={r.overall_structural_pass} />
-          <span className="text-xs text-neutral-400">Legacy</span>
-          <ScoreBadge score={leg.criteria?.score} />
-          <span className="text-xs text-neutral-400">LG</span>
-          <ScoreBadge score={lg.criteria?.score} />
+          <span className="text-xs text-neutral-400">{pipelineLabel}</span>
+          <ScoreBadge score={data.criteria?.score} />
         </div>
       </button>
 
       {open && (
         <div className="px-4 pb-4 pt-2 bg-white dark:bg-neutral-900 border-t border-neutral-100 dark:border-neutral-800 space-y-4">
-          {/* Side-by-side pipeline detail */}
-          <div className="grid grid-cols-2 gap-4">
-            {[
-              { label: 'Legacy', data: leg },
-              { label: 'LangGraph', data: lg },
-            ].map(({ label, data }) => (
-              <div key={label} className="rounded-lg border border-neutral-100 dark:border-neutral-800 p-3">
-                <p className="text-xs font-bold text-neutral-600 dark:text-neutral-400 mb-2">{label}</p>
-                {!data.ok ? (
-                  <p className="text-xs text-red-600 dark:text-red-400 font-mono whitespace-pre-wrap break-words">
-                    {data.error ?? 'Error'}
-                  </p>
-                ) : (
-                  <dl className="space-y-1 text-xs">
+          {/* Pipeline run detail — graded against this case's expected_criteria (ground truth) */}
+          <div className="rounded-lg border border-neutral-100 dark:border-neutral-800 p-3">
+            <p className="text-xs font-bold text-neutral-600 dark:text-neutral-400 mb-2">{pipelineLabel}</p>
+            {!data.ok ? (
+              <p className="text-xs text-red-600 dark:text-red-400 font-mono whitespace-pre-wrap break-words">
+                {data.error ?? 'Error'}
+              </p>
+            ) : (
+              <dl className="space-y-1 text-xs">
+                <div className="flex justify-between">
+                  <dt className="text-neutral-500">Answer length</dt>
+                  <dd className="font-semibold text-neutral-800 dark:text-neutral-200">{data.answer_length.toLocaleString()} chars</dd>
+                </div>
+                <div className="flex justify-between">
+                  <dt className="text-neutral-500">Evidence</dt>
+                  <dd className="font-semibold text-neutral-800 dark:text-neutral-200">{data.evidence_count} items</dd>
+                </div>
+                <div className="flex justify-between">
+                  <dt className="text-neutral-500">Claims</dt>
+                  <dd className="font-semibold text-neutral-800 dark:text-neutral-200">{data.claim_count}</dd>
+                </div>
+                <div className="flex justify-between">
+                  <dt className="text-neutral-500">Latency</dt>
+                  <dd className="font-semibold text-neutral-800 dark:text-neutral-200">{(data.latency_ms / 1000).toFixed(1)}s</dd>
+                </div>
+                {data.criteria && (
+                  <>
                     <div className="flex justify-between">
-                      <dt className="text-neutral-500">Answer length</dt>
-                      <dd className="font-semibold text-neutral-800 dark:text-neutral-200">{data.answer_length.toLocaleString()} chars</dd>
+                      <dt className="text-neutral-500">Criteria score</dt>
+                      <dd><ScoreBadge score={data.criteria.score} /></dd>
                     </div>
-                    <div className="flex justify-between">
-                      <dt className="text-neutral-500">Evidence</dt>
-                      <dd className="font-semibold text-neutral-800 dark:text-neutral-200">{data.evidence_count} items</dd>
-                    </div>
-                    <div className="flex justify-between">
-                      <dt className="text-neutral-500">Claims</dt>
-                      <dd className="font-semibold text-neutral-800 dark:text-neutral-200">{data.claim_count}</dd>
-                    </div>
-                    <div className="flex justify-between">
-                      <dt className="text-neutral-500">Latency</dt>
-                      <dd className="font-semibold text-neutral-800 dark:text-neutral-200">{(data.latency_ms / 1000).toFixed(1)}s</dd>
-                    </div>
-                    {data.criteria && (
-                      <>
-                        <div className="flex justify-between">
-                          <dt className="text-neutral-500">Criteria score</dt>
-                          <dd><ScoreBadge score={data.criteria.score} /></dd>
-                        </div>
-                        {data.criteria.passed.length > 0 && (
-                          <div>
-                            <dt className="text-neutral-500 mb-0.5">Passed</dt>
-                            <dd className="space-y-0.5">
-                              {data.criteria.passed.map((p, i) => (
-                                <p key={i} className="text-green-700 dark:text-green-400">✓ {p}</p>
-                              ))}
-                            </dd>
-                          </div>
-                        )}
-                        {data.criteria.failed.length > 0 && (
-                          <div>
-                            <dt className="text-neutral-500 mb-0.5">Failed</dt>
-                            <dd className="space-y-0.5">
-                              {data.criteria.failed.map((p, i) => (
-                                <p key={i} className="text-red-600 dark:text-red-400">✗ {p}</p>
-                              ))}
-                            </dd>
-                          </div>
-                        )}
-                        <div>
-                          <dt className="text-neutral-500">Explanation</dt>
-                          <dd className="text-neutral-700 dark:text-neutral-300 mt-0.5">{data.criteria.explanation}</dd>
-                        </div>
-                      </>
+                    {data.criteria.passed.length > 0 && (
+                      <div>
+                        <dt className="text-neutral-500 mb-0.5">Passed</dt>
+                        <dd className="space-y-0.5">
+                          {data.criteria.passed.map((p, i) => (
+                            <p key={i} className="text-green-700 dark:text-green-400">✓ {p}</p>
+                          ))}
+                        </dd>
+                      </div>
                     )}
-                  </dl>
+                    {data.criteria.failed.length > 0 && (
+                      <div>
+                        <dt className="text-neutral-500 mb-0.5">Failed</dt>
+                        <dd className="space-y-0.5">
+                          {data.criteria.failed.map((p, i) => (
+                            <p key={i} className="text-red-600 dark:text-red-400">✗ {p}</p>
+                          ))}
+                        </dd>
+                      </div>
+                    )}
+                    <div>
+                      <dt className="text-neutral-500">Explanation</dt>
+                      <dd className="text-neutral-700 dark:text-neutral-300 mt-0.5">{data.criteria.explanation}</dd>
+                    </div>
+                  </>
                 )}
-              </div>
-            ))}
+              </dl>
+            )}
           </div>
 
           {/* Structural checks */}
@@ -223,6 +214,7 @@ export function EvalsRunsTab({ authorizedFetch }: { authorizedFetch: AuthorizedF
   const [runs, setRuns] = useState<EvalRunSummary[]>([])
   const [error, setError] = useState('')
   const [langsmithLinks, setLangsmithLinks] = useState<{ legacy?: string; langgraph?: string }>({})
+  const [pipeline, setPipeline] = useState<EvalPipeline>('langgraph')
   const logRef = useRef<HTMLDivElement>(null)
   const abortRef = useRef<AbortController | null>(null)
 
@@ -271,8 +263,8 @@ export function EvalsRunsTab({ authorizedFetch }: { authorizedFetch: AuthorizedF
     setLangsmithLinks({})
 
     const payload = selectedIds.size > 0
-      ? { case_ids: Array.from(selectedIds) }
-      : {}
+      ? { case_ids: Array.from(selectedIds), pipeline }
+      : { pipeline }
 
     const startResp = await authorizedFetch('/admin/evals/runs', {
       method: 'POST',
@@ -340,14 +332,13 @@ export function EvalsRunsTab({ authorizedFetch }: { authorizedFetch: AuthorizedF
         break
       case 'case_result': {
         const r = ev.result as EvalCaseRunResult
-        const legOk = r.legacy.ok ? '✓' : '✗'
-        const lgOk = r.langgraph.ok ? '✓' : '✗'
-        const legScore = pct(r.legacy.criteria?.score)
-        const lgScore = pct(r.langgraph.criteria?.score)
-        setLog(l => [...l, `  → Legacy ${legOk} (criteria ${legScore})  LG ${lgOk} (criteria ${lgScore})`])
+        const ok = r.run.ok ? '✓' : '✗'
+        const score = pct(r.run.criteria?.score)
+        setLog(l => [...l, `  → ${r.pipeline} ${ok} (criteria ${score})`])
         // Accumulate into the envelope's cases list
         setRunResult(prev => ({
           mode: 'in_process',
+          pipeline: r.pipeline,
           cases: [...(prev?.cases ?? []), r],
           langsmith: null,
         }))
@@ -408,14 +399,26 @@ export function EvalsRunsTab({ authorizedFetch }: { authorizedFetch: AuthorizedF
                   : `${selectedIds.size} of ${cases.length} selected`}
             </p>
           </div>
-          <button
-            type="button"
-            disabled={!canRun}
-            onClick={startRun}
-            className="flex items-center gap-1.5 rounded-lg bg-neutral-900 dark:bg-white px-3 py-2 text-xs font-semibold text-white dark:text-neutral-900 hover:bg-neutral-700 dark:hover:bg-neutral-200 disabled:opacity-40"
-          >
-            <Play size={12} /> {runStatus === 'running' ? 'Running…' : 'Run'}
-          </button>
+          <div className="flex items-center gap-2">
+            <select
+              value={pipeline}
+              onChange={e => setPipeline(e.target.value as EvalPipeline)}
+              disabled={runStatus === 'running'}
+              title="Each case is graded against its own expected_criteria (ground truth) for the selected pipeline. To compare legacy vs langgraph head-to-head, use the Parity tab instead."
+              className="rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 px-2 py-2 text-xs font-semibold text-neutral-700 dark:text-neutral-300 disabled:opacity-40"
+            >
+              <option value="langgraph">LangGraph</option>
+              <option value="legacy">Legacy</option>
+            </select>
+            <button
+              type="button"
+              disabled={!canRun}
+              onClick={startRun}
+              className="flex items-center gap-1.5 rounded-lg bg-neutral-900 dark:bg-white px-3 py-2 text-xs font-semibold text-white dark:text-neutral-900 hover:bg-neutral-700 dark:hover:bg-neutral-200 disabled:opacity-40"
+            >
+              <Play size={12} /> {runStatus === 'running' ? 'Running…' : 'Run'}
+            </button>
+          </div>
         </div>
 
         {cases.length > 0 && (

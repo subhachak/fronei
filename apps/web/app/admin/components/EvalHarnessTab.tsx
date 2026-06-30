@@ -337,6 +337,12 @@ function CaseResultRow({ r, authorizedFetch }: { r: EvalCaseRunResult; authorize
               {r.route_correct ? '✓ route' : '✗ route'}
             </span>
           )}
+          {r.deep_research_gate && (
+            <span className={r.deep_research_gate.pass ? 'text-emerald-600 dark:text-emerald-400 font-semibold' : 'text-red-600 dark:text-red-400 font-semibold'}
+              title="Deep-research confirmation gate — verified the unconfirmed first pass returns route=clarify with a real plan preview before the confirmed pass runs research">
+              {r.deep_research_gate.pass ? '✓ gate' : '✗ gate'}
+            </span>
+          )}
           <span className="font-mono text-[10px] uppercase tracking-wide text-neutral-400 bg-neutral-100 dark:bg-neutral-800 rounded px-1.5 py-0.5" title="Route the orchestrator actually picked">
             {r.route}
           </span>

@@ -10,11 +10,13 @@ Parity routes (legacy vs LangGraph golden-set comparison):
   DELETE /admin/evals/parity/promote          Revert to env/config default
 
 Eval case CRUD:
-  GET    /admin/evals/cases                   List all cases
+  GET    /admin/evals/cases                   List active cases (?include_inactive=true for all)
   POST   /admin/evals/cases                   Create case
   GET    /admin/evals/cases/{id}              Get case
   PUT    /admin/evals/cases/{id}              Update case
-  DELETE /admin/evals/cases/{id}              Delete case
+  DELETE /admin/evals/cases/{id}              Soft-delete (sets is_active=False)
+  POST   /admin/evals/cases/{id}/restore      Reactivate a soft-deleted case
+  POST   /admin/evals/cases/upload            Bulk upsert from JSON array
 
 General eval runs (both pipelines, structural + criteria scoring):
   POST   /admin/evals/runs                    Start a run over selected (or all) cases
@@ -445,6 +447,7 @@ def _case_out(c) -> dict:
         "expected_primary_role": c.expected_primary_role,
         "min_independent_sources": c.min_independent_sources,
         "notes": c.notes,
+        "is_active": c.is_active,
         "created_by": c.created_by,
         "created_at": c.created_at.isoformat() if c.created_at else None,
         "updated_at": c.updated_at.isoformat() if c.updated_at else None,
@@ -452,11 +455,17 @@ def _case_out(c) -> dict:
 
 
 @router.get("/cases")
-def list_eval_cases(admin: AdminPrincipal = RequireAdmin) -> dict:
+def list_eval_cases(
+    include_inactive: bool = False,
+    admin: AdminPrincipal = RequireAdmin,
+) -> dict:
     from app.db.models import EvalCase, SessionLocal
     db = SessionLocal()
     try:
-        cases = db.query(EvalCase).order_by(EvalCase.created_at.desc()).all()
+        q = db.query(EvalCase)
+        if not include_inactive:
+            q = q.filter(EvalCase.is_active.is_(True))
+        cases = q.order_by(EvalCase.created_at.desc()).all()
         return {"items": [_case_out(c) for c in cases], "total": len(cases)}
     finally:
         db.close()
@@ -533,16 +542,120 @@ def update_eval_case(case_id: int, body: EvalCaseUpdate, admin: AdminPrincipal =
 
 @router.delete("/cases/{case_id}", status_code=204)
 def delete_eval_case(case_id: int, admin: AdminPrincipal = RequireAdmin) -> None:
+    """Soft-delete: sets is_active=False. Case is hidden from normal queries but never erased."""
     from app.db.models import EvalCase, SessionLocal
     db = SessionLocal()
     try:
         case = db.query(EvalCase).filter(EvalCase.id == case_id).first()
         if not case:
             raise HTTPException(status_code=404, detail=f"Eval case {case_id} not found.")
-        db.delete(case)
+        case.is_active = False
+        case.updated_at = datetime.now(timezone.utc)
         db.commit()
     finally:
         db.close()
+
+
+@router.post("/cases/{case_id}/restore", status_code=200)
+def restore_eval_case(case_id: int, admin: AdminPrincipal = RequireAdmin) -> dict:
+    """Reactivate a soft-deleted case."""
+    from app.db.models import EvalCase, SessionLocal
+    db = SessionLocal()
+    try:
+        case = db.query(EvalCase).filter(EvalCase.id == case_id).first()
+        if not case:
+            raise HTTPException(status_code=404, detail=f"Eval case {case_id} not found.")
+        case.is_active = True
+        case.updated_at = datetime.now(timezone.utc)
+        db.commit()
+        db.refresh(case)
+        return _case_out(case)
+    finally:
+        db.close()
+
+
+class EvalCaseUploadItem(BaseModel):
+    title: str = Field(min_length=1, max_length=256)
+    query: str = Field(min_length=1)
+    category: str | None = None
+    expected_criteria: list[str] = Field(default_factory=list)
+    expected_primary_role: str | None = None
+    min_independent_sources: int | None = Field(default=None, ge=1)
+    notes: str | None = None
+
+
+@router.post("/cases/upload", status_code=200)
+def upload_eval_cases(
+    body: list[EvalCaseUploadItem] = Body(...),
+    admin: AdminPrincipal = RequireAdmin,
+) -> dict:
+    """Bulk upsert eval cases from a JSON array.
+
+    Matching is by title (case-insensitive). Existing active cases are updated;
+    inactive (soft-deleted) cases are reactivated and updated; new titles are created.
+    Returns counts: created / updated / reactivated.
+    """
+    from app.db.models import EvalCase, SessionLocal
+    db = SessionLocal()
+    created = updated = reactivated = 0
+    errors: list[dict] = []
+    now = datetime.now(timezone.utc)
+
+    try:
+        # Build title → case map (all rows, including inactive, for upsert matching).
+        existing: dict[str, EvalCase] = {
+            c.title.lower(): c
+            for c in db.query(EvalCase).all()
+        }
+
+        for item in body:
+            try:
+                key = item.title.lower()
+                case = existing.get(key)
+                if case:
+                    was_inactive = not case.is_active
+                    case.title = item.title
+                    case.query = item.query
+                    case.category = item.category
+                    case.expected_criteria_json = json.dumps(item.expected_criteria)
+                    case.expected_primary_role = item.expected_primary_role
+                    case.min_independent_sources = item.min_independent_sources
+                    case.notes = item.notes
+                    case.is_active = True
+                    case.updated_at = now
+                    if was_inactive:
+                        reactivated += 1
+                    else:
+                        updated += 1
+                else:
+                    new_case = EvalCase(
+                        title=item.title,
+                        query=item.query,
+                        category=item.category,
+                        expected_criteria_json=json.dumps(item.expected_criteria),
+                        expected_primary_role=item.expected_primary_role,
+                        min_independent_sources=item.min_independent_sources,
+                        notes=item.notes,
+                        created_by=admin.user_id,
+                        is_active=True,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                    db.add(new_case)
+                    created += 1
+            except Exception as exc:
+                errors.append({"title": item.title, "error": str(exc)})
+
+        db.commit()
+    finally:
+        db.close()
+
+    return {
+        "created": created,
+        "updated": updated,
+        "reactivated": reactivated,
+        "errors": errors,
+    }
 
 
 # ===========================================================================
@@ -795,12 +908,12 @@ def start_eval_run(body: EvalRunRequest = Body(default=None), admin: AdminPrinci
 
     db = SessionLocal()
     try:
-        q = db.query(EvalCase)
+        q = db.query(EvalCase).filter(EvalCase.is_active.is_(True))
         if body and body.case_ids:
             q = q.filter(EvalCase.id.in_(body.case_ids))
         cases = q.order_by(EvalCase.created_at).all()
         if not cases:
-            raise HTTPException(status_code=422, detail="No eval cases found (create some first).")
+            raise HTTPException(status_code=422, detail="No active eval cases found (create some first).")
         case_dicts = [_case_out(c) for c in cases]
 
         run_id = f"evalrun_{uuid.uuid4().hex[:12]}"

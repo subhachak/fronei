@@ -24,6 +24,7 @@ import type {
   EvalCase,
   EvalCaseRunResult,
   EvalPipeline,
+  EvalRoute,
   EvalRunResult,
   EvalRunSummary,
 } from '../types'
@@ -47,10 +48,14 @@ const EVAL_CASE_CATEGORIES = [
   'evidence_quality', 'domain_specific', 'answer_behavior',
 ]
 
+// The harness no longer force-routes every case to "research" — the
+// orchestrator picks for real, so a case can assert which route it expects.
+const EVAL_ROUTE_OPTIONS: (EvalRoute | '')[] = ['', 'direct', 'clarify', 'research', 'document', 'research_document']
+
 const DEFAULT_FORM = {
   title: '', query: '', category: '', expected_criteria_text: '',
   expected_primary_role: '', min_independent_sources: '',
-  min_evidence_items: '', min_criteria_score: '', notes: '',
+  min_evidence_items: '', min_criteria_score: '', expected_route: '', notes: '',
 }
 type FormState = typeof DEFAULT_FORM
 
@@ -326,6 +331,15 @@ function CaseResultRow({ r, authorizedFetch }: { r: EvalCaseRunResult; authorize
               {r.overall_benchmark_pass ? '✓ benchmarks' : '✗ benchmarks'}
             </span>
           )}
+          {r.route_correct != null && (
+            <span className={r.route_correct ? 'text-emerald-600 dark:text-emerald-400 font-semibold' : 'text-red-600 dark:text-red-400 font-semibold'}
+              title={`Expected route: ${r.expected_route}`}>
+              {r.route_correct ? '✓ route' : '✗ route'}
+            </span>
+          )}
+          <span className="font-mono text-[10px] uppercase tracking-wide text-neutral-400 bg-neutral-100 dark:bg-neutral-800 rounded px-1.5 py-0.5" title="Route the orchestrator actually picked">
+            {r.route}
+          </span>
           <span className="text-neutral-400">{pipelineLabel}</span><ScoreBadge score={data.criteria?.score} />
         </div>
       </button>
@@ -440,6 +454,7 @@ function CaseModal({ initial, onSave, onClose }: {
       min_independent_sources: initial.min_independent_sources != null ? String(initial.min_independent_sources) : '',
       min_evidence_items: initial.min_evidence_items != null ? String(initial.min_evidence_items) : '',
       min_criteria_score: initial.min_criteria_score != null ? String(initial.min_criteria_score) : '',
+      expected_route: initial.expected_route ?? '',
       notes: initial.notes ?? '',
     } : DEFAULT_FORM,
   )
@@ -480,6 +495,13 @@ function CaseModal({ initial, onSave, onClose }: {
                 {ROLE_OPTIONS.map(r => <option key={r} value={r}>{r || '—'}</option>)}
               </select></div>
           </div>
+          <div><label className="block text-xs font-semibold text-neutral-500 mb-1">
+              Expected route <span className="font-normal text-neutral-400">(optional — leave blank to not assert on routing, just grade whatever route the orchestrator picks)</span>
+            </label>
+            <select value={form.expected_route} onChange={e => set('expected_route', e.target.value)}
+              className="w-full rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-3 py-2 text-sm text-neutral-900 dark:text-neutral-50 focus:outline-none focus:ring-2 focus:ring-neutral-400">
+              {EVAL_ROUTE_OPTIONS.map(r => <option key={r} value={r}>{r || '— any —'}</option>)}
+            </select></div>
           <div><label className="block text-xs font-semibold text-neutral-500 mb-1">Expected criteria <span className="font-normal text-neutral-400">(one per line)</span></label>
             <textarea rows={4} value={form.expected_criteria_text} onChange={e => set('expected_criteria_text', e.target.value)}
               placeholder={"Cites practitioner data\nIncludes official USCIS SLA\nGives specific time range"}
@@ -891,6 +913,7 @@ export function EvalHarnessTab({ authorizedFetch }: { authorizedFetch: Authorize
       min_independent_sources: form.min_independent_sources ? Number(form.min_independent_sources) : null,
       min_evidence_items: form.min_evidence_items ? Number(form.min_evidence_items) : null,
       min_criteria_score: form.min_criteria_score ? Number(form.min_criteria_score) : null,
+      expected_route: form.expected_route || null,
       notes: form.notes || null,
     }
     const url = existing ? `/admin/evals/cases/${existing.id}` : '/admin/evals/cases'

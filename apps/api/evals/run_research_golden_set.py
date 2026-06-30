@@ -49,13 +49,37 @@ def _make_tools():
     return Tools.from_settings()
 
 
+def _resolve_research_level(message: str, forced_level: str | None) -> str:
+    """Mirror what the orchestrator would resolve research_level to.
+
+    The eval harness calls the research pipelines directly, bypassing
+    orchestrator.decide(), so choose_research_level()'s dimension-richness
+    classifier never runs unless we invoke it here ourselves.
+    """
+    if forced_level in {"easy", "regular", "deep"}:
+        return forced_level
+    from app.services.agent.models import TurnRequest
+    from app.services.agent.orchestrator import choose_research_level
+
+    probe_request = TurnRequest(
+        message=message,
+        research_level="auto",
+        quality_mode="standard",
+        output_format="chat",
+    )
+    return choose_research_level(probe_request, "research")
+
+
 def _run_one_case(entry: dict, tools, run_id: str) -> dict:
     from app.services.agent.models import TurnRequest
     from app.services.agent.research_lead import lead_research_loop
 
+    resolved_level = _resolve_research_level(
+        entry["request"]["message"], entry["request"].get("research_level")
+    )
     request = TurnRequest(
         message=entry["request"]["message"],
-        research_level=entry["request"].get("research_level", "auto"),
+        research_level=resolved_level,
         quality_mode="standard",
         output_format="chat",
     )

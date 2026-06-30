@@ -133,6 +133,10 @@ class EvalCase(Base):
     # Primary evidence role expected ("official_policy", "operational_reality", etc.)
     expected_primary_role: Mapped[str | None] = mapped_column(String(64), nullable=True)
     min_independent_sources: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Structured benchmark thresholds, scored deterministically (not by the LLM judge)
+    # against the actual run's evidence_count and criteria.score.
+    min_evidence_items: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    min_criteria_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
     # Soft-delete: False = deactivated (hidden from normal queries, never erased).

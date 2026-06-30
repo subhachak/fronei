@@ -289,6 +289,10 @@ export type EvalCase = {
   expected_criteria: string[]
   expected_primary_role: string | null
   min_independent_sources: number | null
+  /** Structured benchmark thresholds — scored deterministically against the
+   *  actual run, separate from the LLM-judged expected_criteria above. */
+  min_evidence_items: number | null
+  min_criteria_score: number | null
   notes: string | null
   is_active: boolean
   created_by: string | null
@@ -303,6 +307,7 @@ export type EvalPipelineResult = {
   answer_length: number
   evidence_count: number
   claim_count: number
+  independent_source_count: number | null
   judge_score: number | null
   latency_ms: number
   criteria: {
@@ -315,6 +320,8 @@ export type EvalPipelineResult = {
 
 export type EvalPipeline = 'langgraph' | 'legacy'
 
+export type EvalBenchmarkResult = { target: number; actual: number | null; pass: boolean }
+
 export type EvalCaseRunResult = {
   case_id: number
   title: string
@@ -325,7 +332,12 @@ export type EvalCaseRunResult = {
   pipeline: EvalPipeline
   run: EvalPipelineResult
   structural: Record<string, boolean>
+  /** Deterministic pass/fail against the case's structured benchmark
+   *  thresholds (min_evidence_items, min_independent_sources, min_criteria_score).
+   *  Empty if the case has no structured benchmarks defined. */
+  benchmarks: Record<string, EvalBenchmarkResult>
   overall_structural_pass: boolean
+  overall_benchmark_pass: boolean | null
 }
 
 export type LangSmithExperiment = {

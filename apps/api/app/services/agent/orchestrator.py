@@ -179,7 +179,7 @@ def heuristic_decide(
             "citations",
         ]
     )
-    if _looks_too_vague(text) and not _referent_resolves_from_context(request.message, getattr(request, "prior_context", None)):
+    if _looks_too_vague(text) and not _referent_resolves_from_context(request.message, request.conversation_context):
         return OrchestratorDecision(
             route="clarify",
             confidence=0.72,
@@ -353,31 +353,27 @@ _REFERENTIAL_PATTERNS: tuple[re.Pattern, ...] = (
 )
 
 
-def _referent_resolves_from_context(query: str, prior_context: list | None) -> bool:
+def _referent_resolves_from_context(query: str, conversation_context: str) -> bool:
     """Return True if an apparently vague/referential query has enough
     prior-conversation context that proceeding to research is safer than
     asking the user to clarify again.
 
-    Intentionally conservative: we only skip the clarify branch when the
-    context is substantive (>50 chars of recent assistant/user content).
-    The failure cost of false-clarifying (friction, broken flow) is higher
-    than the failure cost of occasionally misresolving a referent — so we
-    lean toward proceeding when any reasonable context exists.
+    Reads `request.conversation_context` (the string already on TurnRequest)
+    rather than a `prior_context` list — TurnRequest has no such attribute;
+    the eval harness formats prior_context turns into conversation_context
+    before dispatch. Intentionally conservative: >50 chars of context is the
+    only bar, which skips the clarify branch when any reasonable context
+    exists. The failure cost of false-clarifying (friction, broken flow) is
+    higher than the failure cost of occasionally misresolving a referent.
     """
-    if not prior_context:
+    if not conversation_context or not conversation_context.strip():
         return False
     # Check if the query even contains a referential expression worth resolving
     query_lower = query.lower()
     has_referent = any(p.search(query_lower) for p in _REFERENTIAL_PATTERNS)
     if not has_referent:
         return False
-    # Look at the last 4 turns (2 user+assistant exchanges) for anchor text
-    recent = prior_context[-4:] if len(prior_context) > 4 else prior_context
-    recent_text = " ".join(
-        t.get("content", "") if isinstance(t, dict) else str(t)
-        for t in recent
-    )
-    return len(recent_text.strip()) > 50
+    return len(conversation_context.strip()) > 50
 
 
 def _looks_too_vague(text: str) -> bool:

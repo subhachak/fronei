@@ -51,32 +51,36 @@ def test_federal_funds_rate_not_excluded():
 
 # ── Fix 2: clarify over-trigger with prior context ───────────────────────────
 
-def test_referent_resolves_from_prior_context():
+def test_referent_resolves_from_conversation_context_string():
     from app.services.agent.orchestrator import _referent_resolves_from_context
-    prior = [
-        {"role": "user", "content": "Compare Salesforce, HubSpot, and Dynamics 365 for enterprise B2B."},
-        {"role": "assistant", "content": "Happy to help. Salesforce leads on customization..."},
-        {"role": "user", "content": "Pricing and integration ecosystem."},
-        {"role": "assistant", "content": "Salesforce Sales Cloud starts at $25/user/month..."},
+    ctx = "User: Compare Salesforce, HubSpot, and Dynamics 365 for enterprise B2B.\nAssistant: Salesforce leads on customization...\nUser: Pricing and integration ecosystem.\nAssistant: Salesforce Sales Cloud starts at $25/user/month..."
+    assert _referent_resolves_from_context("The Salesforce one.", ctx) is True
+
+
+def test_no_resolution_with_empty_context_string():
+    from app.services.agent.orchestrator import _referent_resolves_from_context
+    assert _referent_resolves_from_context("The Salesforce one.", "") is False
+    assert _referent_resolves_from_context("The Salesforce one.", "   ") is False
+
+
+def test_thin_context_string_not_resolved():
+    from app.services.agent.orchestrator import _referent_resolves_from_context
+    assert _referent_resolves_from_context("Can you go deeper on that?", "User: Yes.") is False
+
+
+def test_format_prior_context_formats_turns():
+    from app.routers.evals import _format_prior_context
+    turns = [
+        {"role": "user", "content": "Compare Salesforce and HubSpot."},
+        {"role": "assistant", "content": "Salesforce leads on customization."},
     ]
-    assert _referent_resolves_from_context("The Salesforce one.", prior) is True
+    result = _format_prior_context(turns)
+    assert "User: Compare Salesforce and HubSpot." in result
+    assert "Assistant: Salesforce leads on customization." in result
+    assert len(result) > 50
 
 
-def test_no_resolution_without_context():
-    from app.services.agent.orchestrator import _referent_resolves_from_context
-    assert _referent_resolves_from_context("The Salesforce one.", None) is False
-    assert _referent_resolves_from_context("The Salesforce one.", []) is False
-
-
-def test_no_referent_not_affected():
-    """A query with no referential expression should not be treated as resolvable."""
-    from app.services.agent.orchestrator import _referent_resolves_from_context
-    prior = [{"role": "user", "content": "Tell me about cloud storage."}]
-    assert _referent_resolves_from_context("Compare AWS S3 and Azure Blob Storage.", prior) is False
-
-
-def test_thin_context_not_resolved():
-    """Context shorter than 50 chars is treated as too thin to resolve a referent."""
-    from app.services.agent.orchestrator import _referent_resolves_from_context
-    prior = [{"role": "assistant", "content": "Yes."}]
-    assert _referent_resolves_from_context("Can you go deeper on that?", prior) is False
+def test_format_prior_context_empty():
+    from app.routers.evals import _format_prior_context
+    assert _format_prior_context(None) == ""
+    assert _format_prior_context([]) == ""

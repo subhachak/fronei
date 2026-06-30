@@ -67,11 +67,19 @@ function fmtMs(ms: number | null | undefined) {
 
 type LangSmithStatus = { configured: boolean; project: string | null; tracing_on: boolean; dataset_name: string }
 
-function LangSmithBanner({ authorizedFetch }: { authorizedFetch: AuthorizedFetch }) {
+function LangSmithBanner({ authorizedFetch, onStatus }: {
+  authorizedFetch: AuthorizedFetch
+  onStatus?: (configured: boolean) => void
+}) {
   const [status, setStatus] = useState<LangSmithStatus | null>(null)
   useEffect(() => {
-    authorizedFetch('/admin/evals/langsmith/status').then(r => r.ok ? r.json() : null).then(d => d && setStatus(d)).catch(() => {})
-  }, [authorizedFetch])
+    authorizedFetch('/admin/evals/langsmith/status')
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        if (d) { setStatus(d); onStatus?.(d.configured) }
+      })
+      .catch(() => {})
+  }, [authorizedFetch]) // eslint-disable-line react-hooks/exhaustive-deps
   if (!status) return null
   if (!status.configured) return (
     <div className="rounded-lg border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-900 px-4 py-3 text-xs text-neutral-500">
@@ -698,6 +706,8 @@ export function EvalHarnessTab({ authorizedFetch }: { authorizedFetch: Authorize
 
   // ── Run ─────────────────────────────────────────────────────────────────────
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
+  const [runMode, setRunMode] = useState<'in_process' | 'langsmith' | 'both'>('in_process')
+  const [lsConfigured, setLsConfigured] = useState(false)
   const [runStatus, setRunStatus] = useState<'idle' | 'running' | 'complete' | 'error'>('idle')
   const [log, setLog] = useState<string[]>([])
   const [progressTotal, setProgressTotal] = useState<number | null>(null)
@@ -885,7 +895,10 @@ export function EvalHarnessTab({ authorizedFetch }: { authorizedFetch: Authorize
   async function startRun() {
     setRunStatus('running'); setLog([]); setRunResult(null); setRunError('')
     setLangsmithLinks({}); setProgressTotal(null); setProgressCompleted(0)
-    const payload = selectedIds.size > 0 ? { case_ids: Array.from(selectedIds) } : {}
+    const payload = {
+      mode: runMode,
+      ...(selectedIds.size > 0 ? { case_ids: Array.from(selectedIds) } : {}),
+    }
     try {
       const startResp = await authorizedFetch('/admin/evals/runs', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
@@ -912,9 +925,37 @@ export function EvalHarnessTab({ authorizedFetch }: { authorizedFetch: Authorize
 
       {/* ═══ RUN SECTION ══════════════════════════════════════════════════════ */}
       <div className="space-y-4">
-        <LangSmithBanner authorizedFetch={authorizedFetch} />
+        <LangSmithBanner authorizedFetch={authorizedFetch} onStatus={setLsConfigured} />
 
-        <div className="flex items-center gap-3">
+        {/* Mode selector + run button */}
+        <div className="flex items-center gap-3 flex-wrap">
+          {/* Segmented mode control */}
+          <div className="flex rounded-lg border border-neutral-200 dark:border-neutral-700 overflow-hidden text-xs font-semibold">
+            {([
+              { value: 'in_process', label: 'Local', title: 'Run both pipelines in-process; full per-case data stored locally' },
+              { value: 'langsmith',  label: 'LangSmith', title: lsConfigured ? 'Run via LangSmith evaluate(); per-case data in LangSmith' : 'LangSmith not configured' },
+              { value: 'both',       label: 'Both', title: lsConfigured ? 'In-process first (local data), then LangSmith experiments — ~2× runtime' : 'LangSmith not configured' },
+            ] as const).map(({ value, label, title }) => {
+              const disabled = !lsConfigured && value !== 'in_process'
+              const active = runMode === value
+              return (
+                <button key={value} type="button"
+                  disabled={disabled || runStatus === 'running'}
+                  title={title}
+                  onClick={() => setRunMode(value)}
+                  className={`px-3 py-1.5 transition-colors border-r border-neutral-200 dark:border-neutral-700 last:border-0
+                    ${active
+                      ? 'bg-neutral-900 dark:bg-white text-white dark:text-neutral-900'
+                      : disabled
+                        ? 'text-neutral-300 dark:text-neutral-600 cursor-not-allowed bg-white dark:bg-neutral-900'
+                        : 'text-neutral-600 dark:text-neutral-400 bg-white dark:bg-neutral-900 hover:bg-neutral-50 dark:hover:bg-neutral-800'
+                    }`}>
+                  {label}
+                </button>
+              )
+            })}
+          </div>
+
           <button type="button" disabled={!canRun} onClick={startRun}
             className="flex items-center gap-1.5 rounded-lg bg-neutral-900 dark:bg-white px-4 py-2 text-sm font-semibold text-white dark:text-neutral-900 hover:bg-neutral-700 dark:hover:bg-neutral-200 disabled:opacity-40">
             <Play size={13} />

@@ -798,7 +798,7 @@ function RunHistoryRow({
             </div>
           )}
           {run.error && (
-            <p className="text-xs text-red-600 dark:text-red-400 font-mono">{run.error}</p>
+            <p className="text-xs text-red-600 dark:text-red-400 font-mono whitespace-pre-wrap break-words">{run.error}</p>
           )}
         </div>
       )}
@@ -1128,7 +1128,7 @@ export function EvalHarnessTab({ authorizedFetch }: { authorizedFetch: Authorize
       <div className="grid grid-cols-1 lg:grid-cols-[420px_1fr] gap-6 items-start">
 
         {/* ═══ LEFT COLUMN — case list ═════════════════════════════════════════ */}
-        <div>
+        <div className="min-w-0">
           <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
             <div className="flex items-center gap-3">
               <h3 className="text-sm font-bold text-neutral-900 dark:text-neutral-50">
@@ -1245,7 +1245,12 @@ export function EvalHarnessTab({ authorizedFetch }: { authorizedFetch: Authorize
         </div>
 
         {/* ═══ RIGHT COLUMN — current run (top) + history (bottom) ════════════ */}
-        <div className="space-y-6">
+        {/* min-w-0 is required: a 1fr grid track won't shrink below its content's
+            intrinsic width by default (grid items have min-width:auto), so long
+            unbreakable content (run IDs, pre-formatted JSON/log lines, wide tables
+            in answer markdown) pushes this column past the viewport instead of
+            wrapping/scrolling within it. */}
+        <div className="space-y-6 min-w-0">
 
           {/* ── Current run status ──────────────────────────────────────────── */}
           <div className="space-y-4">
@@ -1327,7 +1332,7 @@ export function EvalHarnessTab({ authorizedFetch }: { authorizedFetch: Authorize
                 ⏹ Run stopped — partial results shown below.
               </p>
             )}
-            {runError && <p className="text-xs text-red-600 dark:text-red-400">{runError}</p>}
+            {runError && <p className="text-xs text-red-600 dark:text-red-400 break-words">{runError}</p>}
 
             {Object.keys(langsmithLinks).length > 0 && (
               <div className="rounded-xl border border-emerald-200 dark:border-emerald-900 bg-emerald-50 dark:bg-emerald-950/30 px-4 py-3 space-y-1">

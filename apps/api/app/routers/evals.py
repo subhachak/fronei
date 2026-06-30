@@ -861,51 +861,92 @@ def _score_criteria(query: str, response_text: str, criteria: list[str]) -> dict
     return {"score": None, "passed": [], "failed": [], "explanation": "Scoring failed."}
 
 
-def _build_eval_request(query: str):
-    """Build the TurnRequest AND get the real orchestrator decision for an
-    eval case — the same routing call a real user turn makes.
+def _decide_eval_route(query: str):
+    """Get the real orchestrator decision for an eval case query — the same
+    routing call a real user turn makes. No force_route: the orchestrator
+    picks direct/clarify/research/document/research_document on its own,
+    exactly like Runtime.run_stream() does. This is what lets the harness
+    grade routing correctness (expected_route) in addition to research-
+    pipeline quality — previously every case was force-routed to "research"
+    regardless of what the query actually called for.
+    """
+    from app.services.agent.models import TurnRequest
+    from app.services.agent.orchestrator import decide
 
-    No force_route: the orchestrator picks direct/clarify/research/document/
-    research_document on its own, exactly like Runtime.run_stream() does.
-    This is what lets the harness grade routing correctness (expected_route)
-    in addition to research-pipeline quality — previously every case was
-    force-routed to "research" regardless of what the query actually called
-    for, so a query that should get a direct answer or hit clarify was never
-    actually tested as such.
+    draft = TurnRequest(message=query, research_level="auto", quality_mode="standard", output_format="chat")
+    return decide(draft)
+
+
+def _build_eval_request(query: str, decision, *, confirm_deep_research: bool):
+    """Build the TurnRequest to actually dispatch, given an already-computed
+    `decision` (from _decide_eval_route) — never re-decides, so a case's
+    routing grade and its dispatched request always agree with each other.
 
     research_level is resolved by choose_research_level() (via decide()'s
     normal path) whenever the decision lands on research/research_document —
     same dimension-richness classifier production uses, not hardcoded.
 
-    When research_level="deep", Runtime.run_stream() would normally pause for
-    user confirmation before running it (requires_confirmation gate at
-    runtime.py:341 — the same "Continue with deep research?" prompt a real
-    user sees). Eval cases are pre-approved to run unattended, so
-    confirm_deep_research=True here plays the same role as a user clicking
-    "Start research": it's the documented bypass for that gate, not a
-    shortcut around it.
-
-    Returns (request, decision).
+    confirm_deep_research is the caller's choice, not hardcoded: pass False
+    to test whether the deep-research confirmation gate (runtime.py:341,
+    the "Continue with deep research?" prompt a real user sees) actually
+    fires — see _check_deep_research_gate. Pass True to bypass it and grade
+    the research that would run once a user approves, the same way clicking
+    "Start research" does on a real second turn.
     """
     from app.services.agent.models import TurnRequest
-    from app.services.agent.orchestrator import decide
 
-    draft = TurnRequest(
-        message=query,
-        research_level="auto",
-        quality_mode="standard",
-        output_format="chat",
-    )
-    decision = decide(draft)
     research_level = decision.research_level if decision.route in ("research", "research_document") else "auto"
-    request = TurnRequest(
+    return TurnRequest(
         message=query,
         research_level=research_level,
         quality_mode="standard",
         output_format="chat",
-        confirm_deep_research=True,
+        confirm_deep_research=confirm_deep_research,
     )
-    return request, decision
+
+
+def _check_deep_research_gate(unconfirmed_request, decision, tools) -> dict[str, Any]:
+    """Verify the deep-research confirmation gate actually fires for a
+    deep-tier-shaped query, by calling the SAME Runtime._run_deep_research_confirmation
+    handler run_stream() uses (runtime.py:1157), with confirm_deep_research=False
+    (no pre-approval) — i.e. exactly what a real user's FIRST turn produces
+    before they've clicked anything.
+
+    A correctly-firing gate returns route="clarify" with a non-empty
+    research_plan_preview and a "Start research" follow-up option that would
+    resume research with confirm_deep_research=True if clicked (or, with a
+    timed gate, auto-fires after the countdown — same payload either way).
+    """
+    from app.services.agent.models import Goal, ProgressEvent, new_id
+    from app.services.agent.runtime import Runtime
+
+    turn_id = new_id("turn")
+    events: list = []
+
+    def progress(stage: str, message: str, **data) -> ProgressEvent:
+        event = ProgressEvent(turn_id=turn_id, stage=stage, message=message, data=data)
+        events.append(event)
+        return event
+
+    runtime = Runtime(tools)
+    goal = Goal(
+        user_id="eval", conversation_id=unconfirmed_request.conversation_id,
+        objective=unconfirmed_request.message, route=decision.route, quality_mode=unconfirmed_request.quality_mode,
+    )
+    result, _ = runtime._run_deep_research_confirmation(unconfirmed_request, goal, turn_id, events, decision, progress)
+
+    preview = result.research_plan_preview or {}
+    has_preview = bool(preview.get("workflow") or preview.get("investigate"))
+    resumes_research = any(
+        opt.get("confirm_deep_research") is True and opt.get("research_level") == "deep"
+        for opt in (result.follow_up_options or [])
+    )
+    return {
+        "route": result.route,
+        "has_preview": has_preview,
+        "resumes_research": resumes_research,
+        "pass": result.route == "clarify" and has_preview and resumes_research,
+    }
 
 
 # configured_orchestrator()'s pipeline selection is process-wide state shared
@@ -1028,8 +1069,24 @@ def _run_one_eval_case(case_dict: dict, tools, pipeline: str = "langgraph") -> d
 
     query = case_dict["query"]
     criteria = case_dict.get("expected_criteria") or []
-    request, decision = _build_eval_request(query)
+    decision = _decide_eval_route(query)
     route = decision.route
+
+    # Two-pass deep-research gate test: first prove the gate actually fires
+    # for a deep-tier-shaped query exactly as a real user's first turn would
+    # see it (confirm_deep_research=False, no pre-approval), then dispatch
+    # the real (approved) request below to grade the research itself. Both
+    # passes use the SAME decision, so they can't disagree with each other.
+    deep_research_gate = None
+    if route in ("research", "research_document") and decision.requires_confirmation:
+        try:
+            unconfirmed_request = _build_eval_request(query, decision, confirm_deep_research=False)
+            deep_research_gate = _check_deep_research_gate(unconfirmed_request, decision, tools)
+        except Exception:
+            deep_research_gate = {"route": None, "has_preview": False, "resumes_research": False,
+                                   "pass": False, "error": tb.format_exc()[:500]}
+
+    request = _build_eval_request(query, decision, confirm_deep_research=True)
 
     t0 = time.perf_counter()
     err = None
@@ -1085,6 +1142,7 @@ def _run_one_eval_case(case_dict: dict, tools, pipeline: str = "langgraph") -> d
         "route": route,
         "expected_route": expected_route,
         "route_correct": route_correct,
+        "deep_research_gate": deep_research_gate,
         "run": run,
         "structural": structural,
         "benchmarks": benchmarks,

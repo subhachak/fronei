@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from app.config import get_settings
 from app.services.agent import model_client
 from app.services.agent.langgraph_runtime.graph import run_stub_graph  # noqa: F401 — re-exported for tests
+from app.services.agent.langgraph_runtime.state import BudgetDecision
 from app.services.agent.models import new_id
 from app.services.agent.research_models import (
     EvidencePack,
@@ -13,6 +15,7 @@ from app.services.agent.research_models import (
     ResearchPlan,
 )
 
+logger = logging.getLogger(__name__)
 
 VALID_ORCHESTRATORS = {"legacy", "langgraph"}
 
@@ -79,6 +82,37 @@ def run_langgraph_research(request: Any, tools: Any, progress: Any = None) -> di
     latency_ms = final_state.get("latency_ms") or 0
     cost_usd = final_state.get("cost_usd_spent") or 0.0
 
+    judge_result = final_state.get("judge_result")
+    if judge_result is None:
+        # The graph reached END without ever running synthesize/verify/judge —
+        # almost always budget_gate_pre_synthesis routing straight to END on
+        # REQUIRE_HUMAN_APPROVAL (cost ceiling hit right after bind, before
+        # synthesis could run; see graph.py's conditional edges). This is a
+        # REAL, user-visible failure: bind may have collected evidence, but
+        # no answer was ever synthesized from it. Previously this fell back to
+        # ResearchJudgeResult(status="pass", score=1.0) with answer="" — a
+        # blank response silently presented as a perfect one. Surface it
+        # honestly instead.
+        budget_decision = final_state.get("budget_decision")
+        evidence_count = len((final_state.get("evidence") or EvidencePack()).items)
+        pause_contract = final_state.get("pause_contract") or {}
+        if budget_decision == BudgetDecision.REQUIRE_HUMAN_APPROVAL:
+            reason = pause_contract.get("pause_reason") or "Cost budget exceeded before synthesis could run."
+            answer = (
+                f"Research was interrupted before an answer could be synthesized: {reason} "
+                f"{evidence_count} source item(s) were collected but not yet written into an answer."
+            )
+        else:
+            reason = f"Graph ended without running synthesis (budget_decision={budget_decision!r})."
+            answer = "Research did not complete: the pipeline ended before an answer could be synthesized."
+        logger.warning(
+            "langgraph research ended without judge_result: %s (visited_nodes=%s)",
+            reason, final_state.get("visited_nodes"),
+        )
+        judge_result = ResearchJudgeResult(
+            status="fail", score=0.0, issues=[reason], can_publish=False,
+        )
+
     response = model_client.ModelResponse(
         text=answer,
         model_used=model_used,
@@ -87,10 +121,6 @@ def run_langgraph_research(request: Any, tools: Any, progress: Any = None) -> di
         model_role="research_synthesis",
     )
 
-    # Build feedback from real judge result; fall back to pass if judge didn't run.
-    judge_result = final_state.get("judge_result") or ResearchJudgeResult(
-        status="pass", score=1.0, issues=[], can_publish=True
-    )
     repair_history = final_state.get("repair_history") or []
     repaired = bool(repair_history)
     feedback = ResearchFeedbackLoop(

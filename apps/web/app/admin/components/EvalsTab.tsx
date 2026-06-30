@@ -585,7 +585,7 @@ export function EvalsTab({ authorizedFetch }: { authorizedFetch: AuthorizedFetch
   const [subTab, setSubTab] = useState<EvalsSubTab>('harness')
 
   return (
-    <div className="space-y-5 max-w-4xl">
+    <div className="space-y-5">
       {/* Header */}
       <div>
         <h2 className="text-base font-bold text-neutral-900 dark:text-neutral-50">Evals</h2>

@@ -179,7 +179,7 @@ def heuristic_decide(
             "citations",
         ]
     )
-    if _looks_too_vague(text):
+    if _looks_too_vague(text) and not _referent_resolves_from_context(request.message, getattr(request, "prior_context", None)):
         return OrchestratorDecision(
             route="clarify",
             confidence=0.72,
@@ -342,6 +342,42 @@ def _parse_json(raw: str) -> dict:
         if not match:
             raise
         return json.loads(match.group(0))
+
+
+_REFERENTIAL_PATTERNS: tuple[re.Pattern, ...] = (
+    re.compile(r"\bthe (\w+) one\b", re.IGNORECASE),   # "the Salesforce one"
+    re.compile(r"\bthat\b", re.IGNORECASE),              # "can you go deeper on that"
+    re.compile(r"\bthis\b", re.IGNORECASE),              # "what about this"
+    re.compile(r"\bit\b", re.IGNORECASE),                # "how does it work"
+    re.compile(r"\bsame\b", re.IGNORECASE),              # "same question for Azure"
+)
+
+
+def _referent_resolves_from_context(query: str, prior_context: list | None) -> bool:
+    """Return True if an apparently vague/referential query has enough
+    prior-conversation context that proceeding to research is safer than
+    asking the user to clarify again.
+
+    Intentionally conservative: we only skip the clarify branch when the
+    context is substantive (>50 chars of recent assistant/user content).
+    The failure cost of false-clarifying (friction, broken flow) is higher
+    than the failure cost of occasionally misresolving a referent — so we
+    lean toward proceeding when any reasonable context exists.
+    """
+    if not prior_context:
+        return False
+    # Check if the query even contains a referential expression worth resolving
+    query_lower = query.lower()
+    has_referent = any(p.search(query_lower) for p in _REFERENTIAL_PATTERNS)
+    if not has_referent:
+        return False
+    # Look at the last 4 turns (2 user+assistant exchanges) for anchor text
+    recent = prior_context[-4:] if len(prior_context) > 4 else prior_context
+    recent_text = " ".join(
+        t.get("content", "") if isinstance(t, dict) else str(t)
+        for t in recent
+    )
+    return len(recent_text.strip()) > 50
 
 
 def _looks_too_vague(text: str) -> bool:

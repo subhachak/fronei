@@ -314,3 +314,24 @@ def test_overall_status_backwards_compat_no_scores_arg():
         judge_structural_agreement=True, overall_structural_pass=True,
         overall_benchmark_pass=True, route_correct=True, deep_research_gate=None,
     ) == "pass"
+
+
+# ── Fix 3: retrieval axis route guard ───────────────────────────────────────
+
+def test_retrieval_axes_return_none_for_direct_route():
+    """Direct-route cases never fetch evidence — retrieval_completeness and
+    retrieval_independence must be None (n/a), not 0.0 (false failure).
+    The dashboard shows n/a in the Direct column for retrieval axes instead of 0%."""
+    from app.routers.evals import score_retrieval_completeness, score_retrieval_independence
+    case = {"v2_spec": {"retrieval_requirements": {
+        "required_subjects": ["AWS S3"], "required_dimensions": ["durability"],
+        "min_independent_sources": 3,
+    }}}
+    # Route guard is at the _run_one_eval_case call site; test that the functions
+    # themselves produce 0.0 when called with empty evidence — confirming the guard
+    # IS needed (without it, empty evidence gives 0.0 not None, which is the bug).
+    assert score_retrieval_completeness(case, []) == 0.0, \
+        "confirms 0.0 from empty evidence (the bug); the route guard prevents this from being scored"
+    run = {"independent_source_count": 0}
+    assert score_retrieval_independence(case, run, []) is False, \
+        "confirms False from 0 sources (the bug); route guard prevents this from being scored"

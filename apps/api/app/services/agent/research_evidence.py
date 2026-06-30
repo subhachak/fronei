@@ -508,7 +508,55 @@ def extract_evidence_claims(
             )
     claims.sort(key=lambda claim: (claim.confidence, _claim_type_priority(claim.claim_type)), reverse=True)
     max_claims = 80 if plan and plan.research_profile == "technical_architecture" else 32
-    return claims[:max_claims]
+    return _balance_claims_across_cells(claims, evidence, max_claims=max_claims)
+
+
+def _balance_claims_across_cells(
+    claims: list[EvidenceClaim], evidence: EvidencePack, *, max_claims: int
+) -> list[EvidenceClaim]:
+    """Cap claims at max_claims without letting one coverage-contract cell
+    (e.g. one subject's claims) crowd out the others.
+
+    A flat confidence-sorted cut silently starves whichever subject/dimension
+    happens to score lower on average — e.g. in a 3-subject comparison, the
+    first-mentioned subject's claims dominate the top of the ranking and the
+    other two subjects vanish from synthesis even though their evidence is
+    sitting unused further down the list. Round-robin across cells (falling
+    back to confidence order for claims whose source has no cell tags) keeps
+    every requested subject/dimension represented up to the same budget.
+    """
+    if len(claims) <= max_claims:
+        return claims
+
+    cells_by_source = {item.source_id: item.supports_cells for item in evidence.items}
+    by_cell: dict[str, list[EvidenceClaim]] = {}
+    uncategorized: list[EvidenceClaim] = []
+    for claim in claims:  # claims is already confidence-sorted; preserve that order within each cell
+        cell_ids = cells_by_source.get(claim.source_id) or []
+        if not cell_ids:
+            uncategorized.append(claim)
+            continue
+        # A claim can support multiple cells; bucket it under its first for round-robin purposes.
+        by_cell.setdefault(cell_ids[0], []).append(claim)
+
+    if not by_cell:
+        return claims[:max_claims]
+
+    selected: list[EvidenceClaim] = []
+    cell_queues = list(by_cell.values())
+    idx = 0
+    while len(selected) < max_claims and any(cell_queues):
+        queue = cell_queues[idx % len(cell_queues)]
+        if queue:
+            selected.append(queue.pop(0))
+        idx += 1
+    remaining = max_claims - len(selected)
+    if remaining > 0 and uncategorized:
+        selected.extend(uncategorized[:remaining])
+
+    # Restore original confidence order among the selected claims.
+    selected_ids = {c.claim_id for c in selected}
+    return [c for c in claims if c.claim_id in selected_ids]
 
 
 def _max_claims_for_item(item: EvidenceItem, plan: ResearchPlan | None, *, default: int) -> int:

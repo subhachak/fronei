@@ -15,6 +15,7 @@ Eval case CRUD:
   GET    /admin/evals/cases/{id}              Get case
   PUT    /admin/evals/cases/{id}              Update case
   DELETE /admin/evals/cases/{id}              Soft-delete (sets is_active=False)
+  GET    /admin/evals/cases/{id}/history      Per-case run history across all runs
   POST   /admin/evals/cases/{id}/restore      Reactivate a soft-deleted case
   POST   /admin/evals/cases/upload            Bulk upsert from JSON array
 
@@ -556,6 +557,76 @@ def delete_eval_case(case_id: int, admin: AdminPrincipal = RequireAdmin) -> None
         db.close()
 
 
+@router.get("/cases/{case_id}/history")
+def get_case_run_history(case_id: int, limit: int = 20, admin: AdminPrincipal = RequireAdmin) -> dict:
+    """Return past eval run results for a specific case (newest first).
+
+    Scans recent EvalRun rows for those that included case_id, extracts the
+    per-case result from results_json, and returns a compact history list.
+    Max scanned rows: 50; max returned entries: limit (default 20).
+    """
+    from app.db.models import EvalRun, SessionLocal
+    db = SessionLocal()
+    try:
+        rows = db.query(EvalRun).order_by(EvalRun.started_at.desc()).limit(50).all()
+        history = []
+        for row in rows:
+            # Fast pre-filter: check case_ids_json before parsing results
+            case_ids = json.loads(row.case_ids_json or "[]")
+            if case_id not in case_ids:
+                continue
+            raw = json.loads(row.results_json or "null")
+            if not raw:
+                continue
+            # Normalise envelope vs. raw list
+            if isinstance(raw, list):
+                results_list = raw
+            elif isinstance(raw, dict):
+                results_list = raw.get("cases", [])
+            else:
+                continue
+            case_result = next((r for r in results_list if r.get("case_id") == case_id), None)
+            if not case_result:
+                continue
+            leg = case_result.get("legacy") or {}
+            lg = case_result.get("langgraph") or {}
+            leg_crit = leg.get("criteria") or {}
+            lg_crit = lg.get("criteria") or {}
+            history.append({
+                "run_id": row.id,
+                "status": row.status,
+                "started_at": row.started_at.isoformat() if row.started_at else None,
+                "overall_structural_pass": case_result.get("overall_structural_pass"),
+                "legacy": {
+                    "ok": leg.get("ok"),
+                    "answer_length": leg.get("answer_length"),
+                    "evidence_count": leg.get("evidence_count"),
+                    "claim_count": leg.get("claim_count"),
+                    "latency_ms": leg.get("latency_ms"),
+                    "criteria_score": leg_crit.get("score"),
+                    "criteria_passed": leg_crit.get("passed") or [],
+                    "criteria_failed": leg_crit.get("failed") or [],
+                    "answer": leg.get("answer", "")[:500],
+                },
+                "langgraph": {
+                    "ok": lg.get("ok"),
+                    "answer_length": lg.get("answer_length"),
+                    "evidence_count": lg.get("evidence_count"),
+                    "claim_count": lg.get("claim_count"),
+                    "latency_ms": lg.get("latency_ms"),
+                    "criteria_score": lg_crit.get("score"),
+                    "criteria_passed": lg_crit.get("passed") or [],
+                    "criteria_failed": lg_crit.get("failed") or [],
+                    "answer": lg.get("answer", "")[:500],
+                },
+            })
+            if len(history) >= limit:
+                break
+        return {"case_id": case_id, "history": history}
+    finally:
+        db.close()
+
+
 @router.post("/cases/{case_id}/restore", status_code=200)
 def restore_eval_case(case_id: int, admin: AdminPrincipal = RequireAdmin) -> dict:
     """Reactivate a soft-deleted case."""
@@ -985,13 +1056,27 @@ def start_eval_run(body: EvalRunRequest = Body(default=None), admin: AdminPrinci
 
 
 @router.get("/runs")
-def list_eval_runs(admin: AdminPrincipal = RequireAdmin) -> dict:
-    """List recent eval runs from DB (newest first)."""
+def list_eval_runs(
+    limit: int = 11,
+    offset: int = 0,
+    admin: AdminPrincipal = RequireAdmin,
+) -> dict:
+    """List eval runs from DB (newest first).
+
+    Supports pagination via limit/offset.  Callers typically request limit=11
+    to fetch one extra row and detect whether a 'load more' page exists, then
+    display only the first 10.
+    """
     from app.db.models import EvalRun, SessionLocal
     db = SessionLocal()
     try:
-        rows = db.query(EvalRun).order_by(EvalRun.started_at.desc()).limit(20).all()
+        q = db.query(EvalRun).order_by(EvalRun.started_at.desc())
+        total: int = q.count()
+        rows = q.offset(offset).limit(min(limit, 50)).all()
         return {
+            "total": total,
+            "offset": offset,
+            "limit": limit,
             "runs": [
                 {
                     "run_id": r.id,
@@ -1001,11 +1086,10 @@ def list_eval_runs(admin: AdminPrincipal = RequireAdmin) -> dict:
                     "started_at": r.started_at.isoformat() if r.started_at else None,
                     "completed_at": r.completed_at.isoformat() if r.completed_at else None,
                     "error": r.error,
-                    # In-progress run: pull live stats from memory
                     "live": r.id in _EVAL_RUNS,
                 }
                 for r in rows
-            ]
+            ],
         }
     finally:
         db.close()

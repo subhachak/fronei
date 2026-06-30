@@ -141,6 +141,17 @@ class EvalCase(Base):
     # "research_document"); null means the case doesn't assert on routing
     # (only graded on its answer once a route is whatever it is).
     expected_route: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # JSON blob holding the v2 scoring schema's optional nested sections
+    # (routing.expected_gate_fires/expected_gate_silent, retrieval_requirements,
+    # synthesis_requirements, document_requirements, cost_latency_budget,
+    # adversarial_properties, harness_integrity_checks — see eval_case_schema.json
+    # case_template). A single JSON column rather than ~15 new individual columns:
+    # the schema is still evolving (scoring_spec.md has open implementation
+    # questions), and every section is independently optional/sparse by design —
+    # scoring functions check each subsection's presence and skip the axis if
+    # absent, same pattern as the existing min_evidence_items/min_criteria_score
+    # benchmark fields. Null/missing means "this case doesn't assert on that axis."
+    v2_spec_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
     # Soft-delete: False = deactivated (hidden from normal queries, never erased).

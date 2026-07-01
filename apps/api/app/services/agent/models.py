@@ -114,6 +114,7 @@ class TurnResult(BaseModel):
     goal: Goal
     answer: str
     route: RouteName
+    turn_status: str = "completed"
     model_used: str = ""
     sources: list[Source] = Field(default_factory=list)
     tool_calls: list[ToolCall] = Field(default_factory=list)

@@ -37,6 +37,7 @@ export function useAgent() {
     setTurnState: (_result: AgentResult | null, _events: ProgressEvent[]) => {},
     resetTurnState: () => {},
     setError: (_message: string | null) => {},
+    resumeTurn: (_turnId: string, _conversationId: string, _turnMessage: string) => Promise.resolve(),
   })
 
   const templateHook = useTemplates({ authorizedFetch })
@@ -56,6 +57,9 @@ export function useAgent() {
     isRunning: () => runningRef.current,
     setMessage,
     onTurnState: (result, events) => turnStateRef.current.setTurnState(result, events),
+    onResumeRunningTurn: (turnId, conversationId, turnMessage) => {
+      void turnStateRef.current.resumeTurn(turnId, conversationId, turnMessage)
+    },
     onResetTurn: () => turnStateRef.current.resetTurnState(),
     onError: message => turnStateRef.current.setError(message),
   })
@@ -83,6 +87,7 @@ export function useAgent() {
     setTurnState: turnRunner.setTurnState,
     resetTurnState: turnRunner.resetTurnState,
     setError: turnRunner.setError,
+    resumeTurn: turnRunner.resumeTurn,
   }
 
   const latestArtifact = turnRunner.result?.artifacts?.[0] || workspaceHook.latestTurn?.artifacts?.[0]

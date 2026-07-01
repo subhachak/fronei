@@ -383,6 +383,21 @@ export function useTurnRunner(options: TurnRunnerOptions) {
     }
   }
 
+  async function resumeTurn(turnId: string, conversationId: string, turnMessage: string) {
+    if (running) return
+    setRunning(true)
+    activeRunMessageRef.current = turnMessage
+    try {
+      const streamed = await streamTurnStatus(turnId, conversationId, turnMessage)
+      if (!streamed) await pollTurnStatus(turnId, conversationId, turnMessage)
+    } catch (err) {
+      setError(streamErrorMessage(err))
+    } finally {
+      setRunning(false)
+      activeRunMessageRef.current = null
+    }
+  }
+
   return {
     events,
     activeEvents,
@@ -393,6 +408,7 @@ export function useTurnRunner(options: TurnRunnerOptions) {
     running,
     canRun,
     run,
+    resumeTurn,
     activeRunMessage: activeRunMessageRef.current,
     resetTurnState,
     setTurnState,

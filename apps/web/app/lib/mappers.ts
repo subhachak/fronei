@@ -32,6 +32,7 @@ export function mapTurn(result: AgentResult): WorkItem {
     id: result.turn_id,
     title: titleFromMessage(message || result.answer || result.route),
     route: result.route,
+    turnStatus: result.turn_status,
     createdAt: result.created_at || new Date().toISOString(),
     completedAt: result.created_at || undefined,
     message,

@@ -84,6 +84,7 @@ export type AgentResult = {
   }
   answer: string
   route: string
+  turn_status?: string
   model_used?: string
   latency_ms?: number
   sources?: Source[]
@@ -108,6 +109,7 @@ export type WorkItem = {
   id: string
   title: string
   route: string
+  turnStatus?: string
   createdAt: string
   completedAt?: string
   message?: string

@@ -22,6 +22,7 @@ type WorkspaceOptions = {
   isRunning: () => boolean
   setMessage: (value: string) => void
   onTurnState: (result: AgentResult | null, events: ProgressEvent[]) => void
+  onResumeRunningTurn?: (turnId: string, conversationId: string, turnMessage: string) => void
   onResetTurn: () => void
   onError: (message: string | null) => void
 }
@@ -37,7 +38,7 @@ type WorkspaceCache = {
 }
 
 export function useWorkspaces(options: WorkspaceOptions) {
-  const { authorizedFetch, isRunning, setMessage, onTurnState, onResetTurn, onError } = options
+  const { authorizedFetch, isRunning, setMessage, onTurnState, onResumeRunningTurn, onResetTurn, onError } = options
   const [cachedWorkspaceState] = useState<WorkspaceCache | null>(() => readWorkspaceCache())
   const [workspaces, setWorkspaces] = useState<Workspace[]>(cachedWorkspaceState?.workspaces || [])
   const [workspacesLoading, setWorkspacesLoading] = useState(true)
@@ -92,7 +93,13 @@ export function useWorkspaces(options: WorkspaceOptions) {
         )),
       })))
       const latest = turns.at(-1)
-      onTurnState(latest?.result || null, latest?.events || [])
+      if (latest && (latest.turnStatus === 'running' || latest.turnStatus === 'queued')) {
+        // Turn is still in-progress — don't show stale persisted result; resume live polling instead.
+        onTurnState(null, [])
+        onResumeRunningTurn?.(latest.id, conversationId, latest.message || '')
+      } else {
+        onTurnState(latest?.result || null, latest?.events || [])
+      }
     } finally {
       if (showInitialPlaceholder) {
         setLoadingConversationId(current => current === conversationId ? null : current)

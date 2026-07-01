@@ -1451,6 +1451,7 @@ def _turn_result_from_rows(
         goal=goal,
         answer=turn.answer,
         route=turn.route,  # type: ignore[arg-type]
+        turn_status=turn.status or "completed",
         model_used=turn.model_used,
         sources=[Source.model_validate(item) for item in _loads(turn.sources_json, [])],
         tool_calls=[

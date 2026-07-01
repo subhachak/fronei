@@ -209,6 +209,7 @@ export function useTurnRunner(options: TurnRunnerOptions) {
       result: next,
       artifacts: next.artifacts || [],
       sourceCount: next.sources?.length || 0,
+      autoStartResearchPlan: Boolean(next.research_plan_preview),
     }, conversationId)
   }
 

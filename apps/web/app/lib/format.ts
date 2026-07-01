@@ -7,15 +7,26 @@ export function formatDuration(ms: number): string {
 }
 
 export function formatRelativeTime(value: string): string {
-  const timestamp = new Date(value).getTime()
-  if (!Number.isFinite(timestamp)) return 'recent'
-  const seconds = Math.max(1, Math.round((Date.now() - timestamp) / 1000))
+  const timestamp = appTimestampMs(value)
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return 'recent'
+  const seconds = Math.round((Date.now() - timestamp) / 1000)
+  if (seconds <= 5) return 'just now'
   if (seconds < 60) return `${seconds}s ago`
   const minutes = Math.round(seconds / 60)
   if (minutes < 60) return `${minutes}m ago`
   const hours = Math.round(minutes / 60)
   if (hours < 24) return `${hours}h ago`
   return `${Math.round(hours / 24)}d ago`
+}
+
+export function appTimestampMs(value?: string): number {
+  if (!value) return 0
+  const trimmed = value.trim()
+  if (!trimmed) return 0
+  const hasTimezone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(trimmed)
+  const normalized = hasTimezone ? trimmed : `${trimmed}Z`
+  const parsed = Date.parse(normalized)
+  return Number.isFinite(parsed) ? parsed : 0
 }
 
 export function humanizeStage(stage: string): string {

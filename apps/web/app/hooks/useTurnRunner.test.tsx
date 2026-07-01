@@ -72,6 +72,31 @@ describe('useTurnRunner', () => {
     expect(authorizedFetch).toHaveBeenNthCalledWith(2, '/turns/turn_1/stream', { headers: {} })
   })
 
+  it('marks a freshly generated research plan as eligible for timed auto-start', async () => {
+    const appendTurn = vi.fn()
+    const authorizedFetch = vi.fn()
+      .mockResolvedValueOnce(response({ turn_id: 'turn_plan', conversation_id: 'conv_1', status: 'running' }))
+      .mockResolvedValueOnce(response([
+        'event: turn',
+        'data: {"turn_id":"turn_plan","status":"completed","turn":{"turn_id":"turn_plan","answer":"Plan ready","route":"clarify","research_plan_preview":{"title":"Deep research"},"follow_up_options":[{"label":"Start research","confirm_deep_research":true}],"sources":[],"artifacts":[]}}',
+        '',
+        '',
+      ].join('\n')))
+    const { result } = renderHook(() => useTurnRunner({
+      ...baseOptions(authorizedFetch),
+      appendTurn,
+    }))
+
+    await act(async () => {
+      await result.current.run()
+    })
+
+    expect(appendTurn).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'turn_plan',
+      autoStartResearchPlan: true,
+    }), 'conv_1')
+  })
+
   it('deduplicates replayed event IDs', async () => {
     const authorizedFetch = vi.fn()
       .mockResolvedValueOnce(response({ turn_id: 'turn_1', conversation_id: 'conv_1', status: 'running' }))

@@ -119,6 +119,7 @@ export type WorkItem = {
   result?: AgentResult
   artifacts: Artifact[]
   sourceCount: number
+  autoStartResearchPlan?: boolean
 }
 
 export type Conversation = {

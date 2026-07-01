@@ -277,6 +277,8 @@ class Turn(Base):
         onupdate=lambda: datetime.now(timezone.utc),
     )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    langgraph_run_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    pause_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class LangGraphRunContext(Base):

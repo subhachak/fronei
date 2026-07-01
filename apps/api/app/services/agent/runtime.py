@@ -375,6 +375,8 @@ class Runtime:
             elif route == "research":
                 research = yield from self._run_research_subtree(request, progress)
                 response = research["response"]
+                langgraph_state = research.get("langgraph_state") or {}
+                is_paused = bool(langgraph_state.get("interrupted"))
                 is_langgraph_streamed = (
                     research.get("orchestrator") == "langgraph"
                     and research.get("answer_streamed")
@@ -382,13 +384,20 @@ class Runtime:
                 if request.research_level == "deep" and (
                     not research.get("answer_streamed")
                     or (research.get("replay_final_answer") and not is_langgraph_streamed)
-                ):
+                ) and not is_paused:
                     yield from self._emit_buffered_answer(response, progress)
+                pause_contract = langgraph_state.get("pause_contract") or {}
                 result = TurnResult(
                     turn_id=turn_id,
                     goal=goal,
                     answer=response.text,
                     route=goal.route,
+                    turn_status="paused" if is_paused else "completed",
+                    langgraph_run_id=research.get("langgraph_run_id") if is_paused else None,
+                    pause_reason=pause_contract.get("pause_reason") if is_paused else None,
+                    required_additional_budget_usd=(
+                        pause_contract.get("required_additional_budget_usd") if is_paused else None
+                    ),
                     model_used=response.model_used,
                     sources=research["sources"],
                     tool_calls=research["tool_calls"],

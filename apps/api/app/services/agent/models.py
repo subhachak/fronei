@@ -115,6 +115,9 @@ class TurnResult(BaseModel):
     answer: str
     route: RouteName
     turn_status: str = "completed"
+    langgraph_run_id: str | None = None
+    pause_reason: str | None = None
+    required_additional_budget_usd: float | None = None
     model_used: str = ""
     sources: list[Source] = Field(default_factory=list)
     tool_calls: list[ToolCall] = Field(default_factory=list)

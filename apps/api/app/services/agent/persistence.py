@@ -1216,6 +1216,8 @@ def load_turn_state(turn_id: str, user_id: str) -> dict | None:
             "attempt_count": turn.attempt_count,
             "max_attempts": turn.max_attempts,
             "heartbeat_at": turn.heartbeat_at.isoformat() if turn.heartbeat_at else None,
+            "langgraph_run_id": turn.langgraph_run_id,
+            "pause_reason": turn.pause_reason,
         }
     finally:
         db.close()
@@ -1223,7 +1225,8 @@ def load_turn_state(turn_id: str, user_id: str) -> dict | None:
 
 def complete_turn(result: TurnResult, *, lease_owner: str | None = None) -> bool:
     context_snapshot = _context_snapshot_from_result(result)
-    should_update_context = bool(result.goal.conversation_id)
+    is_paused = result.turn_status == "paused"
+    should_update_context = bool(result.goal.conversation_id) and not is_paused
     completed_at = datetime.now(timezone.utc)
     completion_values = {
         Turn.user_id: result.goal.user_id,
@@ -1231,18 +1234,20 @@ def complete_turn(result: TurnResult, *, lease_owner: str | None = None) -> bool
         Turn.objective: result.goal.objective,
         Turn.route: result.route,
         Turn.quality_mode: result.goal.quality_mode,
-        Turn.status: "completed",
+        Turn.status: result.turn_status,
         Turn.answer: result.answer,
         Turn.model_used: result.model_used,
         Turn.sources_json: _dumps([source.model_dump(mode="json") for source in result.sources]),
         Turn.latency_ms: result.latency_ms,
         Turn.cost_usd: result.cost_usd,
-        Turn.completed_at: completed_at,
+        Turn.completed_at: None if is_paused else completed_at,
         Turn.updated_at: completed_at,
         Turn.lease_owner: None,
         Turn.lease_expires_at: None,
         Turn.heartbeat_at: None,
         Turn.error_message: None,
+        Turn.langgraph_run_id: result.langgraph_run_id,
+        Turn.pause_reason: result.pause_reason,
     }
     db = SessionLocal()
     new_artifact_locations: list[str] = []
@@ -1293,10 +1298,10 @@ def complete_turn(result: TurnResult, *, lease_owner: str | None = None) -> bool
                         ctx.setdefault("conversation", {})
                         ctx["conversation"]["title"] = conversation.title
                         conversation.context_json = _dumps(ctx)
-                conversation.updated_at = turn.completed_at
+                conversation.updated_at = turn.completed_at or turn.updated_at
                 workspace = db.get(Workspace, conversation.workspace_id)
                 if workspace:
-                    workspace.updated_at = turn.completed_at
+                    workspace.updated_at = conversation.updated_at
 
         for tool in result.tool_calls:
             if db.get(ToolCallRow, tool.id):
@@ -1350,6 +1355,46 @@ def complete_turn(result: TurnResult, *, lease_owner: str | None = None) -> bool
     return True
 
 
+def complete_turn_after_langgraph_resume(langgraph_run_id: str, result: dict[str, Any]) -> bool:
+    """Update the original chat Turn after an admin resumes a paused LangGraph run."""
+    db = SessionLocal()
+    try:
+        turn = db.query(Turn).filter(Turn.langgraph_run_id == langgraph_run_id).first()
+        if turn is None:
+            return False
+        langgraph_state = result.get("langgraph_state") or {}
+        still_paused = bool(langgraph_state.get("interrupted"))
+        pause_contract = langgraph_state.get("pause_contract") or {}
+        response = result.get("response")
+        now = datetime.now(timezone.utc)
+
+        turn.status = "paused" if still_paused else "completed"
+        text = getattr(response, "text", "")
+        if text:
+            turn.answer = text
+        turn.model_used = getattr(response, "model_used", turn.model_used) or turn.model_used
+        turn.latency_ms = int((turn.latency_ms or 0) + int(getattr(response, "latency_ms", 0) or 0))
+        turn.cost_usd = float(turn.cost_usd or 0.0) + float(getattr(response, "cost_usd", 0.0) or 0.0)
+        turn.updated_at = now
+        turn.completed_at = None if still_paused else now
+        if still_paused:
+            turn.pause_reason = pause_contract.get("pause_reason")
+        else:
+            turn.pause_reason = None
+            turn.langgraph_run_id = None
+            if turn.conversation_id:
+                conversation = db.get(Conversation, turn.conversation_id)
+                if conversation and conversation.user_id == turn.user_id:
+                    conversation.updated_at = now
+                    workspace = db.get(Workspace, conversation.workspace_id)
+                    if workspace:
+                        workspace.updated_at = now
+        db.commit()
+        return True
+    finally:
+        db.close()
+
+
 def _record_routing_feedback(result: TurnResult) -> None:
     try:
         router_event = next((event for event in result.events if event.stage == "fast_router"), None)
@@ -1399,6 +1444,8 @@ def load_turn_status(turn_id: str, user_id: str) -> dict | None:
         attempt_count = turn.attempt_count
         max_attempts = turn.max_attempts
         heartbeat_at = turn.heartbeat_at
+        langgraph_run_id = turn.langgraph_run_id
+        pause_reason = turn.pause_reason
     finally:
         db.close()
     result = load_turn(turn_id, user_id)
@@ -1411,6 +1458,8 @@ def load_turn_status(turn_id: str, user_id: str) -> dict | None:
         "attempt_count": attempt_count,
         "max_attempts": max_attempts,
         "heartbeat_at": heartbeat_at.isoformat() if heartbeat_at else None,
+        "langgraph_run_id": langgraph_run_id,
+        "pause_reason": pause_reason,
         "turn": result.model_dump(mode="json"),
     }
 
@@ -1477,6 +1526,8 @@ def _turn_result_from_rows(
         answer=turn.answer,
         route=turn.route,  # type: ignore[arg-type]
         turn_status=turn.status or "completed",
+        langgraph_run_id=turn.langgraph_run_id,
+        pause_reason=turn.pause_reason,
         model_used=turn.model_used,
         sources=[Source.model_validate(item) for item in _loads(turn.sources_json, [])],
         tool_calls=[

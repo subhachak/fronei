@@ -4,8 +4,11 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from app.db.models import LangGraphRunContext, SessionLocal
+from app.auth import AdminPrincipal
+from app.db.models import LangGraphRunContext, SessionLocal, Turn
+from app.routers import admin as admin_router
 from app.services.agent import model_client
+from app.services.agent import persistence
 from app.services.agent.langgraph_runtime.nodes import NODE_ORDER
 from app.services.agent.langgraph_runtime.graph import get_compiled_research_graph
 from app.services.agent.langgraph_runtime.runtime import (
@@ -15,7 +18,7 @@ from app.services.agent.langgraph_runtime.runtime import (
     stream_langgraph_research,
 )
 from app.services.agent.langgraph_runtime.state import BudgetDecision
-from app.services.agent.models import TurnRequest, new_id
+from app.services.agent.models import Goal, TurnRequest, TurnResult, new_id
 from app.services.agent.orchestrator import OrchestratorDecision
 from app.services.agent.research_models import EvidenceItem, EvidencePack, ResearchJudgeResult, ResearchPlan
 from app.services.agent.research_synthesis import synthesize_answer_stream
@@ -189,6 +192,39 @@ def test_langgraph_research_sse_streams_progress_and_answer_before_result(monkey
     assert result["events"][-1]["stage"] == "answer_complete"
 
 
+def test_runtime_research_turn_surfaces_langgraph_pause(monkeypatch):
+    _patch_completion(monkeypatch)
+    from app.config import get_settings
+    import app.services.agent.langgraph_runtime.nodes as nodes_module
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "fronei_orchestrator", "langgraph")
+    monkeypatch.setattr(settings, "fronei_orchestrator_qa_override_enabled", False)
+
+    original_bind = nodes_module.bind
+
+    def force_budget_pause(state, *, run_id, request, tools=None, progress=None):
+        result = original_bind(state, run_id=run_id, request=request, tools=tools, progress=progress)
+        result["cost_usd_spent"] = 10.0
+        return result
+
+    monkeypatch.setattr(nodes_module, "bind", force_budget_pause)
+
+    envelopes = list(
+        Runtime(tools=FakeTools()).run_stream(
+            TurnRequest(message="Research pause lifecycle.", research_level="regular"),
+            user_id="u1",
+        )
+    )
+
+    result = next(envelope.data for envelope in envelopes if envelope.type == "result")
+    assert result["turn_status"] == "paused"
+    assert result["langgraph_run_id"]
+    assert result["pause_reason"]
+    assert isinstance(result["required_additional_budget_usd"], float)
+    assert result["answer"] == ""
+
+
 def test_langgraph_deep_repair_does_not_buffer_replay_after_stream(monkeypatch):
     streamed_text = "Alpha streamed answer. Beta streamed answer."
     _patch_completion(monkeypatch, text=streamed_text)
@@ -246,6 +282,55 @@ def test_langgraph_deep_repair_does_not_buffer_replay_after_stream(monkeypatch):
     assert "".join(answer_deltas) == streamed_text
     assert result["answer"] == streamed_text
     assert result["events"][-1]["stage"] == "answer_complete"
+
+
+def test_complete_turn_persists_paused_and_resume_updates_original_turn(monkeypatch):
+    _patch_completion(monkeypatch)
+    import app.services.agent.langgraph_runtime.nodes as nodes_module
+
+    original_judge = nodes_module.judge
+
+    def approve_after_resume(state, *, run_id, request, tools=None, progress=None):
+        result = original_judge(state, run_id=run_id, request=request, tools=tools, progress=progress)
+        result["judge_result"] = ResearchJudgeResult(status="pass", score=0.9, issues=[], can_publish=True)
+        result["next_action"] = "publish"
+        return result
+
+    monkeypatch.setattr(nodes_module, "judge", approve_after_resume)
+
+    run_id = _pause_a_run(monkeypatch)
+    goal = Goal(user_id="u1", conversation_id=None, objective="Paused turn", route="research")
+    turn_id = new_id("turn")
+    persistence.complete_turn(
+        TurnResult(
+            turn_id=turn_id,
+            goal=goal,
+            answer="",
+            route="research",
+            turn_status="paused",
+            langgraph_run_id=run_id,
+            pause_reason="Budget approval is required.",
+        )
+    )
+
+    with SessionLocal() as db:
+        row = db.get(Turn, turn_id)
+        assert row is not None
+        assert row.status == "paused"
+        assert row.completed_at is None
+        assert row.langgraph_run_id == run_id
+
+    resumed = resume_langgraph_research(run_id, approved_by="admin-1")
+    assert persistence.complete_turn_after_langgraph_resume(run_id, resumed) is True
+
+    with SessionLocal() as db:
+        row = db.get(Turn, turn_id)
+        assert row is not None
+        assert row.status == "completed"
+        assert row.completed_at is not None
+        assert row.langgraph_run_id is None
+        assert row.pause_reason is None
+        assert row.answer
 
 
 def _pause_a_run(monkeypatch) -> str:
@@ -505,3 +590,44 @@ def test_cleanup_langgraph_checkpoints_corrects_drifted_paused_status(monkeypatc
         row = db.get(LangGraphRunContext, run_id)
         assert row is not None
         assert row.status == "orphaned"
+
+
+def test_admin_langgraph_runs_lists_joined_turn_context():
+    run_id = new_id("lgrun")
+    turn_id = new_id("turn")
+    now = datetime.now(timezone.utc)
+    with SessionLocal() as db:
+        db.add(
+            LangGraphRunContext(
+                run_id=run_id,
+                request_json="{}",
+                tool_config_json="{}",
+                status="paused",
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        db.add(
+            Turn(
+                id=turn_id,
+                user_id="u-admin-list",
+                conversation_id=None,
+                objective="Research paused admin list context",
+                route="research",
+                quality_mode="standard",
+                status="paused",
+                langgraph_run_id=run_id,
+                pause_reason="Budget approval is required.",
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        db.commit()
+
+    response = admin_router.list_langgraph_runs(status="paused", admin=AdminPrincipal(user_id="admin"))
+    item = next(item for item in response["items"] if item["run_id"] == run_id)
+
+    assert item["turn_id"] == turn_id
+    assert item["objective"] == "Research paused admin list context"
+    assert item["user_id"] == "u-admin-list"
+    assert item["pause_reason"] == "Budget approval is required."

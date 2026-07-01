@@ -85,6 +85,9 @@ export type AgentResult = {
   answer: string
   route: string
   turn_status?: string
+  langgraph_run_id?: string | null
+  pause_reason?: string | null
+  required_additional_budget_usd?: number | null
   model_used?: string
   latency_ms?: number
   sources?: Source[]
@@ -97,7 +100,7 @@ export type AgentResult = {
 
 export type AgentTurnStatus = {
   turn_id: string
-  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | string
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'paused' | string
   error_message?: string | null
   attempt_count?: number
   max_attempts?: number

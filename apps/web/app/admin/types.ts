@@ -93,6 +93,23 @@ export type AdminJobsResponse = {
   offset: number
 }
 
+export type LangGraphRunStatus = 'running' | 'paused' | 'resuming' | 'completed' | 'failed' | 'orphaned'
+
+export type LangGraphRunItem = {
+  run_id: string
+  status: LangGraphRunStatus
+  created_at: string | null
+  updated_at: string | null
+  resumed_at: string | null
+  resumed_by: string | null
+  turn_id: string | null
+  objective: string | null
+  user_id: string | null
+  pause_reason: string | null
+}
+
+export type LangGraphRunsResponse = { items: LangGraphRunItem[] }
+
 export type UserStatus = 'active' | 'pending' | 'suspended'
 export type UserRole = 'user' | 'admin'
 

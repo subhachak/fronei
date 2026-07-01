@@ -58,6 +58,13 @@ Important distinction:
   the deliverable is a chat research answer, not a generated document. Choose research unless they explicitly ask
   Fronei to create/export the artifact.
 
+Pending-intent rule:
+- If last_turn_route="clarify" and the current message is a short answer (a location, name, date, or detail) that
+  appears to answer the previous clarification question, choose the route the ORIGINAL request needed (usually
+  research or research_document), not direct. The user is completing a prior intent, not starting a new one.
+- If the user asks a meta question about the conversation itself (e.g. "are you researching now?", "did you find
+  anything?", "what route did you pick?") choose direct — these never need source-grounded research.
+
 If the route is research or research_document, also choose exactly one research_level:
 - easy: very narrow freshness check or simple sourced lookup; minimal web use.
 - regular: normal source-grounded research, comparison, recommendation, or briefing.
@@ -112,6 +119,7 @@ def decide_with_options(
         {
             "message": request.message,
             "conversation_context": request.conversation_context[-5000:] if request.conversation_context else "",
+            "last_turn_route": request.last_turn_route,
             "quality_mode": request.quality_mode,
             "requested_research_level": request.research_level,
             "deep_research_confirmed": request.confirm_deep_research,
@@ -295,9 +303,34 @@ def _normalize_research_decision(request: TurnRequest, decision: OrchestratorDec
     asks_research = "research" in text or decision.route in {"research", "research_document"}
     asks_doc = _asks_for_document_artifact(text)
     signal_decision = routing_policy.evaluate_routing_signals(request.message)
-    if decision.source != "forced" and decision.route == "direct" and signal_decision.suggested_route:
+    # Only let routing signals override "direct" when the LLM was uncertain
+    # (confidence < 0.85). A confident direct decision — e.g. "are you
+    # researching now?" scored at 1.0 — must not be overridden by a keyword
+    # match on "researching". The signal is correct context for uncertain cases;
+    # it's noise when the model already knows the answer doesn't need a source.
+    if (
+        decision.source != "forced"
+        and decision.route == "direct"
+        and decision.confidence < 0.85
+        and signal_decision.suggested_route
+    ):
         decision.route = "research"
         decision.reason = f"Routing signals require source-grounded handling. {decision.reason}".strip()
+        asks_research = True
+    # Pending-intent carry-forward: if the previous turn was clarify (the model
+    # asked a clarification question) and the current message is a short answer
+    # (≤ 25 words, no new verb-led intent), the user is answering that question,
+    # not starting a new conversation. Route to research rather than direct so
+    # the original research intent completes instead of stalling at acknowledge.
+    if (
+        decision.source != "forced"
+        and decision.route == "direct"
+        and request.last_turn_route == "clarify"
+        and len(request.message.split()) <= 25
+        and not _asks_for_document_artifact(text)
+    ):
+        decision.route = "research"
+        decision.reason = f"Resolving prior clarification; continuing with research. {decision.reason}".strip()
         asks_research = True
     if request.output_format == "chat" and _asks_research_about_document_tools(text):
         decision.route = "research"

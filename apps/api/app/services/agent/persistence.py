@@ -385,6 +385,27 @@ def wait_for_context_updates(timeout_s: float = 5.0) -> None:
         future.result(timeout=timeout_s)
 
 
+def last_turn_route_for_conversation(user_id: str, conversation_id: str | None) -> str | None:
+    """Return the route of the most recently completed turn in this conversation,
+    or None if no turns exist yet or the conversation doesn't belong to user_id.
+    Reads context_json.recent_turns (same rolling buffer that conversation_context_text
+    renders) rather than doing a separate DB query."""
+    if not conversation_id:
+        return None
+    db = SessionLocal()
+    try:
+        conversation = db.get(Conversation, conversation_id)
+        if conversation is None or conversation.user_id != user_id:
+            return None
+        ctx = _loads(conversation.context_json, {})
+        recent_turns = ctx.get("recent_turns") or []
+        if not recent_turns:
+            return None
+        return str(recent_turns[-1].get("route") or "") or None
+    finally:
+        db.close()
+
+
 def conversation_context_text(
     user_id: str,
     conversation_id: str | None,

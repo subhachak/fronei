@@ -1,20 +1,29 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
 from app.db.models import LangGraphRunContext, SessionLocal
 from app.services.agent import model_client
 from app.services.agent.langgraph_runtime.nodes import NODE_ORDER
 from app.services.agent.langgraph_runtime.graph import get_compiled_research_graph
 from app.services.agent.langgraph_runtime.runtime import (
+    LangGraphResumeConflict,
     resume_langgraph_research,
     run_langgraph_research,
     stream_langgraph_research,
 )
 from app.services.agent.langgraph_runtime.state import BudgetDecision
-from app.services.agent.models import TurnRequest
+from app.services.agent.models import TurnRequest, new_id
 from app.services.agent.orchestrator import OrchestratorDecision
 from app.services.agent.research_models import EvidenceItem, EvidencePack, ResearchJudgeResult, ResearchPlan
 from app.services.agent.research_synthesis import synthesize_answer_stream
 from app.services.agent.runtime import Runtime
+from app.services.maintenance_jobs import (
+    cleanup_langgraph_checkpoints,
+    reconcile_orphaned_langgraph_runs,
+)
 
 from test_agent_runtime import FakeTools, _patch_completion
 
@@ -69,22 +78,18 @@ def test_langgraph_pause_resume_survives_empty_in_memory_context(monkeypatch):
     assert resumed["feedback"].judge.can_publish is True
     assert resumed["langgraph_state"].get("approval_contract", {}).get("approved_by") == "test-admin"
     with SessionLocal() as db:
-        row = db.get(LangGraphRunContext, run_id)
-        assert row is not None
-        assert row.status == "completed"
+        assert db.get(LangGraphRunContext, run_id) is None
 
 
 def test_langgraph_run_context_does_not_persist_plaintext_tool_keys(monkeypatch):
     _patch_completion(monkeypatch)
 
-    result = run_langgraph_research(
-        TurnRequest(message="Please research stored tool context.", research_level="regular"),
-        FakeTools(),
-    )
+    run_id = _pause_a_run(monkeypatch)
 
     with SessionLocal() as db:
-        row = db.get(LangGraphRunContext, result["langgraph_run_id"])
+        row = db.get(LangGraphRunContext, run_id)
         assert row is not None
+        assert row.status == "paused"
         assert "fake" not in row.tool_config_json.lower()
         assert "you_api_key" not in row.tool_config_json
         assert "tavily_api_key" not in row.tool_config_json
@@ -238,3 +243,220 @@ def test_langgraph_deep_repair_does_not_buffer_replay_after_stream(monkeypatch):
     assert "".join(answer_deltas) == streamed_text
     assert result["answer"] == streamed_text
     assert result["events"][-1]["stage"] == "answer_complete"
+
+
+def _pause_a_run(monkeypatch) -> str:
+    """Shared setup: force a budget-gate pause and return the paused run_id."""
+    from app.services.agent.langgraph_runtime import runtime as runtime_module
+    import app.services.agent.langgraph_runtime.nodes as nodes_module
+
+    original_bind = nodes_module.bind
+
+    def force_budget_pause(state, *, run_id, request, tools=None, progress=None):
+        result = original_bind(state, run_id=run_id, request=request, tools=tools, progress=progress)
+        result["cost_usd_spent"] = 10.0
+        return result
+
+    monkeypatch.setattr(nodes_module, "bind", force_budget_pause)
+
+    request = TurnRequest(message="Pause for resume-conflict test.", research_level="regular")
+    paused = run_langgraph_research(request, FakeTools())
+    run_id = paused["langgraph_run_id"]
+    assert paused["langgraph_state"].get("budget_decision") == BudgetDecision.REQUIRE_HUMAN_APPROVAL
+    runtime_module._RUN_CONTEXTS.clear()
+    return run_id
+
+
+def test_resume_langgraph_research_rejects_concurrent_duplicate_resume(monkeypatch):
+    """Gap 1: a second resume_langgraph_research call for the same run_id
+    must raise LangGraphResumeConflict instead of re-invoking the graph
+    (which would double-run synthesize/repair LLM calls and double spend).
+    """
+    _patch_completion(monkeypatch)
+
+    import app.services.agent.langgraph_runtime.nodes as nodes_module
+
+    original_judge = nodes_module.judge
+
+    def approve_after_resume(state, *, run_id, request, tools=None, progress=None):
+        result = original_judge(state, run_id=run_id, request=request, tools=tools, progress=progress)
+        result["judge_result"] = ResearchJudgeResult(status="pass", score=0.9, issues=[], can_publish=True)
+        result["next_action"] = "publish"
+        return result
+
+    monkeypatch.setattr(nodes_module, "judge", approve_after_resume)
+
+    run_id = _pause_a_run(monkeypatch)
+
+    invoke_calls = {"count": 0}
+    original_invoke = get_compiled_research_graph().invoke
+
+    def counting_invoke(*args, **kwargs):
+        invoke_calls["count"] += 1
+        return original_invoke(*args, **kwargs)
+
+    monkeypatch.setattr(get_compiled_research_graph(), "invoke", counting_invoke)
+
+    first = resume_langgraph_research(run_id, approved_by="admin-1")
+    assert first["feedback"].judge.can_publish is True
+    assert invoke_calls["count"] == 1
+
+    with SessionLocal() as db:
+        assert db.get(LangGraphRunContext, run_id) is None
+
+    with pytest.raises(LangGraphResumeConflict):
+        resume_langgraph_research(run_id, approved_by="admin-2")
+
+    # The graph must not have been invoked a second time for the same run_id.
+    assert invoke_calls["count"] == 1
+
+
+def test_cleanup_langgraph_checkpoints_deletes_old_completed_runs(monkeypatch):
+    """Gap 2: rows completed more than the retention window ago get their
+    checkpoint deleted and their langgraph_run_contexts row removed.
+    """
+    run_id = new_id("lgrun")
+    old_completed_at = datetime.now(timezone.utc) - timedelta(days=30)
+
+    with SessionLocal() as db:
+        row = LangGraphRunContext(
+            run_id=run_id,
+            request_json="{}",
+            tool_config_json="{}",
+            status="completed",
+            created_at=old_completed_at,
+            updated_at=old_completed_at,
+            completed_at=old_completed_at,
+        )
+        db.add(row)
+        db.commit()
+
+    deleted_thread_ids: list[str] = []
+
+    class FakeCheckpointer:
+        def delete_thread(self, thread_id: str) -> None:
+            deleted_thread_ids.append(thread_id)
+
+    monkeypatch.setattr(
+        "app.services.agent.langgraph_runtime.checkpointer.get_checkpointer",
+        lambda: FakeCheckpointer(),
+    )
+
+    result = cleanup_langgraph_checkpoints(retention_days=7)
+
+    assert run_id in result["deleted_run_ids"]
+    assert run_id in deleted_thread_ids
+    with SessionLocal() as db:
+        assert db.get(LangGraphRunContext, run_id) is None
+
+
+def test_cleanup_langgraph_checkpoints_never_touches_active_statuses(monkeypatch):
+    """Gap 2: paused/running/resuming rows are never deleted regardless of age."""
+    old = datetime.now(timezone.utc) - timedelta(days=30)
+    run_ids = {}
+    with SessionLocal() as db:
+        for status in ("paused", "running", "resuming"):
+            run_id = new_id("lgrun")
+            run_ids[status] = run_id
+            db.add(
+                LangGraphRunContext(
+                    run_id=run_id,
+                    request_json="{}",
+                    tool_config_json="{}",
+                    status=status,
+                    created_at=old,
+                    updated_at=old,
+                    completed_at=old if status != "paused" else None,
+                )
+            )
+        db.commit()
+
+    class FakeCheckpointer:
+        def delete_thread(self, thread_id: str) -> None:
+            raise AssertionError("delete_thread must not be called for active-status runs")
+
+    # The paused-row reconciliation path calls pending_langgraph_pause, which
+    # hits the real checkpointer/graph; stub it out so this test only
+    # exercises the deletion-eligibility filter, not Gap 4's reconciliation.
+    monkeypatch.setattr(
+        "app.services.agent.langgraph_runtime.checkpointer.get_checkpointer",
+        lambda: FakeCheckpointer(),
+    )
+    monkeypatch.setattr(
+        "app.services.agent.langgraph_runtime.pending_langgraph_pause",
+        lambda run_id: {"run_id": run_id, "status": "paused", "pause_contract": {}},
+    )
+
+    result = cleanup_langgraph_checkpoints(retention_days=7)
+
+    assert result["deleted_run_ids"] == []
+    with SessionLocal() as db:
+        for status, run_id in run_ids.items():
+            row = db.get(LangGraphRunContext, run_id)
+            assert row is not None
+            assert row.status == status
+
+
+def test_reconcile_orphaned_langgraph_runs_flips_stale_running_rows():
+    """Gap 3: a 'running' row left over from a crashed process gets flipped
+    to 'orphaned' by the startup reconciliation function.
+    """
+    run_id = new_id("lgrun")
+    with SessionLocal() as db:
+        db.add(
+            LangGraphRunContext(
+                run_id=run_id,
+                request_json="{}",
+                tool_config_json="{}",
+                status="running",
+            )
+        )
+        db.commit()
+
+    result = reconcile_orphaned_langgraph_runs()
+
+    assert run_id in result["orphaned_run_ids"]
+    with SessionLocal() as db:
+        row = db.get(LangGraphRunContext, run_id)
+        assert row is not None
+        assert row.status == "orphaned"
+
+
+def test_cleanup_langgraph_checkpoints_corrects_drifted_paused_status(monkeypatch):
+    """Gap 4: a row claiming status='paused' whose checkpoint no longer shows
+    a pending interrupt (resumed via a path that skipped this row, or the
+    checkpoint is gone) gets corrected to 'orphaned' by the maintenance pass.
+    """
+    run_id = new_id("lgrun")
+    with SessionLocal() as db:
+        db.add(
+            LangGraphRunContext(
+                run_id=run_id,
+                request_json="{}",
+                tool_config_json="{}",
+                status="paused",
+            )
+        )
+        db.commit()
+
+    class FakeCheckpointer:
+        def delete_thread(self, thread_id: str) -> None:
+            raise AssertionError("paused-status reconciliation must not delete checkpoints")
+
+    monkeypatch.setattr(
+        "app.services.agent.langgraph_runtime.checkpointer.get_checkpointer",
+        lambda: FakeCheckpointer(),
+    )
+    # Simulate "checkpoint has already resumed/completed" -> no pending interrupt.
+    monkeypatch.setattr(
+        "app.services.agent.langgraph_runtime.pending_langgraph_pause",
+        lambda run_id: None,
+    )
+
+    result = cleanup_langgraph_checkpoints(retention_days=7)
+
+    assert run_id in result["reconciled_run_ids"]
+    with SessionLocal() as db:
+        row = db.get(LangGraphRunContext, run_id)
+        assert row is not None
+        assert row.status == "orphaned"

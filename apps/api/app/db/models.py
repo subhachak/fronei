@@ -285,6 +285,13 @@ class LangGraphRunContext(Base):
     run_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     request_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     tool_config_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    # Valid values: running, paused, resuming, completed, failed, orphaned.
+    # "resuming" is a short-lived transitional state set atomically by the
+    # idempotency guard in resume_langgraph_research before the graph is
+    # invoked, closing the double-resume race (see LangGraphResumeConflict).
+    # "orphaned" is set by the startup reconciliation job (mirrors
+    # _mark_orphaned_eval_runs in app/main.py) for rows still "running" or
+    # "resuming" from a process that crashed/restarted.
     status: Mapped[str] = mapped_column(String(24), nullable=False, default="running", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(
@@ -293,6 +300,12 @@ class LangGraphRunContext(Base):
         onupdate=lambda: datetime.now(timezone.utc),
     )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Set atomically together with status="resuming" by the check-and-set
+    # guard in resume_langgraph_research. Distinguishes "someone is/has
+    # resumed this run" from created_at/updated_at, which get touched by
+    # other status transitions too.
+    resumed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    resumed_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
 
 class Event(Base):

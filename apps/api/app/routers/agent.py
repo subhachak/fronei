@@ -346,13 +346,16 @@ def approve_langgraph_pause(
 ) -> dict:
     if not is_admin:
         raise HTTPException(status_code=403, detail="Admin access required.")
-    from app.services.agent.langgraph_runtime import resume_langgraph_research
+    from app.services.agent.langgraph_runtime import LangGraphResumeConflict, resume_langgraph_research
 
-    result = resume_langgraph_research(
-        run_id,
-        approved_by=user_id,
-        updated_budget_ceiling_usd=(body.updated_budget_ceiling_usd if body else None),
-    )
+    try:
+        result = resume_langgraph_research(
+            run_id,
+            approved_by=user_id,
+            updated_budget_ceiling_usd=(body.updated_budget_ceiling_usd if body else None),
+        )
+    except LangGraphResumeConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return jsonable_encoder(result)
 
 

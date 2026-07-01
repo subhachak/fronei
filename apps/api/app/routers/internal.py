@@ -7,6 +7,7 @@ from app.config import get_settings
 from app.db.models import SessionLocal, engine
 from app.db.schema_check import check_schema_version
 from app.services.maintenance_jobs import (
+    enqueue_langgraph_checkpoint_cleanup,
     enqueue_profile_consolidation,
     get_job,
     maintenance_job_worker,
@@ -35,6 +36,18 @@ def consolidate_profiles(
         lookback_days=lookback_days,
         max_workspaces=max_workspaces,
     )
+    maintenance_job_worker.notify()
+    return {"status": "queued" if created else "already_queued", "job": job}
+
+
+@router.post("/cleanup-langgraph-checkpoints", status_code=status.HTTP_202_ACCEPTED)
+def cleanup_langgraph_checkpoints_endpoint(
+    x_internal_secret: str = Header(default=""),
+    retention_days: int | None = Query(default=None, ge=1, le=365),
+) -> dict:
+    """Idempotently enqueue LangGraph checkpoint + run-context cleanup (Gap 2/4)."""
+    _require_internal_secret(x_internal_secret)
+    job, created = enqueue_langgraph_checkpoint_cleanup(retention_days=retention_days)
     maintenance_job_worker.notify()
     return {"status": "queued" if created else "already_queued", "job": job}
 

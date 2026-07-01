@@ -2180,7 +2180,7 @@ def _drain_ls_events_to_run(events_q: queue.Queue, run: dict) -> None:
 _MAX_EVAL_CASE_CONCURRENCY = 4
 
 
-def _run_in_process_core(run: dict, case_dicts: list[dict], pipeline: str = "langgraph") -> list[dict]:
+def _run_in_process_core(run: dict, case_dicts: list[dict], pipeline: str = "langgraph", run_id: str | None = None) -> list[dict]:
     """Run ONE pipeline locally for every case, graded against each case's
     pre-determined expected_criteria. Mutates run["progress"]/["log"]/["completed"].
     Does NOT touch run["status"] — the caller decides when to flip to "complete"/"stopped".
@@ -2246,6 +2246,13 @@ def _run_in_process_core(run: dict, case_dicts: list[dict], pipeline: str = "lan
             }
             for future in as_completed(futures):
                 future.result()  # surface exceptions; _run_one_eval_case already catches its own
+                # Checkpoint partial progress to DB after each case so that
+                # the status endpoint's DB fallback can serve real data on any
+                # page reload or tab switch (not just while _EVAL_RUNS is live).
+                if run_id:
+                    with progress_lock:
+                        current_progress = list(run["progress"])
+                    _checkpoint_eval_run(run_id, current_progress, pipeline)
                 if run.get("stop_requested"):
                     for pending in futures:
                         pending.cancel()
@@ -2314,7 +2321,7 @@ def _run_eval_background(
 
         elif mode == "both":
             # Phase 1 — in-process (full local per-case data)
-            all_results = _run_in_process_core(run, case_dicts, pipeline=pipeline)
+            all_results = _run_in_process_core(run, case_dicts, pipeline=pipeline, run_id=run_id)
             if run.get("stop_requested"):
                 envelope = _make_result_envelope("in_process", all_results, None, pipeline=pipeline)
                 run["results"] = envelope
@@ -2334,7 +2341,7 @@ def _run_eval_background(
 
         else:
             # in_process (default)
-            all_results = _run_in_process_core(run, case_dicts, pipeline=pipeline)
+            all_results = _run_in_process_core(run, case_dicts, pipeline=pipeline, run_id=run_id)
             if run.get("stop_requested"):
                 envelope = _make_result_envelope("in_process", all_results, None, pipeline=pipeline)
                 run["results"] = envelope
@@ -2357,6 +2364,30 @@ def _run_eval_background(
         run["completed_at"] = time.time()
         run["log"].append(f"✗ Error: {str(exc)[:200]}")
         _persist_eval_run(run_id, _make_result_envelope("error", [], None), "error", error=err)
+
+
+def _checkpoint_eval_run(run_id: str, partial_results: list[dict], pipeline: str) -> None:
+    """Write partial per-case results to the DB after each case completes.
+
+    This makes the status endpoint's DB fallback useful while a run is still
+    in-flight — any page reload or tab switch can resume the progress display
+    by reading from the DB rather than requiring the in-process _EVAL_RUNS
+    dict to be reachable on the same request.  Status and completed_at are
+    intentionally NOT updated; _persist_eval_run handles those on completion.
+    """
+    try:
+        from app.db.models import EvalRun, SessionLocal
+        envelope = _make_result_envelope("in_process", partial_results, None, pipeline=pipeline)
+        db = SessionLocal()
+        try:
+            row = db.query(EvalRun).filter(EvalRun.id == run_id).first()
+            if row:
+                row.results_json = json.dumps(envelope, default=str)
+                db.commit()
+        finally:
+            db.close()
+    except Exception as exc:
+        logger.debug("Could not checkpoint eval run %s to DB: %s", run_id, exc)
 
 
 def _persist_eval_run(run_id: str, results: dict, status: str, error: str | None = None) -> None:

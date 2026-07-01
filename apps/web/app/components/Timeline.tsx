@@ -2,7 +2,7 @@
 
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
-import { CheckCircle2, Copy, Download, Pencil, RefreshCw, Sparkles } from 'lucide-react'
+import { CheckCircle2, Download, Pencil, RefreshCw, Sparkles } from 'lucide-react'
 import { useEffect, useMemo, useRef } from 'react'
 import { assistantTurnCopyText, buildConfidenceCues, eventChips, plainCommentary, plainCommentaryForEvent } from '../lib/commentary'
 import { formatAppTime, formatRelativeTime, humanizeStage } from '../lib/format'
@@ -287,10 +287,12 @@ function TurnPair({
             className="inline-flex h-6 w-6 items-center justify-center rounded-full text-white/50 transition-colors hover:text-white dark:text-neutral-500 dark:hover:text-neutral-200">
             <Pencil size={12} />
           </button>
-          <button type="button" onClick={() => onCopyText(userCopy, `${turn.id}:user`)} aria-label={userCopied ? 'Copied' : 'Copy'} title={userCopied ? 'Copied' : 'Copy'}
-            className="inline-flex h-6 w-6 items-center justify-center rounded-full text-white/50 transition-colors hover:text-white dark:text-neutral-500 dark:hover:text-neutral-200">
-            <Copy size={12} />
-          </button>
+          <CopyButton
+            tone="on-inverted-bubble"
+            copied={userCopied}
+            label="Copy your message"
+            onClick={() => onCopyText(userCopy, `${turn.id}:user`)}
+          />
         </div>
       </div>
 
@@ -393,15 +395,19 @@ function LiveTurn({
   const commentary = plainCommentary(events)
   const latestMessage = commentary.at(-1) || 'I’m getting oriented and deciding the best way to handle this.'
   const telemetryEvents = events.filter(event => !['tool_selection', 'tool_result'].includes(event.stage))
+  const userCopied = copiedKey === 'live:user'
+  const assistantCopied = copiedKey === 'live:assistant'
 
   return (
     <div className="flex flex-col gap-2.5">
       <div className="self-end max-w-[min(88%,860px)] rounded-2xl rounded-br-md bg-neutral-900 px-4 py-3 text-white dark:bg-white dark:text-neutral-900">
-        <div className="mb-1.5 flex items-center justify-between gap-3">
+        <div className="mb-1.5">
           <p className="text-[11px] font-bold uppercase tracking-wide text-white/55 dark:text-neutral-500">You</p>
-          <CopyButton tone="on-inverted-bubble" copied={copiedKey === 'live:user'} label="Copy your message" onClick={() => onCopyText(message, 'live:user')} />
         </div>
         <p className="whitespace-pre-wrap text-[15px] leading-relaxed [overflow-wrap:anywhere]">{message}</p>
+        <div className="mt-2 flex justify-end">
+          <CopyButton tone="on-inverted-bubble" copied={userCopied} label="Copy your message" onClick={() => onCopyText(message, 'live:user')} />
+        </div>
       </div>
 
       {answer ? (
@@ -414,9 +420,11 @@ function LiveTurn({
               <p className="text-sm font-bold text-neutral-900 dark:text-neutral-50">Fronei</p>
               <p className="mt-0.5 text-sm leading-relaxed text-neutral-500 dark:text-neutral-400">Writing the response…</p>
             </div>
-            <CopyButton copied={copiedKey === 'live:assistant'} label="Copy current response" onClick={() => onCopyText(answer, 'live:assistant')} />
           </div>
           <StreamingMarkdown text={answer} live />
+          <div className="mt-3.5 flex justify-end">
+            <CopyButton copied={assistantCopied} label="Copy current response" onClick={() => onCopyText(answer, 'live:assistant')} />
+          </div>
         </div>
       ) : (
       <div className="w-full max-w-[860px] rounded-2xl rounded-bl-md border border-neutral-200 bg-white p-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
@@ -428,7 +436,6 @@ function LiveTurn({
             <p className="text-sm font-bold text-neutral-900 dark:text-neutral-50">Fronei</p>
             <p className="mt-0.5 text-sm leading-relaxed text-neutral-500 dark:text-neutral-400">{latestMessage}</p>
           </div>
-          <CopyButton copied={copiedKey === 'live:assistant'} label="Copy current status" onClick={() => onCopyText(latestMessage, 'live:assistant')} />
         </div>
 
         <div aria-label="Fronei is actively working" className="av3-pulse-bars relative mb-4 ml-12 grid max-w-[180px] grid-cols-3 gap-1.5">
@@ -438,6 +445,9 @@ function LiveTurn({
         </div>
 
         <TelemetryWindow events={telemetryEvents} fallback={latestMessage} />
+        <div className="mt-3.5 flex justify-end">
+          <CopyButton copied={assistantCopied} label="Copy current status" onClick={() => onCopyText(latestMessage, 'live:assistant')} />
+        </div>
       </div>
       )}
     </div>

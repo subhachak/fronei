@@ -1396,13 +1396,20 @@ def _run_one_eval_case(case_dict: dict, tools, pipeline: str = "langgraph") -> d
             result = _run_non_research_route_blocking(request, decision, route, tools)
     except Exception:
         err = tb.format_exc()
+        logger.error(
+            "eval case %s pipeline crash (route=%s): %s",
+            case_dict.get("id"), route, err,
+        )
     latency_ms = int((time.perf_counter() - t0) * 1000)
 
     evidence_items: list = []
     artifacts: list = []
     full_answer = ""  # untruncated — run["answer"] below is a display-length preview only
     if err or result is None:
-        run = {"ok": False, "error": (err or "")[:500], "answer": "", "answer_length": 0,
+        # Store the tail of the traceback, not the head — the exception type
+        # and message are always at the end. [:500] was cutting them off,
+        # leaving only module import frames and making every crash indistinguishable.
+        run = {"ok": False, "error": (err or "")[-2000:], "answer": "", "answer_length": 0,
                "evidence_count": 0, "claim_count": 0, "judge_score": None}
     else:
         response = result.get("response")
@@ -1477,18 +1484,30 @@ def _run_one_eval_case(case_dict: dict, tools, pipeline: str = "langgraph") -> d
         "gap_honesty": gap_honesty,
         "conflict_handling": conflict_handling,
     }
-    overall_status = compute_overall_status(
-        judge_structural_agreement=judge_structural_agreement,
-        overall_structural_pass=overall_structural_pass,
-        overall_benchmark_pass=overall_benchmark_pass,
-        route_correct=route_correct,
-        deep_research_gate=deep_research_gate,
-        scores=scores_for_rollup,
+    # Pipeline crash: run.ok=False + empty answer is always harness_error regardless
+    # of judge_score (which is None for direct/clarify routes and would bypass the
+    # existing judge_structural_agreement gate). The existing gate only catches
+    # judge_score>0.5 + empty_answer; it cannot catch ok=False + null judge_score.
+    if not run["ok"] and run["answer_length"] == 0:
+        overall_status = "harness_error"
+    else:
+        overall_status = compute_overall_status(
+            judge_structural_agreement=judge_structural_agreement,
+            overall_structural_pass=overall_structural_pass,
+            overall_benchmark_pass=overall_benchmark_pass,
+            route_correct=route_correct,
+            deep_research_gate=deep_research_gate,
+            scores=scores_for_rollup,
+        )
+    retrieval_completeness_pass = (
+        retrieval_completeness >= _RETRIEVAL_COMPLETENESS_PASS_THRESHOLD
+        if retrieval_completeness is not None else None
     )
     all_scores = {
         "route_correct": route_correct,
         "gate_correct": gate_correct,
         "retrieval_completeness": retrieval_completeness,
+        "retrieval_completeness_pass": retrieval_completeness_pass,
         "retrieval_independence": retrieval_independence,
         "latency_pass": latency_pass,
         "synthesis_grounding": synthesis_grounding,

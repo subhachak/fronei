@@ -20,6 +20,7 @@ import {
 } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { readErrorBody } from '../../lib/api'
+import { formatAppDateTime } from '../../lib/format'
 import type {
   AuthorizedFetch,
   EvalCase,
@@ -353,7 +354,7 @@ function CaseRunHistory({ caseId, authorizedFetch }: { caseId: number; authorize
               {isOpen ? <ChevronDown size={12} className="text-neutral-400 flex-shrink-0" /> : <ChevronRight size={12} className="text-neutral-400 flex-shrink-0" />}
               <span className="font-mono text-neutral-500 truncate flex-1">{entry.run_id}</span>
               {entry.started_at && (
-                <span className="text-neutral-400 flex-shrink-0">{new Date(entry.started_at).toLocaleString()}</span>
+                <span className="text-neutral-400 flex-shrink-0">{formatAppDateTime(entry.started_at)}</span>
               )}
               <span className={`font-semibold flex-shrink-0 ${entry.overall_structural_pass ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
                 {entry.overall_structural_pass ? '✓' : '✗'}
@@ -887,7 +888,7 @@ function RunHistoryRow({
           <span className={`text-xs font-semibold flex-shrink-0 ${statusText}`}>{run.status}</span>
           {run.started_at && (
             <span className="text-xs text-neutral-400 flex-shrink-0 hidden sm:block">
-              {new Date(run.started_at).toLocaleString()}
+              {formatAppDateTime(run.started_at)}
             </span>
           )}
           {loading && <Loader2 size={13} className="text-neutral-400 animate-spin flex-shrink-0" />}

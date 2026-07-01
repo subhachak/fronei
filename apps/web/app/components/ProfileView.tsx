@@ -18,6 +18,7 @@ import {
 import { useEffect, useRef, useState } from 'react'
 import { Area, AreaChart, Bar, BarChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { useProfile } from '../hooks/useProfile'
+import { formatAppDateTime } from '../lib/format'
 import type { DocumentTemplateOption, OutputFormat, ProfileSettings, ProfileWorkspace, QualityMode, ResearchLevel } from '../types'
 import { Badge, Card } from './ui/Card'
 import { SelectField } from './ui/Field'
@@ -245,7 +246,7 @@ export function ProfileView({ onClose }: { onClose: () => void }) {
                 />
               </div>
               {profile.me?.preferences_updated_at && (
-                <p className="mt-2 text-[11px] text-neutral-400">Last refreshed {new Date(profile.me.preferences_updated_at).toLocaleString()}</p>
+                <p className="mt-2 text-[11px] text-neutral-400">Last refreshed {formatAppDateTime(profile.me.preferences_updated_at)}</p>
               )}
             </Card>
 

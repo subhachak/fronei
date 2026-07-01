@@ -5,6 +5,7 @@ import { marked } from 'marked'
 import { CheckCircle2, Copy, Download, Pencil, RefreshCw, Sparkles } from 'lucide-react'
 import { useEffect, useMemo, useRef } from 'react'
 import { assistantTurnCopyText, buildConfidenceCues, plainCommentary } from '../lib/commentary'
+import { formatAppTime } from '../lib/format'
 import type { Artifact, FollowUpOption, ProgressEvent, WorkItem } from '../types'
 import { CopyButton } from './ui/CopyButton'
 import { MessageActions } from './ui/MessageActions'
@@ -227,11 +228,7 @@ export function Timeline({
 }
 
 function formatTime(iso: string) {
-  try {
-    return new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
-  } catch {
-    return ''
-  }
+  return formatAppTime(iso)
 }
 
 function TurnPair({

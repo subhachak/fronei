@@ -1,3 +1,5 @@
+export const APP_TIME_ZONE = 'America/New_York'
+
 export function formatDuration(ms: number): string {
   if (ms < 1000) return `${Math.round(ms)}ms`
   const seconds = Math.round(ms / 1000)
@@ -27,6 +29,45 @@ export function appTimestampMs(value?: string): number {
   const normalized = hasTimezone ? trimmed : `${trimmed}Z`
   const parsed = Date.parse(normalized)
   return Number.isFinite(parsed) ? parsed : 0
+}
+
+export function appDate(value?: string): Date | null {
+  const timestamp = appTimestampMs(value)
+  return timestamp > 0 ? new Date(timestamp) : null
+}
+
+export function formatAppTime(value?: string): string {
+  const date = appDate(value)
+  if (!date) return ''
+  return new Intl.DateTimeFormat(undefined, {
+    timeZone: APP_TIME_ZONE,
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(date)
+}
+
+export function formatAppDate(value?: string | null): string {
+  const date = appDate(value || undefined)
+  if (!date) return '—'
+  return new Intl.DateTimeFormat(undefined, {
+    timeZone: APP_TIME_ZONE,
+    month: 'numeric',
+    day: 'numeric',
+    year: 'numeric',
+  }).format(date)
+}
+
+export function formatAppDateTime(value?: string | null, options: Intl.DateTimeFormatOptions = {}): string {
+  const date = appDate(value || undefined)
+  if (!date) return '—'
+  return new Intl.DateTimeFormat(undefined, {
+    timeZone: APP_TIME_ZONE,
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    ...options,
+  }).format(date)
 }
 
 export function humanizeStage(stage: string): string {

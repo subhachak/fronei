@@ -3,6 +3,7 @@
 import { Ban, RefreshCw } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
 import { readErrorBody } from '../../lib/api'
+import { formatAppDateTime } from '../../lib/format'
 import type { AdminJobStatus, AdminJobsResponse, AuthorizedFetch } from '../types'
 
 const FILTERS: Array<{ label: string; value: '' | AdminJobStatus }> = [
@@ -23,14 +24,7 @@ const STATUS_STYLES: Record<AdminJobStatus, string> = {
 }
 
 function formatTime(value: string | null) {
-  if (!value) return '—'
-  return new Intl.DateTimeFormat(undefined, {
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-    second: '2-digit',
-  }).format(new Date(value))
+  return formatAppDateTime(value, { second: '2-digit' })
 }
 
 export function JobsTab({ authorizedFetch }: { authorizedFetch: AuthorizedFetch }) {

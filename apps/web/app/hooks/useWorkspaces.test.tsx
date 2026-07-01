@@ -110,6 +110,72 @@ describe('useWorkspaces', () => {
       'turn_8',
     ])
   })
+
+  it('sorts workspaces and conversations by most recent update after loading', async () => {
+    const authorizedFetch = vi.fn(async path => {
+      if (path === '/workspaces') {
+        return jsonResponse({
+          workspaces: [
+            {
+              id: 'ws_old',
+              name: 'Old workspace',
+              created_at: '2026-06-20T00:00:00Z',
+              updated_at: '2026-06-20T00:00:00Z',
+              conversations: [],
+            },
+            {
+              id: 'ws_recent',
+              name: 'Recent workspace',
+              created_at: '2026-06-21T00:00:00Z',
+              updated_at: '2026-06-25T00:00:00Z',
+              conversations: [
+                {
+                  id: 'conv_old',
+                  workspace_id: 'ws_recent',
+                  title: 'Older conversation',
+                  created_at: '2026-06-22T00:00:00Z',
+                  updated_at: '2026-06-22T00:00:00Z',
+                  turn_count: 1,
+                },
+                {
+                  id: 'conv_recent',
+                  workspace_id: 'ws_recent',
+                  title: 'Recent conversation',
+                  created_at: '2026-06-23T00:00:00Z',
+                  updated_at: '2026-06-26T00:00:00Z',
+                  turn_count: 2,
+                },
+              ],
+            },
+          ],
+        })
+      }
+      if (path === `/conversations/conv_recent/turns?limit=${INITIAL_VISIBLE_TURNS}`) {
+        return jsonResponse({ turns: [] })
+      }
+      return new Response('not found', { status: 404 })
+    })
+    const { result } = renderHook(() => useWorkspaces({
+      authorizedFetch,
+      isRunning: () => false,
+      setMessage: vi.fn(),
+      onTurnState: vi.fn(),
+      onResetTurn: vi.fn(),
+      onError: vi.fn(),
+    }))
+
+    await act(async () => {
+      await result.current.loadWorkspaces()
+    })
+
+    expect(result.current.workspaces.map(workspace => workspace.id)).toEqual(['ws_recent', 'ws_old'])
+    expect(result.current.activeWorkspace?.id).toBe('ws_recent')
+    expect(result.current.activeConversation?.id).toBe('conv_recent')
+    expect(result.current.workspaces[0].conversations.map(conversation => conversation.id)).toEqual([
+      'conv_recent',
+      'conv_old',
+    ])
+  })
 })
 
 function jsonResponse(body: unknown) {

@@ -271,7 +271,7 @@ export function useTurnRunner(options: TurnRunnerOptions) {
             // progress log, so there is no reason to store them in eventsRef or call
             // setEvents — doing so would increment events.length on every token and
             // trigger unrelated effects (e.g. the scroll handler) for every token.
-            if (nextEvent.stage === 'answer_delta' || nextEvent.stage === 'answer_complete') {
+            if (nextEvent.stage === 'answer_delta' || nextEvent.stage === 'answer_complete' || nextEvent.stage === 'answer_reset') {
               applyAnswerProgress(nextEvent)
               continue
             }
@@ -447,6 +447,12 @@ export function useTurnRunner(options: TurnRunnerOptions) {
   }
 
   function applyAnswerProgress(event: ProgressEvent) {
+    if (event.stage === 'answer_reset') {
+      clearStreamState()
+      liveAnswerRef.current = ''
+      setLiveAnswer('')
+      return
+    }
     if (event.stage === 'answer_complete') {
       flushTokenQueue()
       return

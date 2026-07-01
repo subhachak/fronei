@@ -662,17 +662,30 @@ class Runtime:
             )
             gen = stream_langgraph_research(request, self.tool_registry.tools, progress)
             buffered_answer = ""
+            last_source_node: str | None = None
             try:
                 while True:
                     kind, payload = next(gen)
                     if kind == "delta":
-                        delta = str(payload)
+                        delta = payload.get("text", "") if isinstance(payload, dict) else str(payload)
+                        source_node = payload.get("source_node", "") if isinstance(payload, dict) else ""
+                        if last_source_node is not None and source_node != last_source_node and delta:
+                            buffered_answer = ""
+                            reset_event = progress(
+                                "answer_reset",
+                                "Revising the answer for accuracy…",
+                                reason=source_node,
+                                ephemeral_ui=True,
+                            )
+                            yield StreamEnvelope(type="progress", data=reset_event.model_dump(mode="json"))
+                        last_source_node = source_node
                         buffered_answer += delta
                         event = progress(
                             "answer_delta",
                             "Streaming answer.",
                             delta=delta,
                             char_count=len(buffered_answer),
+                            source_node=source_node,
                             ephemeral_ui=True,
                         )
                         yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))

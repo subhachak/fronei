@@ -362,9 +362,10 @@ def _summarize_node_delta(node_name: str, delta: dict[str, Any]) -> dict[str, An
 def stream_langgraph_research(request: Any, tools: Any, progress: Any = None):
     """Streaming LangGraph research runner.
 
-    Yields ("node", payload) for completed graph nodes and ("delta", text)
-    for answer text emitted via LangGraph custom stream writer. Returns the
-    same final result dict as run_langgraph_research via StopIteration.value.
+    Yields ("node", payload) for completed graph nodes and
+    ("delta", {"text": text, "source_node": source_node}) for answer text
+    emitted via LangGraph custom stream writer. Returns the same final result
+    dict as run_langgraph_research via StopIteration.value.
     """
     run_id = new_id("lgrun")
     _persist_run_context(run_id, request, tools, status="running")
@@ -375,7 +376,6 @@ def stream_langgraph_research(request: Any, tools: Any, progress: Any = None):
     graph = get_compiled_research_graph()
 
     pause_contract: dict[str, Any] | None = None
-    synthesis_streamed = False
     try:
         for mode, payload in graph.stream(
             _initial_state(run_id, request),
@@ -385,11 +385,7 @@ def stream_langgraph_research(request: Any, tools: Any, progress: Any = None):
             if mode == "custom":
                 if isinstance(payload, dict) and payload.get("answer_delta"):
                     source_node = str(payload.get("source_node") or "")
-                    if source_node == "synthesize":
-                        synthesis_streamed = True
-                    if source_node == "repair" and synthesis_streamed:
-                        continue
-                    yield ("delta", str(payload["answer_delta"]))
+                    yield ("delta", {"text": str(payload["answer_delta"]), "source_node": source_node})
                 continue
             pause_contract = _interrupt_payload(payload)
             if pause_contract is not None:

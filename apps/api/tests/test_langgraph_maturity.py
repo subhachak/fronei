@@ -155,7 +155,11 @@ def test_stream_langgraph_research_yields_node_and_answer_delta_events(monkeypat
     assert "synthesize" in node_names
     assert any(node in node_names for node in NODE_ORDER)
     assert len(deltas) >= 2
-    assert "".join(deltas) == "Alpha streamed answer. Beta streamed answer."
+    assert all(set(delta) == {"text", "source_node"} for delta in deltas)
+    assert "synthesize" in {delta["source_node"] for delta in deltas}
+    for source_node in {delta["source_node"] for delta in deltas}:
+        source_text = "".join(delta["text"] for delta in deltas if delta["source_node"] == source_node)
+        assert source_text == "Alpha streamed answer. Beta streamed answer."
 
 
 def test_langgraph_research_sse_streams_progress_and_answer_before_result(monkeypatch):
@@ -272,14 +276,36 @@ def test_langgraph_deep_repair_does_not_buffer_replay_after_stream(monkeypatch):
             user_id="u1",
         )
     )
-    answer_deltas = [
-        envelope.data["data"]["delta"]
+    progress_events = [
+        envelope.data
         for envelope in envelopes
-        if envelope.type == "progress" and envelope.data["stage"] == "answer_delta"
+        if envelope.type == "progress"
+    ]
+    answer_deltas = [event for event in progress_events if event["stage"] == "answer_delta"]
+    reset_index = next(index for index, event in enumerate(progress_events) if event["stage"] == "answer_reset")
+    synth_delta_indexes = [
+        index
+        for index, event in enumerate(progress_events)
+        if event["stage"] == "answer_delta" and event["data"].get("source_node") == "synthesize"
+    ]
+    repair_delta_indexes = [
+        index
+        for index, event in enumerate(progress_events)
+        if event["stage"] == "answer_delta" and event["data"].get("source_node") == "repair"
+    ]
+    post_reset_deltas = [
+        event["data"]["delta"]
+        for index, event in enumerate(progress_events)
+        if index > reset_index and event["stage"] == "answer_delta"
     ]
     result = next(envelope.data for envelope in envelopes if envelope.type == "result")
 
-    assert "".join(answer_deltas) == streamed_text
+    assert answer_deltas
+    assert synth_delta_indexes
+    assert repair_delta_indexes
+    assert max(synth_delta_indexes) < reset_index < min(repair_delta_indexes)
+    assert progress_events[reset_index]["data"]["reason"] == "repair"
+    assert "".join(post_reset_deltas) == streamed_text
     assert result["answer"] == streamed_text
     assert result["events"][-1]["stage"] == "answer_complete"
 

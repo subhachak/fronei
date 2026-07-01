@@ -154,11 +154,9 @@ class Settings(BaseSettings):
 
     # Research orchestration implementation selector. This is a deployment
     # default, not an end-user request option.
-    # Default remains "legacy" until the real parity comparator confirms
-    # LangGraph meets or exceeds the legacy oracle on the golden set.
-    # Promote to "langgraph" by setting FRONEI_ORCHESTRATOR=langgraph in the
-    # environment (or change this default after the parity gate passes).
-    fronei_orchestrator: str = "legacy"
+    # Promoted to "langgraph" as the default after parity gate passed.
+    # Override with FRONEI_ORCHESTRATOR=legacy in the environment to revert.
+    fronei_orchestrator: str = "langgraph"
     # Reserved for trusted QA tooling in a later slice. Slice 0A intentionally
     # does not implement a per-request override; production must fail closed if
     # this unsafe bypass is enabled accidentally.

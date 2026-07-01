@@ -158,6 +158,47 @@ def synthesize_answer(request: TurnRequest, plan: ResearchPlan, evidence: Eviden
     )
 
 
+def synthesize_answer_stream(
+    request: TurnRequest,
+    plan: ResearchPlan,
+    evidence: EvidencePack,
+    *,
+    on_delta=None,
+):
+    """Streaming variant of synthesize_answer with the same final response shape."""
+    system_prompt, user_prompt = build_synthesis_prompt(request, plan, evidence)
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+    response = None
+    chunks: list[str] = []
+    for item in model_client.stream_complete(
+        messages,
+        max_tokens=_synthesis_token_budget(request, plan),
+        role="synthesis",
+        quality_mode=request.quality_mode,
+        overrides=request.model_overrides,
+        timeout_s=_longform_timeout_s(),
+    ):
+        if isinstance(item, model_client.ModelDelta):
+            if item.text:
+                chunks.append(item.text)
+                if on_delta:
+                    on_delta(item.text)
+        else:
+            response = item
+    if response is None:
+        return model_client.ModelResponse(
+            text="".join(chunks),
+            model_used="",
+            latency_ms=0,
+            cost_usd=0.0,
+            model_role="synthesis",
+        )
+    return response
+
+
 def judge_research(request: TurnRequest, plan: ResearchPlan, evidence: EvidencePack, answer: str) -> ResearchJudgeResult:
     issues: list[str] = []
     score = 0.45
@@ -320,6 +361,68 @@ def repair_research_answer(
         overrides=request.model_overrides,
         timeout_s=_longform_timeout_s(),
     )
+
+
+def repair_research_answer_stream(
+    request: TurnRequest,
+    plan: ResearchPlan,
+    evidence: EvidencePack,
+    answer: str,
+    judge: ResearchJudgeResult,
+    *,
+    on_delta=None,
+):
+    """Streaming variant of repair_research_answer with the same final response shape."""
+    evidence_context = source_context_from_evidence(evidence) or "No source evidence was available."
+    prompt = resolve_prompt(
+        "agent.research.repair.default",
+        agent_id="repair",
+        fallback_system_prompt=REPAIR_PROMPT,
+        variables=["answer", "judge", "evidence_pack"],
+        profile=plan.research_profile,
+    )
+    messages = [
+        {"role": "system", "content": prompt.system_prompt},
+        {
+            "role": "user",
+            "content": (
+                f"{request.conversation_context}\n\n" if request.conversation_context else ""
+            )
+            + (
+                f"User request:\n{request.message}\n\n"
+                f"Original answer:\n{answer}\n\n"
+                f"Judge feedback:\n{judge.model_dump_json()}\n\n"
+                f"Evidence pack:\n{evidence_context}\n\n"
+                f"Research questions:\n{json.dumps(plan.questions, ensure_ascii=False)}"
+            ),
+        },
+    ]
+    response = None
+    chunks: list[str] = []
+    for item in model_client.stream_complete(
+        messages,
+        max_tokens=_synthesis_token_budget(request, plan),
+        role="repair",
+        quality_mode=request.quality_mode,
+        overrides=request.model_overrides,
+        timeout_s=_longform_timeout_s(),
+    ):
+        if isinstance(item, model_client.ModelDelta):
+            if item.text:
+                chunks.append(item.text)
+                if on_delta:
+                    on_delta(item.text)
+        else:
+            response = item
+    if response is None:
+        return model_client.ModelResponse(
+            text="".join(chunks),
+            model_used="",
+            latency_ms=0,
+            cost_usd=0.0,
+            model_role="repair",
+        )
+    return response
 
 
 def rank_sources(sources: list[Source], plan: ResearchPlan) -> list[RankedSource]:
@@ -991,8 +1094,10 @@ __all__ = [
     "judge_research",
     "rank_sources",
     "repair_research_answer",
+    "repair_research_answer_stream",
     "source_context_from_evidence",
     "synthesize_answer",
+    "synthesize_answer_stream",
     "_architecture_cards_context",
     "_arxiv_id_from_url",
     "_domain_specific_link_candidates",

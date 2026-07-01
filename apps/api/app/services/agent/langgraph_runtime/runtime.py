@@ -103,19 +103,37 @@ def _loads(value: str | None, fallback: Any) -> Any:
 
 def _tool_config(tools: Any | None) -> dict[str, Any]:
     if tools is None:
-        tools = Tools.from_settings()
-    if is_dataclass(tools):
-        return asdict(tools)
-    return {
+        return {"source": "default_settings"}
+    default_tools = Tools.from_settings()
+    current = asdict(tools) if is_dataclass(tools) else {
         "you_api_key": getattr(tools, "you_api_key", None),
         "tavily_api_key": getattr(tools, "tavily_api_key", None),
         "nimble_api_key": getattr(tools, "nimble_api_key", None),
         "nimble_api_endpoint": getattr(tools, "nimble_api_endpoint", Tools().nimble_api_endpoint),
     }
+    defaults = asdict(default_tools)
+    if current == defaults:
+        return {"source": "default_settings"}
+    providers = [
+        provider
+        for provider, present in (
+            ("you", bool(current.get("you_api_key"))),
+            ("tavily", bool(current.get("tavily_api_key"))),
+            ("nimble", bool(current.get("nimble_api_key"))),
+        )
+        if present
+    ]
+    return {
+        "source": "custom_tools",
+        "providers": providers,
+        "nimble_api_endpoint": current.get("nimble_api_endpoint") or Tools().nimble_api_endpoint,
+    }
 
 
 def _tools_from_config(payload: dict[str, Any] | None) -> Tools:
     payload = payload or {}
+    if payload.get("source") in {None, "default_settings", "custom_tools"}:
+        return Tools.from_settings()
     return Tools(
         you_api_key=payload.get("you_api_key"),
         tavily_api_key=payload.get("tavily_api_key"),
@@ -275,24 +293,79 @@ def _result_from_state(run_id: str, final_state: dict[str, Any]) -> dict[str, An
         "feedback": feedback,
         "answer_streamed": False,
         "replay_final_answer": repaired,
+        "orchestrator": "langgraph",
         "langgraph_run_id": run_id,
         "langgraph_state": final_state,
     }
 
 
-def run_langgraph_research(request: Any, tools: Any, progress: Any = None) -> dict[str, Any]:
-    """Run LangGraph research with a compile-once graph and SQLite checkpoints."""
+def _summarize_node_delta(node_name: str, delta: dict[str, Any]) -> dict[str, Any]:
+    payload: dict[str, Any] = {"node_name": node_name}
+    for key in (
+        "message",
+        "cost_usd_spent",
+        "tool_calls_made",
+        "model_calls_made",
+        "model_used",
+        "latency_ms",
+        "budget_decision",
+        "next_action",
+    ):
+        if key in delta:
+            value = delta[key]
+            payload[key] = value.value if hasattr(value, "value") else value
+    for key in ("sources", "tool_calls", "worker_reports"):
+        value = delta.get(key)
+        if isinstance(value, list):
+            payload[f"{key}_count"] = len(value)
+    evidence = delta.get("evidence")
+    if evidence is not None:
+        payload["evidence_item_count"] = len(getattr(evidence, "items", []) or [])
+    visited = delta.get("visited_nodes")
+    if isinstance(visited, list):
+        payload["visited_count"] = len(visited)
+    return payload
+
+
+def stream_langgraph_research(request: Any, tools: Any, progress: Any = None):
+    """Streaming LangGraph research runner.
+
+    Yields ("node", payload) for completed graph nodes and ("delta", text)
+    for answer text emitted via LangGraph custom stream writer. Returns the
+    same final result dict as run_langgraph_research via StopIteration.value.
+    """
     run_id = new_id("lgrun")
     _persist_run_context(run_id, request, tools, status="running")
     _RUN_CONTEXTS[run_id] = {"request": request, "tools": tools, "progress": progress}
-    config = _langgraph_config(run_id, request, tools, progress)
+    # Progress callbacks are bridged from graph updates below; passing None into
+    # nodes avoids double-recording the same progress event.
+    config = _langgraph_config(run_id, request, tools, None)
     graph = get_compiled_research_graph()
 
     pause_contract: dict[str, Any] | None = None
-    for update in graph.stream(_initial_state(run_id, request), config=config):
-        pause_contract = _interrupt_payload(update)
+    synthesis_streamed = False
+    for mode, payload in graph.stream(
+        _initial_state(run_id, request),
+        config=config,
+        stream_mode=["updates", "custom"],
+    ):
+        if mode == "custom":
+            if isinstance(payload, dict) and payload.get("answer_delta"):
+                source_node = str(payload.get("source_node") or "")
+                if source_node == "synthesize":
+                    synthesis_streamed = True
+                if source_node == "repair" and synthesis_streamed:
+                    continue
+                yield ("delta", str(payload["answer_delta"]))
+            continue
+        pause_contract = _interrupt_payload(payload)
         if pause_contract is not None:
             break
+        if not isinstance(payload, dict) or not payload:
+            continue
+        node_name, delta = next(iter(payload.items()))
+        if isinstance(delta, dict):
+            yield ("node", _summarize_node_delta(str(node_name), delta))
 
     final_state = _snapshot_values(run_id, request, tools)
     if pause_contract is not None:
@@ -306,6 +379,20 @@ def run_langgraph_research(request: Any, tools: Any, progress: Any = None) -> di
     _RUN_CONTEXTS.pop(run_id, None)
     _mark_run_context(run_id, "completed")
     return _result_from_state(run_id, final_state)
+
+
+def run_langgraph_research(request: Any, tools: Any, progress: Any = None) -> dict[str, Any]:
+    """Blocking wrapper over stream_langgraph_research."""
+    gen = stream_langgraph_research(request, tools, progress)
+    try:
+        while True:
+            kind, payload = next(gen)
+            if kind == "node" and progress:
+                node_name = str(payload.get("node_name") or "")
+                data = {k: v for k, v in payload.items() if k != "node_name"}
+                progress(node_name, data.pop("message", node_name), **data)
+    except StopIteration as stop:
+        return stop.value
 
 
 def resume_langgraph_research(

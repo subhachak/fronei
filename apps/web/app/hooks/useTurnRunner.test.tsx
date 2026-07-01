@@ -444,6 +444,91 @@ describe('useTurnRunner', () => {
       vi.useRealTimers()
     }
   })
+
+  it('clears the streamed draft when a repaired answer starts', async () => {
+    vi.useFakeTimers()
+    try {
+      const draft = 'This draft answer is long enough to begin streaming before repair.'
+      const repaired = 'This repaired answer replaces the draft.'
+      const authorizedFetch = vi.fn()
+        .mockResolvedValueOnce(response({ turn_id: 'turn_1', conversation_id: 'conv_1', status: 'running' }))
+        .mockResolvedValueOnce(streamingResponse([
+          {
+            at: 0,
+            text: [
+              'id: answer_1',
+              'event: progress',
+              `data: ${JSON.stringify({ event_id: 'answer_1', stage: 'answer_delta', message: 'Streaming', data: { delta: draft, source_node: 'synthesize' } })}`,
+              '',
+              '',
+            ].join('\n'),
+          },
+          {
+            at: 700,
+            text: [
+              'id: answer_reset',
+              'event: progress',
+              `data: ${JSON.stringify({ event_id: 'answer_reset', stage: 'answer_reset', message: 'Revising the answer for accuracy.', data: { reason: 'repair', ephemeral_ui: true } })}`,
+              '',
+              '',
+            ].join('\n'),
+          },
+          {
+            at: 900,
+            text: [
+              'id: answer_2',
+              'event: progress',
+              `data: ${JSON.stringify({ event_id: 'answer_2', stage: 'answer_delta', message: 'Streaming', data: { delta: repaired, source_node: 'repair' } })}`,
+              '',
+              '',
+            ].join('\n'),
+          },
+          {
+            at: 1800,
+            text: [
+              'event: turn',
+              `data: ${JSON.stringify({ turn_id: 'turn_1', status: 'completed', turn: { turn_id: 'turn_1', answer: repaired, route: 'research', sources: [], artifacts: [] } })}`,
+              '',
+              '',
+            ].join('\n'),
+          },
+        ]))
+      const { result } = renderHook(() => useTurnRunner(baseOptions(authorizedFetch)))
+
+      let runPromise: Promise<void>
+      await act(async () => {
+        runPromise = result.current.run()
+        await vi.advanceTimersByTimeAsync(500)
+      })
+
+      expect(result.current.liveAnswer.length).toBeGreaterThan(0)
+      expect(draft).toContain(result.current.liveAnswer)
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(250)
+      })
+
+      expect(result.current.liveAnswer).toBe('')
+      expect(result.current.events).toHaveLength(0)
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(350)
+      })
+
+      expect(result.current.liveAnswer.length).toBeGreaterThan(0)
+      expect(repaired).toContain(result.current.liveAnswer)
+      expect(result.current.liveAnswer).not.toContain(draft)
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000)
+        await runPromise
+      })
+
+      expect(result.current.result?.answer).toBe(repaired)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
 
 function baseOptions(authorizedFetch: (path: string, init?: RequestInit) => Promise<Response>) {

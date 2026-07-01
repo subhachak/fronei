@@ -22,8 +22,9 @@ import { Sheet } from './ui/Sheet'
 
 const MIN_LEFT_RAIL_WIDTH = 240
 const MAX_LEFT_RAIL_WIDTH = 420
-const MIN_COMPOSER_HEIGHT = 152
-const COMPACT_COMPOSER_HEIGHT = 118
+const MIN_COMPOSER_HEIGHT = 118
+const DEFAULT_COMPOSER_HEIGHT = 132
+const COMPACT_COMPOSER_HEIGHT = 104
 const MAX_COMPOSER_HEIGHT = 340
 const LEFT_RAIL_COLLAPSED_KEY = 'agent-shell:left-rail-collapsed'
 
@@ -51,7 +52,7 @@ export function AgentShell() {
   const [librarySheetOpen, setLibrarySheetOpen] = useState(false)
   const [traceOpen, setTraceOpen] = useState(false)
   const [leftRailWidth, setLeftRailWidth] = useState(280)
-  const [composerHeight, setComposerHeight] = useState(168)
+  const [composerHeight, setComposerHeight] = useState(DEFAULT_COMPOSER_HEIGHT)
   const [leftRailCollapsed, setLeftRailCollapsed] = useState(false)
   const [workPaneScrolled, setWorkPaneScrolled] = useState(false)
   const [workModalOpen, setWorkModalOpen] = useState(false)

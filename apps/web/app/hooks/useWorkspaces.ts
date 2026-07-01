@@ -47,6 +47,7 @@ export function useWorkspaces(options: WorkspaceOptions) {
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(cachedWorkspaceState?.activeWorkspaceId || null)
   const [activeConversationId, setActiveConversationId] = useState<string | null>(cachedWorkspaceState?.activeConversationId || null)
   const [visibleTurnCount, setVisibleTurnCount] = useState(INITIAL_VISIBLE_TURNS)
+  const [loadingOlderTurns, setLoadingOlderTurns] = useState(false)
   const [expandedWorkspaceIds, setExpandedWorkspaceIds] = useState<Record<string, boolean>>(
     cachedWorkspaceState?.expandedWorkspaceIds || {},
   )
@@ -70,7 +71,11 @@ export function useWorkspaces(options: WorkspaceOptions) {
     loadingConversationId && activeConversationId === loadingConversationId && activeTurns.length === 0,
   )
   const visibleTurns = activeTurns.slice(Math.max(0, activeTurns.length - visibleTurnCount))
-  const canLoadOlder = Boolean(activeConversation && (activeConversation.turnCount || activeTurns.length) > activeTurns.length)
+  const canLoadOlder = Boolean(
+    activeConversation
+      && !loadingOlderTurns
+      && (activeConversation.turnCount || activeTurns.length) > activeTurns.length,
+  )
   const latestTurn = activeTurns.at(-1) || null
 
   useEffect(() => {
@@ -433,10 +438,40 @@ export function useWorkspaces(options: WorkspaceOptions) {
       : item))
   }
 
-  function loadOlderTurns() {
-    const nextCount = visibleTurnCount + INITIAL_VISIBLE_TURNS
-    setVisibleTurnCount(nextCount)
-    if (activeConversationId) void loadConversationTurns(activeConversationId, nextCount)
+  async function loadOlderTurns() {
+    if (!activeConversation || loadingOlderTurns) return
+    const firstTurn = activeConversation.turns[0]
+    if (!firstTurn) {
+      try {
+        await loadConversationTurns(activeConversation.id, INITIAL_VISIBLE_TURNS)
+      } catch (err) {
+        onError(err instanceof Error ? err.message : 'Could not load older turns')
+      }
+      return
+    }
+    setLoadingOlderTurns(true)
+    try {
+      const response = await authorizedFetch(
+        `/conversations/${activeConversation.id}/turns?limit=${INITIAL_VISIBLE_TURNS}&before=${encodeURIComponent(firstTurn.id)}`,
+      )
+      if (!response.ok) throw new Error(await readErrorBody(response, 'Could not load older turns'))
+      const payload = await response.json() as { turns: AgentResult[] }
+      const olderTurns = payload.turns.map(mapTurn)
+      setVisibleTurnCount(count => count + olderTurns.length)
+      setWorkspaces(prev => prev.map(workspace => ({
+        ...workspace,
+        conversations: workspace.conversations.map(conversation => {
+          if (conversation.id !== activeConversation.id) return conversation
+          const existingIds = new Set(conversation.turns.map(turn => turn.id))
+          const uniqueOlderTurns = olderTurns.filter(turn => !existingIds.has(turn.id))
+          return { ...conversation, turns: [...uniqueOlderTurns, ...conversation.turns] }
+        }),
+      })))
+    } catch (err) {
+      onError(err instanceof Error ? err.message : 'Could not load older turns')
+    } finally {
+      setLoadingOlderTurns(false)
+    }
   }
 
   return {

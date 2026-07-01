@@ -25,6 +25,7 @@ from app.db.models import (
 )
 from app.main import app
 from app.services.agent.models import TurnRequest, Source
+from app.services.agent.orchestrator import OrchestratorDecision
 from app.services.agent.runtime import Runtime
 from app.services.agent.tools import Tools
 
@@ -163,6 +164,22 @@ def _patch_completion(monkeypatch, text="# Answer\n\nDone."):
 
 def _collect_stream(runtime: Runtime, request: TurnRequest):
     return list(runtime.run_stream(request, user_id="u1"))
+
+
+def test_apply_decision_preserves_original_message_when_rewritten():
+    request = TurnRequest(message="Compare the EHR vendors for hospital deployment")
+    decision = OrchestratorDecision(
+        route="research",
+        research_level="deep",
+        output_format="markdown",
+        rewritten_request="Research enterprise EHR platform deployment using a vendor comparison matrix",
+    )
+
+    updated = Runtime(tools=FakeTools())._apply_decision(request, decision)
+
+    assert updated.message == "Compare the EHR vendors for hospital deployment"
+    assert updated.research_level == "deep"
+    assert updated.output_format == "markdown"
 
 
 def _stream_response(model_client, text: str, *, model: str = "fake-direct"):

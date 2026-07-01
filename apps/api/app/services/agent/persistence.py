@@ -961,6 +961,7 @@ def claim_next_turn(worker_id: str, *, lease_seconds: int) -> tuple[str, str, Tu
         )
         for candidate in candidates:
             previous_attempt = int(candidate.attempt_count or 0)
+            reclaiming_expired = candidate.status == "running"
             updated = (
                 db.query(Turn)
                 .filter(
@@ -991,6 +992,23 @@ def claim_next_turn(worker_id: str, *, lease_seconds: int) -> tuple[str, str, Tu
             if not updated:
                 db.rollback()
                 continue
+            if reclaiming_expired:
+                db.add(
+                    Event(
+                        id=new_id("event"),
+                        turn_id=candidate.id,
+                        stage="job_reclaimed",
+                        message="Resuming this background run after the previous worker stopped responding.",
+                        data_json=_dumps(
+                            {
+                                "previous_attempt": previous_attempt,
+                                "next_attempt": previous_attempt + 1,
+                                "reason": "lease_expired",
+                            }
+                        ),
+                        created_at=now,
+                    )
+                )
             db.commit()
             payload = _loads(candidate.request_json, {})
             try:

@@ -6,7 +6,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.db.models import Base, Turn
+from app.db.models import Base, Event, Turn
 from app.services.agent import persistence
 from app.services.agent.models import Goal, TurnRequest, TurnResult
 
@@ -60,9 +60,11 @@ def test_expired_turn_lease_is_reclaimed(monkeypatch):
     assert reclaimed is not None
     with Session() as db:
         row = db.get(Turn, "turn_1")
+        event = db.query(Event).filter(Event.turn_id == "turn_1", Event.stage == "job_reclaimed").one()
         assert row.status == "running"
         assert row.attempt_count == 2
         assert row.lease_owner == "worker-b"
+        assert "previous worker stopped responding" in event.message
 
 
 def test_failed_attempt_requeues_then_exhausts_retry_budget(monkeypatch):

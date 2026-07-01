@@ -44,6 +44,12 @@ class TurnRequest(BaseModel):
     # picks it up for free. Length-capped server-side; see
     # ATTACHMENT_CONTEXT_MAX_CHARS in routers/agent.py.
     attachment_context: str = ""
+    # Route of the immediately preceding completed turn in this conversation.
+    # Populated server-side (agent.py) from context_json; never sent by clients.
+    # Used by the orchestrator to detect pending-intent patterns — specifically
+    # "last turn was clarify, user is now answering the clarification" → inherit
+    # the original research/document intent rather than routing to direct.
+    last_turn_route: str | None = None
 
 
 class Goal(BaseModel):

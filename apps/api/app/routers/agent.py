@@ -102,6 +102,7 @@ def start_turn(
         update={
             "conversation_id": conversation.id,
             "conversation_context": _build_conversation_context(user_id, conversation.id, request),
+            "last_turn_route": persistence.last_turn_route_for_conversation(user_id, conversation.id),
         }
     )
     turn_id = new_id("turn")
@@ -149,6 +150,7 @@ def stream_turn(
         update={
             "conversation_id": conversation.id,
             "conversation_context": _build_conversation_context(user_id, conversation.id, request),
+            "last_turn_route": persistence.last_turn_route_for_conversation(user_id, conversation.id),
         }
     )
 

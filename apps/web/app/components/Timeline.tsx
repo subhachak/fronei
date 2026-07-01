@@ -34,6 +34,21 @@ function InlineMarkdown({ text }: { text: string }) {
   return <span dangerouslySetInnerHTML={{ __html: html }} />
 }
 
+function StreamingInlineMarkdown({ text, live }: { text: string; live: boolean }) {
+  const prevLengthRef = useRef(0)
+  const previousLength = live && text.length >= prevLengthRef.current ? prevLengthRef.current : 0
+  const committed = text.slice(0, previousLength)
+  const incoming = text.slice(previousLength)
+  useEffect(() => { prevLengthRef.current = text.length }, [text.length])
+  if (!live) return <InlineMarkdown text={text} />
+  return (
+    <>
+      {committed && <InlineMarkdown text={committed} />}
+      {incoming && <span key={text.length} className="av3-stream-in"><InlineMarkdown text={incoming} /></span>}
+    </>
+  )
+}
+
 function StreamCursor() {
   return <span className="av3-stream-cursor" aria-hidden="true" />
 }
@@ -68,7 +83,7 @@ function LiveParagraph({ text, live }: { text: string; live: boolean }) {
       <ul className="grid gap-1.5 pl-5 list-disc text-[15px] leading-relaxed [overflow-wrap:anywhere]">
         {items.slice(0, -1).map((item, i) => <li key={i}><InlineMarkdown text={item} /></li>)}
         {items.at(-1) !== undefined && (
-          <li><InlineMarkdown text={items.at(-1)!} />{live && <StreamCursor />}</li>
+          <li><StreamingInlineMarkdown text={items.at(-1)!} live={live} />{live && <StreamCursor />}</li>
         )}
       </ul>
     )
@@ -81,7 +96,7 @@ function LiveParagraph({ text, live }: { text: string; live: boolean }) {
       <ol className="grid gap-1.5 pl-5 list-decimal text-[15px] leading-relaxed [overflow-wrap:anywhere]">
         {items.slice(0, -1).map((item, i) => <li key={i}><InlineMarkdown text={item} /></li>)}
         {items.at(-1) !== undefined && (
-          <li><InlineMarkdown text={items.at(-1)!} />{live && <StreamCursor />}</li>
+          <li><StreamingInlineMarkdown text={items.at(-1)!} live={live} />{live && <StreamCursor />}</li>
         )}
       </ol>
     )
@@ -92,7 +107,7 @@ function LiveParagraph({ text, live }: { text: string; live: boolean }) {
     const content = lines.map(l => l.replace(/^> ?/, '')).join('\n')
     return (
       <blockquote className="border-l-[3px] border-neutral-300 pl-3 text-neutral-500 text-[15px] leading-relaxed dark:border-neutral-600 dark:text-neutral-400">
-        <InlineMarkdown text={content} />{live && <StreamCursor />}
+        <StreamingInlineMarkdown text={content} live={live} />{live && <StreamCursor />}
       </blockquote>
     )
   }
@@ -114,15 +129,15 @@ function LiveParagraph({ text, live }: { text: string; live: boolean }) {
     const tail = lines.slice(1).join('\n')
     return (
       <>
-        {level === 1 && <h1 className={cls}><InlineMarkdown text={hMatch[2]} />{live && !tail && <StreamCursor />}</h1>}
-        {level === 2 && <h2 className={cls}><InlineMarkdown text={hMatch[2]} />{live && !tail && <StreamCursor />}</h2>}
-        {level === 3 && <h3 className={cls}><InlineMarkdown text={hMatch[2]} />{live && !tail && <StreamCursor />}</h3>}
-        {level === 4 && <h4 className={cls}><InlineMarkdown text={hMatch[2]} />{live && !tail && <StreamCursor />}</h4>}
-        {level === 5 && <h5 className={cls}><InlineMarkdown text={hMatch[2]} />{live && !tail && <StreamCursor />}</h5>}
-        {level === 6 && <h6 className={cls}><InlineMarkdown text={hMatch[2]} />{live && !tail && <StreamCursor />}</h6>}
+        {level === 1 && <h1 className={cls}><StreamingInlineMarkdown text={hMatch[2]} live={live} />{live && !tail && <StreamCursor />}</h1>}
+        {level === 2 && <h2 className={cls}><StreamingInlineMarkdown text={hMatch[2]} live={live} />{live && !tail && <StreamCursor />}</h2>}
+        {level === 3 && <h3 className={cls}><StreamingInlineMarkdown text={hMatch[2]} live={live} />{live && !tail && <StreamCursor />}</h3>}
+        {level === 4 && <h4 className={cls}><StreamingInlineMarkdown text={hMatch[2]} live={live} />{live && !tail && <StreamCursor />}</h4>}
+        {level === 5 && <h5 className={cls}><StreamingInlineMarkdown text={hMatch[2]} live={live} />{live && !tail && <StreamCursor />}</h5>}
+        {level === 6 && <h6 className={cls}><StreamingInlineMarkdown text={hMatch[2]} live={live} />{live && !tail && <StreamCursor />}</h6>}
         {tail && (
           <p className="whitespace-pre-wrap text-[15px] leading-relaxed [overflow-wrap:anywhere]">
-            <InlineMarkdown text={tail} />{live && <StreamCursor />}
+            <StreamingInlineMarkdown text={tail} live={live} />{live && <StreamCursor />}
           </p>
         )}
       </>
@@ -132,7 +147,7 @@ function LiveParagraph({ text, live }: { text: string; live: boolean }) {
   // ── Default paragraph ────────────────────────────────────────────────────
   return (
     <p className="whitespace-pre-wrap text-[15px] leading-relaxed [overflow-wrap:anywhere]">
-      <InlineMarkdown text={text} />{live && <StreamCursor />}
+      <StreamingInlineMarkdown text={text} live={live} />{live && <StreamCursor />}
     </p>
   )
 }

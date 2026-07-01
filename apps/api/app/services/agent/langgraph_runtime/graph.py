@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import functools
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, StateGraph
 
+from app.services.agent.langgraph_runtime.checkpointer import get_checkpointer
 from app.services.agent.langgraph_runtime import nodes
 from app.services.agent.langgraph_runtime.events import ProgressCallback
 from app.services.agent.langgraph_runtime.state import BudgetDecision, ResearchGraphState
@@ -12,6 +15,61 @@ from app.services.agent.langgraph_runtime.state import BudgetDecision, ResearchG
 if TYPE_CHECKING:
     from app.services.agent.models import TurnRequest
     from app.services.agent.tools import Tools
+
+
+def _run_config(
+    *,
+    run_id: str,
+    request: TurnRequest,
+    tools: Tools | None = None,
+    progress: ProgressCallback | None = None,
+) -> RunnableConfig:
+    return {
+        "configurable": {
+            "thread_id": run_id,
+            "run_id": run_id,
+            "request": request,
+            "tools": tools,
+            "progress": progress,
+            "preserve_tools_none": tools is None,
+        },
+        "metadata": {
+            "run_id": run_id,
+            "research_level": getattr(request, "research_level", None),
+            "conversation_id": getattr(request, "conversation_id", None),
+            "orchestrator": "langgraph",
+        },
+        "tags": ["fronei", "research", "langgraph"],
+    }
+
+
+class _BoundResearchGraph:
+    def __init__(self, compiled: Any, config: RunnableConfig, *, reset_thread: bool = False) -> None:
+        self._compiled = compiled
+        self._config = config
+        self._reset_thread = reset_thread
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._compiled, name)
+
+    def invoke(self, input: Any, config: RunnableConfig | None = None, **kwargs: Any) -> Any:
+        effective_config = config or self._config
+        if self._reset_thread:
+            _delete_thread(self._compiled, effective_config)
+        return self._compiled.invoke(input, config=effective_config, **kwargs)
+
+    def stream(self, input: Any, config: RunnableConfig | None = None, **kwargs: Any) -> Any:
+        effective_config = config or self._config
+        if self._reset_thread:
+            _delete_thread(self._compiled, effective_config)
+        return self._compiled.stream(input, config=effective_config, **kwargs)
+
+
+def _delete_thread(compiled: Any, config: RunnableConfig) -> None:
+    thread_id = ((config or {}).get("configurable") or {}).get("thread_id")
+    checkpointer = getattr(compiled, "checkpointer", None)
+    if thread_id and hasattr(checkpointer, "delete_thread"):
+        checkpointer.delete_thread(thread_id)
 
 
 def _budget_gate_router(state: ResearchGraphState) -> str:
@@ -39,12 +97,49 @@ def _judge_router(state: ResearchGraphState) -> str:
     return "publish_end"
 
 
-def build_research_graph(
-    run_id: str,
-    request: TurnRequest,
-    progress: ProgressCallback | None = None,
-    tools: Tools | None = None,
-) -> Any:  # langgraph.graph.compiled.CompiledStateGraph
+def _runtime_context(state: ResearchGraphState, config: RunnableConfig | None) -> dict[str, Any]:
+    configurable = (config or {}).get("configurable") or {}
+    request = configurable.get("request")
+    if request is None:
+        request_payload = state.get("request_payload")
+        if isinstance(request_payload, dict):
+            from app.services.agent.models import TurnRequest
+
+            request = TurnRequest.model_validate(request_payload)
+    tools = configurable.get("tools")
+    if tools is None and not configurable.get("preserve_tools_none"):
+        from app.services.agent.tools import Tools
+
+        tools = Tools.from_settings()
+    run_id = configurable.get("run_id") or configurable.get("thread_id") or "langgraph-run"
+    return {
+        "run_id": run_id,
+        "request": request,
+        "tools": tools,
+        "progress": configurable.get("progress"),
+    }
+
+
+def _node_adapter(node_name: str) -> Callable[..., Any]:
+    def wrapped(state: ResearchGraphState, config: RunnableConfig = None) -> Any:
+        ctx = _runtime_context(state, config)
+        node_fn = getattr(nodes, node_name)
+        return node_fn(state, **ctx)
+
+    return wrapped
+
+
+def _router_adapter(router_name: str) -> Callable[..., Any]:
+    def wrapped(state: ResearchGraphState, config: RunnableConfig = None) -> Any:
+        ctx = _runtime_context(state, config)
+        router_fn = getattr(nodes, router_name)
+        return router_fn(state, **ctx)
+
+    return wrapped
+
+
+@functools.lru_cache(maxsize=1)
+def get_compiled_research_graph() -> Any:  # langgraph.graph.compiled.CompiledStateGraph
     """Build and compile the Slice 3 StateGraph.
 
     Pipeline shape:
@@ -59,7 +154,7 @@ def build_research_graph(
           "repair_gate"  → budget_gate_pre_repair →
               "continue"         → repair → END
               "stop_with_gaps"   → END
-              "requires_approval"→ END
+              human approval pauses via LangGraph interrupt() inside the gate
 
     All nodes are real domain-function calls (Slice 4 complete).
     classify_claims pre-classifies sources and stores results in state;
@@ -67,27 +162,18 @@ def build_research_graph(
     """
     graph: StateGraph = StateGraph(ResearchGraphState)
 
-    # --- Pipeline nodes: each bound with run_id, request, tools, progress ----
+    # --- Pipeline nodes: request-scoped data is read from RunnableConfig. ----
     for node_name in nodes.NODE_ORDER:
-        node_fn = getattr(nodes, node_name)
-        bound = functools.partial(
-            node_fn,
-            run_id=run_id,
-            request=request,
-            tools=tools,
-            progress=progress,
-        )
-        graph.add_node(node_name, bound)
+        graph.add_node(node_name, _node_adapter(node_name))
 
     # --- Budget gate (fires at two points in the pipeline) ------------------
-    gate_kwargs = dict(run_id=run_id, request=request, tools=tools, progress=progress)
     graph.add_node(
         "budget_gate_pre_synthesis",
-        functools.partial(nodes.budget_gate, **gate_kwargs),
+        _node_adapter("budget_gate"),
     )
     graph.add_node(
         "budget_gate_pre_repair",
-        functools.partial(nodes.budget_gate, **gate_kwargs),
+        _node_adapter("budget_gate"),
     )
 
     # --- Linear pre-search edges --------------------------------------------
@@ -101,13 +187,7 @@ def build_research_graph(
     # After all search_worker invocations complete, execution continues at rank.
     graph.add_conditional_edges(
         "dispatch_search",
-        functools.partial(
-            nodes.dispatch_search_router,
-            run_id=run_id,
-            request=request,
-            tools=tools,
-            progress=progress,
-        ),
+        _router_adapter("dispatch_search_router"),
     )
     graph.add_edge("search_worker", "rank")
 
@@ -160,7 +240,25 @@ def build_research_graph(
 
     graph.add_edge("repair", END)
     graph.set_entry_point("brief")
-    return graph.compile()
+    return graph.compile(checkpointer=get_checkpointer())
+
+
+def build_research_graph(
+    run_id: str,
+    request: TurnRequest,
+    progress: ProgressCallback | None = None,
+    tools: Tools | None = None,
+) -> Any:  # langgraph.graph.compiled.CompiledStateGraph
+    """Backward-compatible graph builder API.
+
+    The graph is now compiled once. Per-run values are supplied at invoke/stream
+    time through RunnableConfig so no request data is captured in the graph.
+    """
+    return _BoundResearchGraph(
+        get_compiled_research_graph(),
+        _run_config(run_id=run_id, request=request, progress=progress, tools=tools),
+        reset_thread=True,
+    )
 
 
 def run_stub_graph(
@@ -172,7 +270,24 @@ def run_stub_graph(
     tools: Tools | None = None,
 ) -> ResearchGraphState:
     """Execute the graph synchronously via LangGraph invoke."""
-    compiled = build_research_graph(
-        run_id=run_id, request=request, progress=progress, tools=tools
-    )
-    return compiled.invoke(initial_state)
+    compiled = get_compiled_research_graph()
+    config = _run_config(run_id=run_id, request=request, progress=progress, tools=tools)
+    _delete_thread(compiled, config)
+    seeded_state = dict(initial_state)
+    seeded_state.setdefault("run_id", run_id)
+    if hasattr(request, "model_dump"):
+        seeded_state.setdefault("request_payload", request.model_dump(mode="json"))
+    result = compiled.invoke(seeded_state, config=config)
+    if isinstance(result, dict) and "__interrupt__" in result:
+        snapshot = compiled.get_state(config)
+        values = dict(getattr(snapshot, "values", None) or {})
+        interrupts = result.get("__interrupt__") or ()
+        if interrupts:
+            interrupt = interrupts[-1]
+            payload = getattr(interrupt, "value", interrupt)
+            if isinstance(payload, dict):
+                values["pause_contract"] = payload
+        values["budget_decision"] = BudgetDecision.REQUIRE_HUMAN_APPROVAL
+        values["interrupted"] = True
+        return values
+    return result

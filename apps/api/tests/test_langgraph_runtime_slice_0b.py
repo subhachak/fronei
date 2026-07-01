@@ -19,6 +19,7 @@ from app.services.agent.langgraph_runtime.state import (
     ResearchGraphState,
 )
 from app.services.agent.models import TurnRequest
+from app.services.agent.research_profiles import research_budget_for
 
 from test_agent_runtime import FakeTools, _patch_completion
 
@@ -111,30 +112,36 @@ def _gate_state(**kwargs) -> ResearchGraphState:
 
 
 def test_budget_gate_returns_continue_under_all_thresholds():
-    # _TEST_REQUEST → regular tier: max_cost_usd=0.08, max_tool_calls=8, max_model_calls=14
-    # 0.01 < 0.08, 3 < 8, 2+4(reserve) < 14 → CONTINUE
+    # _TEST_REQUEST → regular tier. Threshold values come from research profiles.
     state = _gate_state(cost_usd_spent=0.01, tool_calls_made=3, model_calls_made=2)
     result = budget_gate(state, run_id="test-gate", request=_TEST_REQUEST)
     assert result["budget_decision"] == BudgetDecision.CONTINUE
 
 
 def test_budget_gate_returns_continue_with_reduced_search_when_tool_calls_high():
-    # tool_calls_made > max_tool_calls(8) but cost < max_cost_usd(0.08) → CONTINUE_WITH_REDUCED_SEARCH
-    state = _gate_state(cost_usd_spent=0.01, tool_calls_made=12, model_calls_made=2)
+    budget = research_budget_for(_TEST_REQUEST)
+    # tool_calls_made > max_tool_calls but cost < max_cost_usd → CONTINUE_WITH_REDUCED_SEARCH
+    state = _gate_state(cost_usd_spent=0.01, tool_calls_made=budget.max_tool_calls + 1, model_calls_made=2)
     result = budget_gate(state, run_id="test-gate", request=_TEST_REQUEST)
     assert result["budget_decision"] == BudgetDecision.CONTINUE_WITH_REDUCED_SEARCH
 
 
 def test_budget_gate_returns_require_human_approval_when_cost_over_threshold():
-    # cost > max_cost_usd(0.08) → REQUIRE_HUMAN_APPROVAL
-    state = _gate_state(cost_usd_spent=0.10, tool_calls_made=5, model_calls_made=2)
+    budget = research_budget_for(_TEST_REQUEST)
+    # cost > max_cost_usd → REQUIRE_HUMAN_APPROVAL
+    state = _gate_state(cost_usd_spent=budget.max_cost_usd + 0.01, tool_calls_made=5, model_calls_made=2)
     result = budget_gate(state, run_id="test-gate", request=_TEST_REQUEST)
     assert result["budget_decision"] == BudgetDecision.REQUIRE_HUMAN_APPROVAL
 
 
 def test_budget_gate_cost_threshold_takes_precedence_over_tool_calls():
+    budget = research_budget_for(_TEST_REQUEST)
     # Both cost AND tool_calls exceeded → REQUIRE_HUMAN_APPROVAL (cost takes priority)
-    state = _gate_state(cost_usd_spent=0.10, tool_calls_made=12, model_calls_made=5)
+    state = _gate_state(
+        cost_usd_spent=budget.max_cost_usd + 0.01,
+        tool_calls_made=budget.max_tool_calls + 1,
+        model_calls_made=5,
+    )
     result = budget_gate(state, run_id="test-gate", request=_TEST_REQUEST)
     assert result["budget_decision"] == BudgetDecision.REQUIRE_HUMAN_APPROVAL
 
@@ -144,8 +151,9 @@ def test_budget_gate_cost_threshold_takes_precedence_over_tool_calls():
 # ---------------------------------------------------------------------------
 
 def test_pause_contract_populated_when_approval_required():
-    # cost > max_cost_usd(0.08) for regular tier
-    state = _gate_state(cost_usd_spent=0.15)
+    budget = research_budget_for(_TEST_REQUEST)
+    # cost > max_cost_usd for regular tier
+    state = _gate_state(cost_usd_spent=budget.max_cost_usd + 0.01)
     result = budget_gate(state, run_id="test-pause", request=_TEST_REQUEST)
     assert result["budget_decision"] == BudgetDecision.REQUIRE_HUMAN_APPROVAL
     pause = result.get("pause_contract")
@@ -162,7 +170,8 @@ def test_pause_contract_required_additional_budget_is_positive():
     It must NOT be `threshold - cost` (which is 0 or negative at approval time).
     It must equal the request's budget ceiling so the user knows what to authorise.
     """
-    state = _gate_state(cost_usd_spent=0.15)
+    budget = research_budget_for(_TEST_REQUEST)
+    state = _gate_state(cost_usd_spent=budget.max_cost_usd + 0.01)
     result = budget_gate(state, run_id="test-pause-budget", request=_TEST_REQUEST)
     assert result["budget_decision"] == BudgetDecision.REQUIRE_HUMAN_APPROVAL
     pause = result.get("pause_contract")
@@ -171,9 +180,7 @@ def test_pause_contract_required_additional_budget_is_positive():
     assert continuation > 0, (
         f"required_additional_budget_usd must be positive; got {continuation}"
     )
-    # Equals one full budget ceiling (regular tier = 0.08)
-    from app.services.agent.research_profiles import research_budget_for
-    budget = research_budget_for(_TEST_REQUEST)
+    # Equals one full budget ceiling.
     assert continuation == budget.max_cost_usd, (
         f"Expected continuation budget = {budget.max_cost_usd}; got {continuation}"
     )
@@ -191,19 +198,25 @@ def test_pause_contract_not_populated_for_continue():
 # ---------------------------------------------------------------------------
 
 def test_budget_gate_deep_tier_has_larger_cost_ceiling():
-    """Deep tier (max_cost_usd=1.25) allows spend that would pause a regular request."""
+    """Deep tier allows spend that would pause a regular request."""
     deep_request = TurnRequest(message="test request", research_level="deep")
-    # 0.50 > regular max(0.08) but < deep max(1.25) → CONTINUE for deep
-    state = _gate_state(cost_usd_spent=0.50, tool_calls_made=5, model_calls_made=2)
+    regular_budget = research_budget_for(_TEST_REQUEST)
+    deep_budget = research_budget_for(deep_request)
+    assert deep_budget.max_cost_usd > regular_budget.max_cost_usd
+    state = _gate_state(
+        cost_usd_spent=(regular_budget.max_cost_usd + deep_budget.max_cost_usd) / 2,
+        tool_calls_made=5,
+        model_calls_made=2,
+    )
     result = budget_gate(state, run_id="test-deep-gate", request=deep_request)
     assert result["budget_decision"] == BudgetDecision.CONTINUE
 
 
 def test_budget_gate_easy_tier_pauses_earlier():
-    """Easy tier (max_cost_usd=0.01) pauses on spend that regular tier would allow."""
+    """Easy tier pauses on spend that regular tier would allow."""
     easy_request = TurnRequest(message="test request", research_level="easy")
-    # 0.02 > easy max(0.01) → REQUIRE_HUMAN_APPROVAL
-    state = _gate_state(cost_usd_spent=0.02, tool_calls_made=1, model_calls_made=1)
+    easy_budget = research_budget_for(easy_request)
+    state = _gate_state(cost_usd_spent=easy_budget.max_cost_usd + 0.01, tool_calls_made=1, model_calls_made=1)
     result = budget_gate(state, run_id="test-easy-gate", request=easy_request)
     assert result["budget_decision"] == BudgetDecision.REQUIRE_HUMAN_APPROVAL
 

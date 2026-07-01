@@ -8,6 +8,7 @@ from threading import Thread
 from typing import Literal
 
 from fastapi import APIRouter, Header, HTTPException
+from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel
 from fastapi.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
 
@@ -318,6 +319,41 @@ def submit_turn_feedback(turn_id: str, body: FeedbackBody, user_id: str = Curren
     if not persistence.set_turn_feedback(turn_id, user_id, body.rating):
         raise HTTPException(status_code=404, detail="Turn not found.")
     return {"turn_id": turn_id, "rating": body.rating}
+
+
+class LangGraphApprovalBody(BaseModel):
+    updated_budget_ceiling_usd: float | None = None
+
+
+@router.get("/admin/langgraph/runs/{run_id}/pause")
+def get_langgraph_pause(run_id: str, is_admin: bool = CurrentUserIsAdmin) -> dict:
+    if not is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required.")
+    from app.services.agent.langgraph_runtime import pending_langgraph_pause
+
+    pause = pending_langgraph_pause(run_id)
+    if pause is None:
+        raise HTTPException(status_code=404, detail="Paused LangGraph run not found.")
+    return jsonable_encoder(pause)
+
+
+@router.post("/admin/langgraph/runs/{run_id}/approve")
+def approve_langgraph_pause(
+    run_id: str,
+    body: LangGraphApprovalBody | None = None,
+    user_id: str = CurrentActiveUser,
+    is_admin: bool = CurrentUserIsAdmin,
+) -> dict:
+    if not is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required.")
+    from app.services.agent.langgraph_runtime import resume_langgraph_research
+
+    result = resume_langgraph_research(
+        run_id,
+        approved_by=user_id,
+        updated_budget_ceiling_usd=(body.updated_budget_ceiling_usd if body else None),
+    )
+    return jsonable_encoder(result)
 
 
 @router.get("/workspaces")

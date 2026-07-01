@@ -279,6 +279,22 @@ class Turn(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
+class LangGraphRunContext(Base):
+    __tablename__ = "langgraph_run_contexts"
+
+    run_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    request_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    tool_config_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="running", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
 class Event(Base):
     __tablename__ = "events"
 

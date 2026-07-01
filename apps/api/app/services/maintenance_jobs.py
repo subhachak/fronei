@@ -11,12 +11,18 @@ from typing import Any
 from sqlalchemy.exc import IntegrityError
 
 from app.config import get_settings
-from app.db.models import MaintenanceJob, SessionLocal
+from app.db.models import LangGraphRunContext, MaintenanceJob, SessionLocal
 from app.observability import log_event
 from app.services.agent.profile_consolidator import consolidate_active_workspace_backlog
 
 logger = logging.getLogger(__name__)
 PROFILE_CONSOLIDATION_JOB = "profile_consolidation"
+LANGGRAPH_CHECKPOINT_CLEANUP_JOB = "langgraph_checkpoint_cleanup"
+
+# langgraph_run_contexts.status values that must never be touched by cleanup
+# (a run in one of these states may still resume and needs its checkpoint).
+_LANGGRAPH_RETAINED_STATUSES = ("paused", "running", "resuming")
+_LANGGRAPH_CLEANUP_ELIGIBLE_STATUSES = ("completed", "failed", "orphaned")
 
 
 def _now() -> datetime:
@@ -87,6 +93,72 @@ def enqueue_profile_consolidation(
             payload_json=json.dumps({
                 "lookback_days": max(1, min(365, lookback_days)),
                 "max_workspaces": max(1, min(5000, max_workspaces)),
+            }),
+            result_json="{}",
+            max_attempts=max(1, settings.maintenance_worker_max_attempts),
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(job)
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            raced = (
+                db.query(MaintenanceJob)
+                .filter(MaintenanceJob.dedupe_key == dedupe_key)
+                .one()
+            )
+            return _payload(raced), False
+        db.refresh(job)
+        return _payload(job), True
+    finally:
+        db.close()
+
+
+def enqueue_langgraph_checkpoint_cleanup(
+    *,
+    retention_days: int | None = None,
+) -> tuple[dict[str, Any], bool]:
+    """Idempotently enqueue the LangGraph checkpoint/run-context cleanup job.
+
+    Mirrors enqueue_profile_consolidation: a daily dedupe_key means repeated
+    triggers (e.g. an external cron firing more than once) collapse onto the
+    same queued/running job for the day instead of piling up duplicates.
+    """
+    db = SessionLocal()
+    try:
+        dedupe_key = f"{LANGGRAPH_CHECKPOINT_CLEANUP_JOB}:{_now().date().isoformat()}"
+        same_run = (
+            db.query(MaintenanceJob)
+            .filter(MaintenanceJob.dedupe_key == dedupe_key)
+            .first()
+        )
+        if same_run:
+            return _payload(same_run), False
+        existing = (
+            db.query(MaintenanceJob)
+            .filter(
+                MaintenanceJob.job_type == LANGGRAPH_CHECKPOINT_CLEANUP_JOB,
+                MaintenanceJob.status.in_(("queued", "running")),
+            )
+            .order_by(MaintenanceJob.created_at.asc())
+            .first()
+        )
+        if existing:
+            return _payload(existing), False
+        settings = get_settings()
+        now = _now()
+        job = MaintenanceJob(
+            id=f"maintenance_{uuid.uuid4().hex[:24]}",
+            job_type=LANGGRAPH_CHECKPOINT_CLEANUP_JOB,
+            dedupe_key=dedupe_key,
+            status="queued",
+            payload_json=json.dumps({
+                "retention_days": max(
+                    1,
+                    int(retention_days if retention_days is not None else settings.langgraph_checkpoint_retention_days),
+                ),
             }),
             result_json="{}",
             max_attempts=max(1, settings.maintenance_worker_max_attempts),
@@ -261,6 +333,152 @@ def fail_or_requeue_job(job_id: str, worker_id: str, message: str) -> str:
         db.close()
 
 
+def _reconcile_stale_paused_langgraph_run(row: LangGraphRunContext) -> bool:
+    """Gap 4: cross-check a 'paused' langgraph_run_contexts row against the
+    LangGraph checkpoint (source of truth for pause state — see
+    pending_langgraph_pause, which already trusts get_state() over this
+    status column for the same reason). If the checkpoint no longer shows a
+    pending interrupt (resumed via a path that didn't update this row, or
+    the checkpoint was deleted), correct the row's status to 'orphaned' and
+    log a warning. Returns True if the row was corrected.
+    """
+    from app.services.agent.langgraph_runtime import pending_langgraph_pause
+
+    try:
+        still_paused = pending_langgraph_pause(row.run_id) is not None
+    except Exception:
+        logger.exception(
+            "Could not verify checkpoint state for paused langgraph run_id=%s; leaving status as-is",
+            row.run_id,
+        )
+        return False
+
+    if still_paused:
+        return False
+
+    logger.warning(
+        "langgraph_run_contexts row run_id=%s claims status='paused' but its checkpoint no "
+        "longer shows a pending interrupt (resumed via a path that skipped this row, or the "
+        "checkpoint was deleted) — correcting status to 'orphaned'.",
+        row.run_id,
+    )
+    row.status = "orphaned"
+    row.updated_at = _now()
+    row.completed_at = row.updated_at
+    return True
+
+
+def cleanup_langgraph_checkpoints(*, retention_days: int) -> dict[str, Any]:
+    """Gap 2 + Gap 4 maintenance pass.
+
+    Gap 2: delete the LangGraph checkpoint (langgraph_checkpoints.db) and the
+    langgraph_run_contexts row for every run that finished (status in
+    'completed'/'failed') more than `retention_days` ago. Rows with status
+    'paused', 'running', or 'resuming' are never touched here regardless of
+    age — a paused run may still be waiting on a human, and a running/
+    resuming run may still be in flight.
+
+    We delete rather than archive: the checkpoint row and the run_context row
+    are two halves of the same disposable execution record (full node-by-node
+    state history + a request/tool-config snapshot), not an audit trail —
+    Turn/Event rows in the main app DB are the durable record of what a user
+    asked and what they got back. Keeping a growing archive table would just
+    move the unbounded-growth problem rather than solve it.
+
+    Gap 4: for every row still claiming status='paused' (regardless of age),
+    verify against the LangGraph checkpoint that it's actually still paused;
+    correct drifted rows to 'orphaned'.
+    """
+    from app.services.agent.langgraph_runtime.checkpointer import get_checkpointer
+
+    cutoff = _now() - timedelta(days=max(0, retention_days))
+    deleted_run_ids: list[str] = []
+    reconciled_run_ids: list[str] = []
+
+    db = SessionLocal()
+    try:
+        stale = (
+            db.query(LangGraphRunContext)
+            .filter(
+                LangGraphRunContext.status.in_(_LANGGRAPH_CLEANUP_ELIGIBLE_STATUSES),
+                LangGraphRunContext.completed_at.isnot(None),
+                LangGraphRunContext.completed_at < cutoff,
+            )
+            .all()
+        )
+        checkpointer = get_checkpointer()
+        for row in stale:
+            run_id = row.run_id
+            try:
+                checkpointer.delete_thread(run_id)
+            except Exception:
+                logger.exception(
+                    "Failed to delete LangGraph checkpoint thread for run_id=%s; leaving "
+                    "langgraph_run_contexts row in place so cleanup can retry next pass.",
+                    run_id,
+                )
+                continue
+            db.delete(row)
+            deleted_run_ids.append(run_id)
+        if deleted_run_ids:
+            db.commit()
+
+        paused_rows = (
+            db.query(LangGraphRunContext)
+            .filter(LangGraphRunContext.status == "paused")
+            .all()
+        )
+        for row in paused_rows:
+            if _reconcile_stale_paused_langgraph_run(row):
+                reconciled_run_ids.append(row.run_id)
+        if reconciled_run_ids:
+            db.commit()
+    finally:
+        db.close()
+
+    return {
+        "retention_days": retention_days,
+        "deleted_count": len(deleted_run_ids),
+        "deleted_run_ids": deleted_run_ids,
+        "reconciled_paused_to_orphaned_count": len(reconciled_run_ids),
+        "reconciled_run_ids": reconciled_run_ids,
+    }
+
+
+def reconcile_orphaned_langgraph_runs() -> dict[str, Any]:
+    """Gap 3: on process startup, mark langgraph_run_contexts rows still
+    showing status in ('running', 'resuming') from before this process
+    started as 'orphaned' — mirrors _mark_orphaned_eval_runs in app/main.py
+    (same startup-hook pattern: query stale in-flight status, flip it,
+    commit, log a warning with the affected ids). Those runs' in-process
+    state (_RUN_CONTEXTS cache, any in-flight graph.stream()/invoke() call)
+    is gone with the old process; the row would otherwise stay 'running' or
+    'resuming' forever and make an admin "list active runs" query lie.
+    """
+    db = SessionLocal()
+    try:
+        orphans = (
+            db.query(LangGraphRunContext)
+            .filter(LangGraphRunContext.status.in_(("running", "resuming")))
+            .all()
+        )
+        now = _now()
+        for row in orphans:
+            row.status = "orphaned"
+            row.updated_at = now
+            row.completed_at = now
+        if orphans:
+            db.commit()
+            logger.warning(
+                "Marked %d orphaned langgraph_run_contexts row(s) as 'orphaned' on startup: %s",
+                len(orphans),
+                [row.run_id for row in orphans],
+            )
+        return {"orphaned_count": len(orphans), "orphaned_run_ids": [row.run_id for row in orphans]}
+    finally:
+        db.close()
+
+
 def execute_job(job_type: str, payload: dict[str, Any]) -> dict[str, Any]:
     if job_type == PROFILE_CONSOLIDATION_JOB:
         result = consolidate_active_workspace_backlog(
@@ -272,6 +490,13 @@ def execute_job(job_type: str, payload: dict[str, Any]) -> dict[str, Any]:
             if int(result.get("failed") or 0) > 0
             else "success"
         )
+        return result
+    if job_type == LANGGRAPH_CHECKPOINT_CLEANUP_JOB:
+        settings = get_settings()
+        result = cleanup_langgraph_checkpoints(
+            retention_days=int(payload.get("retention_days") or settings.langgraph_checkpoint_retention_days),
+        )
+        result["outcome"] = "success"
         return result
     raise ValueError(f"Unsupported maintenance job type: {job_type}")
 

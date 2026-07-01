@@ -85,6 +85,22 @@ def _mark_orphaned_eval_runs() -> None:
         logging.getLogger(__name__).warning("Could not clean up orphaned eval runs: %s", exc)
 
 
+def _mark_orphaned_langgraph_runs() -> None:
+    """On startup, mark any langgraph_run_contexts rows still 'running' or
+    'resuming' as 'orphaned'. Mirrors _mark_orphaned_eval_runs above: these
+    are runs (or in-flight resumes) that were interrupted by a server
+    restart/crash — their in-process state (_RUN_CONTEXTS cache) is gone, so
+    they will never complete on their own and would otherwise stay
+    'running'/'resuming' forever.
+    """
+    import logging
+    from app.services.maintenance_jobs import reconcile_orphaned_langgraph_runs
+    try:
+        reconcile_orphaned_langgraph_runs()
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Could not clean up orphaned langgraph runs: %s", exc)
+
+
 async def lifespan(app: FastAPI):
     check_production_config()
     check_schema_version(engine)
@@ -92,6 +108,7 @@ async def lifespan(app: FastAPI):
     _configure_langsmith()
     _bootstrap_eval_cases()
     _mark_orphaned_eval_runs()
+    _mark_orphaned_langgraph_runs()
     turn_job_worker.start()
     maintenance_job_worker.start()
     try:

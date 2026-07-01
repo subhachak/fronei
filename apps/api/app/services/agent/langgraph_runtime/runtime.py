@@ -29,6 +29,18 @@ logger = logging.getLogger(__name__)
 
 VALID_ORCHESTRATORS = {"legacy", "langgraph"}
 
+
+class LangGraphResumeConflict(RuntimeError):
+    """Raised when resume_langgraph_research is called for a run_id that is
+    not currently paused (already resumed/resuming, or never paused).
+
+    This guards against double-spend: two concurrent approve calls for the
+    same run_id (double-click, or two admins racing) must not both invoke
+    the compiled graph against the same checkpoint, which would re-run
+    synthesize/repair LLM calls (and any remaining tool calls) twice for one
+    approval. See resume_langgraph_research's atomic conditional UPDATE.
+    """
+
 # Runtime-mutable orchestrator override. Set by the admin /evals/parity/promote
 # endpoint after a successful parity gate run.  Takes precedence over the
 # FRONEI_ORCHESTRATOR env var for the lifetime of the current process; lost on
@@ -195,6 +207,44 @@ def _mark_run_context(run_id: str, status: str) -> None:
         db.close()
 
 
+def _delete_run_context(run_id: str) -> None:
+    db = SessionLocal()
+    try:
+        row = db.get(LangGraphRunContext, run_id)
+        if row is None:
+            return
+        db.delete(row)
+        db.commit()
+    finally:
+        db.close()
+
+
+def _delete_checkpoint(run_id: str) -> None:
+    try:
+        checkpointer = getattr(get_compiled_research_graph(), "checkpointer", None)
+        if checkpointer is None:
+            return
+        checkpointer.delete_thread(run_id)
+    except Exception:
+        logger.exception(
+            "Failed to delete LangGraph checkpoint for completed run_id=%s; "
+            "retention cleanup can retry later.",
+            run_id,
+        )
+
+
+def _complete_run(run_id: str, *, delete_context: bool = True) -> None:
+    _mark_run_context(run_id, "completed")
+    _delete_checkpoint(run_id)
+    if delete_context:
+        _delete_run_context(run_id)
+
+
+def _fail_run(run_id: str) -> None:
+    _mark_run_context(run_id, "failed")
+    _delete_checkpoint(run_id)
+
+
 def _initial_state(run_id: str, request: Any) -> dict[str, Any]:
     state = {
         "run_id": run_id,
@@ -234,11 +284,13 @@ def pending_langgraph_pause(run_id: str) -> dict[str, Any] | None:
         for interrupt in reversed(getattr(task, "interrupts", ()) or ()):
             payload = getattr(interrupt, "value", interrupt)
             if isinstance(payload, dict):
+                _mark_run_context(run_id, "paused")
                 return {"run_id": run_id, "status": "paused", "pause_contract": payload}
 
     values = getattr(snapshot, "values", None) or {}
     pause_contract = values.get("pause_contract")
     if pause_contract:
+        _mark_run_context(run_id, "paused")
         return {"run_id": run_id, "status": "paused", "pause_contract": pause_contract}
     return None
 
@@ -344,28 +396,33 @@ def stream_langgraph_research(request: Any, tools: Any, progress: Any = None):
 
     pause_contract: dict[str, Any] | None = None
     synthesis_streamed = False
-    for mode, payload in graph.stream(
-        _initial_state(run_id, request),
-        config=config,
-        stream_mode=["updates", "custom"],
-    ):
-        if mode == "custom":
-            if isinstance(payload, dict) and payload.get("answer_delta"):
-                source_node = str(payload.get("source_node") or "")
-                if source_node == "synthesize":
-                    synthesis_streamed = True
-                if source_node == "repair" and synthesis_streamed:
-                    continue
-                yield ("delta", str(payload["answer_delta"]))
-            continue
-        pause_contract = _interrupt_payload(payload)
-        if pause_contract is not None:
-            break
-        if not isinstance(payload, dict) or not payload:
-            continue
-        node_name, delta = next(iter(payload.items()))
-        if isinstance(delta, dict):
-            yield ("node", _summarize_node_delta(str(node_name), delta))
+    try:
+        for mode, payload in graph.stream(
+            _initial_state(run_id, request),
+            config=config,
+            stream_mode=["updates", "custom"],
+        ):
+            if mode == "custom":
+                if isinstance(payload, dict) and payload.get("answer_delta"):
+                    source_node = str(payload.get("source_node") or "")
+                    if source_node == "synthesize":
+                        synthesis_streamed = True
+                    if source_node == "repair" and synthesis_streamed:
+                        continue
+                    yield ("delta", str(payload["answer_delta"]))
+                continue
+            pause_contract = _interrupt_payload(payload)
+            if pause_contract is not None:
+                break
+            if not isinstance(payload, dict) or not payload:
+                continue
+            node_name, delta = next(iter(payload.items()))
+            if isinstance(delta, dict):
+                yield ("node", _summarize_node_delta(str(node_name), delta))
+    except BaseException:
+        _RUN_CONTEXTS.pop(run_id, None)
+        _fail_run(run_id)
+        raise
 
     final_state = _snapshot_values(run_id, request, tools)
     if pause_contract is not None:
@@ -377,7 +434,7 @@ def stream_langgraph_research(request: Any, tools: Any, progress: Any = None):
         return _result_from_state(run_id, final_state)
 
     _RUN_CONTEXTS.pop(run_id, None)
-    _mark_run_context(run_id, "completed")
+    _complete_run(run_id)
     return _result_from_state(run_id, final_state)
 
 
@@ -395,6 +452,58 @@ def run_langgraph_research(request: Any, tools: Any, progress: Any = None) -> di
         return stop.value
 
 
+def _claim_run_for_resume(run_id: str, *, resumed_by: str) -> None:
+    """Atomically transition a run_id from status='paused' to 'resuming'.
+
+    This is a check-and-set, not a read-then-write: the UPDATE's WHERE
+    clause encodes the precondition (status='paused') and we inspect the
+    actual rowcount the database reports, so a concurrent duplicate call
+    (double-click, two admins racing) can affect at most one of the two
+    calls. The loser raises LangGraphResumeConflict instead of proceeding
+    to invoke the graph, which would otherwise double-run the remaining
+    synthesize/repair LLM calls (and tool calls) against the same paused
+    checkpoint and double real spend.
+    """
+    def try_claim() -> bool:
+        now = datetime.now(timezone.utc)
+        db = SessionLocal()
+        try:
+            updated = (
+                db.query(LangGraphRunContext)
+                .filter(
+                    LangGraphRunContext.run_id == run_id,
+                    LangGraphRunContext.status == "paused",
+                )
+                .update(
+                    {
+                        LangGraphRunContext.status: "resuming",
+                        LangGraphRunContext.resumed_at: now,
+                        LangGraphRunContext.resumed_by: resumed_by,
+                        LangGraphRunContext.updated_at: now,
+                    },
+                    synchronize_session=False,
+                )
+            )
+            db.commit()
+            return updated == 1
+        finally:
+            db.close()
+
+    if try_claim():
+        return
+
+    # The checkpoint is the source of truth for pause state. If the DB status
+    # drifted, pending_langgraph_pause() will observe the interrupt and mark the
+    # context paused, then this one retry can claim it atomically.
+    if pending_langgraph_pause(run_id) is not None and try_claim():
+        return
+
+    raise LangGraphResumeConflict(
+        f"LangGraph run_id={run_id!r} is not awaiting approval (already resumed, "
+        "completed, or never paused) — refusing to resume it again."
+    )
+
+
 def resume_langgraph_research(
     run_id: str,
     *,
@@ -402,10 +511,19 @@ def resume_langgraph_research(
     updated_budget_ceiling_usd: float | None = None,
     progress: Any = None,
 ) -> dict[str, Any]:
-    """Resume a paused LangGraph research run after human budget approval."""
+    """Resume a paused LangGraph research run after human budget approval.
+
+    Raises LangGraphResumeConflict if run_id is not currently paused —
+    callers (e.g. the /approve endpoint) should translate that into a 409,
+    not silently no-op or proceed.
+    """
+    _claim_run_for_resume(run_id, resumed_by=approved_by)
+
     ctx = _RUN_CONTEXTS.get(run_id) or _load_run_context(run_id) or {}
     if ctx.get("request") is None:
+        _mark_run_context(run_id, "paused")
         raise RuntimeError(f"LangGraph run context is missing for run_id={run_id!r}")
+
     approval: dict[str, Any] = {
         "approved_by": approved_by,
         "approved_at": datetime.utcnow().isoformat() + "Z",
@@ -415,7 +533,11 @@ def resume_langgraph_research(
         approval["updated_budget_ceiling_usd"] = updated_budget_ceiling_usd
 
     config = _langgraph_config(run_id, ctx.get("request"), ctx.get("tools"), progress or ctx.get("progress"))
-    result = get_compiled_research_graph().invoke(Command(resume=approval), config=config)
+    try:
+        result = get_compiled_research_graph().invoke(Command(resume=approval), config=config)
+    except BaseException:
+        _mark_run_context(run_id, "paused")
+        raise
     pause_contract = _interrupt_payload(result)
     if pause_contract is not None:
         final_state = _snapshot_values(run_id, ctx.get("request"), ctx.get("tools"))
@@ -426,5 +548,5 @@ def resume_langgraph_research(
         return _result_from_state(run_id, final_state)
 
     _RUN_CONTEXTS.pop(run_id, None)
-    _mark_run_context(run_id, "completed")
+    _complete_run(run_id)
     return _result_from_state(run_id, result)

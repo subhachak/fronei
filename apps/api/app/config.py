@@ -158,6 +158,13 @@ class Settings(BaseSettings):
     # Override with FRONEI_ORCHESTRATOR=legacy in the environment to revert.
     fronei_orchestrator: str = "langgraph"
     langgraph_checkpoint_db_path: str = "./langgraph_checkpoints.db"
+    # How long to keep LangGraph checkpoints + langgraph_run_contexts rows for
+    # completed/failed runs before the maintenance job deletes them. Paused,
+    # running, and resuming runs are never touched regardless of age. 7 days
+    # balances "enough history to debug a recent production issue" against
+    # unbounded growth of langgraph_checkpoints.db (every node write in every
+    # run is a full checkpoint row, kept forever without this).
+    langgraph_checkpoint_retention_days: int = 7
     # Reserved for trusted QA tooling in a later slice. Slice 0A intentionally
     # does not implement a per-request override; production must fail closed if
     # this unsafe bypass is enabled accidentally.

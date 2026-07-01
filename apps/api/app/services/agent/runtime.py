@@ -1150,8 +1150,6 @@ class Runtime:
             updates["output_format"] = decision.output_format
         if decision.research_level in {"easy", "regular", "deep"}:
             updates["research_level"] = decision.research_level
-        if decision.rewritten_request:
-            updates["message"] = decision.rewritten_request
         return request.model_copy(update=updates) if updates else request
 
     def _run_deep_research_confirmation(

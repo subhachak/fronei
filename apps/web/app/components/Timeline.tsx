@@ -302,7 +302,12 @@ function TurnPair({
         )}
 
         {turn.result?.research_plan_preview ? (
-          <ResearchPlanCard preview={turn.result.research_plan_preview} followUpOptions={turn.result.follow_up_options || []} onFollowUp={onFollowUp} />
+          <ResearchPlanCard
+            preview={turn.result.research_plan_preview}
+            followUpOptions={turn.result.follow_up_options || []}
+            onFollowUp={onFollowUp}
+            autoStart={false}
+          />
         ) : (
           <MarkdownResult content={turn.result?.answer || ''} />
         )}

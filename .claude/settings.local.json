@@ -15,7 +15,30 @@
       "Bash(node scripts/gen-icons.mjs)",
       "Bash(npm uninstall *)",
       "Bash(grep -n \"empty-headline\\\\|onboardingName\\\\|showOnboarding\\\\|shell\\\\|</div>$\" /Users/subh/MyApps/sage/apps/web/app/page.tsx)",
-      "Bash(uv sync *)"
+      "Bash(uv sync *)",
+      "Bash(git push *)",
+      "Bash(git checkout *)",
+      "Bash(git pull *)",
+      "Bash(git rebase *)",
+      "Bash(git stash *)",
+      "Bash(.venv/bin/python3 -m py_compile app/routers/evals.py)",
+      "Bash(.venv/bin/python3 -c ' *)",
+      "Bash(.venv/bin/python3 -m pytest tests/test_eval_v2_scoring_axes.py tests/test_eval_harness_integrity_gate.py tests/test_eval_narrow_judge_rubrics.py tests/test_eval_document_extraction.py -q)",
+      "Bash(.venv/bin/python3 -m pytest tests/test_eval_dashboard.py -v)",
+      "Bash(.venv/bin/python3 -m pytest tests/test_eval_v2_scoring_axes.py tests/test_eval_harness_integrity_gate.py tests/test_eval_narrow_judge_rubrics.py tests/test_eval_document_extraction.py tests/test_eval_dashboard.py -q)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(.venv/bin/python3 -m pytest tests/test_eval_harness_integrity_gate.py tests/test_eval_v2_scoring_axes.py -q)",
+      "Bash(.venv/bin/python3 -m pytest tests/ -q)",
+      "Bash(.venv/bin/python3 -m pytest tests/test_langgraph_runtime_slice_3.py::test_ehr_fixture_judge_result_populated -q)",
+      "Bash(.venv/bin/python3 -m pytest tests/test_eval_harness_integrity_gate.py tests/test_eval_v2_scoring_axes.py tests/test_eval_narrow_judge_rubrics.py tests/test_eval_document_extraction.py tests/test_eval_dashboard.py -q)",
+      "Bash(.venv/bin/python3 -m pytest tests/test_eval_dashboard.py -q)",
+      "Bash(.venv/bin/python3 -m pytest tests/test_eval_harness_integrity_gate.py tests/test_eval_v2_scoring_axes.py tests/test_eval_dashboard.py -q)",
+      "Bash(python3 -c ' *)",
+      "Bash(.venv/bin/python3 -m py_compile app/services/agent/langgraph_runtime/runtime.py app/services/agent/research_profiles.py app/services/agent/orchestrator.py app/services/agent/routing_policy.py app/routers/evals.py)",
+      "Bash(.venv/bin/python3 -m pytest tests/test_orchestrator_routing.py tests/test_eval_v2_scoring_axes.py -q)",
+      "Bash(.venv/bin/python3 -m py_compile app/routers/evals.py app/services/agent/orchestrator.py)",
+      "Bash(.venv/bin/python3 -m pytest tests/test_orchestrator_routing.py tests/test_eval_harness_integrity_gate.py tests/test_eval_v2_scoring_axes.py tests/test_eval_dashboard.py -q)"
     ]
   }
 }

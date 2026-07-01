@@ -59,6 +59,26 @@ from app.services.agent.tools import Tools, source_context
 DEEP_RESEARCH_HEARTBEAT_SECONDS = 2.5
 DEEP_RESEARCH_QUEUE_POLL_SECONDS = 0.25
 
+_LANGGRAPH_NODE_MESSAGES: dict[str, str] = {
+    "brief": "Understanding what you're asking...",
+    "subject_derivation": "Identifying what to compare...",
+    "contract": "Mapping out what needs to be covered...",
+    "plan": "Planning the research approach...",
+    "dispatch_search": "Starting the searches...",
+    "search_worker": "Searching the web...",
+    "rank": "Ranking the best sources...",
+    "read": "Reading the source pages...",
+    "classify_claims": "Reviewing claims for accuracy...",
+    "expand_source_graph": "Following up on related links...",
+    "bind": "Pulling the evidence together...",
+    "budget_gate_pre_synthesis": "Checking the research budget...",
+    "budget_gate_pre_repair": "Checking the research budget...",
+    "synthesize": "Writing the answer...",
+    "verify": "Double-checking citations...",
+    "judge": "Reviewing answer quality...",
+    "repair": "Improving the answer...",
+}
+
 
 def _is_owner_reliability_research(message: str) -> bool:
     text = (message or "").lower()
@@ -355,8 +375,13 @@ class Runtime:
             elif route == "research":
                 research = yield from self._run_research_subtree(request, progress)
                 response = research["response"]
+                is_langgraph_streamed = (
+                    research.get("orchestrator") == "langgraph"
+                    and research.get("answer_streamed")
+                )
                 if request.research_level == "deep" and (
-                    not research.get("answer_streamed") or research.get("replay_final_answer")
+                    not research.get("answer_streamed")
+                    or (research.get("replay_final_answer") and not is_langgraph_streamed)
                 ):
                     yield from self._emit_buffered_answer(response, progress)
                 result = TurnResult(
@@ -612,7 +637,7 @@ class Runtime:
 
         if configured_orchestrator() == "langgraph":
             from app.config import get_settings
-            from app.services.agent.langgraph_runtime import run_langgraph_research
+            from app.services.agent.langgraph_runtime import stream_langgraph_research
             from app.services.agent.models import new_id
 
             audit_id = new_id("lgaudit")
@@ -626,7 +651,50 @@ class Runtime:
                     "message_preview": (getattr(request, "message", "") or "")[:60],
                 },
             )
-            return run_langgraph_research(request, self.tool_registry.tools, progress)
+            gen = stream_langgraph_research(request, self.tool_registry.tools, progress)
+            buffered_answer = ""
+            try:
+                while True:
+                    kind, payload = next(gen)
+                    if kind == "delta":
+                        delta = str(payload)
+                        buffered_answer += delta
+                        event = progress(
+                            "answer_delta",
+                            "Streaming answer.",
+                            delta=delta,
+                            char_count=len(buffered_answer),
+                            ephemeral_ui=True,
+                        )
+                        yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
+                    elif kind == "node":
+                        node_payload = dict(payload)
+                        node_name = str(node_payload.pop("node_name", "") or "")
+                        message = (
+                            _LANGGRAPH_NODE_MESSAGES.get(node_name)
+                            or node_payload.pop("message", None)
+                            or f"{node_name.replace('_', ' ').capitalize()}..."
+                        )
+                        event = progress(node_name, message, **node_payload)
+                        yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
+            except StopIteration as stop:
+                result = stop.value
+            if buffered_answer and result is not None:
+                result["answer_streamed"] = True
+                if not result.get("replay_final_answer"):
+                    result["replay_final_answer"] = False
+                response = result.get("response")
+                event = progress(
+                    "answer_complete",
+                    "Answer stream complete.",
+                    char_count=len(buffered_answer),
+                    model_used=getattr(response, "model_used", ""),
+                    latency_ms=getattr(response, "latency_ms", 0),
+                    cost_usd=getattr(response, "cost_usd", 0.0),
+                    ephemeral_ui=True,
+                )
+                yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
+            return result
 
         if request.research_level == "deep":
             from queue import Empty, Queue

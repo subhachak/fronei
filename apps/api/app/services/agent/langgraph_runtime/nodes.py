@@ -800,6 +800,15 @@ def bind(
 # Synthesis half: synthesize → verify → judge → repair  (Slice 3)
 # ---------------------------------------------------------------------------
 
+def _langgraph_stream_writer():
+    try:
+        from langgraph.config import get_stream_writer
+
+        return get_stream_writer()
+    except RuntimeError:
+        return None
+
+
 def synthesize(
     state: ResearchGraphState,
     *,
@@ -812,7 +821,7 @@ def synthesize(
 
     Returns delta-only: answer, model_used, latency_ms, cost_usd_spent, model_calls_made.
     """
-    from app.services.agent.research_synthesis import synthesize_answer
+    from app.services.agent.research_synthesis import synthesize_answer_stream
 
     node_name: GraphNodeName = "synthesize"
     visited = [*state.get("visited_nodes", []), node_name]
@@ -840,7 +849,13 @@ def synthesize(
             "model_calls_made": 0,
         }
 
-    response = synthesize_answer(request, plan, evidence)
+    writer = _langgraph_stream_writer()
+
+    def _on_delta(text: str) -> None:
+        if writer is not None:
+            writer({"answer_delta": text, "source_node": node_name})
+
+    response = synthesize_answer_stream(request, plan, evidence, on_delta=_on_delta)
 
     emit_graph_event(
         progress,
@@ -1076,7 +1091,7 @@ def repair(
     When repair runs: calls repair_research_answer(request, plan, evidence, answer, judge_result).
     Updates answer, model_used, latency_ms, cost_usd_spent, repair_history.
     """
-    from app.services.agent.research_synthesis import repair_research_answer
+    from app.services.agent.research_synthesis import repair_research_answer_stream
 
     node_name: GraphNodeName = "repair"
     visited = [*state.get("visited_nodes", []), node_name]
@@ -1131,7 +1146,13 @@ def repair(
             "model_calls_made": 0,
         }
 
-    response = repair_research_answer(request, plan, evidence, answer, judge_result)
+    writer = _langgraph_stream_writer()
+
+    def _on_delta(text: str) -> None:
+        if writer is not None:
+            writer({"answer_delta": text, "source_node": node_name})
+
+    response = repair_research_answer_stream(request, plan, evidence, answer, judge_result, on_delta=_on_delta)
     history = [*(state.get("repair_history") or []), instruction]
 
     emit_graph_event(

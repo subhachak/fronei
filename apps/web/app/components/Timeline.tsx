@@ -4,8 +4,8 @@ import DOMPurify from 'dompurify'
 import { marked } from 'marked'
 import { CheckCircle2, Copy, Download, Pencil, RefreshCw, Sparkles } from 'lucide-react'
 import { useEffect, useMemo, useRef } from 'react'
-import { assistantTurnCopyText, buildConfidenceCues, plainCommentary } from '../lib/commentary'
-import { formatAppTime } from '../lib/format'
+import { assistantTurnCopyText, buildConfidenceCues, eventChips, plainCommentary, plainCommentaryForEvent } from '../lib/commentary'
+import { formatAppTime, formatRelativeTime, humanizeStage } from '../lib/format'
 import type { Artifact, FollowUpOption, ProgressEvent, WorkItem } from '../types'
 import { CopyButton } from './ui/CopyButton'
 import { MessageActions } from './ui/MessageActions'
@@ -377,6 +377,7 @@ function LiveTurn({
 }) {
   const commentary = plainCommentary(events)
   const latestMessage = commentary.at(-1) || 'I’m getting oriented and deciding the best way to handle this.'
+  const telemetryEvents = events.filter(event => !['tool_selection', 'tool_result'].includes(event.stage))
 
   return (
     <div className="flex flex-col gap-2.5">
@@ -420,8 +421,66 @@ function LiveTurn({
           <span className="h-1 rounded-full bg-emerald-500/70" />
           <span className="h-1 rounded-full bg-emerald-500/70" />
         </div>
+
+        <TelemetryWindow events={telemetryEvents} fallback={latestMessage} />
       </div>
       )}
+    </div>
+  )
+}
+
+function TelemetryWindow({ events, fallback }: { events: ProgressEvent[]; fallback: string }) {
+  const scrollRef = useRef<HTMLDivElement | null>(null)
+  const visibleEvents = events.slice(-16)
+
+  useEffect(() => {
+    if (!scrollRef.current) return
+    scrollRef.current.scrollTop = scrollRef.current.scrollHeight
+  }, [visibleEvents.length])
+
+  if (visibleEvents.length === 0) {
+    return (
+      <div className="ml-12 rounded-xl border border-neutral-200 bg-neutral-50 px-3 py-2 text-xs leading-relaxed text-neutral-500 dark:border-neutral-800 dark:bg-neutral-950/40 dark:text-neutral-400">
+        {fallback}
+      </div>
+    )
+  }
+
+  return (
+    <div className="ml-12 overflow-hidden rounded-xl border border-neutral-200 bg-neutral-50 dark:border-neutral-800 dark:bg-neutral-950/40">
+      <div className="flex items-center justify-between border-b border-neutral-200 px-3 py-2 dark:border-neutral-800">
+        <span className="text-[10px] font-bold uppercase tracking-wider text-neutral-400">Live telemetry</span>
+        <span className="text-[10px] font-semibold text-neutral-400">{visibleEvents.length} step{visibleEvents.length === 1 ? '' : 's'}</span>
+      </div>
+      <div ref={scrollRef} className="max-h-44 overflow-y-auto px-3 py-2">
+        <div className="grid gap-2">
+          {visibleEvents.map((event, index) => {
+            const summary = plainCommentaryForEvent(event) || event.message || 'Working through the task.'
+            const chips = eventChips(event)
+            return (
+              <div key={event.event_id || `${event.stage}-${index}-${event.created_at || ''}`} className="grid grid-cols-[8px_minmax(0,1fr)] gap-2">
+                <span className={`mt-1.5 h-2 w-2 rounded-full ${index === visibleEvents.length - 1 ? 'bg-emerald-500' : 'bg-neutral-300 dark:bg-neutral-700'}`} />
+                <div className="min-w-0">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <span className="truncate text-[11px] font-bold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">{humanizeStage(event.stage)}</span>
+                    {event.created_at && <span className="flex-shrink-0 text-[10px] text-neutral-400">{formatRelativeTime(event.created_at)}</span>}
+                  </div>
+                  <p className="mt-0.5 text-xs leading-relaxed text-neutral-600 dark:text-neutral-300">{summary}</p>
+                  {chips.length > 0 && (
+                    <div className="mt-1 flex flex-wrap gap-1">
+                      {chips.slice(0, 3).map(chip => (
+                        <span key={chip} className="rounded-full bg-white px-1.5 py-0.5 text-[10px] font-semibold text-neutral-400 ring-1 ring-neutral-200 dark:bg-neutral-900 dark:ring-neutral-800">
+                          {chip}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      </div>
     </div>
   )
 }

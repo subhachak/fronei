@@ -78,7 +78,10 @@ def test_langgraph_pause_resume_survives_empty_in_memory_context(monkeypatch):
     assert resumed["feedback"].judge.can_publish is True
     assert resumed["langgraph_state"].get("approval_contract", {}).get("approved_by") == "test-admin"
     with SessionLocal() as db:
-        assert db.get(LangGraphRunContext, run_id) is None
+        row = db.get(LangGraphRunContext, run_id)
+        assert row is not None
+        assert row.status == "completed"
+        assert row.completed_at is not None
 
 
 def test_langgraph_run_context_does_not_persist_plaintext_tool_keys(monkeypatch):
@@ -302,13 +305,55 @@ def test_resume_langgraph_research_rejects_concurrent_duplicate_resume(monkeypat
     assert invoke_calls["count"] == 1
 
     with SessionLocal() as db:
-        assert db.get(LangGraphRunContext, run_id) is None
+        row = db.get(LangGraphRunContext, run_id)
+        assert row is not None
+        assert row.status == "completed"
+        assert row.resumed_at is not None
+        assert row.resumed_by == "admin-1"
 
     with pytest.raises(LangGraphResumeConflict):
         resume_langgraph_research(run_id, approved_by="admin-2")
 
     # The graph must not have been invoked a second time for the same run_id.
     assert invoke_calls["count"] == 1
+
+
+def test_cleanup_langgraph_checkpoints_keeps_recent_completed_runs(monkeypatch):
+    """Gap 2: successful runs are retained for the configured window, not
+    deleted immediately on completion.
+    """
+    run_id = new_id("lgrun")
+    now = datetime.now(timezone.utc)
+
+    with SessionLocal() as db:
+        row = LangGraphRunContext(
+            run_id=run_id,
+            request_json="{}",
+            tool_config_json="{}",
+            status="completed",
+            created_at=now,
+            updated_at=now,
+            completed_at=now,
+        )
+        db.add(row)
+        db.commit()
+
+    class FakeCheckpointer:
+        def delete_thread(self, thread_id: str) -> None:
+            raise AssertionError("fresh completed runs must stay until the retention window expires")
+
+    monkeypatch.setattr(
+        "app.services.agent.langgraph_runtime.checkpointer.get_checkpointer",
+        lambda: FakeCheckpointer(),
+    )
+
+    result = cleanup_langgraph_checkpoints(retention_days=7)
+
+    assert run_id not in result["deleted_run_ids"]
+    with SessionLocal() as db:
+        row = db.get(LangGraphRunContext, run_id)
+        assert row is not None
+        assert row.status == "completed"
 
 
 def test_cleanup_langgraph_checkpoints_deletes_old_completed_runs(monkeypatch):

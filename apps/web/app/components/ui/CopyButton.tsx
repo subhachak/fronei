@@ -29,6 +29,8 @@ export function CopyButton({
         tone === 'default'
           && 'border-neutral-200 bg-white text-neutral-500 hover:border-neutral-300 hover:text-neutral-900 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-100',
         copied && tone === 'default' && 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-400',
+        copied && tone !== 'default'
+          && 'border-emerald-300/60 bg-emerald-400/20 text-emerald-100 hover:bg-emerald-400/25 dark:border-emerald-600/40 dark:bg-emerald-500/15 dark:text-emerald-700 dark:hover:bg-emerald-500/20',
       )}
     >
       {copied ? <Check size={13} /> : <Copy size={13} />}

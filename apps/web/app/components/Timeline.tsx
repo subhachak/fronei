@@ -394,6 +394,7 @@ function LiveTurn({
 }) {
   const commentary = plainCommentary(events)
   const latestMessage = commentary.at(-1) || 'I’m getting oriented and deciding the best way to handle this.'
+  const answerInProgressMessage = commentary.at(-1) || 'Writing the response…'
   const telemetryEvents = events.filter(event => !['tool_selection', 'tool_result'].includes(event.stage))
   const userCopied = copiedKey === 'live:user'
   const assistantCopied = copiedKey === 'live:assistant'
@@ -418,7 +419,7 @@ function LiveTurn({
             </span>
             <div className="min-w-0 flex-1">
               <p className="text-sm font-bold text-neutral-900 dark:text-neutral-50">Fronei</p>
-              <p className="mt-0.5 text-sm leading-relaxed text-neutral-500 dark:text-neutral-400">Writing the response…</p>
+              <p className="mt-0.5 text-sm leading-relaxed text-neutral-500 dark:text-neutral-400">{answerInProgressMessage}</p>
             </div>
           </div>
           <StreamingMarkdown text={answer} live />

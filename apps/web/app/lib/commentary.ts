@@ -40,6 +40,8 @@ export function plainCommentaryForEvent(event: ProgressEvent): string | null {
     case 'document_judge_result':
     case 'judge':
       return 'I’m doing a quality pass before handing it back.'
+    case 'verify':
+      return 'I’m double-checking the citations and source support.'
     case 'repair':
     case 'repair_loop':
       return 'I found something to improve, so I’m tightening it up.'

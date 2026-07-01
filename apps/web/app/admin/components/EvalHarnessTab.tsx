@@ -970,6 +970,7 @@ export function EvalHarnessTab({ authorizedFetch }: { authorizedFetch: Authorize
   const [progressTotal, setProgressTotal] = useState<number | null>(null)
   const [progressCompleted, setProgressCompleted] = useState(0)
   const [runResult, setRunResult] = useState<EvalRunResult | null>(null)
+  const [reconnecting, setReconnecting] = useState(false)
   const [runs, setRuns] = useState<EvalRunSummary[]>([])
   const [runsHasMore, setRunsHasMore] = useState(false)
   const [runsLoadingMore, setRunsLoadingMore] = useState(false)
@@ -1131,6 +1132,7 @@ export function EvalHarnessTab({ authorizedFetch }: { authorizedFetch: Authorize
   }
 
   const applySnapshot = useCallback((data: Record<string, unknown>) => {
+    setReconnecting(false)
     setLog((data.log as string[]) ?? [])
     setProgressTotal((data.total as number | null) ?? null)
     setProgressCompleted((data.completed as number) ?? 0)
@@ -1174,10 +1176,12 @@ export function EvalHarnessTab({ authorizedFetch }: { authorizedFetch: Authorize
     autoResumedRef.current = true
     setCurrentRunId(liveRun.run_id)
     setRunStatus('running')
+    setReconnecting(true)
     authorizedFetch(`/admin/evals/runs/${liveRun.run_id}/status`)
       .then(resp => (resp.ok ? resp.json() : null))
       .then(data => { if (data) applySnapshot(data) })
       .catch(() => {})
+      .finally(() => setReconnecting(false))
     startPolling(liveRun.run_id)
   }, [runs, currentRunId, authorizedFetch, applySnapshot])
 
@@ -1207,7 +1211,7 @@ export function EvalHarnessTab({ authorizedFetch }: { authorizedFetch: Authorize
   async function startRun(caseIdsOverride?: number[]) {
     setRunStatus('running'); setLog([]); setRunResult(null); setRunError('')
     setLangsmithLinks({}); setProgressTotal(null); setProgressCompleted(0); setCurrentRunId(null)
-    setShowDashboard(false)
+    setReconnecting(false); setShowDashboard(false)
     const ids = caseIdsOverride ?? Array.from(selectedIds)
     const payload = {
       mode: runMode,
@@ -1565,6 +1569,12 @@ export function EvalHarnessTab({ authorizedFetch }: { authorizedFetch: Authorize
             )}
             {runResult?.mode === 'langsmith' && runStatus === 'complete' && (runResult.cases?.length ?? 0) === 0 && (
               <p className="text-xs text-neutral-500 italic">Per-case rows are in LangSmith. Use the experiment links above.</p>
+            )}
+            {runStatus === 'running' && !runResult && reconnecting && (
+              <p className="text-xs text-neutral-400 italic flex items-center gap-1.5">
+                <Loader2 size={12} className="animate-spin flex-shrink-0" />
+                Reconnecting to live run — per-case results loading…
+              </p>
             )}
             {runStatus === 'idle' && !runResult && (
               <p className="text-xs text-neutral-400 italic">No run in progress. Pick cases on the left and hit Run, or click the ▶ icon next to a single case.</p>

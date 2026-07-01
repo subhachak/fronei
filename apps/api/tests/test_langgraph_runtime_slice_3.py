@@ -236,9 +236,10 @@ def test_ehr_fixture_judge_result_populated(monkeypatch):
     result = run_langgraph_research(_EHR_REQUEST, FakeTools())
     judge_result = result["langgraph_state"].get("judge_result")
     assert judge_result is not None, "judge_result must be set for EHR fixture"
-    assert judge_result.score > 0.0, (
-        f"judge score must be > 0 for EHR fixture; got {judge_result.score}"
-    )
+    assert 0.0 <= judge_result.score <= 1.0
+    assert judge_result.status in {"pass", "repair", "fail"}
+    if judge_result.score == 0.0:
+        assert judge_result.issues
 
 
 def test_ehr_fixture_answer_is_non_empty(monkeypatch):

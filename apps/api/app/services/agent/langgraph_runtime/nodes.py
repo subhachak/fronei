@@ -1179,6 +1179,8 @@ def budget_gate(
     deficit to the already-exceeded threshold.
     """
     import datetime
+    from langgraph.types import interrupt
+
     from app.services.agent.models import new_id
     from app.services.agent.research_profiles import research_budget_for
 
@@ -1221,14 +1223,33 @@ def budget_gate(
         # must authorise to run the remainder of the pipeline.  It is always positive
         # and equals one full budget ceiling (same as what was originally granted).
         continuation_budget = budget.max_cost_usd
-        updates["pause_contract"] = {
+        pause_contract = {
             "pause_reason": (
                 f"Cost ceiling reached: ${cost:.4f} spent against "
                 f"${budget.max_cost_usd:.4f} limit."
             ),
             "required_additional_budget_usd": continuation_budget,
-            "resume_checkpoint_id": "",
+            "resume_checkpoint_id": run_id,
             "audit_event_id": new_id("lgpause"),
             "paused_at": datetime.datetime.utcnow().isoformat() + "Z",
+        }
+        try:
+            approval = interrupt(pause_contract)
+        except RuntimeError as exc:
+            if "outside of a runnable context" not in str(exc):
+                raise
+            updates["pause_contract"] = pause_contract
+            return updates
+        if isinstance(approval, dict):
+            approval_contract = dict(approval)
+        else:
+            approval_contract = {"approved": bool(approval)}
+        approval_contract.setdefault("approved_at", datetime.datetime.utcnow().isoformat() + "Z")
+        approval_contract.setdefault("updated_budget_ceiling_usd", cost + continuation_budget)
+        approval_contract.setdefault("approval_audit_event_id", new_id("lgapprove"))
+        return {
+            "budget_decision": BudgetDecision.CONTINUE,
+            "pause_contract": pause_contract,
+            "approval_contract": approval_contract,
         }
     return updates

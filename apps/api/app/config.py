@@ -157,6 +157,7 @@ class Settings(BaseSettings):
     # Promoted to "langgraph" as the default after parity gate passed.
     # Override with FRONEI_ORCHESTRATOR=legacy in the environment to revert.
     fronei_orchestrator: str = "langgraph"
+    langgraph_checkpoint_db_path: str = "./langgraph_checkpoints.db"
     # Reserved for trusted QA tooling in a later slice. Slice 0A intentionally
     # does not implement a per-request override; production must fail closed if
     # this unsafe bypass is enabled accidentally.

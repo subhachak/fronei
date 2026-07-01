@@ -67,7 +67,7 @@ class PauseContract(TypedDict, total=False):
     """Populated when budget_decision == REQUIRE_HUMAN_APPROVAL."""
     pause_reason: str
     required_additional_budget_usd: float
-    resume_checkpoint_id: str        # LangGraph checkpoint ID to resume from
+    resume_checkpoint_id: str        # Stable LangGraph thread_id/run_id to resume
     audit_event_id: str              # Logged at pause; immutable
     paused_at: str                   # ISO-8601 timestamp
 
@@ -96,6 +96,7 @@ class ResearchGraphState(TypedDict, total=False):
     request_message: str
     research_level: str              # "easy" | "regular" | "deep"
     run_id: str
+    request_payload: dict[str, Any]  # JSON-safe TurnRequest copy for resume
 
     # ---- Pipeline products (each node writes its own output field) --------
     brief: ResearchBrief | None

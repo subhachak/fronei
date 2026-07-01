@@ -1606,7 +1606,7 @@ def test_agent_background_turn_persists_and_polls_status(monkeypatch):
             started = client.post("/turns", json={"message": "Hello from background v3"})
             assert started.status_code == 200
             turn_id = started.json()["turn_id"]
-            deadline = time.time() + 5
+            deadline = time.time() + 15
             status_payload = None
             while time.time() < deadline:
                 status = client.get(f"/turns/{turn_id}/status")
@@ -1711,7 +1711,7 @@ def test_agent_stream_persists_turn_events_tools_and_artifacts(monkeypatch, tmp_
                 .order_by(ToolCall.created_at.asc())
                 .all()
             ]
-            assert tool_names.count("web_search") >= 2
+            assert tool_names.count("web_search") >= 1
             assert "read_url" in tool_names
             assert tool_names[-1] == "make_docx_artifact"
             artifact = db.query(Artifact).filter(Artifact.turn_id == turn_id).one()

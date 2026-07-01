@@ -1,9 +1,9 @@
-"""LangGraph research runtime compatibility shell.
+"""LangGraph research runtime."""
 
-Slice 0A contains only stubs and public-shape compatibility. Real graph nodes
-and domain-function wiring are intentionally left for later slices.
-"""
+from app.services.agent.langgraph_runtime.runtime import (
+    pending_langgraph_pause,
+    resume_langgraph_research,
+    run_langgraph_research,
+)
 
-from app.services.agent.langgraph_runtime.runtime import run_langgraph_research
-
-__all__ = ["run_langgraph_research"]
+__all__ = ["pending_langgraph_pause", "resume_langgraph_research", "run_langgraph_research"]

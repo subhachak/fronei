@@ -23,6 +23,7 @@ import { Sheet } from './ui/Sheet'
 const MIN_LEFT_RAIL_WIDTH = 240
 const MAX_LEFT_RAIL_WIDTH = 420
 const MIN_COMPOSER_HEIGHT = 152
+const COMPACT_COMPOSER_HEIGHT = 118
 const MAX_COMPOSER_HEIGHT = 340
 const LEFT_RAIL_COLLAPSED_KEY = 'agent-shell:left-rail-collapsed'
 
@@ -52,6 +53,7 @@ export function AgentShell() {
   const [leftRailWidth, setLeftRailWidth] = useState(280)
   const [composerHeight, setComposerHeight] = useState(168)
   const [leftRailCollapsed, setLeftRailCollapsed] = useState(false)
+  const [workPaneScrolled, setWorkPaneScrolled] = useState(false)
   const [workModalOpen, setWorkModalOpen] = useState(false)
   const [prefsPopoverOpen, setPrefsPopoverOpen] = useState(false)
   const [uploadSource, setUploadSource] = useState<'composer' | 'profile'>('profile')
@@ -125,6 +127,15 @@ export function AgentShell() {
     document.addEventListener('pointermove', onMove)
     document.addEventListener('pointerup', onUp, { once: true })
   }
+
+  function handleWorkPaneScroll() {
+    const nextScrolled = (chatScrollRef.current?.scrollTop || 0) > 24
+    setWorkPaneScrolled(current => current === nextScrolled ? current : nextScrolled)
+  }
+
+  const effectiveComposerHeight = workPaneScrolled
+    ? Math.min(composerHeight, COMPACT_COMPOSER_HEIGHT)
+    : composerHeight
 
   const libraryContent = (
     <LibraryPanel
@@ -366,19 +377,18 @@ export function AgentShell() {
             <AdminShell embedded onClose={() => setView('chat')} />
           ) : (
             <>
-              <header className="hidden flex-shrink-0 border-b border-neutral-200 bg-white/95 px-8 py-5 backdrop-blur md:block dark:border-neutral-800 dark:bg-neutral-950/95">
+              <header className={`hidden flex-shrink-0 border-b border-neutral-200 bg-white/95 px-8 backdrop-blur transition-all duration-200 md:block dark:border-neutral-800 dark:bg-neutral-950/95 ${workPaneScrolled ? 'py-2.5' : 'py-3.5'}`}>
                 <div className="flex items-center justify-between gap-4">
-                  <div>
-                    <p className="text-[11px] font-bold uppercase tracking-wider text-neutral-400">Research and work-product studio</p>
-                    <h2 className="mt-0.5 text-2xl font-bold text-neutral-900 dark:text-neutral-50">Workbench</h2>
-                    <p className="mt-1 max-w-[52rem] truncate text-xs font-semibold text-neutral-400">
+                  <div className="min-w-0">
+                    {!workPaneScrolled && (
+                      <p className="text-[10px] font-bold uppercase tracking-wider text-neutral-400">Research and work-product studio</p>
+                    )}
+                    <h2 className={`${workPaneScrolled ? 'text-lg' : 'mt-0.5 text-xl'} font-bold leading-tight text-neutral-900 transition-all duration-200 dark:text-neutral-50`}>Workbench</h2>
+                    <p className={`${workPaneScrolled ? 'mt-0.5' : 'mt-1'} max-w-[52rem] truncate text-xs font-semibold text-neutral-400`}>
                       {agent.activeWorkspace?.name || 'No workspace selected'} / {agent.activeConversation?.title || 'No conversation selected'}
                     </p>
                   </div>
                   <div className="flex items-center gap-3">
-                    {agent.result && (
-                      <Badge tone="neutral">{agent.result.route} · {agent.result.latency_ms ?? 0}ms</Badge>
-                    )}
                     <Badge tone={agent.running ? 'success' : 'neutral'}>
                       {agent.running ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
                       {agent.running ? 'Working' : 'Ready'}
@@ -407,7 +417,7 @@ export function AgentShell() {
                 </div>
               </header>
 
-              <div ref={chatScrollRef} className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4 sm:px-6 md:px-8 md:py-6">
+              <div ref={chatScrollRef} onScroll={handleWorkPaneScroll} className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4 sm:px-6 md:px-8 md:py-6">
                 {showConversationPlaceholder ? (
                   <ConversationSkeleton />
                 ) : (
@@ -458,7 +468,10 @@ export function AgentShell() {
                 )}
               </div>
 
-              <div className="relative flex-shrink-0 border-t border-neutral-200 bg-white/95 p-2.5 backdrop-blur [padding-bottom:calc(0.625rem+env(safe-area-inset-bottom))] md:px-8 md:py-4 dark:border-neutral-800 dark:bg-neutral-950/95" style={{ minHeight: composerHeight }}>
+              <div
+                className={`relative flex-shrink-0 border-t border-neutral-200 bg-white/95 p-2.5 backdrop-blur transition-all duration-200 [padding-bottom:calc(0.625rem+env(safe-area-inset-bottom))] md:px-8 dark:border-neutral-800 dark:bg-neutral-950/95 ${workPaneScrolled ? 'md:py-2.5' : 'md:py-3'}`}
+                style={{ minHeight: effectiveComposerHeight }}
+              >
                 <div
                   role="separator"
                   aria-label="Resize composer"
@@ -492,6 +505,7 @@ export function AgentShell() {
                   attachingFile={agent.attachingFile}
                   attachmentError={agent.attachmentError}
                   onClearAttachment={agent.clearAttachment}
+                  compact={workPaneScrolled}
                 />
               </div>
             </>

@@ -44,6 +44,46 @@ def test_empty_answer_with_low_judge_score_is_not_harness_error():
     assert agreement is True
 
 
+def test_pipeline_crash_empty_answer_is_harness_error():
+    """ok=False + answer_length=0 + judge_score=None (direct/clarify routes)
+    must produce harness_error. The existing judge_structural_agreement gate
+    cannot catch this because it explicitly allows null judge_score (direct
+    routes don't run a judge). This covers cases #26, #27, #58 from the
+    evalrun_34691bb17fdf regression where pipeline crashes on direct-route
+    cases produced status=fail rather than harness_error."""
+    from app.routers.evals import _run_one_eval_case
+    from unittest.mock import patch, MagicMock
+
+    # Simulate a case whose pipeline crashes — run.ok=False, answer_length=0,
+    # judge_score=None (the exact shape the error path at line ~1405 produces).
+    case_dict = {
+        "id": 26,
+        "title": "Boiling point of water",
+        "query": "What is the boiling point of water?",
+        "expected_criteria": [],
+        "expected_route": "direct",
+        "v2_spec": {"routing": {"expected_route": "direct"}},
+        "min_independent_sources": None,
+        "min_evidence_items": None,
+        "min_criteria_score": None,
+    }
+
+    with patch("app.routers.evals._decide_eval_route") as mock_decide, \
+         patch("app.routers.evals._run_non_research_route_blocking") as mock_run:
+        mock_decide.return_value = MagicMock(
+            route="direct", research_level="regular", requires_confirmation=False
+        )
+        mock_run.side_effect = RuntimeError("simulated pipeline crash")
+        result = _run_one_eval_case(case_dict, tools=MagicMock(), pipeline="langgraph")
+
+    assert result["overall_status"] == "harness_error", (
+        f"Pipeline crash must produce harness_error, got {result['overall_status']!r}"
+    )
+    assert result["run"]["ok"] is False
+    assert result["run"]["answer_length"] == 0
+    assert result["run"]["judge_score"] is None
+
+
 def test_judge_score_none_does_not_trip_the_gate():
     """direct/clarify/document routes never run a research judge — judge_score
     is None for them, which must not be treated as a structural disagreement."""

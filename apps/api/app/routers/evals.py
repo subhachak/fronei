@@ -2517,26 +2517,47 @@ def list_eval_runs(
 
 @router.get("/runs/{run_id}/status")
 def get_eval_run_status(run_id: str, admin: AdminPrincipal = RequireAdmin) -> dict:
-    """Poll for live progress and final results. Checks in-process memory, then DB."""
+    """Poll for live progress and final results. Checks in-process memory, then DB.
+
+    Always returns a consistent shape:
+      status:    running | complete | stopped | error
+      total:     total case count (null if not yet known)
+      completed: number of cases finished so far
+      progress:  list of per-case result dicts (grows as cases finish)
+      log:       human-readable progress lines (live-only; empty from DB)
+      results:   EvalRunResult envelope {mode, pipeline, cases, ...} — always
+                 present even for in-flight runs (cases=[] until first case done)
+    """
     with _EVAL_RUNS_LOCK:
         run = _EVAL_RUNS.get(run_id)
     if run:
+        pipeline = run.get("pipeline", "langgraph")
+        progress_snapshot = list(run.get("progress", []))
+        # Always build a results envelope so the frontend has a consistent
+        # shape regardless of how many cases have finished.  For a completed
+        # run run.get("results") is the final envelope; for an in-flight run
+        # it's None, so we build a partial one from the current progress.
+        results = run.get("results") or _make_result_envelope(
+            "in_process", progress_snapshot, None, pipeline=pipeline
+        )
         return {
             "run_id": run_id,
             "status": run["status"],
             "mode": run.get("mode", "in_process"),
-            "pipeline": run.get("pipeline", "langgraph"),
+            "pipeline": pipeline,
             "total": run.get("total"),
             "completed": run.get("completed", 0),
-            "progress": list(run.get("progress", [])),
+            "progress": progress_snapshot,
             "log": list(run.get("log", [])),
-            "results": run.get("results"),
+            "results": results,
             "langsmith_links": run.get("langsmith_links"),
             "error": run.get("error"),
             "started_at": run.get("started_at"),
             "completed_at": run.get("completed_at"),
         }
-    # Fall through to DB for historical runs
+    # Fall through to DB — handles historical runs AND runs whose process died
+    # (server restart). The checkpoint writes keep results_json current while
+    # the run is in-flight so this path returns real partial data, not just [].
     from app.db.models import EvalRun, SessionLocal
     db = SessionLocal()
     try:

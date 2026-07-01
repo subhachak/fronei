@@ -11,12 +11,14 @@ import {
   Moon,
   ServerCog,
   ShieldAlert,
+  ShieldCheck,
   Sun,
   Users,
 } from 'lucide-react'
 import { useState } from 'react'
 import { useTheme } from '../../hooks/useTheme'
 import { useAdmin } from '../hooks/useAdmin'
+import { ApprovalsTab } from './ApprovalsTab'
 import { EvalsTab } from './EvalsTab'
 import { ModelPolicyTab } from './ModelPolicyTab'
 import { JobsTab } from './JobsTab'
@@ -25,11 +27,12 @@ import { SystemTab } from './SystemTab'
 import { UsageTab } from './UsageTab'
 import { UsersTab } from './UsersTab'
 
-type AdminTab = 'overview' | 'jobs' | 'users' | 'modelpolicy' | 'usage' | 'system' | 'evals'
+type AdminTab = 'overview' | 'jobs' | 'approvals' | 'users' | 'modelpolicy' | 'usage' | 'system' | 'evals'
 
 const TABS: { id: AdminTab; label: string; icon: typeof LayoutDashboard }[] = [
   { id: 'overview', label: 'Overview', icon: LayoutDashboard },
   { id: 'jobs', label: 'Jobs', icon: ListTodo },
+  { id: 'approvals', label: 'Approvals', icon: ShieldCheck },
   { id: 'users', label: 'Users', icon: Users },
   { id: 'modelpolicy', label: 'Model policy', icon: Cpu },
   { id: 'usage', label: 'Usage', icon: Activity },
@@ -141,6 +144,7 @@ export function AdminShell({ embedded = false, onClose }: { embedded?: boolean; 
           <>
             {tab === 'overview' && <OverviewTab authorizedFetch={authorizedFetch} />}
             {tab === 'jobs' && <JobsTab authorizedFetch={authorizedFetch} />}
+            {tab === 'approvals' && <ApprovalsTab authorizedFetch={authorizedFetch} />}
             {tab === 'users' && <UsersTab authorizedFetch={authorizedFetch} />}
             {tab === 'modelpolicy' && <ModelPolicyTab authorizedFetch={authorizedFetch} />}
             {tab === 'usage' && <UsageTab authorizedFetch={authorizedFetch} />}

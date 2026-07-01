@@ -159,6 +159,114 @@ describe('useTurnRunner', () => {
     }
   })
 
+  it('stops streaming on a paused turn without appending a completed conversation item', async () => {
+    const appendTurn = vi.fn()
+    const authorizedFetch = vi.fn()
+      .mockResolvedValueOnce(response({ turn_id: 'turn_pause', conversation_id: 'conv_1', status: 'running' }))
+      .mockResolvedValueOnce(response([
+        'event: turn',
+        'data: {"turn_id":"turn_pause","status":"paused","turn":{"turn_id":"turn_pause","answer":"","route":"research","turn_status":"paused","langgraph_run_id":"lgrun_1","pause_reason":"Budget approval is required.","sources":[],"artifacts":[],"events":[]}}',
+        '',
+        '',
+      ].join('\n')))
+    const { result } = renderHook(() => useTurnRunner({ ...baseOptions(authorizedFetch), appendTurn }))
+
+    await act(async () => {
+      await result.current.run()
+    })
+
+    expect(result.current.running).toBe(false)
+    expect(result.current.result?.turn_status).toBe('paused')
+    expect(result.current.result?.langgraph_run_id).toBe('lgrun_1')
+    expect(result.current.result?.pause_reason).toBe('Budget approval is required.')
+    expect(appendTurn).not.toHaveBeenCalled()
+  })
+
+  it('cancels the active running turn and handles the cancelled terminal event', async () => {
+    vi.useFakeTimers()
+    try {
+      const authorizedFetch = vi.fn()
+        .mockResolvedValueOnce(response({ turn_id: 'turn_cancel', conversation_id: 'conv_1', status: 'running' }))
+        .mockResolvedValueOnce(streamingResponse([
+          {
+            at: 500,
+            text: [
+              'event: turn',
+              'data: {"turn_id":"turn_cancel","status":"cancelled","turn":{"turn_id":"turn_cancel","answer":"","route":"research","sources":[],"artifacts":[]}}',
+              '',
+              '',
+            ].join('\n'),
+          },
+        ]))
+        .mockResolvedValueOnce(response({ status: 'cancellation_requested' }))
+      const { result } = renderHook(() => useTurnRunner(baseOptions(authorizedFetch)))
+
+      let runPromise: Promise<void>
+      await act(async () => {
+        runPromise = result.current.run()
+        await Promise.resolve()
+      })
+
+      await act(async () => {
+        await result.current.cancel()
+      })
+
+      expect(authorizedFetch).toHaveBeenNthCalledWith(3, '/turns/turn_cancel/cancel', { method: 'POST' })
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(700)
+        await runPromise
+      })
+
+      expect(result.current.running).toBe(false)
+      expect(result.current.error).toBe('This turn was cancelled.')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not surface an error when cancel races with an already-finished turn', async () => {
+    vi.useFakeTimers()
+    try {
+      const authorizedFetch = vi.fn()
+        .mockResolvedValueOnce(response({ turn_id: 'turn_done', conversation_id: 'conv_1', status: 'running' }))
+        .mockResolvedValueOnce(streamingResponse([
+          {
+            at: 500,
+            text: [
+              'event: turn',
+              'data: {"turn_id":"turn_done","status":"completed","turn":{"turn_id":"turn_done","answer":"Done","route":"direct","sources":[],"artifacts":[]}}',
+              '',
+              '',
+            ].join('\n'),
+          },
+        ]))
+        .mockResolvedValueOnce(response({ detail: 'already finished' }, { status: 409 }))
+      const { result } = renderHook(() => useTurnRunner(baseOptions(authorizedFetch)))
+
+      let runPromise: Promise<void>
+      await act(async () => {
+        runPromise = result.current.run()
+        await Promise.resolve()
+      })
+
+      await act(async () => {
+        await result.current.cancel()
+      })
+
+      expect(result.current.error).toBeNull()
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(700)
+        await runPromise
+      })
+
+      expect(result.current.result?.answer).toBe('Done')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('smoothly drains answer deltas before the final turn arrives', async () => {
     vi.useFakeTimers()
     try {

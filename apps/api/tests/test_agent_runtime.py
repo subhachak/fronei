@@ -1594,6 +1594,7 @@ def test_agent_api_stream(monkeypatch):
 
 
 def test_agent_background_turn_persists_and_polls_status(monkeypatch):
+    _use_legacy_orchestrator(monkeypatch)
     _patch_completion(monkeypatch, "Background answer.")
     from app.services.agent import persistence
 

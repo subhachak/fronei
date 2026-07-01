@@ -12,6 +12,7 @@ import { Composer } from './Composer'
 import { ContextPanel } from './ContextPanel'
 import { LibraryPanel } from './LibraryPanel'
 import { ProfileView } from './ProfileView'
+import { PausedApprovalCard } from './PausedApprovalCard'
 import { Timeline } from './Timeline'
 import { Badge } from './ui/Card'
 import { Button } from './ui/Button'
@@ -435,6 +436,19 @@ export function AgentShell() {
                       onRetry={message => void agent.run({ label: 'Retry', message })}
                       onEdit={agent.setMessage}
                     />
+                    {agent.result?.turn_status === 'paused' && (
+                      <PausedApprovalCard
+                        result={agent.result}
+                        isAdmin={agent.isAdmin}
+                        authorizedFetch={agent.authorizedFetch}
+                        onResolved={updated => {
+                          agent.setTurnState(updated, updated.events || [])
+                          if (agent.activeWorkspace?.id && agent.activeConversation?.id) {
+                            void agent.selectConversation(agent.activeWorkspace.id, agent.activeConversation.id)
+                          }
+                        }}
+                      />
+                    )}
                   </>
                 )}
                 {agent.error && (
@@ -463,6 +477,8 @@ export function AgentShell() {
                   running={agent.running}
                   canRun={agent.canRun}
                   run={() => void agent.run()}
+                  cancel={() => void agent.cancel()}
+                  cancelling={agent.cancelling}
                   onUploadTemplate={() => openTemplateUpload('composer')}
                   templates={agent.templates}
                   selectedTemplateId={agent.selectedTemplateExists ? agent.selectedTemplateId : ''}

@@ -81,8 +81,10 @@ export function useTurnRunner(options: TurnRunnerOptions) {
   const [liveAnswer, setLiveAnswer] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [running, setRunning] = useState(false)
+  const [cancelling, setCancelling] = useState(false)
   const eventsRef = useRef<ProgressEvent[]>([])
   const activeRunMessageRef = useRef<string | null>(null)
+  const activeTurnIdRef = useRef<string | null>(null)
   // Token smoothing queue: SSE tokens land here without touching React state.
   // A small timer drains the queue at a steady cadence so bursty network/model
   // chunks appear as a continuous rolling response.
@@ -221,6 +223,11 @@ export function useTurnRunner(options: TurnRunnerOptions) {
   ): boolean {
     if (payload.status === 'completed') {
       completeTurn(payload.turn, conversationId, turnMessage, option)
+      return true
+    }
+    if (payload.status === 'paused') {
+      clearStreamState()
+      setTurnState(payload.turn, payload.turn.events || eventsRef.current)
       return true
     }
     if (payload.status === 'failed') {
@@ -373,6 +380,7 @@ export function useTurnRunner(options: TurnRunnerOptions) {
       })
       if (!response.ok) throw new Error(await readErrorBody(response, 'Fronei job could not start'))
       const started = await response.json() as { turn_id: string; conversation_id: string; status: string }
+      activeTurnIdRef.current = started.turn_id
       const activeConversation = started.conversation_id || conversationId
       const streamed = await streamTurnStatus(started.turn_id, activeConversation, runMessage, option)
       if (!streamed) await pollTurnStatus(started.turn_id, activeConversation, runMessage, option)
@@ -381,6 +389,8 @@ export function useTurnRunner(options: TurnRunnerOptions) {
     } finally {
       setRunning(false)
       activeRunMessageRef.current = null
+      activeTurnIdRef.current = null
+      setCancelling(false)
     }
   }
 
@@ -388,6 +398,7 @@ export function useTurnRunner(options: TurnRunnerOptions) {
     if (running) return
     setRunning(true)
     activeRunMessageRef.current = turnMessage
+    activeTurnIdRef.current = turnId
     try {
       const streamed = await streamTurnStatus(turnId, conversationId, turnMessage)
       if (!streamed) await pollTurnStatus(turnId, conversationId, turnMessage)
@@ -396,6 +407,24 @@ export function useTurnRunner(options: TurnRunnerOptions) {
     } finally {
       setRunning(false)
       activeRunMessageRef.current = null
+      activeTurnIdRef.current = null
+      setCancelling(false)
+    }
+  }
+
+  async function cancel() {
+    const turnId = activeTurnIdRef.current
+    if (!turnId || cancelling) return
+    setCancelling(true)
+    try {
+      const response = await authorizedFetch(`/turns/${turnId}/cancel`, { method: 'POST' })
+      if (!response.ok && response.status !== 409) {
+        throw new Error(await readErrorBody(response, 'Could not stop this turn'))
+      }
+    } catch (err) {
+      setError(streamErrorMessage(err))
+    } finally {
+      setCancelling(false)
     }
   }
 
@@ -410,6 +439,8 @@ export function useTurnRunner(options: TurnRunnerOptions) {
     canRun,
     run,
     resumeTurn,
+    cancel,
+    cancelling,
     activeRunMessage: activeRunMessageRef.current,
     resetTurnState,
     setTurnState,

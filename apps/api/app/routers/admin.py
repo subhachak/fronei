@@ -21,6 +21,7 @@ from app.db.models import (
     AdminAuditLog,
     DocumentTemplate,
     Event,
+    LangGraphRunContext,
     MaintenanceJob,
     SessionLocal,
     ToolCall,
@@ -357,6 +358,39 @@ def jobs(
                 for row in maintenance_rows
             ],
         }
+    finally:
+        db.close()
+
+
+@router.get("/langgraph/runs")
+def list_langgraph_runs(
+    status: str | None = Query(default=None, pattern="^(running|paused|resuming|completed|failed|orphaned)$"),
+    admin: AdminPrincipal = RequireAdmin,
+) -> dict:
+    db = SessionLocal()
+    try:
+        query = db.query(LangGraphRunContext)
+        if status:
+            query = query.filter(LangGraphRunContext.status == status)
+        rows = query.order_by(LangGraphRunContext.updated_at.desc()).limit(200).all()
+        items = []
+        for row in rows:
+            turn = db.query(Turn).filter(Turn.langgraph_run_id == row.run_id).first()
+            items.append(
+                {
+                    "run_id": row.run_id,
+                    "status": row.status,
+                    "created_at": row.created_at.isoformat() if row.created_at else None,
+                    "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+                    "resumed_at": row.resumed_at.isoformat() if row.resumed_at else None,
+                    "resumed_by": row.resumed_by,
+                    "turn_id": turn.id if turn else None,
+                    "objective": turn.objective if turn else None,
+                    "user_id": turn.user_id if turn else None,
+                    "pause_reason": turn.pause_reason if turn else None,
+                }
+            )
+        return {"items": items}
     finally:
         db.close()
 

@@ -1,6 +1,6 @@
 'use client'
 
-import { FileText, Loader2, Paperclip, Send, Shield, SlidersHorizontal, Upload, X } from 'lucide-react'
+import { FileText, Loader2, Paperclip, Send, Shield, SlidersHorizontal, Square, Upload, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import type { AttachedFile, DocumentTemplateOption, OutputFormat, QualityMode, ResearchLevel } from '../types'
 import { SelectField, Textarea } from './ui/Field'
@@ -46,6 +46,8 @@ export function Composer({
   running,
   canRun,
   run,
+  cancel,
+  cancelling,
   onUploadTemplate,
   templates,
   selectedTemplateId,
@@ -71,6 +73,8 @@ export function Composer({
   running: boolean
   canRun: boolean
   run: () => void
+  cancel: () => void
+  cancelling: boolean
   onUploadTemplate: () => void
   templates: DocumentTemplateOption[]
   selectedTemplateId: string
@@ -224,12 +228,21 @@ export function Composer({
             </button>
             <button
               type="button"
-              onClick={run}
-              disabled={!canRun}
-              aria-label={running ? 'Working' : 'Start'}
-              className="grid h-9 w-9 place-items-center rounded-lg bg-neutral-900 text-white disabled:bg-neutral-300 dark:bg-white dark:text-neutral-900 dark:disabled:bg-neutral-700"
+              onClick={running ? cancel : run}
+              disabled={running ? cancelling : !canRun}
+              aria-label={running ? 'Stop' : 'Start'}
+              title={running ? 'Stop this turn' : 'Start'}
+              className={`grid h-9 w-9 place-items-center rounded-lg text-white disabled:opacity-50 ${
+                running
+                  ? 'bg-red-600 hover:bg-red-700 dark:bg-red-600 dark:hover:bg-red-500'
+                  : 'bg-neutral-900 disabled:bg-neutral-300 dark:bg-white dark:text-neutral-900 dark:disabled:bg-neutral-700'
+              }`}
             >
-              {running ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />}
+              {running ? (
+                cancelling ? <Loader2 size={15} className="animate-spin" /> : <Square size={14} fill="currentColor" />
+              ) : (
+                <Send size={15} />
+              )}
             </button>
           </div>
         </div>

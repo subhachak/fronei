@@ -275,7 +275,7 @@ def stream_turn_updates(
             state = persistence.load_turn_state(turn_id, user_id)
             if state is None:
                 return
-            if state["status"] in {"completed", "failed", "cancelled"}:
+            if state["status"] in {"completed", "failed", "cancelled", "paused"}:
                 terminal = persistence.load_turn_status(turn_id, user_id)
                 if terminal is not None:
                     yield _turn_update_sse(
@@ -347,6 +347,7 @@ def approve_langgraph_pause(
     if not is_admin:
         raise HTTPException(status_code=403, detail="Admin access required.")
     from app.services.agent.langgraph_runtime import LangGraphResumeConflict, resume_langgraph_research
+    from app.services.agent import persistence
 
     try:
         result = resume_langgraph_research(
@@ -356,6 +357,7 @@ def approve_langgraph_pause(
         )
     except LangGraphResumeConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    persistence.complete_turn_after_langgraph_resume(run_id, result)
     return jsonable_encoder(result)
 
 

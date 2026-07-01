@@ -2173,8 +2173,11 @@ def _drain_ls_events_to_run(events_q: queue.Queue, run: dict) -> None:
 # docstring), so concurrency is bounded by external API/LLM rate limits, not
 # by that lock. Scale with selection size so small runs (2-3 cases) get full
 # parallelism while large runs don't fire off dozens of simultaneous search/
-# LLM calls at once.
-_MAX_EVAL_CASE_CONCURRENCY = 10
+# LLM calls at once. 4 is the sweet spot: enough to overlap research I/O
+# without triggering provider rate limits that open the circuit breaker.
+# 10 was tripping the OpenAI circuit mid-run — cases that started after
+# the circuit opened got "all candidates skipped" crashes on direct_answer.
+_MAX_EVAL_CASE_CONCURRENCY = 4
 
 
 def _run_in_process_core(run: dict, case_dicts: list[dict], pipeline: str = "langgraph") -> list[dict]:
@@ -2186,6 +2189,16 @@ def _run_in_process_core(run: dict, case_dicts: list[dict], pipeline: str = "lan
     hard cancellation), but no new batch is dispatched after a stop request."""
     from concurrent.futures import ThreadPoolExecutor, as_completed
     from app.services.agent.tools import Tools
+    from app.services.provider_health import reset_circuit_state
+
+    # Reset the provider circuit breaker before each run. Stale trip state
+    # from a prior run (or from live traffic bursts) would cause all
+    # provider candidates to be skipped for cases that happen to call a
+    # provider after the circuit opened, producing ok=False crashes that
+    # look like product failures but are actually harness infrastructure
+    # failures. The reset only affects the in-process state — it does not
+    # affect any external load balancer or provider-side rate limits.
+    reset_circuit_state()
 
     tools = Tools.from_settings()
     total = len(case_dicts)

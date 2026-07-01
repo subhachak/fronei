@@ -926,6 +926,13 @@ def enqueue_turn(goal: Goal, turn_id: str, request: TurnRequest, *, max_attempts
                 updated_at=now,
             )
         )
+        if goal.conversation_id:
+            conversation = db.get(Conversation, goal.conversation_id)
+            if conversation and conversation.user_id == goal.user_id:
+                conversation.updated_at = now
+                workspace = db.get(Workspace, conversation.workspace_id)
+                if workspace:
+                    workspace.updated_at = now
         db.commit()
     finally:
         db.close()

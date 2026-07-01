@@ -40,7 +40,7 @@ type WorkspaceCache = {
 export function useWorkspaces(options: WorkspaceOptions) {
   const { authorizedFetch, isRunning, setMessage, onTurnState, onResumeRunningTurn, onResetTurn, onError } = options
   const [cachedWorkspaceState] = useState<WorkspaceCache | null>(() => readWorkspaceCache())
-  const [workspaces, setWorkspaces] = useState<Workspace[]>(cachedWorkspaceState?.workspaces || [])
+  const [workspaces, setWorkspaces] = useState<Workspace[]>(() => sortWorkspaces(cachedWorkspaceState?.workspaces || []))
   const [workspacesLoading, setWorkspacesLoading] = useState(true)
   const [workspaceAction, setWorkspaceAction] = useState('')
   const [loadingConversationId, setLoadingConversationId] = useState<string | null>(null)
@@ -55,10 +55,11 @@ export function useWorkspaces(options: WorkspaceOptions) {
   const [editingWorkspaceName, setEditingWorkspaceName] = useState('')
   const [pendingDelete, setPendingDelete] = useState<PendingDelete>(null)
   const pendingWorkspaceCreateRef = useRef<Record<string, Promise<Workspace>>>({})
+  const sortedWorkspaces = useMemo(() => sortWorkspaces(workspaces), [workspaces])
 
   const activeWorkspace = useMemo(
-    () => workspaces.find(workspace => workspace.id === activeWorkspaceId) || workspaces[0] || null,
-    [activeWorkspaceId, workspaces],
+    () => sortedWorkspaces.find(workspace => workspace.id === activeWorkspaceId) || sortedWorkspaces[0] || null,
+    [activeWorkspaceId, sortedWorkspaces],
   )
   const activeConversation = useMemo(
     () => activeWorkspace?.conversations.find(conversation => conversation.id === activeConversationId)
@@ -80,8 +81,8 @@ export function useWorkspaces(options: WorkspaceOptions) {
 
   useEffect(() => {
     if (workspaces.length === 0 && workspacesLoading) return
-    writeWorkspaceCache({ workspaces, activeWorkspaceId, activeConversationId, expandedWorkspaceIds })
-  }, [activeConversationId, activeWorkspaceId, expandedWorkspaceIds, workspaces, workspacesLoading])
+    writeWorkspaceCache({ workspaces: sortedWorkspaces, activeWorkspaceId, activeConversationId, expandedWorkspaceIds })
+  }, [activeConversationId, activeWorkspaceId, expandedWorkspaceIds, sortedWorkspaces, workspaces.length, workspacesLoading])
 
   async function loadConversationTurns(conversationId: string, limit = visibleTurnCount) {
     const showInitialPlaceholder = limit <= INITIAL_VISIBLE_TURNS
@@ -91,12 +92,12 @@ export function useWorkspaces(options: WorkspaceOptions) {
       if (!response.ok) throw new Error(await readErrorBody(response, 'Could not load conversation turns'))
       const payload = await response.json() as { turns: AgentResult[] }
       const turns = payload.turns.map(mapTurn)
-      setWorkspaces(prev => prev.map(workspace => ({
+      setWorkspaces(prev => sortWorkspaces(prev.map(workspace => ({
         ...workspace,
         conversations: workspace.conversations.map(conversation => (
           conversation.id === conversationId ? { ...conversation, turns } : conversation
         )),
-      })))
+      }))))
       const latest = turns.at(-1)
       if (latest && (latest.turnStatus === 'running' || latest.turnStatus === 'queued')) {
         // Turn is still in-progress — don't show stale persisted result; resume live polling instead.
@@ -127,7 +128,7 @@ export function useWorkspaces(options: WorkspaceOptions) {
       const response = await authorizedFetch('/workspaces')
       if (!response.ok) throw new Error(await readErrorBody(response, 'Could not load workspaces'))
       const payload = await response.json() as { workspaces: ApiWorkspace[] }
-      const next = payload.workspaces.map(mapWorkspace)
+      const next = sortWorkspaces(payload.workspaces.map(mapWorkspace))
 
       // Merge workspace list into state while preserving any turns already loaded
       // (either from the parallel prefetch above or from the localStorage cache).
@@ -135,13 +136,13 @@ export function useWorkspaces(options: WorkspaceOptions) {
         const cachedTurns = new Map(
           prev.flatMap(workspace => workspace.conversations.map(conversation => [conversation.id, conversation.turns]))
         )
-        return next.map(workspace => ({
+        return sortWorkspaces(next.map(workspace => ({
           ...workspace,
           conversations: workspace.conversations.map(conversation => ({
             ...conversation,
             turns: cachedTurns.get(conversation.id) || [],
           })),
-        }))
+        })))
       })
 
       const preferredConversationId = selectConversationId || activeConversationId
@@ -188,7 +189,7 @@ export function useWorkspaces(options: WorkspaceOptions) {
       })
       if (!response.ok) throw new Error(await readErrorBody(response, 'Could not create workspace'))
       workspace = mapWorkspace({ ...(await response.json()), conversations: [] })
-      setWorkspaces(prev => [workspace as Workspace, ...prev])
+      setWorkspaces(prev => sortWorkspaces([workspace as Workspace, ...prev]))
       setActiveWorkspaceId(workspace.id)
     }
     if (activeConversation && !activeConversation.isDraft) return activeConversation.id
@@ -198,7 +199,7 @@ export function useWorkspaces(options: WorkspaceOptions) {
     })
     if (!response.ok) throw new Error(await readErrorBody(response, 'Could not create conversation'))
     const conversation = mapConversation(await response.json())
-    setWorkspaces(prev => prev.map(item => (
+    setWorkspaces(prev => sortWorkspaces(prev.map(item => (
       item.id === workspace!.id
         ? {
           ...item,
@@ -208,13 +209,13 @@ export function useWorkspaces(options: WorkspaceOptions) {
             : [conversation, ...item.conversations],
         }
         : item
-    )))
+    ))))
     setActiveConversationId(conversation.id)
     return conversation.id
   }
 
   function appendTurn(turn: WorkItem, conversationId: string | null) {
-    setWorkspaces(prev => prev.map(workspace => {
+    setWorkspaces(prev => sortWorkspaces(prev.map(workspace => {
       if (!workspace.conversations.some(conversation => conversation.id === conversationId)) return workspace
       return {
         ...workspace,
@@ -234,7 +235,7 @@ export function useWorkspaces(options: WorkspaceOptions) {
             : conversation
         )),
       }
-    }))
+    })))
   }
 
   async function selectConversation(workspaceId: string, conversationId: string) {
@@ -263,7 +264,7 @@ export function useWorkspaces(options: WorkspaceOptions) {
     }
     onError(null)
     setWorkspaceAction('Saving workspace...')
-    setWorkspaces(prev => [tempWorkspace, ...prev])
+    setWorkspaces(prev => sortWorkspaces([tempWorkspace, ...prev]))
     setActiveWorkspaceId(tempWorkspace.id)
     setActiveConversationId(tempWorkspace.conversations[0].id)
     setExpandedWorkspaceIds(prev => ({ ...prev, [tempWorkspace.id]: true }))
@@ -278,9 +279,9 @@ export function useWorkspaces(options: WorkspaceOptions) {
     pendingWorkspaceCreateRef.current[tempWorkspace.id] = createPromise
     try {
       const workspace = await createPromise
-      setWorkspaces(prev => prev.map(item => item.id === tempWorkspace.id
+      setWorkspaces(prev => sortWorkspaces(prev.map(item => item.id === tempWorkspace.id
         ? { ...workspace, conversations: item.conversations }
-        : item))
+        : item)))
       setActiveWorkspaceId(current => current === tempWorkspace.id ? workspace.id : current)
       setExpandedWorkspaceIds(prev => {
         const { [tempWorkspace.id]: tempExpanded, ...rest } = prev
@@ -288,7 +289,7 @@ export function useWorkspaces(options: WorkspaceOptions) {
       })
       setEditingWorkspaceId(current => current === tempWorkspace.id ? workspace.id : current)
     } catch (err) {
-      setWorkspaces(prev => prev.filter(item => item.id !== tempWorkspace.id))
+      setWorkspaces(prev => sortWorkspaces(prev.filter(item => item.id !== tempWorkspace.id)))
       onError(err instanceof Error ? err.message : 'Could not create workspace')
     } finally {
       delete pendingWorkspaceCreateRef.current[tempWorkspace.id]
@@ -304,7 +305,7 @@ export function useWorkspaces(options: WorkspaceOptions) {
     onError(null)
     setWorkspaceAction('Deleting workspace...')
     setPendingDelete(null)
-    setWorkspaces(prev => prev.filter(workspace => workspace.id !== workspaceId))
+    setWorkspaces(prev => sortWorkspaces(prev.filter(workspace => workspace.id !== workspaceId)))
     if (activeWorkspaceId === workspaceId) {
       setActiveWorkspaceId(nextWorkspace?.id || null)
       setActiveConversationId(nextWorkspace?.conversations[0]?.id || null)
@@ -319,7 +320,7 @@ export function useWorkspaces(options: WorkspaceOptions) {
       const response = await authorizedFetch(`/workspaces/${workspaceId}`, { method: 'DELETE' })
       if (!response.ok) throw new Error(await readErrorBody(response, 'Could not delete workspace'))
     } catch (err) {
-      setWorkspaces(previousWorkspaces)
+      setWorkspaces(sortWorkspaces(previousWorkspaces))
       onError(err instanceof Error ? err.message : 'Could not delete workspace')
     } finally {
       setWorkspaceAction('')
@@ -329,13 +330,13 @@ export function useWorkspaces(options: WorkspaceOptions) {
   function createConversation(workspaceId: string, titleOverride?: string) {
     const now = new Date().toISOString()
     const conversation = draftConversation(titleOverride || 'New conversation', now)
-    setWorkspaces(prev => prev.map(workspace => workspace.id === workspaceId
+    setWorkspaces(prev => sortWorkspaces(prev.map(workspace => workspace.id === workspaceId
       ? {
         ...workspace,
         updatedAt: conversation.updatedAt,
         conversations: [conversation, ...workspace.conversations.filter(item => !item.isDraft)],
       }
-      : workspace))
+      : workspace)))
     setActiveWorkspaceId(workspaceId)
     setActiveConversationId(conversation.id)
     setExpandedWorkspaceIds(prev => ({ ...prev, [workspaceId]: true }))
@@ -350,9 +351,9 @@ export function useWorkspaces(options: WorkspaceOptions) {
     )
     if (target?.isDraft) {
       setPendingDelete(null)
-      setWorkspaces(prev => prev.map(workspace => workspace.id === workspaceId
+      setWorkspaces(prev => sortWorkspaces(prev.map(workspace => workspace.id === workspaceId
         ? { ...workspace, conversations: workspace.conversations.filter(item => item.id !== conversationId) }
-        : workspace))
+        : workspace)))
       if (activeConversationId === conversationId) {
         const next = workspaces.find(item => item.id === workspaceId)?.conversations.find(
           item => item.id !== conversationId,
@@ -366,13 +367,13 @@ export function useWorkspaces(options: WorkspaceOptions) {
     onError(null)
     setWorkspaceAction('Deleting conversation...')
     setPendingDelete(null)
-    setWorkspaces(prev => prev.map(workspace => workspace.id === workspaceId
+    setWorkspaces(prev => sortWorkspaces(prev.map(workspace => workspace.id === workspaceId
       ? {
         ...workspace,
         updatedAt: new Date().toISOString(),
         conversations: workspace.conversations.filter(item => item.id !== conversationId),
       }
-      : workspace))
+      : workspace)))
     if (activeConversationId === conversationId) {
       const workspace = workspaces.find(item => item.id === workspaceId)
       const next = workspace?.conversations.find(item => item.id !== conversationId)
@@ -389,7 +390,7 @@ export function useWorkspaces(options: WorkspaceOptions) {
       const response = await authorizedFetch(`/conversations/${conversationId}`, { method: 'DELETE' })
       if (!response.ok) throw new Error(await readErrorBody(response, 'Could not delete conversation'))
     } catch (err) {
-      setWorkspaces(previousWorkspaces)
+      setWorkspaces(sortWorkspaces(previousWorkspaces))
       onError(err instanceof Error ? err.message : 'Could not delete conversation')
     } finally {
       setWorkspaceAction('')
@@ -425,7 +426,7 @@ export function useWorkspaces(options: WorkspaceOptions) {
       return
     }
     const updated = mapWorkspace(await response.json())
-    setWorkspaces(prev => prev.map(item => item.id === workspaceId
+    setWorkspaces(prev => sortWorkspaces(prev.map(item => item.id === workspaceId
       ? {
         ...item,
         name: updated.name,
@@ -435,7 +436,7 @@ export function useWorkspaces(options: WorkspaceOptions) {
           return existing ? { ...nextConversation, turns: existing.turns } : nextConversation
         }),
       }
-      : item))
+      : item)))
   }
 
   async function loadOlderTurns() {
@@ -458,7 +459,7 @@ export function useWorkspaces(options: WorkspaceOptions) {
       const payload = await response.json() as { turns: AgentResult[] }
       const olderTurns = payload.turns.map(mapTurn)
       setVisibleTurnCount(count => count + olderTurns.length)
-      setWorkspaces(prev => prev.map(workspace => ({
+      setWorkspaces(prev => sortWorkspaces(prev.map(workspace => ({
         ...workspace,
         conversations: workspace.conversations.map(conversation => {
           if (conversation.id !== activeConversation.id) return conversation
@@ -466,7 +467,7 @@ export function useWorkspaces(options: WorkspaceOptions) {
           const uniqueOlderTurns = olderTurns.filter(turn => !existingIds.has(turn.id))
           return { ...conversation, turns: [...uniqueOlderTurns, ...conversation.turns] }
         }),
-      })))
+      }))))
     } catch (err) {
       onError(err instanceof Error ? err.message : 'Could not load older turns')
     } finally {
@@ -475,7 +476,7 @@ export function useWorkspaces(options: WorkspaceOptions) {
   }
 
   return {
-    workspaces,
+    workspaces: sortedWorkspaces,
     workspacesLoading,
     setWorkspacesLoading,
     workspaceAction,
@@ -554,6 +555,30 @@ function writeWorkspaceCache(cache: WorkspaceCache) {
   } catch {
     // Best-effort UI cache only.
   }
+}
+
+function sortWorkspaces(workspaces: Workspace[]): Workspace[] {
+  return [...workspaces]
+    .map(workspace => ({
+      ...workspace,
+      conversations: sortConversations(workspace.conversations || []),
+    }))
+    .sort((a, b) => compareRecent(b.updatedAt, a.updatedAt) || compareRecent(b.createdAt, a.createdAt) || a.name.localeCompare(b.name))
+}
+
+function sortConversations(conversations: Conversation[]): Conversation[] {
+  return [...conversations].sort(
+    (a, b) => compareRecent(b.updatedAt, a.updatedAt) || compareRecent(b.createdAt, a.createdAt) || a.title.localeCompare(b.title),
+  )
+}
+
+function compareRecent(left?: string, right?: string) {
+  return timestamp(left) - timestamp(right)
+}
+
+function timestamp(value?: string) {
+  const parsed = value ? Date.parse(value) : 0
+  return Number.isFinite(parsed) ? parsed : 0
 }
 
 function draftConversation(title: string, now: string): Conversation {

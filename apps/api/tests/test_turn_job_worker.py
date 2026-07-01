@@ -6,7 +6,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.db.models import Base, Event, Turn
+from app.db.models import Base, Conversation, Event, Turn, Workspace
 from app.services.agent import persistence
 from app.services.agent.models import Goal, TurnRequest, TurnResult
 
@@ -65,6 +65,39 @@ def test_expired_turn_lease_is_reclaimed(monkeypatch):
         assert row.attempt_count == 2
         assert row.lease_owner == "worker-b"
         assert "previous worker stopped responding" in event.message
+
+
+def test_enqueue_turn_marks_conversation_recent(monkeypatch):
+    Session = _session()
+    monkeypatch.setattr(persistence, "SessionLocal", Session)
+    old = (datetime.now(timezone.utc) - timedelta(days=2)).replace(tzinfo=None)
+    with Session() as db:
+        db.add(Workspace(
+            id="ws_1",
+            user_id="u1",
+            name="Workspace",
+            created_at=old,
+            updated_at=old,
+        ))
+        db.add(Conversation(
+            id="conv_1",
+            user_id="u1",
+            workspace_id="ws_1",
+            title="Conversation",
+            created_at=old,
+            updated_at=old,
+        ))
+        db.commit()
+
+    goal = Goal(user_id="u1", conversation_id="conv_1", objective="durable task", route="direct")
+    request = TurnRequest(message="durable task", conversation_id="conv_1")
+    persistence.enqueue_turn(goal, "turn_1", request, max_attempts=3)
+
+    with Session() as db:
+        workspace = db.get(Workspace, "ws_1")
+        conversation = db.get(Conversation, "conv_1")
+        assert workspace.updated_at > old
+        assert conversation.updated_at > old
 
 
 def test_failed_attempt_requeues_then_exhausts_retry_budget(monkeypatch):

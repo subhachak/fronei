@@ -282,7 +282,11 @@ def test_langgraph_deep_repair_does_not_buffer_replay_after_stream(monkeypatch):
         if envelope.type == "progress"
     ]
     answer_deltas = [event for event in progress_events if event["stage"] == "answer_delta"]
-    reset_index = next(index for index, event in enumerate(progress_events) if event["stage"] == "answer_reset")
+    reset_index = next(
+        index
+        for index, event in enumerate(progress_events)
+        if event["stage"] == "repair" and event["data"].get("reset") is True
+    )
     synth_delta_indexes = [
         index
         for index, event in enumerate(progress_events)
@@ -304,7 +308,7 @@ def test_langgraph_deep_repair_does_not_buffer_replay_after_stream(monkeypatch):
     assert synth_delta_indexes
     assert repair_delta_indexes
     assert max(synth_delta_indexes) < reset_index < min(repair_delta_indexes)
-    assert progress_events[reset_index]["data"]["reason"] == "repair"
+    assert progress_events[reset_index]["data"]["reset"] is True
     assert "".join(post_reset_deltas) == streamed_text
     assert result["answer"] == streamed_text
     assert result["events"][-1]["stage"] == "answer_complete"

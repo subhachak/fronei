@@ -1873,6 +1873,108 @@ def test_agent_conversation_context_connects_followup_turns(monkeypatch, tmp_pat
         app.dependency_overrides.clear()
 
 
+def test_agent_conversation_context_uses_committed_turns_before_async_context_update(monkeypatch, tmp_path):
+    from app.services.agent import model_client, persistence
+
+    _set_artifact_dir(monkeypatch, tmp_path)
+    Session = _sqlite_session()
+    monkeypatch.setattr(persistence, "SessionLocal", Session)
+    monkeypatch.setattr(persistence, "_submit_context_update", lambda snapshot: None)
+    captured_prompts: list[str] = []
+
+    def fake_complete(messages, *, preferred_model=None, role=None, quality_mode="standard", timeout_s=30, max_tokens=1200, **_kwargs):
+        return SimpleNamespace(
+            text=json.dumps({"route": "direct", "confidence": 0.9, "reason": "direct test"}),
+            model_used="fake-orchestrator",
+            latency_ms=1,
+            cost_usd=0.0,
+        )
+
+    answers = iter([
+        "I can give specific meal planning guidance. Would you like that?",
+        "Meal planning follow-up.",
+    ])
+
+    def fake_stream_complete(messages, **kwargs):
+        captured_prompts.append(messages[-1]["content"])
+        yield from _stream_response(model_client, next(answers), model="fake-model")
+
+    monkeypatch.setattr(model_client, "complete", fake_complete)
+    monkeypatch.setattr(model_client, "stream_complete", fake_stream_complete)
+    app.dependency_overrides[get_current_user_id] = lambda: "u1"
+    app.dependency_overrides[get_current_user_is_admin] = lambda: False
+    try:
+        with TestClient(app) as client:
+            workspace = client.post("/workspaces", json={"name": "Immediate follow-up workspace"}).json()
+            conversation = client.post(
+                f"/workspaces/{workspace['id']}/conversations",
+                json={"title": "Blood sugar thread"},
+            ).json()
+            first = client.post(
+                "/turns/stream",
+                json={"message": "Explain nighttime blood sugar management.", "conversation_id": conversation["id"]},
+            )
+            assert first.status_code == 200
+            second = client.post(
+                "/turns/stream",
+                json={"message": "yes", "conversation_id": conversation["id"]},
+            )
+            assert second.status_code == 200
+
+        assert "I can give specific meal planning guidance. Would you like that?" in captured_prompts[-1]
+        assert "Explain nighttime blood sugar management." in captured_prompts[-1]
+        assert "Current user request:\nyes" in captured_prompts[-1]
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_agent_context_compaction_preserves_assistant_tail():
+    from app.services.agent import persistence
+
+    final_sentence = "Would you like that?"
+    answer = "Opening guidance. " + "middle details " * 80 + final_sentence
+
+    compacted = persistence._compact_text_preserve_tail(answer, 160, tail_chars=50)
+
+    assert compacted.startswith("Opening guidance.")
+    assert compacted.endswith(final_sentence)
+    assert " ... " in compacted
+    assert len(compacted) <= 160
+    assert persistence._compact_text_preserve_tail("Short answer.", 160) == "Short answer."
+
+
+def test_agent_context_snapshot_preserves_trailing_offer():
+    from app.services.agent import persistence
+
+    final_sentence = "Would you like that?"
+    answer = "Opening guidance. " + "middle details " * 120 + final_sentence
+    ctx = {
+        "version": 1,
+        "max_chars": 6000,
+        "recent_turns": [],
+        "key_facts": [],
+        "running_summary": "",
+    }
+
+    updated = persistence._update_context_with_snapshot(
+        ctx,
+        {
+            "turn_id": "turn_offer",
+            "route": "direct",
+            "objective": "Explain nighttime blood sugar management.",
+            "answer": answer,
+            "artifact_filenames": [],
+            "source_count": 0,
+        },
+    )
+
+    assistant_context = updated["recent_turns"][-1]["assistant"]
+    assert assistant_context.startswith("Opening guidance.")
+    assert assistant_context.endswith(final_sentence)
+    assert " ... " in assistant_context
+    assert len(assistant_context) <= persistence.ASSISTANT_CONTEXT_CHARS
+
+
 def test_agent_workspace_context_is_shared_across_conversations(monkeypatch, tmp_path):
     from app.services.agent import model_client, persistence
 

@@ -5,7 +5,7 @@ import { marked } from 'marked'
 import { CheckCircle2, Download, Pencil, RefreshCw, Sparkles } from 'lucide-react'
 import { useEffect, useMemo, useRef } from 'react'
 import { assistantTurnCopyText, buildConfidenceCues, eventChips, plainCommentary, plainCommentaryForEvent } from '../lib/commentary'
-import { formatAppTime, formatRelativeTime, humanizeStage } from '../lib/format'
+import { appTimestampMs, formatAppTime, formatRelativeTime, humanizeStage } from '../lib/format'
 import type { Artifact, FollowUpOption, ProgressEvent, WorkItem } from '../types'
 import { CopyButton } from './ui/CopyButton'
 import { MessageActions } from './ui/MessageActions'
@@ -255,6 +255,31 @@ function formatTime(iso: string) {
   return formatAppTime(iso)
 }
 
+function formatResponseDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms <= 0) return ''
+  const totalSeconds = Math.round(ms / 1000)
+  if (totalSeconds < 1) return 'under 1 sec'
+  const hours = Math.floor(totalSeconds / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  const seconds = totalSeconds % 60
+  const parts: string[] = []
+  if (hours) parts.push(`${hours} hr${hours === 1 ? '' : 's'}`)
+  if (minutes) parts.push(`${minutes} min`)
+  if (seconds || parts.length === 0) parts.push(`${seconds} sec`)
+  return parts.join(' ')
+}
+
+function responseDurationLabel(turn: WorkItem): string {
+  const latencyMs = turn.result?.latency_ms
+  if (typeof latencyMs === 'number' && Number.isFinite(latencyMs) && latencyMs > 0) {
+    return formatResponseDuration(latencyMs)
+  }
+  const startedAt = appTimestampMs(turn.createdAt)
+  const completedAt = appTimestampMs(turn.completedAt)
+  const elapsedMs = completedAt - startedAt
+  return Number.isFinite(elapsedMs) && elapsedMs > 0 ? formatResponseDuration(elapsedMs) : ''
+}
+
 function TurnPair({
   turn,
   isLatestTurn,
@@ -282,6 +307,7 @@ function TurnPair({
   const assistantCopy = assistantTurnCopyText(turn)
   const confidenceCues = buildConfidenceCues(turn.events || [], turn.result || null)
   const userCopied = copiedKey === `${turn.id}:user`
+  const durationLabel = responseDurationLabel(turn)
   return (
     <div className="flex flex-col gap-2.5">
       <div className="self-end max-w-[min(88%,860px)] rounded-2xl rounded-br-md bg-neutral-900 px-4 py-3 text-white dark:bg-white dark:text-neutral-900">
@@ -372,7 +398,10 @@ function TurnPair({
           </div>
         )}
 
-        <div className="mt-3.5 flex justify-end">
+        <div className="mt-3.5 flex items-center justify-between gap-3">
+          <span className="text-[11px] font-medium text-neutral-400 dark:text-neutral-500">
+            {durationLabel ? `Took ${durationLabel}` : ''}
+          </span>
           <MessageActions
             turnId={turn.id}
             copyText={assistantCopy}

@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from langgraph.types import Command
+from sqlalchemy.exc import OperationalError
 
 from app.config import get_settings
 from app.db.models import LangGraphRunContext, SessionLocal
@@ -192,6 +193,15 @@ def _load_run_context(run_id: str) -> dict[str, Any] | None:
         db.close()
 
 
+def _run_context_status(run_id: str) -> str | None:
+    db = SessionLocal()
+    try:
+        row = db.get(LangGraphRunContext, run_id)
+        return row.status if row is not None else None
+    finally:
+        db.close()
+
+
 def _mark_run_context(run_id: str, status: str) -> None:
     db = SessionLocal()
     try:
@@ -207,42 +217,12 @@ def _mark_run_context(run_id: str, status: str) -> None:
         db.close()
 
 
-def _delete_run_context(run_id: str) -> None:
-    db = SessionLocal()
-    try:
-        row = db.get(LangGraphRunContext, run_id)
-        if row is None:
-            return
-        db.delete(row)
-        db.commit()
-    finally:
-        db.close()
-
-
-def _delete_checkpoint(run_id: str) -> None:
-    try:
-        checkpointer = getattr(get_compiled_research_graph(), "checkpointer", None)
-        if checkpointer is None:
-            return
-        checkpointer.delete_thread(run_id)
-    except Exception:
-        logger.exception(
-            "Failed to delete LangGraph checkpoint for completed run_id=%s; "
-            "retention cleanup can retry later.",
-            run_id,
-        )
-
-
-def _complete_run(run_id: str, *, delete_context: bool = True) -> None:
+def _complete_run(run_id: str) -> None:
     _mark_run_context(run_id, "completed")
-    _delete_checkpoint(run_id)
-    if delete_context:
-        _delete_run_context(run_id)
 
 
 def _fail_run(run_id: str) -> None:
     _mark_run_context(run_id, "failed")
-    _delete_checkpoint(run_id)
 
 
 def _initial_state(run_id: str, request: Any) -> dict[str, Any]:
@@ -464,6 +444,10 @@ def _claim_run_for_resume(run_id: str, *, resumed_by: str) -> None:
     synthesize/repair LLM calls (and tool calls) against the same paused
     checkpoint and double real spend.
     """
+    def is_sqlite_lock_error(exc: OperationalError) -> bool:
+        text = str(exc).lower()
+        return "database is locked" in text or "database table is locked" in text or "database is busy" in text
+
     def try_claim() -> bool:
         now = datetime.now(timezone.utc)
         db = SessionLocal()
@@ -486,6 +470,13 @@ def _claim_run_for_resume(run_id: str, *, resumed_by: str) -> None:
             )
             db.commit()
             return updated == 1
+        except OperationalError as exc:
+            db.rollback()
+            if is_sqlite_lock_error(exc):
+                raise LangGraphResumeConflict(
+                    f"LangGraph run_id={run_id!r} is already being resumed; refusing to resume it again."
+                ) from exc
+            raise
         finally:
             db.close()
 
@@ -493,9 +484,12 @@ def _claim_run_for_resume(run_id: str, *, resumed_by: str) -> None:
         return
 
     # The checkpoint is the source of truth for pause state. If the DB status
-    # drifted, pending_langgraph_pause() will observe the interrupt and mark the
-    # context paused, then this one retry can claim it atomically.
-    if pending_langgraph_pause(run_id) is not None and try_claim():
+    # drifted while the run is still non-terminal, pending_langgraph_pause()
+    # will observe the interrupt and mark the context paused, then this one
+    # retry can claim it atomically. Terminal rows must never be resurrected by
+    # a stale pause_contract value left in the checkpoint state.
+    status = _run_context_status(run_id)
+    if status not in {None, "completed", "failed", "orphaned"} and pending_langgraph_pause(run_id) is not None and try_claim():
         return
 
     raise LangGraphResumeConflict(

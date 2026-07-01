@@ -3,6 +3,7 @@
 import { Loader2, Search, Shield, ShieldOff, X } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { readErrorBody } from '../../lib/api'
+import { formatAppDate } from '../../lib/format'
 import type { AdminUserDetail, AdminUserRow, AdminUsersResponse, AuthorizedFetch, UserRole, UserStatus } from '../types'
 
 const STATUS_STYLES: Record<UserStatus, string> = {
@@ -126,7 +127,7 @@ export function UsersTab({ authorizedFetch }: { authorizedFetch: AuthorizedFetch
                   </td>
                   <td className="px-3 py-2.5 text-neutral-600 dark:text-neutral-300">${row.month_spend.toFixed(2)}</td>
                   <td className="px-3 py-2.5 text-neutral-600 dark:text-neutral-300">{row.conversation_count}</td>
-                  <td className="px-3 py-2.5 text-xs text-neutral-400">{row.last_seen_at ? new Date(row.last_seen_at).toLocaleDateString() : '—'}</td>
+                  <td className="px-3 py-2.5 text-xs text-neutral-400">{formatAppDate(row.last_seen_at)}</td>
                 </tr>
               ))}
               {!loading && sorted.length === 0 && (

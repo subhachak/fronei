@@ -3,6 +3,7 @@
 import { ChevronDown, ChevronRight, ExternalLink, Play } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { readErrorBody } from '../../lib/api'
+import { formatAppDateTime } from '../../lib/format'
 import type { AuthorizedFetch, EvalCase, EvalCaseRunResult, EvalPipeline, EvalRunResult, EvalRunSummary } from '../types'
 
 type LangSmithStatus = {
@@ -515,7 +516,7 @@ export function EvalsRunsTab({ authorizedFetch }: { authorizedFetch: AuthorizedF
                   : 'text-yellow-600 dark:text-yellow-400'
                 }`}>{r.status}</span>
                 {r.started_at && (
-                  <span className="text-neutral-400">{new Date(r.started_at).toLocaleString()}</span>
+                  <span className="text-neutral-400">{formatAppDateTime(r.started_at)}</span>
                 )}
               </div>
             ))}

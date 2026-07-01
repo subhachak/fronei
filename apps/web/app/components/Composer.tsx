@@ -61,6 +61,7 @@ export function Composer({
   attachingFile,
   attachmentError,
   onClearAttachment,
+  compact = false,
 }: {
   message: string
   setMessage: (message: string) => void
@@ -88,6 +89,7 @@ export function Composer({
   attachingFile: boolean
   attachmentError: string
   onClearAttachment: () => void
+  compact?: boolean
 }) {
   const [optionsOpen, setOptionsOpen] = useState(false)
   const [docPopupOpen, setDocPopupOpen] = useState(false)
@@ -144,8 +146,8 @@ export function Composer({
   }
 
   return (
-    <div className="relative flex h-full min-h-0 flex-col rounded-xl border border-neutral-200 bg-white shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
-      <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-xl">
+    <div className={`relative flex h-full min-h-0 flex-col border border-neutral-200 bg-white shadow-sm transition-all duration-200 dark:border-neutral-800 dark:bg-neutral-900 ${compact ? 'rounded-lg' : 'rounded-xl'}`}>
+      <div className={`flex h-full min-h-0 flex-col overflow-hidden transition-all duration-200 ${compact ? 'rounded-lg' : 'rounded-xl'}`}>
         <Textarea
           value={message}
           onChange={event => setMessage(event.target.value)}
@@ -156,7 +158,7 @@ export function Composer({
             }
           }}
           placeholder="Give Fronei a task..."
-          className="min-h-[44px] px-3 pt-3"
+          className={`${compact ? 'min-h-[34px] px-3 pt-2 text-sm' : 'min-h-[44px] px-3 pt-3'}`}
         />
 
         {(attachedFile || attachingFile || attachmentError) && (
@@ -180,7 +182,7 @@ export function Composer({
           </div>
         )}
 
-        <div className="flex flex-shrink-0 items-center gap-1.5 px-2 py-1.5">
+        <div className={`flex flex-shrink-0 items-center gap-1.5 px-2 ${compact ? 'py-1' : 'py-1.5'}`}>
           <button
             ref={toggleRef}
             type="button"
@@ -222,7 +224,7 @@ export function Composer({
               disabled={attachingFile}
               title="Attach a file or photo for context"
               aria-label="Attach a file or photo for context"
-              className="grid h-9 w-9 place-items-center rounded-lg text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600 disabled:opacity-50 dark:text-neutral-500 dark:hover:bg-neutral-800 dark:hover:text-neutral-300"
+              className={`${compact ? 'h-8 w-8' : 'h-9 w-9'} grid place-items-center rounded-lg text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600 disabled:opacity-50 dark:text-neutral-500 dark:hover:bg-neutral-800 dark:hover:text-neutral-300`}
             >
               {attachingFile ? <Loader2 size={15} className="animate-spin" /> : <Paperclip size={15} />}
             </button>
@@ -232,7 +234,7 @@ export function Composer({
               disabled={running ? cancelling : !canRun}
               aria-label={running ? 'Stop' : 'Start'}
               title={running ? 'Stop this turn' : 'Start'}
-              className={`grid h-9 w-9 place-items-center rounded-lg text-white disabled:opacity-50 ${
+              className={`grid ${compact ? 'h-8 w-8' : 'h-9 w-9'} place-items-center rounded-lg text-white disabled:opacity-50 ${
                 running
                   ? 'bg-red-600 hover:bg-red-700 dark:bg-red-600 dark:hover:bg-red-500'
                   : 'bg-neutral-900 disabled:bg-neutral-300 dark:bg-white dark:text-neutral-900 dark:disabled:bg-neutral-700'

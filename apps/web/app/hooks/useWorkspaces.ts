@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { readErrorBody } from '../lib/api'
-import { draftConversationId, draftWorkspaceId, titleFromMessage, uniqueWorkspaceName } from '../lib/format'
+import { appTimestampMs, draftConversationId, draftWorkspaceId, titleFromMessage, uniqueWorkspaceName } from '../lib/format'
 import { mapConversation, mapTurn, mapWorkspace } from '../lib/mappers'
 import type {
   AgentResult,
@@ -577,8 +577,7 @@ function compareRecent(left?: string, right?: string) {
 }
 
 function timestamp(value?: string) {
-  const parsed = value ? Date.parse(value) : 0
-  return Number.isFinite(parsed) ? parsed : 0
+  return appTimestampMs(value)
 }
 
 function draftConversation(title: string, now: string): Conversation {

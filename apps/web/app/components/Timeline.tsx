@@ -206,10 +206,11 @@ export function Timeline({
 
   return (
     <div className="flex flex-1 flex-col gap-6">
-      {turns.map(turn => (
+      {turns.map((turn, index) => (
         <TurnPair
           key={turn.id}
           turn={turn}
+          isLatestTurn={index === turns.length - 1}
           downloadArtifact={downloadArtifact}
           onFollowUp={onFollowUp}
           copiedKey={copiedKey}
@@ -235,6 +236,7 @@ function formatTime(iso: string) {
 
 function TurnPair({
   turn,
+  isLatestTurn,
   downloadArtifact,
   onFollowUp,
   copiedKey,
@@ -245,6 +247,7 @@ function TurnPair({
   onEdit,
 }: {
   turn: WorkItem
+  isLatestTurn: boolean
   downloadArtifact: (artifact: Artifact) => void | Promise<void>
   onFollowUp?: (option: FollowUpOption) => void
   copiedKey: string | null
@@ -306,7 +309,7 @@ function TurnPair({
             preview={turn.result.research_plan_preview}
             followUpOptions={turn.result.follow_up_options || []}
             onFollowUp={onFollowUp}
-            autoStart={false}
+            autoStart={Boolean(isLatestTurn && turn.autoStartResearchPlan)}
           />
         ) : (
           <MarkdownResult content={turn.result?.answer || ''} />

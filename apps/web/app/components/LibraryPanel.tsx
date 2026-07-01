@@ -3,7 +3,7 @@
 import { ChevronDown, Folder, Loader2, MessageSquare, Moon, Plus, Search, Sun, Trash2 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { brandAsset } from '../lib/brand'
-import { formatRelativeTime } from '../lib/format'
+import { appTimestampMs, formatRelativeTime } from '../lib/format'
 import type { PendingDelete, Workspace } from '../types'
 import { AccountMenu } from './AccountMenu'
 import { InlineDeleteConfirm } from './InlineDeleteConfirm'
@@ -85,7 +85,7 @@ export function LibraryPanel({
       || workspace.name.toLowerCase().includes(workspaceQuery)
       || workspace.conversations.some(conversation => conversation.title.toLowerCase().includes(workspaceQuery))
     ))
-    .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
+    .sort((a, b) => appTimestampMs(b.updatedAt) - appTimestampMs(a.updatedAt))
 
   useEffect(() => {
     setWorkspacesTileOpen(view === 'chat')
@@ -177,7 +177,7 @@ export function LibraryPanel({
                   || conversation.title.toLowerCase().includes(conversationQuery)
                   || String(conversation.turnCount || conversation.turns.length).includes(conversationQuery)
                 ))
-                .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
+                .sort((a, b) => appTimestampMs(b.updatedAt) - appTimestampMs(a.updatedAt))
               const turnCount = workspace.conversations.reduce((total, conversation) => total + (conversation.turnCount || conversation.turns.length), 0)
 
               return (

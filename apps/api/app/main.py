@@ -54,12 +54,44 @@ def _bootstrap_eval_cases() -> None:
 
 
 @asynccontextmanager
+def _mark_orphaned_eval_runs() -> None:
+    """On startup, mark any DB eval runs still showing 'running' as 'error'.
+
+    These are runs that were in-flight when the server process died (restart,
+    crash, OOM kill).  The in-process _EVAL_RUNS dict is gone; the run will
+    never complete.  Leaving them as 'running' causes the UI to poll forever.
+    """
+    import logging
+    from datetime import datetime, timezone
+    from app.db.models import SessionLocal
+    try:
+        from app.db.models import EvalRun
+        db = SessionLocal()
+        try:
+            orphans = db.query(EvalRun).filter(EvalRun.status == "running").all()
+            for row in orphans:
+                row.status = "error"
+                row.error = "Server restarted while run was in progress."
+                row.completed_at = datetime.now(timezone.utc)
+            if orphans:
+                db.commit()
+                logging.getLogger(__name__).warning(
+                    "Marked %d orphaned eval run(s) as error on startup: %s",
+                    len(orphans), [r.id for r in orphans],
+                )
+        finally:
+            db.close()
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Could not clean up orphaned eval runs: %s", exc)
+
+
 async def lifespan(app: FastAPI):
     check_production_config()
     check_schema_version(engine)
     configure_provider_keys()
     _configure_langsmith()
     _bootstrap_eval_cases()
+    _mark_orphaned_eval_runs()
     turn_job_worker.start()
     maintenance_job_worker.start()
     try:

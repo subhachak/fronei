@@ -848,7 +848,10 @@ function RunHistoryRow({
         if (!resp.ok) throw new Error(await readErrorBody(resp, 'Failed to load run'))
         const data = await resp.json()
         // progress[] is the per-case array from the status endpoint
-        const cases: EvalCaseRunResult[] = data.progress ?? data.results?.cases ?? []
+        // Prefer the live progress list; fall back to results.cases (set by
+        // checkpoint writes or on completion) so RunHistoryRow shows data
+        // even when the run is in-flight and progress was fetched from DB.
+        const cases: EvalCaseRunResult[] = (data.progress?.length ? data.progress : null) ?? data.results?.cases ?? []
         setDetail({ cases, log: data.log ?? [] })
       } catch (err: unknown) {
         setFetchError(err instanceof Error ? err.message : 'Load failed')

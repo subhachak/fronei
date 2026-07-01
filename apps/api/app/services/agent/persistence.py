@@ -48,6 +48,8 @@ logger = logging.getLogger(__name__)
 
 _CONTEXT_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="agent-context")
 _PENDING_CONTEXT_FUTURES: set[Future] = set()
+ASSISTANT_CONTEXT_CHARS = 700
+ASSISTANT_CONTEXT_TAIL_CHARS = 220
 
 
 def _dumps(value: Any) -> str:
@@ -77,6 +79,19 @@ def _title_from_message(message: str) -> str:
 def _compact_text(value: str, limit: int) -> str:
     cleaned = " ".join((value or "").split())
     return cleaned[:limit].rstrip()
+
+
+def _compact_text_preserve_tail(value: str, limit: int, tail_chars: int = 180) -> str:
+    """Compact text while preserving the closing sentence for follow-ups."""
+    cleaned = " ".join((value or "").split())
+    if len(cleaned) <= limit:
+        return cleaned
+    separator = " ... "
+    tail_budget = min(tail_chars, limit // 3)
+    head_budget = max(limit - tail_budget - len(separator), 0)
+    head = cleaned[:head_budget].rstrip()
+    tail = cleaned[-tail_budget:].lstrip()
+    return f"{head}{separator}{tail}"
 
 
 def _user_profile_context(db, user_id: str) -> dict:
@@ -161,7 +176,11 @@ def _normalize_context(ctx: dict, *, max_chars: int = 6000) -> dict:
                 "route": str(turn.get("route") or ""),
                 "conversation": _compact_text(str(turn.get("conversation") or ""), 180),
                 "user": _compact_text(str(turn.get("user") or ""), 360),
-                "assistant": _compact_text(str(turn.get("assistant") or ""), 520),
+                "assistant": _compact_text_preserve_tail(
+                    str(turn.get("assistant") or ""),
+                    ASSISTANT_CONTEXT_CHARS,
+                    ASSISTANT_CONTEXT_TAIL_CHARS,
+                ),
                 "artifacts": turn.get("artifacts") if isinstance(turn.get("artifacts"), list) else [],
                 "source_count": int(turn.get("source_count") or 0),
             }
@@ -256,7 +275,11 @@ def _update_context_with_result(ctx: dict, result: TurnResult, *, conversation_t
         "turn_id": result.turn_id,
         "route": result.route,
         "user": result.goal.objective,
-        "assistant": result.answer,
+        "assistant": _compact_text_preserve_tail(
+            result.answer,
+            ASSISTANT_CONTEXT_CHARS,
+            ASSISTANT_CONTEXT_TAIL_CHARS,
+        ),
         "artifacts": artifact_names,
         "source_count": len(result.sources),
     }
@@ -289,7 +312,11 @@ def _update_context_with_snapshot(ctx: dict, snapshot: dict, *, conversation_tit
         "turn_id": str(snapshot.get("turn_id") or ""),
         "route": str(snapshot.get("route") or ""),
         "user": _compact_text(str(snapshot.get("objective") or ""), 360),
-        "assistant": _compact_text(str(snapshot.get("answer") or ""), 520),
+        "assistant": _compact_text_preserve_tail(
+            str(snapshot.get("answer") or ""),
+            ASSISTANT_CONTEXT_CHARS,
+            ASSISTANT_CONTEXT_TAIL_CHARS,
+        ),
         "artifacts": artifact_names,
         "source_count": int(snapshot.get("source_count") or 0),
     }
@@ -329,6 +356,41 @@ def _context_snapshot_from_result(result: TurnResult) -> dict:
         "source_count": len(result.sources),
         "completed_at": _now().isoformat(),
     }
+
+
+def _merge_live_recent_turns(db, ctx: dict, conversation: Conversation, *, limit: int = 6) -> dict:
+    """Merge committed turns so immediate follow-ups do not race context updates."""
+    ctx = _normalize_context(ctx)
+    recent_turns = list(ctx.get("recent_turns") or [])
+    seen_ids = {str(turn.get("turn_id") or "") for turn in recent_turns if isinstance(turn, dict)}
+    live_turns = (
+        db.query(Turn)
+        .filter(
+            Turn.conversation_id == conversation.id,
+            Turn.user_id == conversation.user_id,
+            Turn.status == "completed",
+            Turn.answer != "",
+        )
+        .order_by(Turn.completed_at.desc(), Turn.updated_at.desc())
+        .limit(limit)
+        .all()
+    )
+    for turn in reversed(live_turns):
+        if turn.id in seen_ids:
+            continue
+        recent_turns.append(
+            {
+                "turn_id": turn.id,
+                "route": turn.route,
+                "user": turn.objective,
+                "assistant": turn.answer,
+                "artifacts": [],
+                "source_count": len(_loads(turn.sources_json, [])),
+            }
+        )
+        seen_ids.add(turn.id)
+    ctx["recent_turns"] = recent_turns[-8:]
+    return ctx
 
 
 def _update_context_for_completed_turn(snapshot: dict) -> None:
@@ -428,6 +490,7 @@ def conversation_context_text(
                 conversation.context_json = _dumps(ctx)
                 conversation.context_updated_at = _now()
                 db.commit()
+        ctx = _merge_live_recent_turns(db, ctx, conversation)
         # The rolling running_summary/key_facts/recent_turns are an
         # intentionally frozen, incrementally-updated snapshot, but the
         # consolidated preferences/priorities should always reflect the

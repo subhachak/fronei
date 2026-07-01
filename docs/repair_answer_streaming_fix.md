@@ -82,6 +82,8 @@ The rest of that method (the `answer_complete` emission, `answer_streamed`/`repl
 
 ## 3. Frontend: reset the buffer on `data.reset`, and reuse `applyAnswerProgress`
 
+**Superseded:** the description below of *how the reset looks on screen* (clearing the big answer bubble and re-typing into it) was replaced after further feedback — showing the draft as the actual answer at all, even once, reads as "two rounds of animated streaming" when repair fires. See `docs/live_draft_activity_feed_ux.md` for the current design: the draft (both synthesize's and, if it fires, repair's) now streams into a small scrolling activity-feed box instead of the answer bubble, and the answer bubble only ever shows the single, final, already-settled answer. **The `useTurnRunner.ts` change below is still exactly correct and required** — `data.reset` still needs to clear `liveAnswer`/`tokenQueueRef` at the synthesize→repair transition, for the same underlying reason (repair's text is a rewrite, not a continuation). Only where `liveAnswer` gets *rendered* changes.
+
 `apps/web/app/hooks/useTurnRunner.ts` already has `clearStreamState()` — it wipes the token queue and streaming flags but not `liveAnswer` itself (by design, since it's currently only called at the very start of a turn or when a terminal result arrives and takes over). Add a check at the top of `applyAnswerProgress` (~line 449), *before* its existing `if (event.stage !== 'answer_delta') return` guard — today that guard means calling the function on a non-delta event is a silent no-op, which is why this needs to run first:
 
 ```typescript

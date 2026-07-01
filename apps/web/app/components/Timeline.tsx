@@ -237,7 +237,16 @@ export function Timeline({
           onEdit={onEdit}
         />
       ))}
-      {running && <LiveTurn message={draftMessage} answer={liveAnswer} events={events} copiedKey={copiedKey} onCopyText={onCopyText} />}
+      {running && (
+        <LiveTurn
+          message={draftMessage}
+          answer={liveAnswer}
+          answerLive={running}
+          events={events}
+          copiedKey={copiedKey}
+          onCopyText={onCopyText}
+        />
+      )}
     </div>
   )
 }
@@ -382,22 +391,25 @@ function TurnPair({
 function LiveTurn({
   message,
   answer,
+  answerLive,
   events,
   copiedKey,
   onCopyText,
 }: {
   message: string
   answer: string
+  answerLive: boolean
   events: ProgressEvent[]
   copiedKey: string | null
   onCopyText: (value: string, key: string) => void | Promise<void>
 }) {
   const commentary = plainCommentary(events)
   const latestMessage = commentary.at(-1) || 'I’m getting oriented and deciding the best way to handle this.'
-  const answerInProgressMessage = commentary.at(-1) || 'Writing the response…'
   const telemetryEvents = events.filter(event => !['tool_selection', 'tool_result'].includes(event.stage))
   const userCopied = copiedKey === 'live:user'
   const assistantCopied = copiedKey === 'live:assistant'
+  const copyValue = answer || latestMessage
+  const copyLabel = answer ? 'Copy current draft' : 'Copy current status'
 
   return (
     <div className="flex flex-col gap-2.5">
@@ -411,23 +423,6 @@ function LiveTurn({
         </div>
       </div>
 
-      {answer ? (
-        <div className="w-full max-w-[860px] rounded-2xl rounded-bl-md border border-neutral-200 bg-white p-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
-          <div className="mb-3.5 flex items-start gap-3">
-            <span className="grid h-9 w-9 flex-shrink-0 place-items-center rounded-full bg-neutral-900 text-white dark:bg-white dark:text-neutral-900">
-              <Sparkles size={16} />
-            </span>
-            <div className="min-w-0 flex-1">
-              <p className="text-sm font-bold text-neutral-900 dark:text-neutral-50">Fronei</p>
-              <p className="mt-0.5 text-sm leading-relaxed text-neutral-500 dark:text-neutral-400">{answerInProgressMessage}</p>
-            </div>
-          </div>
-          <StreamingMarkdown text={answer} live />
-          <div className="mt-3.5 flex justify-end">
-            <CopyButton copied={assistantCopied} label="Copy current response" onClick={() => onCopyText(answer, 'live:assistant')} />
-          </div>
-        </div>
-      ) : (
       <div className="w-full max-w-[860px] rounded-2xl rounded-bl-md border border-neutral-200 bg-white p-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
         <div className="mb-3.5 flex items-start gap-3">
           <span className="av3-pulse-ring grid h-9 w-9 flex-shrink-0 place-items-center rounded-full bg-neutral-900 text-white dark:bg-white dark:text-neutral-900">
@@ -445,26 +440,35 @@ function LiveTurn({
           <span className="h-1 rounded-full bg-emerald-500/70" />
         </div>
 
-        <TelemetryWindow events={telemetryEvents} fallback={latestMessage} />
+        <TelemetryWindow events={telemetryEvents} fallback={latestMessage} draftText={answer} draftLive={answerLive} />
         <div className="mt-3.5 flex justify-end">
-          <CopyButton copied={assistantCopied} label="Copy current status" onClick={() => onCopyText(latestMessage, 'live:assistant')} />
+          <CopyButton copied={assistantCopied} label={copyLabel} onClick={() => onCopyText(copyValue, 'live:assistant')} />
         </div>
       </div>
-      )}
     </div>
   )
 }
 
-function TelemetryWindow({ events, fallback }: { events: ProgressEvent[]; fallback: string }) {
+function TelemetryWindow({
+  events,
+  fallback,
+  draftText,
+  draftLive,
+}: {
+  events: ProgressEvent[]
+  fallback: string
+  draftText: string
+  draftLive: boolean
+}) {
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const visibleEvents = events.slice(-16)
 
   useEffect(() => {
     if (!scrollRef.current) return
     scrollRef.current.scrollTop = scrollRef.current.scrollHeight
-  }, [visibleEvents.length])
+  }, [visibleEvents.length, draftText])
 
-  if (visibleEvents.length === 0) {
+  if (visibleEvents.length === 0 && !draftText) {
     return (
       <div className="ml-12 rounded-xl border border-neutral-200 bg-neutral-50 px-3 py-2 text-xs leading-relaxed text-neutral-500 dark:border-neutral-800 dark:bg-neutral-950/40 dark:text-neutral-400">
         {fallback}
@@ -478,14 +482,14 @@ function TelemetryWindow({ events, fallback }: { events: ProgressEvent[]; fallba
         <span className="text-[10px] font-bold uppercase tracking-wider text-neutral-400">Live telemetry</span>
         <span className="text-[10px] font-semibold text-neutral-400">{visibleEvents.length} step{visibleEvents.length === 1 ? '' : 's'}</span>
       </div>
-      <div ref={scrollRef} className="max-h-44 overflow-y-auto px-3 py-2">
+      <div ref={scrollRef} className="max-h-64 overflow-y-auto px-3 py-2">
         <div className="grid gap-2">
           {visibleEvents.map((event, index) => {
             const summary = plainCommentaryForEvent(event) || event.message || 'Working through the task.'
             const chips = eventChips(event)
             return (
               <div key={event.event_id || `${event.stage}-${index}-${event.created_at || ''}`} className="grid grid-cols-[8px_minmax(0,1fr)] gap-2">
-                <span className={`mt-1.5 h-2 w-2 rounded-full ${index === visibleEvents.length - 1 ? 'bg-emerald-500' : 'bg-neutral-300 dark:bg-neutral-700'}`} />
+                <span className={`mt-1.5 h-2 w-2 rounded-full ${index === visibleEvents.length - 1 && !draftText ? 'bg-emerald-500' : 'bg-neutral-300 dark:bg-neutral-700'}`} />
                 <div className="min-w-0">
                   <div className="flex min-w-0 items-center gap-2">
                     <span className="truncate text-[11px] font-bold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">{humanizeStage(event.stage)}</span>
@@ -505,6 +509,18 @@ function TelemetryWindow({ events, fallback }: { events: ProgressEvent[]; fallba
               </div>
             )
           })}
+          {draftText && (
+            <div className="grid grid-cols-[8px_minmax(0,1fr)] gap-2">
+              <span className="av3-pulse-dot mt-1.5 h-2 w-2 rounded-full bg-emerald-500" />
+              <div className="min-w-0">
+                <span className="truncate text-[11px] font-bold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">Drafting</span>
+                <p className="mt-0.5 whitespace-pre-wrap text-xs leading-relaxed text-neutral-600 dark:text-neutral-300 [overflow-wrap:anywhere]">
+                  <StreamingText text={draftText} />
+                  {draftLive && <StreamCursor />}
+                </p>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>

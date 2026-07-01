@@ -466,9 +466,9 @@ describe('useTurnRunner', () => {
           {
             at: 700,
             text: [
-              'id: answer_reset',
+              'id: repair_reset',
               'event: progress',
-              `data: ${JSON.stringify({ event_id: 'answer_reset', stage: 'answer_reset', message: 'Revising the answer for accuracy.', data: { reason: 'repair', ephemeral_ui: true } })}`,
+              `data: ${JSON.stringify({ event_id: 'repair_reset', stage: 'repair', message: 'I found something to improve, so I’m tightening it up.', data: { reset: true, ephemeral_ui: true } })}`,
               '',
               '',
             ].join('\n'),
@@ -509,7 +509,8 @@ describe('useTurnRunner', () => {
       })
 
       expect(result.current.liveAnswer).toBe('')
-      expect(result.current.events).toHaveLength(0)
+      expect(result.current.events).toHaveLength(1)
+      expect(result.current.events[0].stage).toBe('repair')
 
       await act(async () => {
         await vi.advanceTimersByTimeAsync(350)

@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import json
 import logging
+import queue
+import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+LANGGRAPH_STREAM_HEARTBEAT_SECONDS = 2.5
+LANGGRAPH_STREAM_QUEUE_POLL_SECONDS = 0.25
 
 from app.services.agent import model_client
 from app.services.agent.deck_subtree import plan_deck
@@ -35,29 +40,10 @@ from app.services.agent.orchestrator import OrchestratorDecision, decide_with_op
 from app.services.agent.research_models import _looks_like_low_value_extraction
 from app.services.agent.research_subtree import (
     EvidencePack,
-    ResearchBudgetLedger,
-    ResearchFeedbackLoop,
-    bind_evidence,
-    build_gap_followup_workers,
     build_research_plan_preview,
-    build_synthesis_prompt,
-    create_research_goal,
-    extract_deep_link_candidates,
-    get_research_registry,
-    is_public_source_url,
-    judge_research,
-    plan_research,
-    rank_sources,
-    repair_research_answer,
-    _synthesis_token_budget,
-    verify_claims,
 )
-from app.services.agent.research_planner import _longform_timeout_s
 from app.services.agent.tool_registry import ToolRegistry
 from app.services.agent.tools import Tools, source_context
-
-DEEP_RESEARCH_HEARTBEAT_SECONDS = 2.5
-DEEP_RESEARCH_QUEUE_POLL_SECONDS = 0.25
 
 _LANGGRAPH_NODE_MESSAGES: dict[str, str] = {
     "brief": "Understanding what you're asking...",
@@ -78,71 +64,6 @@ _LANGGRAPH_NODE_MESSAGES: dict[str, str] = {
     "judge": "Reviewing answer quality...",
     "repair": "Improving the answer...",
 }
-
-
-def _is_owner_reliability_research(message: str) -> bool:
-    text = (message or "").lower()
-    owner_terms = (
-        "owner review",
-        "owner reviews",
-        "owner report",
-        "owner reports",
-        "owner experience",
-        "owner experiences",
-        "owners say",
-        "user reviews",
-        "customer reviews",
-        "reddit",
-        "forum",
-        "community",
-        "real-world",
-        "real world",
-    )
-    reliability_terms = (
-        "reliability",
-        "failure rate",
-        "failure rates",
-        "failures",
-        "degradation",
-        "capacity retention",
-        "long-term",
-        "long term",
-        "after 1",
-        "after 2",
-        "1-2 years",
-        "1–2 years",
-        "warranty claim",
-    )
-    return any(term in text for term in owner_terms) and any(term in text for term in reliability_terms)
-
-
-def _add_owner_reliability_gaps(request: TurnRequest, evidence: EvidencePack) -> None:
-    if not _is_owner_reliability_research(request.message):
-        return
-    combined = "\n".join(
-        f"{item.title} {item.url} {item.evidence}"
-        for item in evidence.items
-    ).lower()
-    gaps: list[str] = []
-    if not any(term in combined for term in ("reddit", "forum", "community", "owner review", "owner report", "verified purchase", "customer review")):
-        gaps.append("Missing actual owner/community/forum evidence; policy or warranty pages do not answer owner reliability.")
-    if not any(term in combined for term in ("12 month", "12-month", "1 year", "one year", "18 month", "18-month", "24 month", "24-month", "2 year", "two year", "long term", "long-term")):
-        gaps.append("Missing 12-24 month longitudinal owner evidence for field reliability.")
-    if any(term in (request.message or "").lower() for term in ("failure rate", "degradation", "capacity retention")) and not any(
-        term in combined for term in ("failure rate", "degradation", "capacity retention", "capacity loss", "warranty claim", "replacement")
-    ):
-        gaps.append("Missing quantified or outcome-based evidence for failure rate, degradation, or claim outcomes.")
-    for gap in gaps:
-        if gap not in evidence.gaps:
-            evidence.gaps.append(gap)
-    if gaps and evidence.coverage >= 1.0:
-        evidence.coverage = 0.55
-
-
-def _gap_followup_read_reserve(request: TurnRequest, ledger: ResearchBudgetLedger) -> int:
-    if not _is_owner_reliability_research(request.message):
-        return 0
-    return min(4, ledger.budget.max_deep_links, max(0, ledger.remaining_source_reads()))
 
 
 class Runtime:
@@ -572,69 +493,17 @@ class Runtime:
         )
         yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
 
-    def _with_heartbeat(
-        self,
-        progress,
-        stage: str,
-        label: str,
-        fn: Callable,
-        *args: Any,
-        heartbeat_interval: float = 2.5,
-        **kwargs: Any,
-    ) -> Iterator[StreamEnvelope]:
-        """Phase 13d — Run a blocking call on a background thread while yielding
-        heartbeat progress events every heartbeat_interval seconds.
-
-        Usage (inside a generator):
-            result = yield from self._with_heartbeat(
-                progress, "citation_verification", "Verifying citations…",
-                verify_claims, answer_text, evidence
-            )
-
-        The generator yields StreamEnvelope heartbeat events and returns the fn result
-        via StopIteration.value so the caller can capture it with 'yield from'.
-        The retry design of the underlying calls is preserved — fn runs exactly once,
-        and any internal retry logic inside fn is unaffected.
-        """
-        from threading import Thread
-
-        result_box: dict[str, Any] = {}
-
-        def _run() -> None:
-            try:
-                result_box["result"] = fn(*args, **kwargs)
-            except Exception as exc:  # noqa: BLE001
-                result_box["error"] = exc
-
-        t = Thread(target=_run, daemon=True)
-        t.start()
-        start = time.monotonic()
-        heartbeat_count = 0
-        while t.is_alive():
-            t.join(timeout=heartbeat_interval)
-            if t.is_alive():
-                heartbeat_count += 1
-                elapsed_ms = int((time.monotonic() - start) * 1000)
-                event = progress(
-                    "research_progress",
-                    label,
-                    blocking_stage=stage,
-                    elapsed_ms=elapsed_ms,
-                    heartbeat_count=heartbeat_count,
-                    ephemeral_ui=True,
-                )
-                yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
-        if "error" in result_box:
-            raise result_box["error"]  # type: ignore[misc]
-        return result_box["result"]  # type: ignore[misc]
-
     def _forward_langgraph_stream(self, gen, progress):
         buffered_answer = ""
         last_source_node: str | None = None
         result = None
         try:
             while True:
-                kind, payload = next(gen)
+                next_result = yield from self._next_langgraph_stream_item(gen, progress)
+                if next_result["status"] == "stop":
+                    result = next_result["value"]
+                    break
+                kind, payload = next_result["value"]
                 if kind == "delta":
                     delta = payload.get("text", "") if isinstance(payload, dict) else str(payload)
                     source_node = payload.get("source_node", "") if isinstance(payload, dict) else ""
@@ -685,6 +554,43 @@ class Runtime:
             )
             yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
         return result
+
+    def _next_langgraph_stream_item(self, gen, progress):
+        out: queue.Queue[tuple[str, Any]] = queue.Queue(maxsize=1)
+
+        def advance() -> None:
+            try:
+                out.put(("item", next(gen)))
+            except StopIteration as stop:
+                out.put(("stop", stop.value))
+            except BaseException as exc:
+                out.put(("error", exc))
+
+        worker = threading.Thread(target=advance, daemon=True, name="langgraph-stream-next")
+        worker.start()
+        started = time.monotonic()
+        last_heartbeat = started
+
+        while True:
+            try:
+                status, value = out.get(timeout=LANGGRAPH_STREAM_QUEUE_POLL_SECONDS)
+            except queue.Empty:
+                now = time.monotonic()
+                if now - last_heartbeat >= LANGGRAPH_STREAM_HEARTBEAT_SECONDS:
+                    last_heartbeat = now
+                    event = progress(
+                        "research_progress",
+                        "Still working...",
+                        quiet_seconds=round(now - started, 1),
+                        ephemeral_ui=True,
+                    )
+                    yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
+                continue
+
+            worker.join(timeout=0)
+            if status == "error":
+                raise value
+            return {"status": status, "value": value}
 
     def _langgraph_research_turn_result(
         self,
@@ -760,542 +666,23 @@ class Runtime:
         yield StreamEnvelope(type="result", data=result.model_dump(mode="json"))
 
     def _run_research_subtree(self, request: TurnRequest, progress):
-        from app.services.agent.langgraph_runtime.runtime import configured_orchestrator
+        from app.config import get_settings
+        from app.services.agent.langgraph_runtime import stream_langgraph_research
+        from app.services.agent.models import new_id
 
-        if configured_orchestrator() == "langgraph":
-            from app.config import get_settings
-            from app.services.agent.langgraph_runtime import stream_langgraph_research
-            from app.services.agent.models import new_id
-
-            audit_id = new_id("lgaudit")
-            logger.info(
-                "langgraph_orchestrator_dispatch",
-                extra={
-                    "audit_id": audit_id,
-                    "orchestrator": "langgraph",
-                    "env": get_settings().app_env,
-                    "research_level": getattr(request, "research_level", None),
-                    "message_preview": (getattr(request, "message", "") or "")[:60],
-                },
-            )
-            gen = stream_langgraph_research(request, self.tool_registry.tools, progress)
-            return (yield from self._forward_langgraph_stream(gen, progress))
-
-        if request.research_level == "deep":
-            from queue import Empty, Queue
-            from threading import Thread
-
-            from app.services.agent.research_subtree import lead_research_loop
-
-            event_queue: Queue[ProgressEvent | object] = Queue()
-            done = object()
-            result_holder: dict[str, object] = {}
-
-            def lead_progress(stage: str, message: str, data: dict):
-                event = progress(stage, message, **data)
-                event_queue.put(event)
-
-            def run_lead_loop() -> None:
-                try:
-                    result_holder["result"] = lead_research_loop(request, self.tool_registry.tools, lead_progress)
-                except BaseException as exc:  # pragma: no cover - defensive streaming bridge.
-                    result_holder["error"] = exc
-                finally:
-                    event_queue.put(done)
-
-            thread = Thread(target=run_lead_loop, name="lead-research", daemon=True)
-            thread.start()
-            last_event_at = time.monotonic()
-            last_stage = "lead_research"
-            heartbeat_count = 0
-            while True:
-                try:
-                    item = event_queue.get(timeout=DEEP_RESEARCH_QUEUE_POLL_SECONDS)
-                except Empty:
-                    if not thread.is_alive():
-                        break
-                    now = time.monotonic()
-                    if now - last_event_at >= DEEP_RESEARCH_HEARTBEAT_SECONDS:
-                        heartbeat_count += 1
-                        event = progress(
-                            "research_progress",
-                            "Deep research is still working.",
-                            last_stage=last_stage,
-                            heartbeat_count=heartbeat_count,
-                            quiet_seconds=int(now - last_event_at),
-                            ephemeral_ui=True,
-                        )
-                        last_event_at = now
-                        yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
-                    continue
-                if item is done:
-                    break
-                last_event_at = time.monotonic()
-                last_stage = str(getattr(item, "stage", None) or last_stage)
-                yield StreamEnvelope(type="progress", data=item.model_dump(mode="json"))
-            thread.join(timeout=1)
-            if "error" in result_holder:
-                raise result_holder["error"]  # type: ignore[misc]
-            return result_holder["result"]
-
-        research_started = time.perf_counter()
-        registry = get_research_registry()
-        research_goal = create_research_goal(request)
-        ledger = ResearchBudgetLedger(budget=research_goal.budget)
-        event = progress(
-            "research_registry",
-            "Research team is ready.",
-            registry=registry.public_summary(),
-            agent_count=len(registry.agents),
+        audit_id = new_id("lgaudit")
+        logger.info(
+            "langgraph_orchestrator_dispatch",
+            extra={
+                "audit_id": audit_id,
+                "orchestrator": "langgraph",
+                "env": get_settings().app_env,
+                "research_level": getattr(request, "research_level", None),
+                "message_preview": (getattr(request, "message", "") or "")[:60],
+            },
         )
-        yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
-        event = progress(
-            "research_goal",
-            "Research goal and safety limits are set.",
-            goal=research_goal.model_dump(mode="json"),
-            budget_ledger=ledger.model_dump(mode="json"),
-        )
-        yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
-        event = progress(
-            "research_planning",
-            "Planning focused research questions.",
-            available_tools=self.tool_registry.tool_names_for_route("research"),
-            agent_id="research_lead",
-            prompt_template_id=registry.agent("research_lead").prompt_template_id,
-        )
-        yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
-        plan = plan_research(request)
-        if plan.model_used:
-            ledger.record_model_call(cost_usd=plan.cost_usd, latency_ms=plan.latency_ms)
-        ledger.refresh_elapsed(int((time.perf_counter() - research_started) * 1000))
-        event = progress(
-            "research_plan",
-            f"Research plan ready with {len(plan.workers)} search worker(s).",
-            questions=plan.questions,
-            search_queries=plan.search_queries,
-            workers=[worker.model_dump(mode="json") for worker in plan.workers],
-            max_sources=plan.max_sources,
-            min_evidence_items=plan.min_evidence_items,
-            judge_threshold=plan.judge_threshold,
-            repair_iterations=plan.repair_iterations,
-            guardrails=plan.guardrails,
-            source=plan.source,
-            model_used=plan.model_used,
-            **model_client.telemetry_for_role(
-                "research_planner",
-                quality_mode=request.quality_mode,
-                model_used=plan.model_used,
-                overrides=request.model_overrides,
-            ),
-            fallback_reason=plan.fallback_reason,
-            agent_id="research_lead",
-            budget_ledger=ledger.model_dump(mode="json"),
-        )
-        yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
-        event = progress(
-            "research_guardrails",
-            "Research guardrails are active.",
-            guardrails=plan.guardrails,
-            max_sources=plan.max_sources,
-            max_workers=len(plan.workers),
-            budget_ledger=ledger.model_dump(mode="json"),
-        )
-        yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
-
-        search_sources: list[Source] = []
-        tool_calls = []
-        for idx, worker in enumerate(plan.workers, start=1):
-            ledger.refresh_elapsed(int((time.perf_counter() - research_started) * 1000))
-            if not ledger.can_start_tool("web_search"):
-                event = progress(
-                    "research_budget",
-                    f"Budget stopped search worker {idx}.",
-                    stop_reason=ledger.stop_reason,
-                    budget_ledger=ledger.model_dump(mode="json"),
-                )
-                yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
-                break
-            event = progress(
-                "search_worker",
-                f"Search worker {idx} running.",
-                agent_id=worker.agent_id,
-                worker_id=worker.worker_id,
-                worker_index=idx,
-                question=worker.question,
-                query=worker.query,
-                rationale=worker.rationale,
-                candidate_queries=plan.search_queries,
-            )
-            yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
-            sources, call = yield from self._run_tool(
-                progress,
-                "web_search",
-                {"query": worker.query, "max_results": worker.max_results},
-            )
-            tool_calls.append(call)
-            ledger.record_tool_call(latency_ms=call.latency_ms, sources_seen=len(sources))
-            search_sources.extend(sources)
-            provider = call.output.get("provider") if isinstance(call.output, dict) else None
-            provider_message = (
-                f"Search worker {idx} used {provider}."
-                if provider
-                else f"Search worker {idx} completed without a provider result."
-            )
-            event = progress(
-                "search_worker_provider",
-                provider_message,
-                agent_id=worker.agent_id,
-                worker_id=worker.worker_id,
-                worker_index=idx,
-                query=worker.query,
-                provider=provider,
-                ok=call.ok,
-                source_count=len(sources),
-                error=call.error,
-                budget_ledger=ledger.model_dump(mode="json"),
-            )
-            yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
-            if ledger.stopped:
-                event = progress(
-                    "research_budget",
-                    "Budget stopped additional search work.",
-                    stop_reason=ledger.stop_reason,
-                    budget_ledger=ledger.model_dump(mode="json"),
-                )
-                yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
-                break
-
-        deduped_all = self._merge_sources(search_sources, [])
-        public_candidates = [source for source in deduped_all if is_public_source_url(source.url)]
-        blocked_source_urls = [source.url for source in deduped_all if source.url and not is_public_source_url(source.url)]
-        ranked_sources = rank_sources(public_candidates, plan)
-        deduped = [item.source for item in ranked_sources]
-        event = progress(
-            "source_ranker",
-            "Ranking source candidates.",
-            agent_id="source_ranker",
-            prompt_template_id=registry.agent("source_ranker").prompt_template_id,
-            ranked_sources=[item.model_dump(mode="json") for item in ranked_sources[: plan.max_sources]],
-        )
-        yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
-        event = progress(
-            "source_selection",
-            f"Selected {min(len(deduped), plan.max_sources)} unique source candidate(s).",
-            candidate_count=len(search_sources),
-            unique_count=len(deduped),
-            selected_urls=[source.url for source in deduped[: plan.max_sources]],
-            blocked_source_urls=blocked_source_urls,
-            guardrail="public_source_urls",
-        )
-        yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
-
-        selected = deduped[: plan.max_sources]
-        if ledger.remaining_source_reads() < len(selected):
-            selected = selected[: ledger.remaining_source_reads()]
-        event = progress(
-            "source_reader",
-            "Reading selected source pages.",
-            agent_id="source_reader",
-            prompt_template_id=registry.agent("source_reader").prompt_template_id,
-            source_count=len(selected),
-            budget_ledger=ledger.model_dump(mode="json"),
-        )
-        yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
-        extracted = []
-        if selected and ledger.can_start_tool("read_url") and ledger.can_read_more_sources():
-            extracted, read_call = yield from self._run_tool(
-                progress,
-                "read_url",
-                {"urls": [source.url for source in selected if source.url]},
-            )
-            tool_calls.append(read_call)
-            ledger.record_tool_call(latency_ms=read_call.latency_ms, sources_read=len(selected))
-        elif selected:
-            event = progress(
-                "research_budget",
-                "Budget skipped source reading.",
-                stop_reason=ledger.stop_reason,
-                budget_ledger=ledger.model_dump(mode="json"),
-            )
-            yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
-        merged = self._merge_sources(selected, extracted)
-        gap_read_reserve = _gap_followup_read_reserve(request, ledger)
-        deep_link_budget = min(
-            ledger.budget.max_deep_links,
-            max(0, ledger.remaining_source_reads() - gap_read_reserve),
-        )
-        deep_links = extract_deep_link_candidates(merged, max_links=deep_link_budget)
-        event = progress(
-            "deep_link_agent",
-            f"Found {len(deep_links)} useful deep link(s).",
-            agent_id="deep_link_agent",
-            prompt_template_id=registry.agent("deep_link_agent").prompt_template_id,
-            link_budget=deep_link_budget,
-            links=[link.model_dump(mode="json") for link in deep_links],
-            budget_ledger=ledger.model_dump(mode="json"),
-        )
-        yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
-        if deep_links and ledger.can_start_tool("read_url") and ledger.can_read_more_sources():
-            deep_extracted, deep_read_call = yield from self._run_tool(
-                progress,
-                "read_url",
-                {"urls": [link.url for link in deep_links], "max_chars_per_source": 1800},
-            )
-            tool_calls.append(deep_read_call)
-            ledger.record_tool_call(latency_ms=deep_read_call.latency_ms, sources_read=len(deep_links))
-            merged = self._merge_sources(merged, deep_extracted)
-        elif deep_links:
-            event = progress(
-                "research_budget",
-                "Budget skipped deep-link reading.",
-                stop_reason=ledger.stop_reason,
-                budget_ledger=ledger.model_dump(mode="json"),
-            )
-            yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
-
-        evidence = bind_evidence(merged, plan=plan, max_items=plan.max_sources)
-        _add_owner_reliability_gaps(request, evidence)
-        if evidence.gaps and not ledger.stopped and ledger.remaining_tool_calls() >= 2:
-            followups = build_gap_followup_workers(request, plan, evidence)
-            event = progress(
-                "gap_agent",
-                f"Gap agent created {len(followups)} follow-up search worker(s).",
-                agent_id="gap_agent",
-                prompt_template_id=registry.agent("gap_agent").prompt_template_id,
-                gaps=evidence.gaps,
-                workers=[worker.model_dump(mode="json") for worker in followups],
-                budget_ledger=ledger.model_dump(mode="json"),
-            )
-            yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
-            for idx, worker in enumerate(followups, start=1):
-                if not ledger.can_start_tool("web_search"):
-                    break
-                sources, call = yield from self._run_tool(
-                    progress,
-                    "web_search",
-                    {"query": worker.query, "max_results": worker.max_results},
-                )
-                tool_calls.append(call)
-                ledger.record_tool_call(latency_ms=call.latency_ms, sources_seen=len(sources))
-                followup_public = [source for source in sources if is_public_source_url(source.url)]
-                followup_ranked = rank_sources(followup_public, plan)
-                remaining_workers = max(1, len(followups) - idx + 1)
-                per_worker_read_limit = max(1, ledger.remaining_source_reads() // remaining_workers)
-                followup_selected = [item.source for item in followup_ranked[:per_worker_read_limit]]
-                if followup_selected and ledger.can_start_tool("read_url") and ledger.can_read_more_sources():
-                    followup_selected = followup_selected[: ledger.remaining_source_reads()]
-                    followup_extracted, followup_read_call = yield from self._run_tool(
-                        progress,
-                        "read_url",
-                        {"urls": [source.url for source in followup_selected], "max_chars_per_source": 1800},
-                    )
-                    tool_calls.append(followup_read_call)
-                    ledger.record_tool_call(latency_ms=followup_read_call.latency_ms, sources_read=len(followup_selected))
-                    merged = self._merge_sources(merged, self._merge_sources(followup_selected, followup_extracted))
-            evidence = bind_evidence(merged, plan=plan, max_items=plan.max_sources)
-            _add_owner_reliability_gaps(request, evidence)
-        elif evidence.gaps:
-            event = progress(
-                "research_budget",
-                "Budget skipped gap follow-up search.",
-                stop_reason=ledger.stop_reason,
-                remaining_tool_calls=ledger.remaining_tool_calls(),
-                budget_ledger=ledger.model_dump(mode="json"),
-            )
-            yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
-        event = progress(
-            "evidence_binder",
-            f"Bound {len(evidence.items)} evidence item(s).",
-            agent_id="evidence_binder",
-            prompt_template_id=registry.agent("evidence_binder").prompt_template_id,
-            coverage=evidence.coverage,
-            gaps=evidence.gaps,
-            contradictions=evidence.contradictions,
-            evidence_items=[item.model_dump(mode="json") for item in evidence.items],
-            budget_ledger=ledger.model_dump(mode="json"),
-        )
-        yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
-
-        if not ledger.can_start_model("synthesis_agent"):
-            response = model_client.ModelResponse(
-                text=(
-                    "I gathered the available evidence, but stopped before synthesis because the research "
-                    f"budget was exhausted ({ledger.stop_reason})."
-                ),
-                model_used="budget-ledger",
-                latency_ms=0,
-                cost_usd=0.0,
-            )
-            judge = judge_research(request, plan, evidence, response.text)
-            feedback = ResearchFeedbackLoop(judge=judge, final_score=judge.score)
-            return {
-                "sources": merged,
-                "tool_calls": tool_calls,
-                "evidence": evidence,
-                "response": response,
-                "plan": plan,
-                "feedback": feedback,
-            }
-        event = progress(
-            "synthesis",
-            "Synthesizing source-grounded answer from evidence.",
-            agent_id="synthesis_agent",
-            prompt_template_id=registry.agent("synthesis_agent").prompt_template_id,
-            **model_client.telemetry_for_role("synthesis", quality_mode=request.quality_mode, overrides=request.model_overrides),
-            budget_ledger=ledger.model_dump(mode="json"),
-        )
-        yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
-        system_prompt, user_prompt = build_synthesis_prompt(request, plan, evidence)
-        response = yield from self._stream_model_response(
-            progress,
-            [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            role="synthesis",
-            quality_mode=request.quality_mode,
-            overrides=request.model_overrides,
-            max_tokens=_synthesis_token_budget(request, plan),
-            timeout_s=_longform_timeout_s(),
-        )
-        ledger.record_model_call(cost_usd=response.cost_usd, latency_ms=response.latency_ms)
-        event = progress(
-            "synthesis_result",
-            f"Synthesis used {response.model_used or 'the configured synthesis model'}.",
-            agent_id="synthesis_agent",
-            **model_client.telemetry_for_role(
-                "synthesis",
-                quality_mode=request.quality_mode,
-                model_used=response.model_used,
-                overrides=request.model_overrides,
-            ),
-            latency_ms=response.latency_ms,
-            cost_usd=response.cost_usd,
-            budget_ledger=ledger.model_dump(mode="json"),
-        )
-        yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
-        judge = judge_research(request, plan, evidence, response.text)
-        event = progress(
-            "research_judge",
-            "Checking research quality before publishing.",
-            agent_id="research_judge",
-            prompt_template_id=registry.agent("research_judge").prompt_template_id,
-            **model_client.telemetry_for_role("research_judge", quality_mode=request.quality_mode, overrides=request.model_overrides),
-        )
-        yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
-        event = progress(
-            "research_judge_result",
-            f"Research judge returned {judge.status}.",
-            status=judge.status,
-            score=judge.score,
-            issues=judge.issues,
-            repair_instruction=judge.repair_instruction,
-            can_publish=judge.can_publish,
-            agent_id="research_judge",
-            budget_ledger=ledger.model_dump(mode="json"),
-        )
-        yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
-        verification = yield from self._with_heartbeat(
-            progress,
-            "citation_verification",
-            "Verifying citations and source support…",
-            verify_claims,
-            response.text,
-            evidence,
-        )
-        event = progress(
-            "claim_verifier",
-            f"Claim verifier returned {verification.status}.",
-            agent_id="claim_verifier",
-            prompt_template_id=registry.agent("claim_verifier").prompt_template_id,
-            verification=verification.model_dump(mode="json"),
-            **model_client.telemetry_for_role(
-                "citation_verifier",
-                quality_mode="standard",
-                model_used=getattr(verification, "model_used", ""),
-                overrides=request.model_overrides,
-            ),
-            budget_ledger=ledger.model_dump(mode="json"),
-        )
-        yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
-        if verification.status == "repair" and judge.status == "pass":
-            judge.status = "repair"
-            judge.issues.extend(verification.notes)
-            judge.repair_instruction = "Add citations to unsupported substantive claims."
-            judge.can_publish = False
-        feedback = ResearchFeedbackLoop(judge=judge, final_score=judge.score)
-        if judge.status == "repair" and plan.repair_iterations > 0 and ledger.can_start_model("repair_agent"):
-            event = progress(
-                "research_repair",
-                "Repairing the research answer.",
-                agent_id="repair_agent",
-                prompt_template_id=registry.agent("repair_agent").prompt_template_id,
-                repair_instruction=judge.repair_instruction,
-                issues=judge.issues,
-                **model_client.telemetry_for_role("repair", quality_mode=request.quality_mode, overrides=request.model_overrides),
-                budget_ledger=ledger.model_dump(mode="json"),
-            )
-            yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
-            repaired = yield from self._with_heartbeat(
-                progress,
-                "research_repair",
-                "Repairing the answer…",
-                repair_research_answer,
-                request,
-                plan,
-                evidence,
-                response.text,
-                judge,
-            )
-            ledger.record_model_call(cost_usd=repaired.cost_usd, latency_ms=repaired.latency_ms)
-            repaired_judge = judge_research(request, plan, evidence, repaired.text)
-            response = repaired
-            feedback = ResearchFeedbackLoop(
-                judge=repaired_judge,
-                repaired=True,
-                repair_attempts=1,
-                final_score=repaired_judge.score,
-            )
-            event = progress(
-                "research_repair_result",
-                f"Repair complete; judge now returned {repaired_judge.status}.",
-                status=repaired_judge.status,
-                score=repaired_judge.score,
-                issues=repaired_judge.issues,
-                can_publish=repaired_judge.can_publish,
-                agent_id="repair_agent",
-                **model_client.telemetry_for_role(
-                    "repair",
-                    quality_mode=request.quality_mode,
-                    model_used=repaired.model_used,
-                    overrides=request.model_overrides,
-                ),
-                budget_ledger=ledger.model_dump(mode="json"),
-            )
-            yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
-        elif judge.status == "repair" and plan.repair_iterations > 0:
-            event = progress(
-                "research_budget",
-                "Budget skipped repair.",
-                stop_reason=ledger.stop_reason,
-                budget_ledger=ledger.model_dump(mode="json"),
-            )
-            yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
-        event = progress(
-            "research_budget",
-            "Research budget ledger closed.",
-            stop_reason=ledger.stop_reason,
-            budget_ledger=ledger.model_dump(mode="json"),
-        )
-        yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
-        return {
-            "sources": merged,
-            "tool_calls": tool_calls,
-            "evidence": evidence,
-            "response": response,
-            "plan": plan,
-            "feedback": feedback,
-        }
+        gen = stream_langgraph_research(request, self.tool_registry.tools, progress)
+        return (yield from self._forward_langgraph_stream(gen, progress))
 
     def _apply_decision(self, request: TurnRequest, decision: OrchestratorDecision) -> TurnRequest:
         updates = {}

@@ -1,14 +1,5 @@
 """Admin eval endpoints.
 
-Parity routes (legacy vs LangGraph golden-set comparison):
-  POST   /admin/evals/parity/run              Start parity run (background)
-  GET    /admin/evals/parity/runs             List recent in-process parity runs
-  GET    /admin/evals/parity/{run_id}/status  Poll for live progress + final report
-  GET    /admin/evals/parity/{run_id}/result  Full ParityReport (alias for /status)
-  GET    /admin/evals/parity/orchestrator     Current effective orchestrator
-  POST   /admin/evals/parity/promote          Flip to langgraph (requires passing run)
-  DELETE /admin/evals/parity/promote          Revert to env/config default
-
 Eval case CRUD:
   GET    /admin/evals/cases                   List active cases (?include_inactive=true for all)
   POST   /admin/evals/cases                   Create case
@@ -19,7 +10,7 @@ Eval case CRUD:
   POST   /admin/evals/cases/{id}/restore      Reactivate a soft-deleted case
   POST   /admin/evals/cases/upload            Bulk upsert from JSON array
 
-General eval runs (both pipelines, structural + criteria scoring):
+General eval runs (LangGraph, structural + criteria scoring):
   POST   /admin/evals/runs                    Start a run over selected (or all) cases
   GET    /admin/evals/runs                    List recent runs
   GET    /admin/evals/runs/{run_id}/status    Poll for live progress + final results
@@ -28,7 +19,6 @@ General eval runs (both pipelines, structural + criteria scoring):
 """
 from __future__ import annotations
 
-import contextlib
 import json
 import logging
 import os
@@ -39,7 +29,6 @@ import threading
 import time
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Body, HTTPException, Response
@@ -51,341 +40,6 @@ from app.auth import AdminPrincipal, RequireAdmin
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin/evals", tags=["admin"])
-
-# ---------------------------------------------------------------------------
-# In-process run registry
-# ---------------------------------------------------------------------------
-
-_RUNS: dict[str, dict[str, Any]] = {}
-_RUNS_LOCK = threading.Lock()
-_MAX_STORED_RUNS = 20  # keep at most N completed runs in memory
-
-
-def _make_run(run_id: str) -> dict[str, Any]:
-    return {
-        "run_id": run_id,
-        "status": "running",    # running | complete | error
-        "total": None,          # set once golden set is loaded
-        "completed": 0,         # incremented after each case finishes
-        "progress": [],         # list of per-case result dicts (poll to watch growth)
-        "log": [],              # human-readable progress lines for the UI log panel
-        "report": None,
-        "error": None,
-        "started_at": time.time(),
-        "completed_at": None,
-    }
-
-
-def _get_run(run_id: str) -> dict[str, Any]:
-    with _RUNS_LOCK:
-        run = _RUNS.get(run_id)
-    if run is None:
-        raise HTTPException(status_code=404, detail=f"Parity run {run_id!r} not found.")
-    return run
-
-
-def _evict_old_runs() -> None:
-    """Keep _RUNS from growing unbounded; evict the oldest completed runs."""
-    with _RUNS_LOCK:
-        completed = sorted(
-            [(k, v) for k, v in _RUNS.items() if v["status"] != "running"],
-            key=lambda kv: kv[1].get("started_at", 0),
-        )
-        while len(_RUNS) > _MAX_STORED_RUNS and completed:
-            oldest_id, _ = completed.pop(0)
-            del _RUNS[oldest_id]
-
-
-# ---------------------------------------------------------------------------
-# Background runner
-# ---------------------------------------------------------------------------
-
-def _load_parity_comparator_module():
-    """Load evals/run_parity_comparator.py directly from its file path.
-
-    We use importlib.util rather than a bare `from evals.xxx import ...` because
-    the FastAPI process may not have apps/api on sys.path and the evals/ directory
-    has no __init__.py, making it an implicit namespace package that can be shadowed
-    by other installed packages.  Loading by absolute path is fully deterministic.
-    """
-    import importlib.util as ilu
-    api_root = Path(__file__).resolve().parents[2]  # apps/api
-    mod_path = api_root / "evals" / "run_parity_comparator.py"
-    if not mod_path.exists():
-        raise ImportError(f"run_parity_comparator.py not found at {mod_path}")
-    spec = ilu.spec_from_file_location("_parity_runner", mod_path)
-    mod = ilu.module_from_spec(spec)  # type: ignore[arg-type]
-    spec.loader.exec_module(mod)  # type: ignore[union-attr]
-    return mod
-
-
-def _run_parity_background(run_id: str, case_ids: list[str] | None) -> None:
-    """Runs in a daemon thread. Writes progress directly to the run dict so the
-    polling endpoint can serve a consistent snapshot without an SSE connection."""
-    run = _get_run(run_id)
-
-    def _log(msg: str) -> None:
-        run["log"].append(msg)
-
-    try:
-        from app.services.agent.langgraph_runtime.comparators import (
-            aggregate_parity_results,
-            compare_pipeline_results,
-        )
-        from app.services.agent.tools import Tools
-        _parity = _load_parity_comparator_module()
-        _load_golden_set = _parity._load_golden_set
-        _run_legacy = _parity._run_legacy
-        _run_langgraph = _parity._run_langgraph
-
-        tools = Tools.from_settings()
-        golden_set = _load_golden_set(case_ids)
-        total = len(golden_set)
-        run["total"] = total
-
-        _log(f"▶ Started ({total} cases)")
-
-        per_case_results = []
-
-        for idx, entry in enumerate(golden_set):
-            case_id = entry["id"]
-            _log(f"  [{idx + 1}/{total}] Running {case_id}…")
-
-            t0 = time.perf_counter()
-            legacy_result, legacy_err = _run_legacy(entry, tools)
-            legacy_ms = int((time.perf_counter() - t0) * 1000)
-
-            t1 = time.perf_counter()
-            langgraph_result, langgraph_err = _run_langgraph(entry, tools)
-            langgraph_ms = int((time.perf_counter() - t1) * 1000)
-
-            pr = compare_pipeline_results(
-                case_id=case_id,
-                legacy_result=legacy_result,
-                langgraph_result=langgraph_result,
-                legacy_error=legacy_err,
-                langgraph_error=langgraph_err,
-            )
-            per_case_results.append(pr)
-
-            result_dict = pr.to_dict()
-            result_dict["legacy_ms"] = legacy_ms
-            result_dict["langgraph_ms"] = langgraph_ms
-
-            icon = "✓" if pr.overall_pass else "✗"
-            _log(
-                f"  {icon} {case_id} — ans={result_dict.get('answer_length_ratio', '–'):.2f}"
-                f" evid={result_dict.get('evidence_count_ratio', '–'):.2f}"
-                f" claims={result_dict.get('claim_count_ratio', '–'):.2f}"
-            )
-
-            # Append to progress list and bump counter atomically (CPython GIL).
-            run["progress"].append(result_dict)
-            run["completed"] = idx + 1
-
-        report = aggregate_parity_results(per_case_results)
-        report_dict = report.to_dict()
-
-        run["report"] = report_dict
-        run["status"] = "complete"
-        run["completed_at"] = time.time()
-
-        verdict = "✅ CUTOVER RECOMMENDED" if report.cutover_recommended else "❌ NOT READY"
-        _log(f"{verdict} — {report.overall_pass}/{total} cases pass all gates")
-
-        try:
-            _save_report(run_id, report_dict)
-        except Exception as save_exc:
-            logger.warning("evals: could not save parity report to disk: %s", save_exc)
-
-    except Exception as exc:
-        import traceback
-        err = traceback.format_exc()
-        logger.exception("Parity run %s failed", run_id)
-        run["error"] = err
-        run["status"] = "error"
-        run["completed_at"] = time.time()
-        _log(f"❌ Error: {exc}")
-
-
-def _save_report(run_id: str, report_dict: dict) -> None:
-    results_dir = Path(__file__).resolve().parents[2] / "evals" / "parity_results"
-    results_dir.mkdir(parents=True, exist_ok=True)
-    path = results_dir / f"{run_id}.json"
-    with open(path, "w", encoding="utf-8") as fh:
-        json.dump(report_dict, fh, indent=2, default=str)
-
-
-# ---------------------------------------------------------------------------
-# Routes
-# ---------------------------------------------------------------------------
-
-@router.post("/parity/run")
-def start_parity_run(
-    case_ids: list[str] | None = Body(default=None),
-    admin: AdminPrincipal = RequireAdmin,
-) -> dict:
-    """Start a background parity run. Returns run_id to poll for progress."""
-    # Prevent running multiple concurrent full runs
-    with _RUNS_LOCK:
-        active = [r for r in _RUNS.values() if r["status"] == "running"]
-    if active:
-        return {
-            "run_id": active[0]["run_id"],
-            "status": "already_running",
-            "message": "A parity run is already in progress.",
-        }
-
-    run_id = f"parity_{uuid.uuid4().hex[:12]}"
-    run = _make_run(run_id)
-    with _RUNS_LOCK:
-        _RUNS[run_id] = run
-
-    _evict_old_runs()
-
-    thread = threading.Thread(
-        target=_run_parity_background,
-        args=(run_id, case_ids),
-        daemon=True,
-        name=f"parity-run-{run_id}",
-    )
-    thread.start()
-
-    logger.info("Parity run %s started by admin %s", run_id, admin.user_id)
-    return {"run_id": run_id, "status": "running"}
-
-
-@router.get("/parity/runs")
-def list_parity_runs(admin: AdminPrincipal = RequireAdmin) -> dict:
-    """List recent in-process parity runs (newest first)."""
-    with _RUNS_LOCK:
-        runs = sorted(_RUNS.values(), key=lambda r: r["started_at"], reverse=True)
-    return {
-        "runs": [
-            {
-                "run_id": r["run_id"],
-                "status": r["status"],
-                "started_at": r["started_at"],
-                "completed_at": r["completed_at"],
-                "cutover_recommended": (
-                    r["report"].get("cutover_recommended") if r["report"] else None
-                ),
-                "overall_pass": r["report"].get("overall_pass") if r["report"] else None,
-                "total_cases": r["report"].get("total_cases") if r["report"] else None,
-            }
-            for r in runs
-        ]
-    }
-
-
-@router.get("/parity/{run_id}/status")
-def get_parity_status(
-    run_id: str,
-    admin: AdminPrincipal = RequireAdmin,
-) -> dict:
-    """Poll for live run progress and final report.
-
-    Returns a consistent snapshot regardless of whether the run is still in
-    progress or complete.  The UI polls this every 3 s while status == 'running'.
-
-    Shape:
-      {
-        run_id, status, total, completed,
-        progress: [ParityCaseResult, ...],   # grows as cases finish
-        log: [str, ...],                     # human-readable progress lines
-        report: ParityReport | null,         # populated on completion
-        error: str | null,
-        started_at, completed_at
-      }
-    """
-    run = _get_run(run_id)
-    return {
-        "run_id": run_id,
-        "status": run["status"],
-        "total": run["total"],
-        "completed": run["completed"],
-        "progress": list(run["progress"]),   # snapshot copy
-        "log": list(run["log"]),
-        "report": run["report"],
-        "error": run["error"],
-        "started_at": run["started_at"],
-        "completed_at": run["completed_at"],
-    }
-
-
-@router.get("/parity/{run_id}/result")
-def get_parity_result(
-    run_id: str,
-    admin: AdminPrincipal = RequireAdmin,
-) -> dict:
-    """Alias for /status — kept for backward compatibility."""
-    return get_parity_status(run_id, admin)
-
-
-@router.post("/parity/promote")
-def promote_langgraph(admin: AdminPrincipal = RequireAdmin) -> dict:
-    """Flip the in-process orchestrator to langgraph after a passing parity run.
-
-    Validates that at least one completed parity run recommends cutover before
-    allowing promotion.  The override lasts for the lifetime of this process;
-    set FRONEI_ORCHESTRATOR=langgraph in the deployment environment to persist
-    it across restarts.
-    """
-    # Require a passing run before promoting
-    with _RUNS_LOCK:
-        passing_runs = [
-            r for r in _RUNS.values()
-            if r["status"] == "complete"
-            and r["report"]
-            and r["report"].get("cutover_recommended")
-        ]
-
-    if not passing_runs:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "No completed parity run recommends cutover. "
-                "Run a parity comparison first and ensure all gates pass."
-            ),
-        )
-
-    from app.services.agent.langgraph_runtime.runtime import set_orchestrator_override
-    set_orchestrator_override("langgraph")
-
-    logger.info(
-        "Orchestrator promoted to langgraph by admin %s (process-lifetime override).",
-        admin.user_id,
-    )
-    return {
-        "effective_orchestrator": "langgraph",
-        "promoted_by": admin.user_id,
-        "note": (
-            "LangGraph is now active for this process. "
-            "Set FRONEI_ORCHESTRATOR=langgraph in your deployment environment "
-            "to persist this across restarts."
-        ),
-    }
-
-
-@router.delete("/parity/promote")
-def revert_orchestrator(admin: AdminPrincipal = RequireAdmin) -> dict:
-    """Revert the in-process override; legacy or FRONEI_ORCHESTRATOR env var takes effect."""
-    from app.services.agent.langgraph_runtime.runtime import (
-        clear_orchestrator_override,
-        configured_orchestrator,
-    )
-    clear_orchestrator_override()
-    effective = configured_orchestrator()
-    logger.info(
-        "Orchestrator override cleared by admin %s; effective orchestrator: %s",
-        admin.user_id,
-        effective,
-    )
-    return {
-        "effective_orchestrator": effective,
-        "reverted_by": admin.user_id,
-    }
-
 
 @router.get("/langsmith/status")
 def get_langsmith_status(admin: AdminPrincipal = RequireAdmin) -> dict:
@@ -399,20 +53,6 @@ def get_langsmith_status(admin: AdminPrincipal = RequireAdmin) -> dict:
         "project": s.langchain_project if configured else None,
         "tracing_on": os.environ.get("LANGCHAIN_TRACING_V2") == "true" if configured else False,
         "dataset_name": "fronei-eval-cases",
-    }
-
-
-@router.get("/parity/orchestrator")
-def get_orchestrator_status(admin: AdminPrincipal = RequireAdmin) -> dict:
-    """Return the current effective orchestrator and whether an override is active."""
-    from app.services.agent.langgraph_runtime import runtime as lg_runtime
-    from app.config import get_settings
-    settings = get_settings()
-    return {
-        "effective_orchestrator": lg_runtime.configured_orchestrator(),
-        "override_active": lg_runtime._RUNTIME_ORCHESTRATOR_OVERRIDE is not None,
-        "override_value": lg_runtime._RUNTIME_ORCHESTRATOR_OVERRIDE,
-        "env_default": settings.fronei_orchestrator,
     }
 
 
@@ -859,10 +499,10 @@ def upload_eval_cases(
 
 
 # ===========================================================================
-# General eval runs (both pipelines + criteria scoring)
+# General eval runs (LangGraph + criteria scoring)
 # ===========================================================================
 
-# In-process registry for general eval runs (same pattern as parity runs)
+# In-process registry for general eval runs.
 _EVAL_RUNS: dict[str, dict[str, Any]] = {}
 _EVAL_RUNS_LOCK = threading.Lock()
 
@@ -1051,32 +691,6 @@ def _check_deep_research_gate(unconfirmed_request, decision, tools) -> dict[str,
     }
 
 
-# configured_orchestrator()'s pipeline selection is process-wide state shared
-# with live user traffic (the same flag the admin "promote" cutover button
-# sets). Forcing a pipeline for an eval case means briefly mutating that
-# global, so this lock serializes those windows — only one forced-pipeline
-# eval case runs at a time process-wide, and concurrent real user requests
-# during that window will transiently see the eval's forced pipeline too.
-# That's an accepted tradeoff for a low-traffic admin tool; see PR discussion.
-_ORCHESTRATOR_OVERRIDE_LOCK = threading.Lock()
-
-
-@contextlib.contextmanager
-def _forced_pipeline(pipeline: str):
-    from app.services.agent.langgraph_runtime import runtime as langgraph_runtime_module
-
-    with _ORCHESTRATOR_OVERRIDE_LOCK:
-        previous = langgraph_runtime_module._RUNTIME_ORCHESTRATOR_OVERRIDE
-        langgraph_runtime_module.set_orchestrator_override(pipeline)
-        try:
-            yield
-        finally:
-            if previous is None:
-                langgraph_runtime_module.clear_orchestrator_override()
-            else:
-                langgraph_runtime_module.set_orchestrator_override(previous)
-
-
 def _drain_generator(gen) -> Any:
     """Drive a generator-based Runtime route handler to completion and
     return its StopIteration.value (the handler's actual return value)."""
@@ -1089,12 +703,11 @@ def _drain_generator(gen) -> Any:
 
 def _run_research_subtree_blocking(request, tools) -> dict[str, Any]:
     """Drive Runtime._run_research_subtree() to completion and return its
-    result dict — the same route-dispatch logic (langgraph vs. legacy-deep
-    vs. legacy-non-deep, see runtime.py:587) a real research-routed user turn
-    goes through, without the outer run_stream() SSE/TurnResult wrapping
-    (fast-path pre-routing and the deep-research confirmation gate don't
-    apply here: the eval already pre-approves confirm_deep_research, same as
-    _build_eval_request documents)."""
+    result dict — the same LangGraph research dispatch a real research-routed
+    user turn goes through, without the outer run_stream() SSE/TurnResult
+    wrapping (fast-path pre-routing and the deep-research confirmation gate
+    don't apply here: the eval already pre-approves confirm_deep_research,
+    same as _build_eval_request documents)."""
     from app.services.agent.models import ProgressEvent, new_id
     from app.services.agent.runtime import Runtime
 
@@ -1288,17 +901,9 @@ def compute_overall_status(
 
 def _run_one_eval_case(case_dict: dict, tools, pipeline: str = "langgraph") -> dict[str, Any]:
     """Run a single eval case through ONE pipeline and grade it against the
-    case's pre-determined expected_criteria (ground truth), not against the
-    other pipeline's output. Use the parity runner (run_parity_comparator.py,
-    wired up at /admin/evals/parity/run) to compare legacy vs langgraph.
-
-    Assumes the caller already holds the pipeline override for the duration
-    of the whole batch (see _run_in_process_core) — this function does NOT
-    acquire _forced_pipeline itself. Cases in a run are dispatched
-    concurrently (see _run_in_process_core); acquiring the override lock
-    per-case here would re-serialize every case on that lock and defeat
-    parallelization entirely, since all cases in one run share one pipeline
-    anyway.
+    case's pre-determined expected_criteria (ground truth). The production
+    research runtime is LangGraph-only; `pipeline` is retained only as an
+    output label for persisted historical shape compatibility.
     """
     import traceback as tb
 
@@ -2237,26 +1842,25 @@ def _run_in_process_core(run: dict, case_dicts: list[dict], pipeline: str = "lan
                 run["log"].append(f"  [{idx + 1}/{total}] {case_dict['title']} — done.")
         return result
 
-    with _forced_pipeline(pipeline):
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {
-                executor.submit(_run_case, idx, case_dict): idx
-                for idx, case_dict in enumerate(case_dicts)
-                if not run.get("stop_requested")
-            }
-            for future in as_completed(futures):
-                future.result()  # surface exceptions; _run_one_eval_case already catches its own
-                # Checkpoint partial progress to DB after each case so that
-                # the status endpoint's DB fallback can serve real data on any
-                # page reload or tab switch (not just while _EVAL_RUNS is live).
-                if run_id:
-                    with progress_lock:
-                        current_progress = list(run["progress"])
-                    _checkpoint_eval_run(run_id, current_progress, pipeline)
-                if run.get("stop_requested"):
-                    for pending in futures:
-                        pending.cancel()
-                    break
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(_run_case, idx, case_dict): idx
+            for idx, case_dict in enumerate(case_dicts)
+            if not run.get("stop_requested")
+        }
+        for future in as_completed(futures):
+            future.result()  # surface exceptions; _run_one_eval_case already catches its own
+            # Checkpoint partial progress to DB after each case so that
+            # the status endpoint's DB fallback can serve real data on any
+            # page reload or tab switch (not just while _EVAL_RUNS is live).
+            if run_id:
+                with progress_lock:
+                    current_progress = list(run["progress"])
+                _checkpoint_eval_run(run_id, current_progress, pipeline)
+            if run.get("stop_requested"):
+                for pending in futures:
+                    pending.cancel()
+                break
 
     if run.get("stop_requested") and len(all_results) < total:
         run["log"].append(f"⏹ Stopped after {len(all_results)} of {total} case(s).")
@@ -2264,7 +1868,7 @@ def _run_in_process_core(run: dict, case_dicts: list[dict], pipeline: str = "lan
 
 
 def _run_langsmith_core(run: dict, run_id: str, case_dicts: list[dict]) -> dict | None:
-    """Run both pipelines via LangSmith evaluate(). Drains events into run["log"].
+    """Run LangGraph via LangSmith evaluate(). Drains events into run["log"].
     Returns the LangSmith summary dict, or None if LS is not configured."""
     from app.services.langsmith_evals import is_configured as ls_configured, run_eval as ls_run_eval
     if not ls_configured():
@@ -2294,15 +1898,10 @@ def _run_eval_background(
       in_process — run ONE pipeline locally, graded against each case's
                    pre-determined expected_criteria; full per-case data stored in DB.
       langsmith  — run via langsmith.evaluate(); per-case data lives in LangSmith
-                   (LangSmith mode still runs both pipelines as separate experiments —
-                   see langsmith_evals.run_eval — that's unaffected by `pipeline` here).
+                   (LangGraph-only).
       both       — run in-process first (local per-case data, single `pipeline`), then
                    run LangSmith experiments in the same thread (adds LS experiment
                    links to the envelope). Takes in_process_time + langsmith_time total.
-
-    Use /admin/evals/parity/run (run_parity_comparator.py) to compare legacy vs
-    langgraph head-to-head — that's a distinct run type from these "regular" evals,
-    which grade a single pipeline against ground-truth criteria.
     """
     run = _EVAL_RUNS.get(run_id)
     if run is None:
@@ -2411,7 +2010,7 @@ def _persist_eval_run(run_id: str, results: dict, status: str, error: str | None
 class EvalRunRequest(BaseModel):
     case_ids: list[int] | None = None  # None = all cases
     mode: str = "in_process"          # in_process | langsmith | both
-    pipeline: str = "langgraph"       # langgraph | legacy — which single pipeline to run
+    pipeline: str = "langgraph"       # retained for old clients; always normalized to langgraph
 
 
 @router.post("/runs", status_code=202)
@@ -2419,18 +2018,14 @@ def start_eval_run(body: EvalRunRequest = Body(default=None), admin: AdminPrinci
     """Start a general eval run over selected (or all) cases against ONE pipeline,
     graded against each case's pre-determined expected_criteria (ground truth).
 
-    pipeline=langgraph  Run the LangGraph pipeline (default).
-    pipeline=legacy      Run the legacy pipeline instead.
+    pipeline=langgraph  Run the LangGraph pipeline (default and only runtime).
     mode=in_process      Run locally; full per-case data stored in DB (default).
     mode=langsmith       Run via LangSmith evaluate(); per-case data in LangSmith.
     mode=both            In-process first then LangSmith; double runtime, both datasets.
-
-    To compare legacy vs langgraph head-to-head, use /admin/evals/parity/run instead —
-    that's a separate run type purpose-built for pipeline-vs-pipeline comparison.
     """
     from app.db.models import EvalCase, EvalRun, SessionLocal
 
-    pipeline = (body.pipeline if body and body.pipeline in ("langgraph", "legacy") else "langgraph")
+    pipeline = "langgraph"
 
     db = SessionLocal()
     try:

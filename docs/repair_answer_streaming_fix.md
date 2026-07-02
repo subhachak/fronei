@@ -1,5 +1,10 @@
 # Fix: repaired answers snap in instead of streaming — Implementation Guide
 
+**Status as of July 2, 2026:** implemented. Research is now LangGraph-only;
+repair deltas carry `source_node`, synthesize-to-repair transitions emit
+`reset`, and the old parity comparator/legacy research path referenced in this
+guide have been retired.
+
 **Update:** after the first version of this doc, testing showed the "I found something to improve, so I'm tightening it up" commentary never appeared on screen either — not a rendering miss, a sequencing bug, confirmed by reading `graph.py`: `repair` is the last node before `END`. Its friendly progress message currently fires from LangGraph's `updates` stream mode, which reports a node only *after* its function returns — so for `repair`, that event and the terminal "turn complete" event land within milliseconds of each other. The message was never visible; it fired and was immediately overwritten. This is independent of the streaming/snap-in issue and would have stayed broken even with the earlier subtitle fix alone. The design below fixes both by emitting the "repair" commentary manually at the moment repair's *first* token arrives, rather than waiting for LangGraph to report the node as finished — reusing the existing commentary/eventsRef pipeline outright, so no new frontend event type is needed for the message, only for the buffer reset.
 
 **What the screenshots show, confirmed against the code:** `judge` sent this answer to `repair`, and `repair` produced a meaningfully rewritten version — different bullet wording, a new "Transparent Statement of Evidence Gaps" section header that wasn't in the paused screenshot at all. That's real content, not a rendering glitch. It appeared as a hard swap because of a deliberate suppression rule in `stream_langgraph_research` (`apps/api/app/services/agent/langgraph_runtime/runtime.py`):
@@ -33,7 +38,16 @@ Remove `synthesis_streamed` entirely (the flag and both `if` checks that referen
 
 ## 2. Backend: detect the transition, emit the commentary early, forward `source_node`
 
-`apps/api/app/services/agent/runtime.py`, inside the `configured_orchestrator() == "langgraph"` branch (~line 663). Confirmed via `streamTurnStatus` in `useTurnRunner.ts` (~line 260-280) that *any* progress event whose `stage` isn't `answer_delta`/`answer_complete` already gets pushed into `eventsRef` and passed to `applyAnswerProgress` automatically — so the fix is to emit a normal node-shaped event (reusing the existing `stage: "repair"` → `_LANGGRAPH_NODE_MESSAGES["repair"]` → `commentary.ts`'s existing `case 'repair':` chain verbatim) at the moment repair's first token arrives, instead of relying on LangGraph's late `updates` event. No new event type needs plumbing through — only a `reset: true` flag the frontend checks for:
+`apps/api/app/services/agent/runtime.py`, inside the LangGraph stream forwarding
+path. Confirmed via `streamTurnStatus` in `useTurnRunner.ts` that *any*
+progress event whose `stage` isn't `answer_delta`/`answer_complete` already
+gets pushed into `eventsRef` and passed to `applyAnswerProgress` automatically
+— so the fix is to emit a normal node-shaped event (reusing the existing
+`stage: "repair"` → `_LANGGRAPH_NODE_MESSAGES["repair"]` →
+`commentary.ts`'s existing `case 'repair':` chain verbatim) at the moment
+repair's first token arrives, instead of relying on LangGraph's late `updates`
+event. No new event type needs plumbing through — only a `reset: true` flag the
+frontend checks for:
 
 ```python
 gen = stream_langgraph_research(request, self.tool_registry.tools, progress)
@@ -118,5 +132,6 @@ Once `liveAnswer` goes back to `''`, `LiveTurn`'s existing `answer ? (...) : (..
 ## Testing plan
 
 - There's already a test for the no-repair case (`test_langgraph_deep_repair_does_not_buffer_replay_after_stream` in `test_langgraph_maturity.py`) using a monkeypatched `judge` that forces `status="repair"`. Extend it (or add a sibling test) to assert: a `stage: "repair"` progress event with `data.reset == True` appears between the last synthesize-sourced `answer_delta` and the first repair-sourced one, and that `"".join(post_reset_deltas)` equals the final `result["answer"]` exactly (proving the streamed text is the real repaired answer, not the stale draft).
-- Regression: re-run the golden-set parity harness — this changes delivery mechanics only, not what gets synthesized/repaired/judged, so final answers must be byte-identical to before.
+- Regression: run the LangGraph eval/maturity suite. The old golden-set parity
+  comparator was retired with the pre-LangGraph runtime.
 - Manual: the exact scenario in your screenshots — a query likely to trigger repair (citation-heavy, multi-subject) — confirm you now see the draft type in, a brief "tightening it up" pulse, then the *revised* answer type in fresh, rather than a silent jump.

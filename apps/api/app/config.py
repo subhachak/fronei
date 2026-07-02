@@ -152,11 +152,6 @@ class Settings(BaseSettings):
     # enabling in production.
     langchain_tracing_v2: bool = False
 
-    # Research orchestration implementation selector. This is a deployment
-    # default, not an end-user request option.
-    # Promoted to "langgraph" as the default after parity gate passed.
-    # Override with FRONEI_ORCHESTRATOR=legacy in the environment to revert.
-    fronei_orchestrator: str = "langgraph"
     langgraph_checkpoint_db_path: str = "./langgraph_checkpoints.db"
     # How long to keep LangGraph checkpoints + langgraph_run_contexts rows for
     # completed/failed runs before the maintenance job deletes them. Paused,
@@ -165,10 +160,6 @@ class Settings(BaseSettings):
     # unbounded growth of langgraph_checkpoints.db (every node write in every
     # run is a full checkpoint row, kept forever without this).
     langgraph_checkpoint_retention_days: int = 7
-    # Reserved for trusted QA tooling in a later slice. Slice 0A intentionally
-    # does not implement a per-request override; production must fail closed if
-    # this unsafe bypass is enabled accidentally.
-    fronei_orchestrator_qa_override_enabled: bool = False
     agentdeck_vision_judge_max_slides: int = 12
     # Reuse a persistent Node/PptxGenJS process for AgentDeck rendering.
     # Falls back to one-shot subprocess rendering if the warm process fails.

@@ -189,7 +189,7 @@ def _make_role_evaluator():
 # Pipeline runner (target for langsmith.evaluate)
 # ---------------------------------------------------------------------------
 
-def _make_pipeline_target(pipeline_name: str, tools):
+def _make_pipeline_target(tools):
     def target(inputs: dict) -> dict:
         from app.services.agent.models import TurnRequest
         query = inputs.get("query", "")
@@ -200,12 +200,8 @@ def _make_pipeline_target(pipeline_name: str, tools):
             output_format="chat",
         )
         try:
-            if pipeline_name == "legacy":
-                from app.services.agent.research_lead import lead_research_loop
-                result = lead_research_loop(request, tools, progress=None)
-            else:
-                from app.services.agent.langgraph_runtime.runtime import run_langgraph_research
-                result = run_langgraph_research(request, tools, progress=None)
+            from app.services.agent.langgraph_runtime.runtime import run_langgraph_research
+            result = run_langgraph_research(request, tools, progress=None)
 
             response = result.get("response")
             answer = response.text if hasattr(response, "text") else str(response or "")
@@ -232,7 +228,7 @@ def run_eval(
     events: _queue.Queue,
     max_concurrency: int = 3,
 ) -> dict[str, Any]:
-    """Run both pipelines via langsmith.evaluate(). Emits SSE-style events to queue.
+    """Run the production LangGraph pipeline via langsmith.evaluate().
 
     Returns a summary dict stored in EvalRun.results_json.
     """
@@ -250,52 +246,50 @@ def run_eval(
         events.put({"type": "langsmith_sync_error", "error": str(exc)})
         raise
 
+    pipeline_name = "langgraph"
     pipeline_results: dict[str, Any] = {}
-
-    for pipeline_name in ("legacy", "langgraph"):
+    events.put({
+        "type": "langsmith_pipeline_start",
+        "pipeline": pipeline_name,
+        "message": "Running LangGraph pipeline via LangSmith evaluate()…",
+    })
+    t0 = time.perf_counter()
+    try:
+        exp = evaluate(
+            _make_pipeline_target(tools),
+            data=DATASET_NAME,
+            evaluators=[_make_criteria_evaluator(), _make_role_evaluator()],
+            experiment_prefix=f"fronei-{pipeline_name}-{run_id[:8]}",
+            max_concurrency=max_concurrency,
+            metadata={"run_id": run_id, "pipeline": pipeline_name},
+        )
+        elapsed = round(time.perf_counter() - t0, 1)
+        exp_url = getattr(exp, "url", None) or getattr(exp, "experiment_url", None)
+        pipeline_results[pipeline_name] = {
+            "ok": True,
+            "experiment_url": exp_url,
+            "elapsed_s": elapsed,
+        }
         events.put({
-            "type": "langsmith_pipeline_start",
+            "type": "langsmith_pipeline_done",
             "pipeline": pipeline_name,
-            "message": f"Running {pipeline_name} pipeline via LangSmith evaluate()…",
+            "experiment_url": exp_url,
+            "elapsed_s": elapsed,
         })
-        t0 = time.perf_counter()
-        try:
-            exp = evaluate(
-                _make_pipeline_target(pipeline_name, tools),
-                data=DATASET_NAME,
-                evaluators=[_make_criteria_evaluator(), _make_role_evaluator()],
-                experiment_prefix=f"fronei-{pipeline_name}-{run_id[:8]}",
-                max_concurrency=max_concurrency,
-                metadata={"run_id": run_id, "pipeline": pipeline_name},
-            )
-            elapsed = round(time.perf_counter() - t0, 1)
-            exp_url = getattr(exp, "url", None) or getattr(exp, "experiment_url", None)
-            pipeline_results[pipeline_name] = {
-                "ok": True,
-                "experiment_url": exp_url,
-                "elapsed_s": elapsed,
-            }
-            events.put({
-                "type": "langsmith_pipeline_done",
-                "pipeline": pipeline_name,
-                "experiment_url": exp_url,
-                "elapsed_s": elapsed,
-            })
-        except Exception as exc:
-            elapsed = round(time.perf_counter() - t0, 1)
-            pipeline_results[pipeline_name] = {"ok": False, "error": str(exc), "elapsed_s": elapsed}
-            events.put({
-                "type": "langsmith_pipeline_error",
-                "pipeline": pipeline_name,
-                "error": str(exc),
-            })
-            log.error("LangSmith eval failed for pipeline %s: %s", pipeline_name, exc)
+    except Exception as exc:
+        elapsed = round(time.perf_counter() - t0, 1)
+        pipeline_results[pipeline_name] = {"ok": False, "error": str(exc), "elapsed_s": elapsed}
+        events.put({
+            "type": "langsmith_pipeline_error",
+            "pipeline": pipeline_name,
+            "error": str(exc),
+        })
+        log.error("LangSmith eval failed for pipeline %s: %s", pipeline_name, exc)
 
     return {
         "mode": "langsmith",
         "dataset_id": dataset_id,
         "run_id": run_id,
         "pipelines": pipeline_results,
-        "legacy_experiment_url": pipeline_results.get("legacy", {}).get("experiment_url"),
         "langgraph_experiment_url": pipeline_results.get("langgraph", {}).get("experiment_url"),
     }

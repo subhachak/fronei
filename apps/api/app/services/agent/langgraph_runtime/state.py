@@ -83,10 +83,8 @@ class ApprovalContract(TypedDict, total=False):
 # ---------------------------------------------------------------------------
 # ResearchGraphState
 #
-# Field list derived by reading actual trace events emitted in
-# research_lead.py:  source_inventory, source_ranker, source_reader,
-# search_worker_report, source_graph_expansion, budget_ledger,
-# worker_reports, all_tool_calls, all_sources.
+# Field list derived from the active LangGraph research nodes and retained
+# state used by synthesis, judging, repair, and resume.
 #
 # Annotated[T, operator.add] fields use LangGraph's reducer protocol to
 # accumulate values across nodes.  All other fields are last-write-wins.

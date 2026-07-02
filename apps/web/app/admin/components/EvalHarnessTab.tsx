@@ -898,7 +898,7 @@ function RunHistoryRow({
             className={`grid h-7 w-7 place-items-center rounded-lg ${showDashboard ? 'bg-neutral-100 dark:bg-neutral-700 text-neutral-700 dark:text-neutral-200' : 'text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-700 hover:text-neutral-700 dark:hover:text-neutral-200'}`}>
             <BarChart3 size={13} />
           </button>
-          <button type="button" onClick={() => onRerun(run.run_id)} disabled={run.status === 'running'} title="Re-run with the same cases/pipeline"
+          <button type="button" onClick={() => onRerun(run.run_id)} disabled={run.status === 'running'} title="Re-run with the same cases"
             className="grid h-7 w-7 place-items-center rounded-lg text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-700 hover:text-neutral-700 dark:hover:text-neutral-200 disabled:opacity-40">
             <RotateCcw size={13} />
           </button>
@@ -963,7 +963,6 @@ export function EvalHarnessTab({ authorizedFetch }: { authorizedFetch: Authorize
   // ── Run ─────────────────────────────────────────────────────────────────────
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
   const [runMode, setRunMode] = useState<'in_process' | 'langsmith' | 'both'>('in_process')
-  const [runPipeline, setRunPipeline] = useState<EvalPipeline>('langgraph')
   const [runningSingleId, setRunningSingleId] = useState<number | null>(null)
   const [lsConfigured, setLsConfigured] = useState(false)
   const [runStatus, setRunStatus] = useState<'idle' | 'running' | 'complete' | 'stopped' | 'error'>('idle')
@@ -1143,7 +1142,7 @@ export function EvalHarnessTab({ authorizedFetch }: { authorizedFetch: Authorize
     if (data.langsmith_links) setLangsmithLinks(data.langsmith_links as Record<string, string>)
     const progress = data.progress as EvalCaseRunResult[] | undefined
     const results = data.results as EvalRunResult | null | undefined
-    const pipeline = (data.pipeline as EvalPipeline | undefined) ?? runPipeline
+    const pipeline = (data.pipeline as EvalPipeline | undefined) ?? 'langgraph'
     if (results?.mode) {
       setRunResult(results)
     } else if (progress?.length) {
@@ -1219,7 +1218,6 @@ export function EvalHarnessTab({ authorizedFetch }: { authorizedFetch: Authorize
     const ids = caseIdsOverride ?? Array.from(selectedIds)
     const payload = {
       mode: runMode,
-      pipeline: runPipeline,
       ...(ids.length > 0 ? { case_ids: ids } : {}),
     }
     try {
@@ -1453,24 +1451,10 @@ export function EvalHarnessTab({ authorizedFetch }: { authorizedFetch: Authorize
           {/* ── Current run status ──────────────────────────────────────────── */}
           <div className="space-y-4">
             <div className="flex items-center gap-3 flex-wrap">
-              {/* Pipeline selector — each case is graded against its own expected_criteria
-                  (ground truth) for the selected pipeline. Use the Parity tab to compare
-                  legacy vs langgraph head-to-head instead. */}
-              <select
-                value={runPipeline}
-                onChange={e => setRunPipeline(e.target.value as EvalPipeline)}
-                disabled={runStatus === 'running'}
-                title="Which single pipeline to run cases through, graded against expected_criteria. For legacy-vs-langgraph comparison, use the Parity tab."
-                className="rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 px-3 py-1.5 text-xs font-semibold text-neutral-700 dark:text-neutral-300 disabled:opacity-40"
-              >
-                <option value="langgraph">LangGraph</option>
-                <option value="legacy">Legacy</option>
-              </select>
-
               {/* Segmented mode control */}
               <div className="flex rounded-lg border border-neutral-200 dark:border-neutral-700 overflow-hidden text-xs font-semibold">
                 {([
-                  { value: 'in_process', label: 'Local', title: 'Run the selected pipeline in-process; full per-case data stored locally' },
+                  { value: 'in_process', label: 'Local', title: 'Run LangGraph in-process; full per-case data stored locally' },
                   { value: 'langsmith',  label: 'LangSmith', title: lsConfigured ? 'Run via LangSmith evaluate(); per-case data in LangSmith' : 'LangSmith not configured' },
                   { value: 'both',       label: 'Both', title: lsConfigured ? 'In-process first (local data), then LangSmith experiments — ~2× runtime' : 'LangSmith not configured' },
                 ] as const).map(({ value, label, title }) => {

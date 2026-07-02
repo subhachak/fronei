@@ -47,17 +47,6 @@ class FakeTools(Tools):
         return extracted, ToolCall(name="read_url", input={"urls": urls}, output={"source_count": 1}, latency_ms=1)
 
 
-def _use_legacy_orchestrator(monkeypatch) -> None:
-    """Pin a test to the legacy research pipeline (FRONEI_ORCHESTRATOR=legacy).
-
-    Call as the first line of any test that specifically exercises legacy-path
-    behavior (progress stages, deep-research threading, repair events, etc.)
-    so the test continues to pass now that LangGraph is the production default.
-    """
-    import app.services.agent.langgraph_runtime.runtime as lg_runtime
-    monkeypatch.setattr(lg_runtime, "configured_orchestrator", lambda: "legacy")
-
-
 def _patch_completion(monkeypatch, text="# Answer\n\nDone."):
     from app.services.agent import model_client
 
@@ -699,210 +688,6 @@ def test_agent_orchestrator_falls_back_to_heuristic(monkeypatch):
     assert result["route"] == "research"
 
 
-def test_agent_research_streams_milestones(monkeypatch):
-    _use_legacy_orchestrator(monkeypatch)
-    _patch_completion(monkeypatch, "Research answer [S1].")
-    runtime = Runtime(tools=FakeTools())
-
-    envelopes = _collect_stream(runtime, TurnRequest(message="Research current AI governance trends."))
-
-    progress_messages = [e.data["message"] for e in envelopes if e.type == "progress"]
-    assert "Planning focused research questions." in progress_messages
-    assert "Research plan ready with 2 search worker(s)." in progress_messages
-    assert "Search worker 1 running." in progress_messages
-    assert "Search worker 1 used FakeSearch." in progress_messages
-    assert "Search worker 2 running." in progress_messages
-    assert "Search worker 2 used FakeSearch." in progress_messages
-    assert "Selected tool web_search." in progress_messages
-    assert "Tool web_search completed." in progress_messages
-    assert "Selected 1 unique source candidate(s)." in progress_messages
-    assert "Selected tool read_url." in progress_messages
-    assert "Tool read_url completed." in progress_messages
-    assert "Bound 1 evidence item(s)." in progress_messages
-    assert "Synthesizing source-grounded answer from evidence." in progress_messages
-    stages = [e.data["stage"] for e in envelopes if e.type == "progress"]
-    for stage in [
-        "research_planning",
-        "research_plan",
-        "search_worker",
-        "search_worker_provider",
-        "source_selection",
-        "source_reader",
-        "evidence_binder",
-        "synthesis",
-    ]:
-        assert stage in stages
-    assert [stage for stage in stages if stage.startswith("answer_")] == [
-        "answer_delta",
-        "answer_delta",
-        "answer_complete",
-    ]
-    result = next(e.data for e in envelopes if e.type == "result")
-    assert result["answer"] == "Research answer [S1]."
-    assert result["sources"][0]["url"] == "https://example.com"
-    provider_events = [e.data for e in envelopes if e.type == "progress" and e.data["stage"] == "search_worker_provider"]
-    assert provider_events[0]["data"]["provider"] == "FakeSearch"
-
-
-def test_agent_deep_research_replays_final_answer_stream(monkeypatch):
-    _use_legacy_orchestrator(monkeypatch)
-    from app.services.agent import runtime as runtime_module
-    from app.services.agent import research_subtree
-    from app.services.agent.model_client import ModelResponse
-    from app.services.agent.orchestrator import OrchestratorDecision
-
-    monkeypatch.setattr(runtime_module, "decide_fast_path", lambda request: SimpleNamespace(path="none"))
-    monkeypatch.setattr(
-        runtime_module,
-        "decide_with_options",
-        lambda request, **kwargs: OrchestratorDecision(
-            route="research",
-            research_level="deep",
-            requires_confirmation=False,
-            reason="test",
-            source="test",
-            available_routes=kwargs.get("available_routes", []),
-            available_tools=kwargs.get("available_tools", []),
-        ),
-    )
-
-    def fake_lead_loop(request, tools, progress):
-        progress("research_budget", "Lead research budget ledger closed.", {})
-        return {
-            "sources": [],
-            "tool_calls": [],
-            "evidence": None,
-            "response": ModelResponse(
-                text="Deep answer first paragraph.\n\nDeep answer second paragraph.",
-                model_used="fake-deep",
-                latency_ms=5,
-                cost_usd=0.0,
-            ),
-            "plan": None,
-            "feedback": None,
-        }
-
-    monkeypatch.setattr(research_subtree, "lead_research_loop", fake_lead_loop)
-
-    envelopes = _collect_stream(
-        Runtime(),
-        TurnRequest(message="Compare AWS S3, Google Cloud Storage, and Azure Blob Storage.", research_level="deep"),
-    )
-    stages = [e.data["stage"] for e in envelopes if e.type == "progress"]
-
-    assert "research_budget" in stages
-    assert "answer_delta" in stages
-    assert "answer_complete" in stages
-    assert stages.index("answer_delta") < stages.index("answer_complete")
-    result = next(e.data for e in envelopes if e.type == "result")
-    assert result["answer"] == "Deep answer first paragraph.\n\nDeep answer second paragraph."
-
-
-def test_agent_deep_research_emits_heartbeat_during_quiet_lead_loop(monkeypatch):
-    _use_legacy_orchestrator(monkeypatch)
-    from app.services.agent import runtime as runtime_module
-    from app.services.agent import research_subtree
-    from app.services.agent.model_client import ModelResponse
-    from app.services.agent.orchestrator import OrchestratorDecision
-
-    monkeypatch.setattr(runtime_module, "DEEP_RESEARCH_HEARTBEAT_SECONDS", 0.01)
-    monkeypatch.setattr(runtime_module, "DEEP_RESEARCH_QUEUE_POLL_SECONDS", 0.005)
-    monkeypatch.setattr(runtime_module, "decide_fast_path", lambda request: SimpleNamespace(path="none"))
-    monkeypatch.setattr(
-        runtime_module,
-        "decide_with_options",
-        lambda request, **kwargs: OrchestratorDecision(
-            route="research",
-            research_level="deep",
-            requires_confirmation=False,
-            reason="test",
-            source="test",
-            available_routes=kwargs.get("available_routes", []),
-            available_tools=kwargs.get("available_tools", []),
-        ),
-    )
-
-    def fake_lead_loop(request, tools, progress):
-        time.sleep(0.04)
-        return {
-            "sources": [],
-            "tool_calls": [],
-            "evidence": None,
-            "response": ModelResponse(text="quiet deep answer", model_used="fake-deep", latency_ms=5, cost_usd=0.0),
-            "plan": None,
-            "feedback": None,
-        }
-
-    monkeypatch.setattr(research_subtree, "lead_research_loop", fake_lead_loop)
-
-    envelopes = _collect_stream(Runtime(), TurnRequest(message="Deep quiet research", research_level="deep"))
-    heartbeats = [
-        e.data
-        for e in envelopes
-        if e.type == "progress" and e.data["stage"] == "research_progress"
-    ]
-
-    assert heartbeats
-    assert heartbeats[0]["data"]["ephemeral_ui"] is True
-    assert heartbeats[0]["data"]["quiet_seconds"] >= 0
-
-
-def test_agent_deep_research_replays_repaired_final_answer(monkeypatch):
-    _use_legacy_orchestrator(monkeypatch)
-    from app.services.agent import runtime as runtime_module
-    from app.services.agent import research_subtree
-    from app.services.agent.model_client import ModelResponse
-    from app.services.agent.orchestrator import OrchestratorDecision
-
-    monkeypatch.setattr(runtime_module, "decide_fast_path", lambda request: SimpleNamespace(path="none"))
-    monkeypatch.setattr(
-        runtime_module,
-        "decide_with_options",
-        lambda request, **kwargs: OrchestratorDecision(
-            route="research",
-            research_level="deep",
-            requires_confirmation=False,
-            reason="test",
-            source="test",
-            available_routes=kwargs.get("available_routes", []),
-            available_tools=kwargs.get("available_tools", []),
-        ),
-    )
-
-    def fake_lead_loop(request, tools, progress):
-        progress("answer_delta", "Streaming answer.", {"delta": "Draft answer", "char_count": 12, "ephemeral_ui": True})
-        progress("answer_complete", "Answer stream complete.", {"char_count": 12, "ephemeral_ui": True})
-        return {
-            "sources": [],
-            "tool_calls": [],
-            "evidence": None,
-            "response": ModelResponse(
-                text="Final repaired answer",
-                model_used="fake-repair",
-                latency_ms=5,
-                cost_usd=0.0,
-            ),
-            "plan": None,
-            "feedback": None,
-            "answer_streamed": True,
-            "replay_final_answer": True,
-        }
-
-    monkeypatch.setattr(research_subtree, "lead_research_loop", fake_lead_loop)
-
-    envelopes = _collect_stream(Runtime(), TurnRequest(message="Deep repaired research", research_level="deep"))
-    answer_deltas = [
-        e.data["data"]["delta"]
-        for e in envelopes
-        if e.type == "progress" and e.data["stage"] == "answer_delta"
-    ]
-    result = next(e.data for e in envelopes if e.type == "result")
-
-    assert "Draft answer" in answer_deltas
-    assert any("Final repaired answer" in delta for delta in answer_deltas)
-    assert result["answer"] == "Final repaired answer"
-
-
 def test_agent_research_registry_exposes_agent_team():
     from app.services.agent.research_subtree import get_research_registry
 
@@ -998,47 +783,6 @@ def test_total_cost_of_ownership_does_not_trigger_owner_reviews():
     assert "interoperability" in query or "implementation" in query
 
 
-def test_owner_reliability_reserves_reads_for_gap_followup():
-    from app.services.agent.runtime import _gap_followup_read_reserve
-    from app.services.agent.research_subtree import ResearchBudget, ResearchBudgetLedger
-
-    ledger = ResearchBudgetLedger(budget=ResearchBudget(max_sources=14, max_deep_links=6))
-    ledger.record_tool_call(sources_read=14)
-
-    reserve = _gap_followup_read_reserve(
-        TurnRequest(message="Anker SOLIX owner reviews real-world reliability failure rate after 1-2 years"),
-        ledger,
-    )
-
-    assert reserve == 4
-
-
-def test_owner_reliability_policy_only_evidence_gets_gap_markers():
-    from app.services.agent.runtime import _add_owner_reliability_gaps
-    from app.services.agent.research_subtree import EvidenceItem, EvidencePack
-
-    evidence = EvidencePack(
-        items=[
-            EvidenceItem(
-                source_id="S1",
-                title="Anker warranty policy",
-                url="https://example.com/warranty.pdf",
-                evidence="Warranty terms require proof of purchase and a return authorization.",
-            )
-        ],
-        coverage=1.0,
-    )
-
-    _add_owner_reliability_gaps(
-        TurnRequest(message="Anker SOLIX owner reviews real-world reliability failure rate after 1-2 years"),
-        evidence,
-    )
-
-    assert evidence.coverage < 1.0
-    assert any("owner/community/forum" in gap for gap in evidence.gaps)
-    assert any("12-24 month" in gap for gap in evidence.gaps)
-
-
 def test_research_judge_rejects_owner_reliability_no_evidence_answer():
     from app.services.agent.research_subtree import EvidenceItem, EvidencePack, ResearchPlan, judge_research
 
@@ -1065,28 +809,6 @@ def test_research_judge_rejects_owner_reliability_no_evidence_answer():
 
     assert verdict.status != "pass"
     assert any("owner/community longitudinal" in issue for issue in verdict.issues)
-
-
-def test_agent_research_emits_agentic_goal_guardrail_and_judge_events(monkeypatch):
-    _use_legacy_orchestrator(monkeypatch)
-    _patch_completion(monkeypatch, "Research answer [S1].")
-    runtime = Runtime(tools=FakeTools())
-
-    envelopes = _collect_stream(runtime, TurnRequest(message="Research current AI governance trends."))
-
-    progress = [e.data for e in envelopes if e.type == "progress"]
-    by_stage = {event["stage"]: event for event in progress}
-    assert by_stage["research_registry"]["data"]["agent_count"] == 11
-    assert "judge_before_publish" in by_stage["research_goal"]["data"]["goal"]["guardrails"]
-    assert by_stage["research_planning"]["data"]["agent_id"] == "research_lead"
-    assert by_stage["source_ranker"]["data"]["agent_id"] == "source_ranker"
-    assert by_stage["deep_link_agent"]["data"]["agent_id"] == "deep_link_agent"
-    assert by_stage["evidence_binder"]["data"]["agent_id"] == "evidence_binder"
-    assert by_stage["claim_verifier"]["data"]["agent_id"] == "claim_verifier"
-    assert by_stage["research_judge_result"]["data"]["status"] in {"pass", "repair", "fail"}
-    assert "score" in by_stage["research_judge_result"]["data"]
-    assert by_stage["research_budget"]["data"]["budget_ledger"]["model_calls"] >= 2
-    assert "max_tool_calls" in by_stage["research_goal"]["data"]["goal"]["budget"]
 
 
 def test_agent_research_source_ranking_and_deep_link_helpers():
@@ -1181,72 +903,6 @@ def test_deep_link_helpers_skip_svg_namespace_links():
     )
 
     assert [link.url for link in links] == ["https://example.com/useful-source"]
-
-
-def test_agent_research_repair_loop_runs_when_judge_requests_repair(monkeypatch):
-    _use_legacy_orchestrator(monkeypatch)
-    from app.services.agent import model_client
-
-    def fake_complete(messages, *, preferred_model=None, role=None, quality_mode="standard", timeout_s=30, max_tokens=1200, **_kwargs):
-        if "research lead" in messages[0]["content"].lower():
-            user_payload = json.loads(messages[-1]["content"])
-            message = user_payload["message"]
-            return SimpleNamespace(
-                text=json.dumps(
-                    {
-                        "questions": ["What changed?"],
-                        "workers": [
-                            {
-                                "question": "What changed?",
-                                "query": message,
-                                "rationale": "Need current evidence.",
-                                "max_results": 3,
-                            }
-                        ],
-                        "max_sources": 3,
-                        "min_evidence_items": 1,
-                        "judge_threshold": 0.72,
-                        "repair_iterations": 1,
-                    }
-                ),
-                model_used="fake-research-planner",
-                latency_ms=2,
-                cost_usd=0.0,
-            )
-        return SimpleNamespace(
-            text=json.dumps({"route": "research", "confidence": 0.91, "reason": "test decision"}),
-            model_used="fake-orchestrator",
-            latency_ms=2,
-            cost_usd=0.0,
-        )
-
-    responses = iter(
-        [
-            "This is a long answer with useful structure but no citation marker. It explains the research finding in enough detail to avoid the short-answer penalty.",
-            "This is a repaired answer with useful structure and a clear citation marker [S1]. It explains the research finding in enough detail.",
-        ]
-    )
-
-    def fake_simple_completion(system, user, *, max_tokens=1200, **kwargs):
-        return SimpleNamespace(text=next(responses), model_used="fake-model", latency_ms=3, cost_usd=0.0)
-
-    def fake_stream_complete(messages, **kwargs):
-        text = next(responses)
-        yield model_client.ModelDelta(text)
-        yield model_client.ModelResponse(text=text, model_used="fake-model", latency_ms=3, cost_usd=0.0)
-
-    monkeypatch.setattr(model_client, "complete", fake_complete)
-    monkeypatch.setattr(model_client, "simple_completion", fake_simple_completion)
-    monkeypatch.setattr(model_client, "stream_complete", fake_stream_complete)
-    runtime = Runtime(tools=FakeTools())
-
-    envelopes = _collect_stream(runtime, TurnRequest(message="Research current AI governance trends."))
-
-    stages = [e.data["stage"] for e in envelopes if e.type == "progress"]
-    assert "research_repair" in stages
-    assert "research_repair_result" in stages
-    result = next(e.data for e in envelopes if e.type == "result")
-    assert "repaired answer" in result["answer"]
 
 
 def test_agent_web_search_prefers_tavily_provider(monkeypatch):
@@ -1393,7 +1049,6 @@ def test_agent_web_search_falls_back_to_nimble(monkeypatch):
 
 
 def test_agent_research_document_creates_artifact(monkeypatch):
-    _use_legacy_orchestrator(monkeypatch)
     _patch_completion(monkeypatch, "## Report\n\n- Finding")
     runtime = Runtime(tools=FakeTools())
 
@@ -1425,14 +1080,12 @@ def test_agent_research_document_creates_artifact(monkeypatch):
     assert plan_event["data"]["title"] == "Fronei Report"
     assert [call["name"] for call in result["tool_calls"]] == [
         "web_search",
-        "web_search",
         "read_url",
         "make_docx_artifact",
     ]
 
 
 def test_agent_markdown_output_renders_in_chat_without_artifact(monkeypatch):
-    _use_legacy_orchestrator(monkeypatch)
     markdown = "## Report\n\n- Finding"
     _patch_completion(monkeypatch, markdown)
     runtime = Runtime(tools=FakeTools())
@@ -1450,7 +1103,6 @@ def test_agent_markdown_output_renders_in_chat_without_artifact(monkeypatch):
     assert result["answer"] == markdown
     assert result["artifacts"] == []
     assert [call["name"] for call in result["tool_calls"]] == [
-        "web_search",
         "web_search",
         "read_url",
     ]
@@ -1618,7 +1270,6 @@ def test_agent_api_stream(monkeypatch):
 
 
 def test_agent_background_turn_persists_and_polls_status(monkeypatch):
-    _use_legacy_orchestrator(monkeypatch)
     _patch_completion(monkeypatch, "Background answer.")
     from app.services.agent import persistence
 
@@ -2062,7 +1713,6 @@ def test_agent_workspace_context_is_shared_across_conversations(monkeypatch, tmp
 
 
 def test_agent_vague_followup_does_not_import_other_workspace_conversation(monkeypatch, tmp_path):
-    _use_legacy_orchestrator(monkeypatch)
     from app.services.agent import model_client, persistence
 
     _set_artifact_dir(monkeypatch, tmp_path)
@@ -2304,28 +1954,3 @@ def test_agent_deep_research_requires_confirmation(monkeypatch):
     labels = [option["label"] for option in result["follow_up_options"]]
     assert labels == ["Start research", "Use regular research", "Answer directly"]
     assert not any(e.data.get("stage") == "research_registry" for e in envelopes if e.type == "progress")
-
-
-def test_agent_confirmed_deep_research_runs_deep_budget(monkeypatch):
-    _use_legacy_orchestrator(monkeypatch)
-    _patch_completion(monkeypatch, "Deep research answer [S1].")
-    runtime = Runtime(tools=FakeTools())
-
-    envelopes = _collect_stream(
-        runtime,
-        TurnRequest(
-            message="Do deep research on enterprise AI governance regulations.",
-            force_route="research",
-            research_level="deep",
-            confirm_deep_research=True,
-        ),
-    )
-
-    progress = [e.data for e in envelopes if e.type == "progress"]
-    goal_event = next(event for event in progress if event["stage"] == "research_goal")
-    assert goal_event["data"]["goal"]["research_level"] == "deep"
-    assert goal_event["data"]["budget_ledger"]["budget"]["max_sources"] == 32
-    assert goal_event["data"]["budget_ledger"]["budget"]["max_results_per_worker"] == 12
-    result = next(e.data for e in envelopes if e.type == "result")
-    assert result["route"] == "research"
-    assert result["sources"]

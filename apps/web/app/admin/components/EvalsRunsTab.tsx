@@ -4,7 +4,7 @@ import { ChevronDown, ChevronRight, ExternalLink, Play } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { readErrorBody } from '../../lib/api'
 import { formatAppDateTime } from '../../lib/format'
-import type { AuthorizedFetch, EvalCase, EvalCaseRunResult, EvalPipeline, EvalRunResult, EvalRunSummary } from '../types'
+import type { AuthorizedFetch, EvalCase, EvalCaseRunResult, EvalRunResult, EvalRunSummary } from '../types'
 
 type LangSmithStatus = {
   configured: boolean
@@ -214,8 +214,7 @@ export function EvalsRunsTab({ authorizedFetch }: { authorizedFetch: AuthorizedF
   const [runResult, setRunResult] = useState<EvalRunResult | null>(null)
   const [runs, setRuns] = useState<EvalRunSummary[]>([])
   const [error, setError] = useState('')
-  const [langsmithLinks, setLangsmithLinks] = useState<{ legacy?: string; langgraph?: string }>({})
-  const [pipeline, setPipeline] = useState<EvalPipeline>('langgraph')
+  const [langsmithLinks, setLangsmithLinks] = useState<{ langgraph?: string }>({})
   const logRef = useRef<HTMLDivElement>(null)
   const abortRef = useRef<AbortController | null>(null)
 
@@ -264,8 +263,8 @@ export function EvalsRunsTab({ authorizedFetch }: { authorizedFetch: AuthorizedF
     setLangsmithLinks({})
 
     const payload = selectedIds.size > 0
-      ? { case_ids: Array.from(selectedIds), pipeline }
-      : { pipeline }
+      ? { case_ids: Array.from(selectedIds) }
+      : {}
 
     const startResp = await authorizedFetch('/admin/evals/runs', {
       method: 'POST',
@@ -401,16 +400,6 @@ export function EvalsRunsTab({ authorizedFetch }: { authorizedFetch: AuthorizedF
             </p>
           </div>
           <div className="flex items-center gap-2">
-            <select
-              value={pipeline}
-              onChange={e => setPipeline(e.target.value as EvalPipeline)}
-              disabled={runStatus === 'running'}
-              title="Each case is graded against its own expected_criteria (ground truth) for the selected pipeline. To compare legacy vs langgraph head-to-head, use the Parity tab instead."
-              className="rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 px-2 py-2 text-xs font-semibold text-neutral-700 dark:text-neutral-300 disabled:opacity-40"
-            >
-              <option value="langgraph">LangGraph</option>
-              <option value="legacy">Legacy</option>
-            </select>
             <button
               type="button"
               disabled={!canRun}
@@ -458,21 +447,13 @@ export function EvalsRunsTab({ authorizedFetch }: { authorizedFetch: AuthorizedF
       )}
 
       {/* LangSmith experiment links */}
-      {(langsmithLinks.legacy || langsmithLinks.langgraph) && (
+      {langsmithLinks.langgraph && (
         <div className="rounded-xl border border-emerald-200 dark:border-emerald-900 bg-emerald-50 dark:bg-emerald-950/30 px-4 py-3 space-y-1">
           <p className="text-xs font-bold text-emerald-800 dark:text-emerald-300 mb-2">LangSmith experiments</p>
-          {langsmithLinks.legacy && (
-            <a href={langsmithLinks.legacy} target="_blank" rel="noopener noreferrer"
-              className="flex items-center gap-1.5 text-xs text-emerald-700 dark:text-emerald-400 hover:underline">
-              <ExternalLink size={11} /> Legacy pipeline experiment
-            </a>
-          )}
-          {langsmithLinks.langgraph && (
-            <a href={langsmithLinks.langgraph} target="_blank" rel="noopener noreferrer"
-              className="flex items-center gap-1.5 text-xs text-emerald-700 dark:text-emerald-400 hover:underline">
-              <ExternalLink size={11} /> LangGraph pipeline experiment
-            </a>
-          )}
+          <a href={langsmithLinks.langgraph} target="_blank" rel="noopener noreferrer"
+            className="flex items-center gap-1.5 text-xs text-emerald-700 dark:text-emerald-400 hover:underline">
+            <ExternalLink size={11} /> LangGraph pipeline experiment
+          </a>
         </div>
       )}
 

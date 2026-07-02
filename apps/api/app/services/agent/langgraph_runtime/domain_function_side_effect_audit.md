@@ -26,35 +26,39 @@
 
 ---
 
-## research_lead.py
+## Retired pre-LangGraph lead runtime
 
-| Function | Module | Classification | Owning node | Notes |
-|----------|--------|----------------|-------------|-------|
-| `_chunk_urls` | research_lead | `pure` | read | Helper; no I/O. |
-| `_max_parallel_read_batches_for` | research_lead | `pure` | read | Policy lookup. |
-| `_read_cap_for_batch` | research_lead | `pure` | read | Arithmetic only. |
-| `_canonical_framework_sources` | research_lead | `pure` | bind | Builds Source list from request data; no I/O. |
-| `_normalized_url` | research_lead | `pure` | any | URL string normalisation. |
-| `_source_text_for_url` | research_lead | `pure` | bind | Reads from state dict (no mutation). |
-| `_prioritized_sources_for_binding` | research_lead | `pure` | bind | Sorts/filters existing state list. |
-| `_framework_remediation_sources` | research_lead | `pure` | bind | Builds remediation list. |
-| `_evidence_quality_issues` | research_lead | `pure` | judge | Analysis only. |
-| `_framework_gap_queries` | research_lead | `pure` | synthesize | Computes gap query strings. |
-| `_generic_remediation_queries` | research_lead | `pure` | repair | Computes remediation strings. |
-| `_assigned_cell_for_worker` | research_lead | `pure` | search | Lookup. |
-| `_retry_query_for_worker` | research_lead | `pure` | search | Builds retry query string. |
-| `_worker_report_from_sources` | research_lead | `pure` | bind | Builds report object. |
-| `_worker_report_message` | research_lead | `pure` | bind | Formats log message. |
-| `_source_inventory_summary` | research_lead | `pure` | source_inventory | Aggregates URL list. |
-| `verify_claims` | research_lead | `llm_call` | verify | Calls LLM to verify citation accuracy. |
-| `LeadResearchAgent._run_search_wave` | research_lead | `web_call` | search | Issues web search queries via tools. |
-| `LeadResearchAgent._dispatch_worker_wave` | research_lead | `web_call` | search | Dispatches parallel search workers; writes to `state.worker_reports`. |
-| `LeadResearchAgent._bind_state_evidence` | research_lead | `state_mutate` | bind | Mutates `state.evidence`.  Must not run in parallel with other mutations. |
-| `LeadResearchAgent._expand_source_graph` | research_lead | `web_call` | expand_source_graph | Fetches deep-link URLs; calls `state.add_sources()`. |
-| `LeadResearchAgent._follow_deep_links` | research_lead | `web_call` | expand_source_graph | Similar to `_expand_source_graph`; legacy call site. |
-| `LeadResearchAgent._escalate_starved_subjects` | research_lead | `web_call` | search | Dispatches targeted escalation queries; may mutate state. |
-| `LeadResearchAgent._remediate_weak_evidence_if_needed` | research_lead | `web_call` | repair | Issues gap-fill searches. |
-| `lead_research_loop` | research_lead | `web_call` + `state_mutate` | (top-level) | Outer loop; wraps all of the above.  Not callable from a node directly — the node calls it as a unit. |
+The previous `research_lead.py` implementation has been retired. Production
+research dispatch now enters the LangGraph runtime directly, so new side-effect
+audits should classify the functions owned by the active node modules below.
+
+| Function | Module | Classification | Former owning node | Notes |
+|----------|--------|----------------|--------------------|-------|
+| `_chunk_urls` | research_lead | `removed` | read | Helper; no I/O. |
+| `_max_parallel_read_batches_for` | research_lead | `removed` | read | Policy lookup. |
+| `_read_cap_for_batch` | research_lead | `removed` | read | Arithmetic only. |
+| `_canonical_framework_sources` | research_lead | `removed` | bind | Built Source list from request data; no I/O. |
+| `_normalized_url` | research_lead | `removed` | any | URL string normalisation. |
+| `_source_text_for_url` | research_lead | `removed` | bind | Read from state dict; no mutation. |
+| `_prioritized_sources_for_binding` | research_lead | `removed` | bind | Sorted/filtered existing state list. |
+| `_framework_remediation_sources` | research_lead | `removed` | bind | Built remediation list. |
+| `_evidence_quality_issues` | research_lead | `removed` | judge | Analysis only. |
+| `_framework_gap_queries` | research_lead | `removed` | synthesize | Computed gap query strings. |
+| `_generic_remediation_queries` | research_lead | `removed` | repair | Computed remediation strings. |
+| `_assigned_cell_for_worker` | research_lead | `removed` | search | Lookup. |
+| `_retry_query_for_worker` | research_lead | `removed` | search | Built retry query string. |
+| `_worker_report_from_sources` | research_lead | `removed` | bind | Built report object. |
+| `_worker_report_message` | research_lead | `removed` | bind | Formatted log message. |
+| `_source_inventory_summary` | research_lead | `removed` | source_inventory | Aggregated URL list. |
+| `verify_claims` | research_lead | `removed` | verify | Called LLM to verify citation accuracy. |
+| `LeadResearchAgent._run_search_wave` | research_lead | `removed` | search | Issued web search queries via tools. |
+| `LeadResearchAgent._dispatch_worker_wave` | research_lead | `removed` | search | Dispatched parallel search workers and wrote worker reports. |
+| `LeadResearchAgent._bind_state_evidence` | research_lead | `removed` | bind | Mutated `state.evidence`; unsafe in parallel. |
+| `LeadResearchAgent._expand_source_graph` | research_lead | `removed` | expand_source_graph | Fetched deep-link URLs and called `state.add_sources()`. |
+| `LeadResearchAgent._follow_deep_links` | research_lead | `removed` | expand_source_graph | Similar to `_expand_source_graph`; legacy call site. |
+| `LeadResearchAgent._escalate_starved_subjects` | research_lead | `removed` | search | Dispatched targeted escalation queries; could mutate state. |
+| `LeadResearchAgent._remediate_weak_evidence_if_needed` | research_lead | `removed` | repair | Issued gap-fill searches. |
+| `lead_research_loop` | research_lead | `removed` | top-level | Outer loop that wrapped all retired lead-runtime behavior. |
 
 ---
 

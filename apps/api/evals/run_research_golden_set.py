@@ -52,9 +52,9 @@ def _make_tools():
 def _build_request(entry: dict) -> "TurnRequest":  # noqa: F821
     """Build the request the exact way a real user turn would.
 
-    The pipelines (lead_research_loop / run_langgraph_research) are invoked
-    directly here, bypassing Runtime.run_stream(), but routing/tier
-    resolution must still go through the real orchestrator.decide() so this
+    The LangGraph research runner is invoked directly here, bypassing
+    Runtime.run_stream(), but routing/tier resolution must still go through
+    the real orchestrator.decide() so this
     eval exercises the same classification logic production uses — not a
     hand-rolled reimplementation of it. force_route="research" mirrors what
     happens when a user (or the UI) forces the research route; decide()
@@ -82,13 +82,13 @@ def _build_request(entry: dict) -> "TurnRequest":  # noqa: F821
 
 
 def _run_one_case(entry: dict, tools, run_id: str) -> dict:
-    from app.services.agent.research_lead import lead_research_loop
+    from app.services.agent.langgraph_runtime import run_langgraph_research
 
     request = _build_request(entry)
 
     stages: list[dict] = []
 
-    def progress(stage: str, message: str, data: dict) -> None:
+    def progress(stage: str, message: str, **data: dict) -> None:
         stages.append({"stage": stage, "message": message})
 
     started = time.perf_counter()
@@ -96,7 +96,7 @@ def _run_one_case(entry: dict, tools, run_id: str) -> dict:
     result: dict | None = None
 
     try:
-        result = lead_research_loop(request, tools, progress=progress)
+        result = run_langgraph_research(request, tools, progress=progress)
     except Exception:
         error_info = traceback.format_exc()
 

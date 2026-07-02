@@ -245,7 +245,7 @@ export function EvalsCasesTab({ authorizedFetch }: { authorizedFetch: Authorized
       <div className="flex items-center justify-between mb-4">
         <div>
           <h3 className="text-sm font-bold text-neutral-900 dark:text-neutral-50">Eval cases</h3>
-          <p className="text-xs text-neutral-500 mt-0.5">{cases.length} case(s) — each run tests all or selected cases through both pipelines.</p>
+          <p className="text-xs text-neutral-500 mt-0.5">{cases.length} case(s) — each run tests all or selected cases through LangGraph.</p>
         </div>
         <button type="button" onClick={() => setModal('create')}
           className="flex items-center gap-1.5 rounded-lg bg-neutral-900 dark:bg-white px-3 py-2 text-xs font-semibold text-white dark:text-neutral-900 hover:bg-neutral-700 dark:hover:bg-neutral-200">

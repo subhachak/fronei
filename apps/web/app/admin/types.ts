@@ -223,78 +223,6 @@ export type ModelPolicy = {
 }
 
 // ---------------------------------------------------------------------------
-// Parity eval types
-// ---------------------------------------------------------------------------
-
-export type ParityCaseResult = {
-  case_id: string
-  legacy_ok: boolean
-  langgraph_ok: boolean
-  legacy_error: string | null
-  langgraph_error: string | null
-  legacy_answer_length: number
-  langgraph_answer_length: number
-  legacy_evidence_count: number
-  langgraph_evidence_count: number
-  legacy_claim_count: number
-  langgraph_claim_count: number
-  legacy_judge_verdict: string
-  langgraph_judge_verdict: string
-  legacy_cost_usd: number
-  langgraph_cost_usd: number
-  legacy_ms?: number
-  langgraph_ms?: number
-  answer_length_ratio: number | null
-  evidence_count_ratio: number | null
-  claim_count_ratio: number | null
-  cost_ratio: number | null
-  judge_verdict_agrees: boolean | null
-  passes_structural_gate: boolean | null
-  passes_answer_length_gate: boolean | null
-  passes_evidence_gate: boolean | null
-  passes_claim_gate: boolean | null
-  passes_budget_gate: boolean | null
-  overall_pass: boolean
-}
-
-export type ParityReport = {
-  total_cases: number
-  structural_pass: number
-  structural_fail: number
-  answer_length_gate_pass: number
-  evidence_gate_pass: number
-  claim_gate_pass: number
-  budget_gate_pass: number
-  verdict_agree: number
-  overall_pass: number
-  overall_fail: number
-  median_answer_length_ratio: number | null
-  median_evidence_count_ratio: number | null
-  median_claim_count_ratio: number | null
-  median_cost_ratio: number | null
-  cutover_recommended: boolean
-  cutover_blockers: string[]
-  per_case: ParityCaseResult[]
-}
-
-export type ParityRunSummary = {
-  run_id: string
-  status: 'running' | 'complete' | 'error'
-  started_at: number
-  completed_at: number | null
-  cutover_recommended: boolean | null
-  overall_pass: number | null
-  total_cases: number | null
-}
-
-export type OrchestratorStatus = {
-  effective_orchestrator: 'legacy' | 'langgraph'
-  override_active: boolean
-  override_value: string | null
-  env_default: string
-}
-
-// ---------------------------------------------------------------------------
 // General eval case / run types
 // ---------------------------------------------------------------------------
 
@@ -346,6 +274,8 @@ export type EvalPipelineResult = {
   } | null
 }
 
+// New runs are LangGraph-only. Keep "legacy" in the union so historical rows
+// persisted before the runtime retirement can still render.
 export type EvalPipeline = 'langgraph' | 'legacy'
 
 export type EvalBenchmarkResult = { target: number; actual: number | null; pass: boolean }
@@ -354,9 +284,8 @@ export type EvalCaseRunResult = {
   case_id: number
   title: string
   query: string
-  /** Which single pipeline this case ran against — regular evals run one
-   *  pipeline graded against expected_criteria (ground truth), not the other
-   *  pipeline's output. Use the parity runner to compare legacy vs langgraph. */
+  /** Which single pipeline this case ran against. New runs are LangGraph-only;
+   *  historical rows may still say "legacy". */
   pipeline: EvalPipeline
   /** The route the orchestrator actually picked for this query (no force_route —
    *  the harness lets routing happen for real, so it can catch routing bugs too). */
@@ -454,7 +383,6 @@ export type EvalDashboard = {
 export type LangSmithExperiment = {
   mode: 'langsmith'
   dataset_id?: string
-  legacy_experiment_url?: string
   langgraph_experiment_url?: string
   pipelines?: Record<string, unknown>
 }

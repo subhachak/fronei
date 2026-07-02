@@ -214,27 +214,3 @@ from app.services.agent.research_synthesis import (  # noqa: F401, E402
     _synthesis_report_contract,
     _synthesis_token_budget,
 )
-
-# Lead orchestration, worker execution, and main research loop live in research_lead.py (TD-01 extraction).
-from app.services.agent.research_lead import (  # noqa: F401, E402
-    LeadResearchAgent,
-    lead_research_loop,
-    verify_claims,
-    _apply_source_provenance,
-    _assigned_cell_for_worker,
-    _chunk_urls,
-    _ensure_source_provenance,
-    _evidence_quality_issues,
-    _framework_gap_queries,
-    _framework_remediation_sources,
-    _max_parallel_read_batches_for,
-    _read_cap_for_batch,
-    _retry_query_for_worker,
-    _source_relevance_for_worker,
-    _specificity_rewrite_issues,
-    _worker_claim_pack,
-    _worker_confidence,
-    _worker_missing_evidence,
-    _worker_report_from_sources,
-    _worker_report_message,
-)

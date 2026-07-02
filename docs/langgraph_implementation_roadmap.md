@@ -1,5 +1,12 @@
 # LangGraph Maturity Roadmap — Fronei Research Runtime
 
+**Status as of July 2, 2026:** implemented for the research runtime. Research
+now runs on LangGraph only; the pre-LangGraph `research_lead.py` path, parity
+cutover workflow, orchestrator override settings, and admin parity controls have
+been retired. This document is kept as historical design context. Sections that
+refer to `FRONEI_ORCHESTRATOR`, parity cutover gates, or legacy rollback are
+superseded.
+
 **Scope:** `apps/api/app/services/agent/langgraph_runtime/` and its call sites (`runtime.py`, `routers/agent.py`, `routers/evals.py`, `config.py`).
 **Objective:** Close the six gaps identified in the code review — real human-in-the-loop (HITL), compile-once graph lifecycle, native streaming, production tracing, legacy retirement, and a deliberate scope decision on further graph adoption.
 **Non-goal:** This roadmap does not migrate `runtime.py`'s routing/document/deck orchestration to LangGraph. That is Phase 6, gated on an explicit go/no-go decision, not assumed.
@@ -16,8 +23,8 @@ LangGraph version in use: `langgraph==1.2.6` (`langgraph-checkpoint 4.1.1`, `lan
 | 2 | Compile graph once; inject per-request data via `config` | Medium | Ongoing latency tax on every research turn; blocks Phase 1's `thread_id` model | Phase 1 (checkpointer needs a stable compiled graph) |
 | 3 | Native streaming (`.stream()` / stream writer) | Medium | UX keeps relying on the buffered-replay hack; no per-node observability for free | Phase 2 |
 | 4 | Production LangSmith tracing | Low | No trace visibility into real user runs, only synthetic evals | None (parallelizable) |
-| 5 | Legacy `research_lead.py` retirement | Low (mechanical), High (organizational) | 1,806 lines of permanent dual-maintenance | Phases 1–3 stable in production for N cycles |
-| 6 | Extend graph modeling beyond research (decision only) | — | Scope creep by default instead of by decision | Phases 1–5 |
+| 5 | Legacy `research_lead.py` retirement | Complete | Retired; no dual-maintenance path remains | Superseded direct decision |
+| 6 | Extend graph modeling beyond research (decision only) | — | Scope creep by default instead of by decision | Post-retirement product/engineering decision |
 
 Do Phase 1 first. It's the only gap with a live correctness bug (a schema field, `resume_checkpoint_id`, that is always empty). Phases 2–4 can run in parallel once Phase 1's checkpointer is in place, since Phase 2 needs a `thread_id` concept that Phase 1 introduces anyway.
 
@@ -94,7 +101,7 @@ def get_checkpointer() -> _LockedSqliteSaver:
     return saver
 ```
 
-Add the setting in `app/config.py` near the other LangGraph settings (after `fronei_orchestrator_qa_override_enabled`, line ~163):
+Add the setting in `app/config.py` near the other LangGraph settings:
 
 ```python
     # LangGraph checkpoint store — required for interrupt()-based human-in-the-loop
@@ -263,7 +270,9 @@ Add `tests/test_langgraph_runtime_slice_6_hitl.py`:
 
 ### 1.10 Rollback
 
-`interrupt()`/checkpointer additions are additive to the graph shape (new node behavior, not new nodes/edges beyond the router simplification in 1.6), so `FRONEI_ORCHESTRATOR=legacy` remains a full rollback with zero blast radius on the legacy path. No changes required there.
+Superseded: `FRONEI_ORCHESTRATOR=legacy` no longer exists. Rollback now means
+reverting the LangGraph runtime change or deploying a previous application
+revision, not flipping an in-process orchestrator selector.
 
 ---
 
@@ -392,33 +401,24 @@ This is the piece that actually deletes `_emit_buffered_answer` in `runtime.py` 
 
 ### 3.4 Wire graph streaming into the existing SSE bridge
 
-`routers/agent.py::stream_turn` already has a queue/thread bridge pattern from `runtime.run_stream()`. `runtime.py::_run_research_subtree`'s `configured_orchestrator() == "langgraph"` branch needs to become a generator that iterates the graph's stream and re-yields `StreamEnvelope`s, matching the shape the legacy deep-research branch already produces a few lines below it in the same function:
+`routers/agent.py::stream_turn` already has a queue/thread bridge pattern from
+`runtime.run_stream()`. `runtime.py::_run_research_subtree` now iterates the
+graph stream and re-yields `StreamEnvelope`s directly:
 
 ```python
-if configured_orchestrator() == "langgraph":
-    from app.services.agent.langgraph_runtime.graph import get_compiled_research_graph
-    compiled = get_compiled_research_graph()
-    config = {"configurable": {"thread_id": run_id, "request": request, "tools": self.tool_registry.tools}}
-    final_state = None
-    for mode, payload in compiled.stream(
-        initial_state, config=config, stream_mode=["updates", "custom"]
-    ):
-        if mode == "custom" and "answer_delta" in payload:
-            event = progress("answer_delta", "Streaming answer.", delta=payload["answer_delta"], ephemeral_ui=True)
-            yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
-        elif mode == "updates":
-            node_name, delta = next(iter(payload.items()))
-            event = progress(node_name, delta.get("message", f"{node_name} complete"), **delta)
-            yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
-            final_state = {**(final_state or {}), **delta}
-    return _build_research_result(final_state, run_id)   # extracted from current run_langgraph_research
+from app.services.agent.langgraph_runtime import stream_langgraph_research
+
+gen = stream_langgraph_research(request, self.tool_registry.tools, progress)
+return (yield from self._forward_langgraph_stream(gen, progress))
 ```
 
 `_run_research_subtree` is a generator (`yield from` elsewhere in `runtime.py`), so this fits the existing control flow without changing `stream_turn`'s consumption code in `routers/agent.py` at all — that's the payoff of matching the existing `StreamEnvelope` contract instead of inventing a new one.
 
 ### 3.5 Testing plan
 
-- Golden-set parity harness (already exists, `langgraph_parity.yml`) must be re-run after this phase — streaming changes the *shape* of intermediate events but must not change the final answer/evidence/judge outcome. This is exactly what the parity gate already checks; no new harness needed, just re-run it as the acceptance gate for Phase 3.
+- Superseded: the old golden-set parity harness (`langgraph_parity.yml`) has
+  been retired with the legacy runtime. Use the LangGraph eval harness,
+  LangSmith runs, and focused streaming/maturity tests as the regression gate.
 - New test: assert `answer_delta` events are emitted incrementally (not all at once) by asserting wall-clock spacing between the first and last `answer_delta` SSE event in an integration test — mirrors the intent of the docstring comment currently on `_emit_buffered_answer` about giving the client's typing animation "genuine wall-clock spacing," except now it's real instead of simulated.
 - Load test: confirm `.stream()` doesn't hold the checkpointer lock (from Phase 1's `_LockedSqliteSaver`) for the duration of the whole run — only for the brief writes between node completions. This matters because `.stream()` naturally checkpoints more frequently than a single `.invoke()` did.
 
@@ -465,17 +465,18 @@ Enable for staging first. In production, consider sampling (LangSmith supports t
 
 ## Phase 5 — Legacy `research_lead.py` Retirement
 
-Don't set a calendar date; set a **quantitative exit criterion** tied to the parity gate you already built, since that's the actual risk signal:
+**Status:** retired directly by explicit decision on July 2, 2026; the parity-gate criteria below are superseded historical context.
 
-**Retirement gate:** `langgraph_parity.yml` has run on schedule (weekly, per its cron) for **6 consecutive clean passes** (all five thresholds met) *after* Phases 1–3 have shipped and been in production for at least 2 of those cycles — the parity harness as written today doesn't exercise the interrupt/streaming paths, so give those real production exposure before trusting a clean parity run to mean "safe to delete legacy."
+The original parity-gate criteria below were superseded by an explicit direct
+retirement decision after LangGraph research proved stable in production.
 
-**Mechanical steps once the gate is met:**
-1. Flip `fronei_orchestrator_qa_override_enabled` review: confirm no environment still needs `FRONEI_ORCHESTRATOR=legacy` as an escape hatch.
-2. Delete `app/services/agent/research_lead.py` (1,806 lines) and its direct-only callers.
-3. Delete the `configured_orchestrator()` branching in `runtime.py::_run_research_subtree` — the `deep` legacy-thread-bridge branch (the `Queue`/`Thread` block) and the non-deep sequential fallback below it — collapsing to a single LangGraph call path.
-4. Retire `langgraph_parity.yml` itself (its job is done) or repurpose it as a standing regression suite against golden-set answer quality (still useful, just not for a cutover decision anymore).
-5. Remove `VALID_ORCHESTRATORS`, `set_orchestrator_override`/`clear_orchestrator_override`, and the `/admin/evals/parity/promote` endpoints in `routers/evals.py` — they exist to manage a transition that's now over.
-6. Update `domain_function_side_effect_audit.md` — mark `research_lead.py` rows as removed rather than deleting the audit trail (useful history for why nodes are shaped the way they are).
+**Completed mechanical steps:**
+1. Removed the orchestrator override settings and escape-hatch flag.
+2. Deleted `app/services/agent/research_lead.py` and its direct-only callers.
+3. Collapsed `runtime.py::_run_research_subtree` to a single LangGraph stream path.
+4. Retired `langgraph_parity.yml`.
+5. Removed `VALID_ORCHESTRATORS`, override helpers, and the admin parity endpoints.
+6. Updated `domain_function_side_effect_audit.md` with `removed` rows.
 
 ---
 
@@ -486,11 +487,13 @@ This is a decision, not a task. `runtime.py` (~1,600 lines) hand-rolls routing, 
 | Question | If yes → | If no → |
 |---|---|---|
 | Does the document/deck path need parallelism LangGraph's `Send` would simplify (e.g., parallel slide generation)? | Strong case for a graph — this is exactly the `search_worker` fan-out pattern already proven in research. | Manual sequential code is fine; a graph adds ceremony without payoff. |
-| Is `_with_heartbeat`'s manual `Thread`-based bridge (runtime.py) causing bugs or hard-to-debug latency? | Migrating that path to LangGraph's native streaming (Phase 3's pattern) directly fixes the root cause. | Leave it — it works today. |
+| Is the previous `_with_heartbeat` bridge still needed? | No. LangGraph stream advancement now emits `research_progress` heartbeats during quiet graph steps. | N/A — retired. |
 | Do you need LangSmith trace visibility into routing/document decisions the way you now have for research? | Graph adoption gets you that for free (Phase 4). | Direct instrumentation is cheaper than a migration. |
 | Is the team's LangGraph fluency (post Phases 1–5) high enough to extend it without repeating the six gaps this review found? | Proceed. | Wait — a second rushed migration recreates this same audit. |
 
-Recommendation: revisit this after Phase 5, not before. Answer the four questions with real data (e.g., instrument `_with_heartbeat` call frequency/duration in production) rather than architectural instinct.
+Recommendation: revisit this after the research-runtime retirement with real
+data from current LangGraph traces and turn latencies, not from the removed
+legacy bridge.
 
 ---
 
@@ -508,9 +511,9 @@ Recommendation: revisit this after Phase 5, not before. Answer the four question
 | `routers/agent.py` | new pause/approve endpoints | — | — (already compatible) | — | — |
 | `routers/evals.py` | — | — | — | — | delete promote endpoints |
 | `research_synthesis.py` | — | — | streaming `synthesize_answer` variant | — | — |
-| `research_lead.py` | — | — | — | — | delete |
+| `research_lead.py` | — | — | — | — | deleted |
 | `infra/docker-compose.yml` | mount checkpoint DB path | — | — | — | — |
-| `.github/workflows/langgraph_parity.yml` | — | — | re-run as regression gate | — | repurpose or retire |
+| `.github/workflows/langgraph_parity.yml` | — | — | superseded | — | retired |
 | `domain_function_side_effect_audit.md` | — | — | — | — | mark legacy rows removed |
 
 ## Appendix B — Testing/Validation Matrix
@@ -519,14 +522,13 @@ Recommendation: revisit this after Phase 5, not before. Answer the four question
 |---|---|---|---|
 | Unit | interrupt fires on `REQUIRE_HUMAN_APPROVAL` | node signature migration is mechanical — full existing suite is the gate | stream writer emits correct payload shape |
 | Integration | pause → resume across process restart | compiled-graph identity + concurrent-invoke isolation | SSE deltas arrive incrementally, not batched |
-| Regression | non-approval runs unaffected | full `test_langgraph_runtime_slice_*` suite unchanged | golden-set parity harness re-run |
+| Regression | non-approval runs unaffected | full `test_langgraph_runtime_slice_*` suite unchanged | LangGraph eval/maturity suite |
 | Load | checkpointer lock contention under concurrent turns | — | checkpointer write frequency under `.stream()` |
 
 ## Appendix C — Rollout Order
 
-1. Ship Phase 1 behind `FRONEI_ORCHESTRATOR=legacy` as the default (unchanged from today) — test in staging with the flag flipped, using the existing promote/revert admin endpoints you already built for exactly this purpose.
-2. Ship Phase 2 the same way — it's pure refactor, verified by the unmodified test suite passing.
-3. Ship Phase 3, re-running the parity harness as the promotion gate, same as the original langgraph cutover.
-4. Ship Phase 4 to staging, review trace payloads for anything privacy-sensitive, then production.
-5. Only after 2+ clean parity cycles with Phases 1–3 live in production: execute Phase 5's deletion checklist.
-6. Revisit Phase 6 as a scoped decision, not a default next step.
+Superseded rollout note: Phases 1–5 have landed for the research runtime.
+There is no `FRONEI_ORCHESTRATOR` flag, parity promotion gate, or promote/revert
+admin endpoint left. Future rollout work should focus on live smoke tests,
+LangGraph eval quality, LangSmith trace review, and the separate Phase 6
+decision about whether non-research orchestration should also move to graphs.

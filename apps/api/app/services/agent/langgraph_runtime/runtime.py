@@ -28,8 +28,6 @@ from app.services.agent.tools import Tools
 
 logger = logging.getLogger(__name__)
 
-VALID_ORCHESTRATORS = {"legacy", "langgraph"}
-
 
 class LangGraphResumeConflict(RuntimeError):
     """Raised when resume_langgraph_research is called for a run_id that is
@@ -42,43 +40,9 @@ class LangGraphResumeConflict(RuntimeError):
     approval. See resume_langgraph_research's atomic conditional UPDATE.
     """
 
-# Runtime-mutable orchestrator override. Set by the admin /evals/parity/promote
-# endpoint after a successful parity gate run.  Takes precedence over the
-# FRONEI_ORCHESTRATOR env var for the lifetime of the current process; lost on
-# restart (env var / config.py default applies on next boot).
-_RUNTIME_ORCHESTRATOR_OVERRIDE: str | None = None
-
 # In-process convenience cache for pause/resume. Checkpoints are persisted in
 # SQLite; this only preserves richer Python objects such as injected test tools.
 _RUN_CONTEXTS: dict[str, dict[str, Any]] = {}
-
-
-def set_orchestrator_override(value: str) -> None:
-    """Set a process-lifetime orchestrator override (admin promote action)."""
-    global _RUNTIME_ORCHESTRATOR_OVERRIDE
-    if value not in VALID_ORCHESTRATORS:
-        raise ValueError(f"Invalid orchestrator value: {value!r}")
-    _RUNTIME_ORCHESTRATOR_OVERRIDE = value
-
-
-def clear_orchestrator_override() -> None:
-    """Clear the process-lifetime override and revert to env/config default."""
-    global _RUNTIME_ORCHESTRATOR_OVERRIDE
-    _RUNTIME_ORCHESTRATOR_OVERRIDE = None
-
-
-def configured_orchestrator() -> str:
-    # Process-lifetime override (set by admin promote action) takes precedence.
-    if _RUNTIME_ORCHESTRATOR_OVERRIDE is not None:
-        return _RUNTIME_ORCHESTRATOR_OVERRIDE
-    settings = get_settings()
-    selected = (settings.fronei_orchestrator or "legacy").strip().lower()
-    if selected not in VALID_ORCHESTRATORS:
-        raise RuntimeError(f"Invalid FRONEI_ORCHESTRATOR value: {settings.fronei_orchestrator!r}")
-    production = settings.app_env.strip().lower() in {"prod", "production"}
-    if production and settings.fronei_orchestrator_qa_override_enabled:
-        raise RuntimeError("Unsafe research orchestrator QA override is enabled in production.")
-    return selected
 
 
 def _langgraph_config(run_id: str, request: Any | None, tools: Any | None, progress: Any = None) -> dict[str, Any]:

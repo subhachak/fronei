@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -165,11 +166,6 @@ def test_stream_langgraph_research_yields_node_and_answer_delta_events(monkeypat
 
 def test_langgraph_research_sse_streams_progress_and_answer_before_result(monkeypatch):
     _patch_completion(monkeypatch, text="Alpha streamed answer. Beta streamed answer.")
-    from app.config import get_settings
-
-    settings = get_settings()
-    monkeypatch.setattr(settings, "fronei_orchestrator", "langgraph")
-    monkeypatch.setattr(settings, "fronei_orchestrator_qa_override_enabled", False)
 
     envelopes = list(
         Runtime(tools=FakeTools()).run_stream(
@@ -197,14 +193,45 @@ def test_langgraph_research_sse_streams_progress_and_answer_before_result(monkey
     assert result["events"][-1]["stage"] == "answer_complete"
 
 
+def test_langgraph_stream_emits_heartbeat_during_quiet_step(monkeypatch):
+    from app.services.agent import runtime as runtime_module
+
+    monkeypatch.setattr(runtime_module, "LANGGRAPH_STREAM_HEARTBEAT_SECONDS", 0.01)
+    monkeypatch.setattr(runtime_module, "LANGGRAPH_STREAM_QUEUE_POLL_SECONDS", 0.005)
+
+    events = []
+
+    def progress(stage, message, **data):
+        from app.services.agent.models import ProgressEvent
+
+        event = ProgressEvent(turn_id="turn_test", stage=stage, message=message, data=data)
+        events.append(event)
+        return event
+
+    def quiet_stream():
+        time.sleep(0.03)
+        yield ("node", {"node_name": "brief"})
+        return {
+            "response": model_client.ModelResponse(
+                text="done",
+                model_used="fake",
+                latency_ms=1,
+                cost_usd=0.0,
+            )
+        }
+
+    envelopes = list(Runtime(tools=FakeTools())._forward_langgraph_stream(quiet_stream(), progress))
+
+    heartbeat_events = [event for event in events if event.stage == "research_progress"]
+    assert heartbeat_events
+    assert heartbeat_events[0].data["ephemeral_ui"] is True
+    assert any(event.stage == "brief" for event in events)
+    assert envelopes
+
+
 def test_runtime_research_turn_surfaces_langgraph_pause(monkeypatch):
     _patch_completion(monkeypatch)
-    from app.config import get_settings
     import app.services.agent.langgraph_runtime.nodes as nodes_module
-
-    settings = get_settings()
-    monkeypatch.setattr(settings, "fronei_orchestrator", "langgraph")
-    monkeypatch.setattr(settings, "fronei_orchestrator_qa_override_enabled", False)
 
     original_bind = nodes_module.bind
 
@@ -233,13 +260,9 @@ def test_runtime_research_turn_surfaces_langgraph_pause(monkeypatch):
 def test_langgraph_deep_repair_does_not_buffer_replay_after_stream(monkeypatch):
     streamed_text = "Alpha streamed answer. Beta streamed answer."
     _patch_completion(monkeypatch, text=streamed_text)
-    from app.config import get_settings
     from app.services.agent import runtime as runtime_module
     import app.services.agent.langgraph_runtime.nodes as nodes_module
 
-    settings = get_settings()
-    monkeypatch.setattr(settings, "fronei_orchestrator", "langgraph")
-    monkeypatch.setattr(settings, "fronei_orchestrator_qa_override_enabled", False)
     monkeypatch.setattr(runtime_module, "decide_fast_path", lambda request: type("FastPath", (), {"path": "none"})())
     monkeypatch.setattr(
         runtime_module,

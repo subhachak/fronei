@@ -1,12 +1,26 @@
 # Fix: approving a paused LangGraph run blocks with no feedback — Implementation Guide
 
-**The gap, confirmed by reading the code:** `resume_langgraph_research` (`apps/api/app/services/agent/langgraph_runtime/runtime.py:497-542`) calls `get_compiled_research_graph().invoke(Command(resume=approval), config=config)` — `.invoke()`, a blocking call that runs the rest of the graph (verify → judge → possibly repair, each a real LLM call) to completion before returning. The `/admin/langgraph/runs/{run_id}/approve` route (`apps/api/app/routers/agent.py:340-361`) calls this directly inside a synchronous request handler. Both places that trigger it — `PausedApprovalCard.tsx:24-43` (user-facing) and `ApprovalsTab.tsx:59-75` (admin table) — just `await` the fetch and show a static "Approving…" label for however long that takes. None of the token-by-token/commentary streaming built for the main path applies here.
+**Status as of July 2, 2026:** implemented and historical as a plan. The
+research runtime is LangGraph-only, and resume now has a streaming path via
+`stream_resume_langgraph_research` and `Runtime.resume_langgraph_turn_stream`.
+Any snippets below that reference `configured_orchestrator` or a legacy branch
+are superseded.
 
-There's a second effect of the same root cause: `complete_turn_after_langgraph_resume` (`persistence.py:1421-1458`) updates the `Turn` row directly and never calls `_submit_context_update` — the resumed answer never reaches `conversation.context_json`'s `running_summary`/`key_facts`. `_merge_live_recent_turns` covers the very next reply, but the summary permanently misses it once that turn ages out of the 8-turn window.
+**Original gap, now closed:** `resume_langgraph_research` used to call
+`get_compiled_research_graph().invoke(Command(resume=approval), config=config)`.
+That blocking call ran the rest of the graph (verify -> judge -> possibly
+repair) to completion before returning, so approval had no live feedback and the
+resumed turn bypassed the ordinary context-update path.
 
-**Fix strategy:** make resume go through the exact same streaming + completion plumbing a fresh turn already uses, instead of a bespoke blocking path. Concretely: add a streaming twin of `resume_langgraph_research`, dispatch it off the request thread, and feed its output through `persistence.persist_turn_envelope` — the same function `job_worker.py` already calls for every ordinary turn. That function's `result` branch already calls `complete_turn`, which already calls `_submit_context_update` — so the context-update gap disappears as a side effect, with no new completion code needed.
+There was a second effect of the same root cause: `complete_turn_after_langgraph_resume` updated the `Turn` row directly and never called `_submit_context_update`, so the resumed answer never reached `conversation.context_json`'s `running_summary`/`key_facts`. The streaming resume path now completes through the ordinary envelope persistence flow instead.
 
-**Scope note before you commit to this:** this touches four files across two layers and adds a new background executor. Given HITL pauses only fire when a run hits its budget ceiling — presumably rare for 2-3 users — this is a real but low-frequency papercut, not an outage. If the full version below feels like more than it's worth, the cheap partial fix is just making `PausedApprovalCard`/`ApprovalsTab` show an honest "this can take a minute, please wait" message instead of a bare spinner, without changing any backend plumbing. That doesn't fix the missing context-update, but it's a 10-minute change instead of this one. Your call — the rest of this doc assumes you want the real fix.
+**Implemented strategy:** resume now goes through the same streaming and
+completion plumbing a fresh turn uses. `stream_resume_langgraph_research`
+provides the generator path, `Runtime.resume_langgraph_turn_stream` turns it
+into envelopes, and `persistence.persist_turn_envelope` completes the turn so
+the normal context-update path runs.
+
+The sections below preserve the implementation shape that landed.
 
 ## 1. Backend: a streaming twin of `resume_langgraph_research`
 
@@ -87,18 +101,16 @@ This is `resume_langgraph_research` with `.invoke()` swapped for the identical `
 
 ## 2. Backend: share the delta/node forwarding loop between fresh and resume turns
 
-`apps/api/app/services/agent/runtime.py`'s `_run_research_subtree` (~line 644-723) currently builds `gen = stream_langgraph_research(request, self.tool_registry.tools, progress)` itself, then runs the delta/node forwarding loop inline. Split the loop out so a resume path can reuse it without duplicating ~60 lines:
+`apps/api/app/services/agent/runtime.py`'s `_run_research_subtree` now builds
+`gen = stream_langgraph_research(request, self.tool_registry.tools, progress)`
+and forwards it through `_forward_langgraph_stream`. Resume streaming should use
+the same helper without duplicating the delta/node loop:
 
 ```python
 def _run_research_subtree(self, request: TurnRequest, progress):
-    from app.services.agent.langgraph_runtime.runtime import configured_orchestrator
-
-    if configured_orchestrator() == "langgraph":
-        from app.services.agent.langgraph_runtime import stream_langgraph_research
-        gen = stream_langgraph_research(request, self.tool_registry.tools, progress)
-        yield from self._forward_langgraph_stream(gen, progress)
-        return
-    ...  # unchanged: deep/lead research and other branches below
+    from app.services.agent.langgraph_runtime import stream_langgraph_research
+    gen = stream_langgraph_research(request, self.tool_registry.tools, progress)
+    return (yield from self._forward_langgraph_stream(gen, progress))
 
 def _forward_langgraph_stream(self, gen, progress):
     """Shared delta/node → StreamEnvelope forwarding for both a fresh
@@ -323,7 +335,10 @@ Wire `onApproved` from wherever `PausedApprovalCard` is rendered (in `AgentShell
 
 ## Testing plan
 
-- Extend `test_langgraph_maturity.py`'s existing pause/resume coverage (it already builds a paused run) to assert `stream_resume_langgraph_research` yields `answer_delta` events with `source_node` present, and that its final `StopIteration.value` matches what `resume_langgraph_research` (the old blocking version, if kept temporarily for comparison) would have produced for the same inputs.
+- Extend `test_langgraph_maturity.py`'s existing pause/resume coverage to
+  assert `stream_resume_langgraph_research` yields `answer_delta` events with
+  `source_node` present, and that the final `StopIteration.value` has the same
+  final-answer shape as the blocking compatibility helper.
 - New test: assert `POST /admin/langgraph/runs/{run_id}/approve` returns within a tight time bound (e.g. under 500ms with the LLM calls mocked to be slow) — proving the endpoint no longer blocks on the graph.
 - New test mirroring `test_agent_conversation_context_uses_committed_turns_before_async_context_update` (added for the earlier context-truncation fix): pause a run, approve it, assert the resumed answer's `running_summary`/`key_facts` get updated — closing the gap this doc opened with.
 - Manual: force a real budget-gate pause, approve from `PausedApprovalCard`, confirm you see live commentary/streaming instead of a frozen button, and that the answer appears via the same activity-feed-then-reveal flow as a fresh turn.

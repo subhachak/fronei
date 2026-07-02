@@ -1,7 +1,15 @@
 # Streaming & Progress UX Implementation Guide (Roadmap Phase 3, corrected scope)
 
+**Status as of July 2, 2026:** implemented and superseded as an active plan.
+Research is now LangGraph-only, with live node progress, answer deltas,
+repair-reset handling, and quiet-step heartbeats. The old parity workflow and
+pre-LangGraph research path referenced below have been retired.
+
 **Supersedes:** Phase 3 of `docs/langgraph_implementation_roadmap.md`.
-**Trigger for this doc:** Code review of the Phase 1–4 implementation found that Phase 3 was not built, and — more importantly — found that the LangGraph research path currently ships **zero** incremental progress events to the frontend, not just zero token streaming. This changes what "implementable now" means: there are two layered gaps, not one.
+**Original trigger for this doc:** Code review of the Phase 1–4 implementation
+found that Phase 3 had not been built, and — more importantly — found that the
+LangGraph research path shipped zero incremental progress events to the
+frontend, not just zero token streaming. That historical gap is now closed.
 
 ---
 
@@ -9,35 +17,38 @@
 
 You want: progress shown in user-friendly text throughout the pipeline, then the answer typed in as soon as generation starts. That's two features — node-level progress streaming, and token-level answer streaming — and only the token-level one was ever attempted (and it wasn't finished; see the previous review). The progress-event one was never wired for the LangGraph path at all. Here's the exact mechanism:
 
-`app/services/agent/runtime.py::Runtime._run_research_subtree` is a generator (it has `yield StreamEnvelope(...)` statements throughout, which is what makes a Python function a generator). Its legacy branches call `progress(...)` and then explicitly `yield StreamEnvelope(...)` right after, so the SSE consumer in `routers/agent.py::stream_turn` gets each event the moment it happens. Its LangGraph branch, however, is:
+`app/services/agent/runtime.py::Runtime._run_research_subtree` is a generator
+that now forwards LangGraph stream events live. Before this work landed, its
+LangGraph branch returned a blocking result instead of yielding progress:
 
 ```python
-if configured_orchestrator() == "langgraph":
-    ...
-    return run_langgraph_research(request, self.tool_registry.tools, progress)
+# old shape, before this work landed
+return run_langgraph_research(request, self.tool_registry.tools, progress)
 ```
 
-A bare `return` inside a generator does not yield anything — it ends the generator and hands back the return value to whatever called it with `yield from`. `run_langgraph_research()` is a plain function, not a generator; internally its nodes call `progress(...)` (via `emit_graph_event`) which only appends `ProgressEvent` objects to an in-memory list — nothing about that call transmits anything over SSE. So for the entire duration of a LangGraph research run (which is the default orchestrator today), the user sees **nothing** until the whole graph finishes or pauses, at which point the accumulated `events` list rides along inside the single final `TurnResult`. This is worse than the buffered-typing-animation issue — it means there's currently no "what's it doing right now" signal at all for the majority of your traffic.
+A bare `return` inside a generator does not yield anything — it ends the generator and hands back the return value to whatever called it with `yield from`. `run_langgraph_research()` is a plain function, not a generator; internally its nodes call `progress(...)` (via `emit_graph_event`) which only appends `ProgressEvent` objects to an in-memory list — nothing about that call transmits anything over SSE. Before this work landed, the user saw **nothing** until the whole graph finished or paused, at which point the accumulated `events` list rode along inside the single final `TurnResult`. This was worse than the buffered-typing-animation issue — it meant there was no "what's it doing right now" signal at all during a research run.
 
 Fix this first. Token streaming without progress streaming is a smaller win than progress streaming without token streaming — do both, but sequence progress-streaming first since token streaming depends on the same generator rewiring.
 
 ---
 
-## 1. Pending & implementable — status table
+## 1. Current status table
 
 | Item | Status | Implementable now? |
 |---|---|---|
-| **Live progress-event streaming for LangGraph runs** | Not implemented (confirmed above) | **Yes — do this first** |
-| **Token-level answer streaming (synthesize/repair)** | Not implemented | **Yes — do this second, same PR is fine** |
-| Frontend rendering for streamed text | Already built (`Timeline.tsx`'s `StreamingInlineMarkdown`) | N/A — just needs real deltas, not simulated ones |
-| Phase 1 bug: `tools=None` after context loss on resume | Confirmed bug (previous review) | Yes, but separate concern from streaming — don't conflate in the same PR |
-| Phase 1 bug: `_RUN_CONTEXTS` in-memory, not durable | Confirmed bug | Yes, separate PR |
-| Phase 1 bug: checkpointer has no thread lock | Confirmed risk | Yes, separate PR |
-| Phase 1 gap: no pause/resume integration test | Confirmed gap | Yes, separate PR |
-| Phase 5 — legacy `research_lead.py` retirement | Correctly not started | **No** — gate requires 6 clean parity cycles with Phases 1–3 stable in production; Phase 3 doesn't exist yet, so the clock hasn't started |
-| Phase 6 — extend graph beyond research | Correctly not started | **No** — explicitly decision-gated on Phase 5 completing first |
+| **Live progress-event streaming for LangGraph runs** | Complete | Implemented by `stream_langgraph_research` and `_forward_langgraph_stream` |
+| **Token-level answer streaming (synthesize/repair)** | Complete | Implemented with streamed deltas and repair reset handling |
+| Frontend rendering for streamed text | Complete | `Timeline.tsx` renders live deltas with `StreamingInlineMarkdown` |
+| Phase 1 bug: `tools=None` after context loss on resume | Complete | Run contexts are durable and resume reloads tool context |
+| Phase 1 bug: `_RUN_CONTEXTS` in-memory, not durable | Complete | Run context storage moved to durable DB-backed state |
+| Phase 1 bug: checkpointer has no thread lock | Complete | Checkpointer access is guarded for SQLite use |
+| Phase 1 gap: no pause/resume integration test | Complete | Covered in LangGraph runtime/maturity tests |
+| Phase 5 — legacy `research_lead.py` retirement | Complete | Done — research is LangGraph-only |
+| Phase 6 — extend graph beyond research | Still a separate decision | Not implied by this work |
 
-Recommendation: ship the two streaming items together (they share the same call-path rewiring), as their own PR, separate from the Phase 1 bug fixes. Streaming touches `runtime.py` (both the langgraph_runtime one and the orchestration one) and `nodes.py`; the Phase 1 bugs touch `checkpointer.py` and `graph.py::_runtime_context`. Different blast radius, different reviewers' attention — don't bundle them.
+Historical sequencing note: the two streaming items shipped together because
+they share the same call-path rewiring. The Phase 1 durability/checkpointer
+fixes landed separately and are now reflected in the current LangGraph runtime.
 
 ---
 
@@ -45,7 +56,10 @@ Recommendation: ship the two streaming items together (they share the same call-
 
 ### 2.1 Turn `run_langgraph_research` into a real streaming generator
 
-`app/services/agent/langgraph_runtime/runtime.py` — add a new generator function alongside the existing `run_langgraph_research`. Don't delete `run_langgraph_research`; the eval harness and existing tests call it expecting a single blocking dict back, and changing its contract would break `langgraph_parity.yml`. Instead, make it a thin wrapper over the new generator:
+`app/services/agent/langgraph_runtime/runtime.py` — add a new generator
+function alongside the existing `run_langgraph_research`. Don't delete
+`run_langgraph_research`; evals and tests call it expecting a single blocking
+dict back. Instead, make it a thin wrapper over the new generator:
 
 ```python
 def stream_langgraph_research(request: Any, tools: Any, progress: Any = None):
@@ -111,13 +125,13 @@ Export `stream_langgraph_research` from `langgraph_runtime/__init__.py` alongsid
 
 ### 2.2 Rewire the orchestration layer to forward events live
 
-`app/services/agent/runtime.py::_run_research_subtree` — replace the `return run_langgraph_research(...)` branch:
+`app/services/agent/runtime.py::_run_research_subtree` — replace the old
+blocking `return run_langgraph_research(...)` branch:
 
 ```python
-if configured_orchestrator() == "langgraph":
-    from app.config import get_settings
-    from app.services.agent.langgraph_runtime.runtime import stream_langgraph_research
-    from app.services.agent.models import new_id
+from app.config import get_settings
+from app.services.agent.langgraph_runtime.runtime import stream_langgraph_research
+from app.services.agent.models import new_id
 
     audit_id = new_id("lgaudit")
     logger.info(
@@ -189,7 +203,8 @@ The existing `message` strings already produced by `emit_graph_event()` inside `
 
 - Unit: iterate `stream_langgraph_research(...)` against a fixture request with `FakeTools`; assert you get at least one `("node", ...)` tuple per entry in `nodes.NODE_ORDER` that the plan actually visits (search-fanout nodes will emit one `("node", ...)` per parallel worker, not one per NODE_ORDER entry — assert on the node *names* seen, not a 1:1 count).
 - Integration: hit `/turns/stream` (or whatever `stream_turn`'s route path is) for a `research` route request, collect SSE events, assert `progress` events with `stage` in `_LANGGRAPH_NODE_MESSAGES.keys()` arrive **before** the terminal `result` event, with a measurable time gap between the first and last (proves they're not all flushed at once — this is the actual regression the current code has).
-- Regression: re-run `langgraph_parity.yml` — this change doesn't touch node logic or state shape, only how already-computed data reaches the client, so the parity comparator's outputs should be byte-for-byte identical to before. If they're not, something in this rewiring leaked into the graph's actual computation, which would be a bug in this change, not an acceptable side effect.
+- Regression: run the LangGraph eval/maturity suite. The old
+  `langgraph_parity.yml` comparator was retired with the pre-LangGraph runtime.
 
 ---
 
@@ -210,7 +225,9 @@ def synthesize_answer(request: TurnRequest, plan: ResearchPlan, evidence: Eviden
     )
 ```
 
-Add a sibling function rather than changing this one's signature (keep the non-streaming version for any caller that doesn't need deltas — e.g. the legacy `lead_research_loop` path, which should stay untouched):
+Add a sibling function rather than changing this one's signature. The
+non-streaming version can remain for blocking callers/tests, while LangGraph
+uses the streaming variant for live answer deltas:
 
 ```python
 def synthesize_answer_stream(request: TurnRequest, plan: ResearchPlan, evidence: EvidencePack, *, on_delta=None):
@@ -303,21 +320,31 @@ if request.research_level == "deep" and (
     yield from self._emit_buffered_answer(response, progress)
 ```
 
-Once section 2.2's `result["answer_streamed"] = True` is set whenever real deltas were forwarded, this condition naturally stops firing the buffered-replay fallback for LangGraph runs — you don't need to touch this block at all, it already does the right thing once the upstream flag is honest. Leave `_emit_buffered_answer` in place; it's still the correct fallback for the legacy `lead_research_loop` path (which has no token stream) and for the edge case where a LangGraph run produced an answer via the repair path without deltas ever firing (e.g. `synthesize` was skipped and only `repair` ran — make sure 3.2's change to `repair` covers that, per the note above).
+Once section 2.2's `result["answer_streamed"] = True` is set whenever real
+deltas were forwarded, this condition naturally stops firing the
+buffered-replay fallback for LangGraph runs. The pre-LangGraph
+`lead_research_loop` fallback no longer exists; `_emit_buffered_answer` is only
+for non-research/direct-style fallback paths that still produce a complete
+answer without token deltas.
 
-No `Timeline.tsx` changes needed — `StreamingInlineMarkdown` (added in the earlier diff) already renders incoming text with the fade-in treatment whenever `live=true` is passed down from whatever prop currently gates that on `answer_delta` events; verify that prop is driven by the presence of `answer_delta` progress events rather than a hardcoded assumption about which route produced them, since it now needs to handle deltas arriving from both the legacy direct/document paths and the LangGraph research path identically.
+No `Timeline.tsx` changes needed — `StreamingInlineMarkdown` renders incoming
+text with the fade-in treatment whenever `live=true` is passed down from the
+`answer_delta` event path.
 
 ### 3.4 Testing plan
 
 - Unit: `synthesize_answer_stream` — assert `on_delta` is called more than once for a multi-sentence fixture answer (proves it's not just calling `on_delta` once with the whole string, which would technically satisfy the interface but defeat the purpose).
 - Integration: SSE test asserting `answer_delta` events for the LangGraph path arrive **before** the node event for `judge`/`repair` complete, i.e., synthesis text starts reaching the client while verification/judging is still running server-side — that ordering is the actual UX win here ("start streaming as soon as possible"), so assert it directly rather than just asserting deltas exist somewhere in the stream.
-- Regression: parity harness again — `synthesize_answer_stream`'s final `ModelResponse` must be identical in content to what `synthesize_answer` would have produced (same prompt, same model, same params — only delivery mechanism changed). If token streaming changes truncation/timeout behavior versus the non-streaming call, that's a real regression the parity gate should catch.
+- Regression: LangGraph eval/maturity tests should confirm
+  `synthesize_answer_stream`'s final `ModelResponse` remains equivalent in
+  content to the non-streaming synthesis path.
 
 ---
 
 ## 4. What remains correctly out of scope
 
-**Phase 5 (legacy retirement):** still not implementable. The retirement gate — 6 clean weekly parity runs with Phases 1–3 stable in production — can't start counting until Phase 3 (this document) actually ships and has been live for a cycle. Don't touch `research_lead.py` yet.
+**Phase 5 (legacy retirement):** complete. `research_lead.py`, the parity
+workflow, and the orchestrator selector have been retired.
 
 **Phase 6 (extend graph beyond research):** still a decision, not a task, and still gated on Phase 5. Nothing here changes that.
 

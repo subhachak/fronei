@@ -13,8 +13,9 @@ The frontend never calls model providers directly. All model access, auth verifi
 
 ## Runtime Flow
 
-Fronei is the sole turn execution architecture. There is no shadow graph,
-legacy planner, or feature-flagged alternate runtime in the request path.
+Fronei is the sole turn execution architecture. Research execution is
+LangGraph-only; there is no shadow research runtime, legacy research planner,
+or feature-flagged alternate research path in the request path.
 
 ```
 Browser (AgentShell)
@@ -29,7 +30,7 @@ Browser (AgentShell)
        - output format and research level resolution
   -> runtime.py dispatches to subtree worker:
        fast_path.py        direct answer, low-latency
-       research_subtree.py web search + source scoring + citation synthesis
+       langgraph_runtime   web search + source scoring + citation synthesis
        document_subtree.py document/markdown artifact generation
        deck_subtree.py     PPTX artifact generation
   -> llm_gateway.py via LiteLLM

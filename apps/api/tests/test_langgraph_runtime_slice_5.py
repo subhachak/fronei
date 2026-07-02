@@ -22,9 +22,8 @@ What this suite does NOT check (requires real API keys + the live comparator):
   - Whether LangGraph matches or exceeds the legacy oracle on coverage or score.
   - primary_evidence_role distribution or failure-mode detection.
 
-The parity cutover condition is gated on the real golden-set comparator at
-evals/run_parity_comparator.py and the GitHub Actions workflow
-.github/workflows/langgraph_parity.yml — not on this structural suite.
+Retirement cutover no longer uses a legacy-vs-LangGraph parity workflow; this
+suite remains a structural invariant check for the active LangGraph runtime.
 
 The 25 cases span: immigration, operational, conflict, freshness, independence,
 medical, financial, tech product, multi-subject, entity status, research level

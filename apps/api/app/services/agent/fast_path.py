@@ -94,6 +94,13 @@ def decide_fast_path(request: TurnRequest) -> FastPathDecision:
             reason="Non-chat output should use the full agentic runtime.",
             source="guardrail",
         )
+    if request.comparison_mode:
+        return FastPathDecision(
+            path="agentic",
+            confidence=1.0,
+            reason="Comparison mode requires the full research runtime.",
+            source="guardrail",
+        )
     if request.confirm_deep_research or request.research_level == "deep":
         return FastPathDecision(
             path="agentic",

@@ -542,6 +542,30 @@ def test_fast_router_overrides_web_fast_for_owner_reliability(monkeypatch):
     assert "owner_reliability_research" in decision.matched_signal_groups
 
 
+def test_fast_router_forces_agentic_for_comparison_mode():
+    from app.services.agent.fast_path import decide_fast_path
+
+    decision = decide_fast_path(TurnRequest(message="AWS versus Azure", comparison_mode=True))
+
+    assert decision.path == "agentic"
+    assert decision.source == "guardrail"
+    assert "Comparison mode" in decision.reason
+
+
+def test_orchestrator_forces_research_for_comparison_mode():
+    from app.services.agent.orchestrator import decide_with_options
+
+    decision = decide_with_options(
+        TurnRequest(message="AWS versus Azure", comparison_mode=True),
+        available_routes=["direct", "clarify", "research", "document", "research_document"],
+        available_tools=[],
+    )
+
+    assert decision.route == "research"
+    assert decision.source == "guardrail"
+    assert "Comparison matrix" in decision.reason
+
+
 def test_agent_routing_feedback_creates_candidate(monkeypatch):
     from app.services.agent import routing_policy
 

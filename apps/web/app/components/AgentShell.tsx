@@ -485,6 +485,8 @@ export function AgentShell() {
                   setOutputFormat={agent.setOutputFormat}
                   researchLevel={agent.researchLevel}
                   setResearchLevel={agent.setResearchLevel}
+                  comparisonMode={agent.comparisonMode}
+                  setComparisonMode={agent.setComparisonMode}
                   running={agent.running}
                   canRun={agent.canRun}
                   run={() => void agent.run()}

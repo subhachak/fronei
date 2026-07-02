@@ -27,6 +27,7 @@ from app.services.agent import model_client
 from app.services.agent.models import Source, TurnRequest
 from app.services.agent.prompt_library import resolve_prompt
 from app.services.agent.research_models import (
+    CoverageContract,
     DeepLinkCandidate,
     EvidencePack,
     PROFILE_POLICIES,
@@ -199,7 +200,13 @@ def synthesize_answer_stream(
     return response
 
 
-def judge_research(request: TurnRequest, plan: ResearchPlan, evidence: EvidencePack, answer: str) -> ResearchJudgeResult:
+def judge_research(
+    request: TurnRequest,
+    plan: ResearchPlan,
+    evidence: EvidencePack,
+    answer: str,
+    contract: CoverageContract | None = None,
+) -> ResearchJudgeResult:
     issues: list[str] = []
     score = 0.45
     if evidence.items:
@@ -234,8 +241,24 @@ def judge_research(request: TurnRequest, plan: ResearchPlan, evidence: EvidenceP
     if owner_reliability_issues:
         score -= min(0.35, 0.16 * len(owner_reliability_issues))
         issues.extend(owner_reliability_issues)
+    comparison_issues = _comparison_table_issues(request, contract, answer)
+    if comparison_issues:
+        score -= min(0.45, 0.18 * len(comparison_issues))
+        issues.extend(comparison_issues)
     score = max(0.0, min(1.0, score))
     threshold = plan.judge_threshold or 0.72
+    if comparison_issues:
+        return ResearchJudgeResult(
+            status="repair",
+            score=score,
+            issues=issues,
+            repair_instruction=(
+                "Rewrite the answer to satisfy comparison matrix mode: produce the required Markdown table, "
+                "include every named subject as its own column, fill every cell, and use 'Insufficient evidence' "
+                "where the evidence does not support a cell."
+            ),
+            can_publish=False,
+        )
     if score >= threshold:
         return ResearchJudgeResult(status="pass", score=score, issues=issues, can_publish=True)
     if score >= max(0.45, threshold - 0.2):
@@ -256,6 +279,59 @@ def judge_research(request: TurnRequest, plan: ResearchPlan, evidence: EvidenceP
         repair_instruction="Redo the research plan with better source coverage.",
         can_publish=False,
     )
+
+
+def _comparison_table_issues(
+    request: TurnRequest,
+    contract: CoverageContract | None,
+    answer: str,
+) -> list[str]:
+    if not request.comparison_mode:
+        return []
+
+    text = answer or ""
+    subjects = [str(subject).strip() for subject in (contract.subjects if contract else []) if str(subject).strip()]
+    if not subjects:
+        try:
+            from app.services.agent.research_contracts import _extract_named_comparison_subjects
+            subjects = _extract_named_comparison_subjects(request.message or "")
+        except Exception:
+            subjects = []
+    issues: list[str] = []
+    table_match = re.search(r"(?m)^\s*\|.+\|\s*$\n\s*\|[-:\s|]+\|\s*$", text)
+
+    if len(subjects) < 2:
+        if table_match:
+            issues.append("Comparison mode found fewer than two named subjects; ask the user to name at least two things to compare instead of producing a table.")
+        elif not re.search(r"\b(at least two|two specific|name.*two|what.*compare)\b", text, re.IGNORECASE):
+            issues.append("Comparison mode found fewer than two named subjects; the answer should ask the user to name at least two specific things to compare.")
+        return issues
+
+    if not table_match:
+        issues.append("Comparison mode requires a Markdown table; the answer does not contain one.")
+        return issues
+
+    header_line = table_match.group(0).splitlines()[0]
+    column_count = header_line.count("|") - 1
+    subject_column_count = max(0, column_count - 1)
+    if subject_column_count < len(subjects):
+        issues.append(
+            f"The table has fewer subject columns ({subject_column_count}) than named subjects ({len(subjects)}) — "
+            "every subject must have its own column."
+        )
+
+    table_lines: list[str] = []
+    for line in text[table_match.start():].splitlines():
+        if not line.strip().startswith("|"):
+            break
+        table_lines.append(line)
+    for line in table_lines[2:]:
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if any(not cell for cell in cells):
+            issues.append("Comparison mode requires every table cell to be filled; use 'Insufficient evidence' for unsupported cells.")
+            break
+
+    return issues
 
 
 def _missing_named_subjects(request: TurnRequest, answer: str) -> list[str]:
@@ -803,6 +879,22 @@ def _synthesis_report_contract(profile: ResearchProfile, request: TurnRequest) -
     # Phase 7 — SYNTHESIS_SUBSTANCE_REQUIREMENTS is appended to every branch below.
     # Each branch's return is constructed as: structural_guidance + SYNTHESIS_SUBSTANCE_REQUIREMENTS
     S = SYNTHESIS_SUBSTANCE_REQUIREMENTS  # local alias for brevity
+
+    if request.comparison_mode:
+        return (
+            "Produce a strict comparison matrix, not a narrative report. "
+            "Open with 1-2 sentences framing what's being compared and why it matters. "
+            "Then produce exactly one Markdown table: one row per evaluation dimension, one column per named "
+            "subject (plus a leading 'Dimension' column). "
+            "Every cell must be filled. If the evidence gathered doesn't support a real answer for a specific "
+            "cell, write 'Insufficient evidence' in that cell — do not fabricate, pad with generic claims, or "
+            "silently drop a subject or dimension because evidence is thin for it. An honest gap is a correct "
+            "answer; a plausible-sounding guess is not. "
+            "If fewer than two distinct subjects can be identified from the request and evidence, do not "
+            "produce a table — instead ask the user to name at least two specific things to compare. "
+            "After the table, close with a short ranked recommendation: the top choice, the decision rule used, "
+            "and the main condition under which a different choice would win."
+        ) + S
 
     if request.output_format == "chat" and "report" not in request.message.lower() and _requires_decision_grade_comparison(request, profile):
         # Phase 7 — replaced rigid structural mandate (matrix → per-option fields → ranked rec)

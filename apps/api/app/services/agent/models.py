@@ -26,6 +26,7 @@ class TurnRequest(BaseModel):
     quality_mode: Literal["draft", "standard", "executive"] = "standard"
     research_level: ResearchLevel = "auto"
     confirm_deep_research: bool = False
+    comparison_mode: bool = False
     force_route: RouteName | None = None
     output_format: Literal["chat", "markdown", "docx", "pptx"] = "chat"
     template_id: str | None = None

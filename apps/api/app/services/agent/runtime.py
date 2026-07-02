@@ -386,24 +386,11 @@ class Runtime:
                     or (research.get("replay_final_answer") and not is_langgraph_streamed)
                 ) and not is_paused:
                     yield from self._emit_buffered_answer(response, progress)
-                pause_contract = langgraph_state.get("pause_contract") or {}
-                result = TurnResult(
+                result = self._langgraph_research_turn_result(
                     turn_id=turn_id,
                     goal=goal,
-                    answer=response.text,
-                    route=goal.route,
-                    turn_status="paused" if is_paused else "completed",
-                    langgraph_run_id=research.get("langgraph_run_id") if is_paused else None,
-                    pause_reason=pause_contract.get("pause_reason") if is_paused else None,
-                    required_additional_budget_usd=(
-                        pause_contract.get("required_additional_budget_usd") if is_paused else None
-                    ),
-                    model_used=response.model_used,
-                    sources=research["sources"],
-                    tool_calls=research["tool_calls"],
+                    research=research,
                     events=events,
-                    latency_ms=response.latency_ms + sum(call.latency_ms for call in research["tool_calls"]),
-                    cost_usd=response.cost_usd,
                 )
             elif route == "document":
                 event = progress("document", "Composing a standalone document artifact.")
@@ -641,6 +628,137 @@ class Runtime:
             raise result_box["error"]  # type: ignore[misc]
         return result_box["result"]  # type: ignore[misc]
 
+    def _forward_langgraph_stream(self, gen, progress):
+        buffered_answer = ""
+        last_source_node: str | None = None
+        result = None
+        try:
+            while True:
+                kind, payload = next(gen)
+                if kind == "delta":
+                    delta = payload.get("text", "") if isinstance(payload, dict) else str(payload)
+                    source_node = payload.get("source_node", "") if isinstance(payload, dict) else ""
+                    if last_source_node is not None and source_node and source_node != last_source_node and delta:
+                        buffered_answer = ""
+                        message = _LANGGRAPH_NODE_MESSAGES.get(
+                            source_node,
+                            f"{source_node.replace('_', ' ').capitalize()}...",
+                        )
+                        reset_event = progress(source_node, message, reset=True, ephemeral_ui=True)
+                        yield StreamEnvelope(type="progress", data=reset_event.model_dump(mode="json"))
+                    last_source_node = source_node
+                    buffered_answer += delta
+                    event = progress(
+                        "answer_delta",
+                        "Streaming answer.",
+                        delta=delta,
+                        char_count=len(buffered_answer),
+                        source_node=source_node,
+                        ephemeral_ui=True,
+                    )
+                    yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
+                elif kind == "node":
+                    node_payload = dict(payload)
+                    node_name = str(node_payload.pop("node_name", "") or "")
+                    message = (
+                        _LANGGRAPH_NODE_MESSAGES.get(node_name)
+                        or node_payload.pop("message", None)
+                        or f"{node_name.replace('_', ' ').capitalize()}..."
+                    )
+                    event = progress(node_name, message, **node_payload)
+                    yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
+        except StopIteration as stop:
+            result = stop.value
+        if buffered_answer and result is not None:
+            result["answer_streamed"] = True
+            if not result.get("replay_final_answer"):
+                result["replay_final_answer"] = False
+            response = result.get("response")
+            event = progress(
+                "answer_complete",
+                "Answer stream complete.",
+                char_count=len(buffered_answer),
+                model_used=getattr(response, "model_used", ""),
+                latency_ms=getattr(response, "latency_ms", 0),
+                cost_usd=getattr(response, "cost_usd", 0.0),
+                ephemeral_ui=True,
+            )
+            yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
+        return result
+
+    def _langgraph_research_turn_result(
+        self,
+        *,
+        turn_id: str,
+        goal: Goal,
+        research: dict[str, Any],
+        events: list[ProgressEvent],
+    ) -> TurnResult:
+        response = research["response"]
+        langgraph_state = research.get("langgraph_state") or {}
+        is_paused = bool(langgraph_state.get("interrupted"))
+        pause_contract = langgraph_state.get("pause_contract") or {}
+        return TurnResult(
+            turn_id=turn_id,
+            goal=goal,
+            answer=response.text,
+            route=goal.route,
+            turn_status="paused" if is_paused else "completed",
+            langgraph_run_id=research.get("langgraph_run_id") if is_paused else None,
+            pause_reason=pause_contract.get("pause_reason") if is_paused else None,
+            required_additional_budget_usd=(
+                pause_contract.get("required_additional_budget_usd") if is_paused else None
+            ),
+            model_used=response.model_used,
+            sources=research["sources"],
+            tool_calls=research["tool_calls"],
+            events=events,
+            latency_ms=response.latency_ms + sum(call.latency_ms for call in research["tool_calls"]),
+            cost_usd=response.cost_usd,
+        )
+
+    def resume_langgraph_turn_stream(
+        self,
+        turn_id: str,
+        langgraph_run_id: str,
+        *,
+        approved_by: str,
+        updated_budget_ceiling_usd: float | None,
+        user_id: str,
+    ):
+        from app.services.agent import persistence
+        from app.services.agent.langgraph_runtime import stream_resume_langgraph_research
+
+        existing = persistence.load_turn(turn_id, user_id)
+        if existing is None:
+            yield StreamEnvelope(
+                type="error",
+                data={"turn_id": turn_id, "message": "Paused turn not found for LangGraph resume."},
+            )
+            return
+        events: list[ProgressEvent] = []
+
+        def progress(stage: str, message: str, **data) -> ProgressEvent:
+            event = ProgressEvent(turn_id=turn_id, stage=stage, message=message, data=data)
+            events.append(event)
+            return event
+
+        gen = stream_resume_langgraph_research(
+            langgraph_run_id,
+            approved_by=approved_by,
+            updated_budget_ceiling_usd=updated_budget_ceiling_usd,
+            progress=progress,
+            already_claimed=True,
+        )
+        research = yield from self._forward_langgraph_stream(gen, progress)
+        result = self._langgraph_research_turn_result(
+            turn_id=turn_id,
+            goal=existing.goal,
+            research=research,
+            events=events,
+        )
+        yield StreamEnvelope(type="result", data=result.model_dump(mode="json"))
+
     def _run_research_subtree(self, request: TurnRequest, progress):
         from app.services.agent.langgraph_runtime.runtime import configured_orchestrator
 
@@ -661,66 +779,7 @@ class Runtime:
                 },
             )
             gen = stream_langgraph_research(request, self.tool_registry.tools, progress)
-            buffered_answer = ""
-            last_source_node: str | None = None
-            try:
-                while True:
-                    kind, payload = next(gen)
-                    if kind == "delta":
-                        delta = payload.get("text", "") if isinstance(payload, dict) else str(payload)
-                        source_node = payload.get("source_node", "") if isinstance(payload, dict) else ""
-                        if last_source_node is not None and source_node and source_node != last_source_node and delta:
-                            buffered_answer = ""
-                            message = _LANGGRAPH_NODE_MESSAGES.get(
-                                source_node,
-                                f"{source_node.replace('_', ' ').capitalize()}...",
-                            )
-                            reset_event = progress(
-                                source_node,
-                                message,
-                                reset=True,
-                                ephemeral_ui=True,
-                            )
-                            yield StreamEnvelope(type="progress", data=reset_event.model_dump(mode="json"))
-                        last_source_node = source_node
-                        buffered_answer += delta
-                        event = progress(
-                            "answer_delta",
-                            "Streaming answer.",
-                            delta=delta,
-                            char_count=len(buffered_answer),
-                            source_node=source_node,
-                            ephemeral_ui=True,
-                        )
-                        yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
-                    elif kind == "node":
-                        node_payload = dict(payload)
-                        node_name = str(node_payload.pop("node_name", "") or "")
-                        message = (
-                            _LANGGRAPH_NODE_MESSAGES.get(node_name)
-                            or node_payload.pop("message", None)
-                            or f"{node_name.replace('_', ' ').capitalize()}..."
-                        )
-                        event = progress(node_name, message, **node_payload)
-                        yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
-            except StopIteration as stop:
-                result = stop.value
-            if buffered_answer and result is not None:
-                result["answer_streamed"] = True
-                if not result.get("replay_final_answer"):
-                    result["replay_final_answer"] = False
-                response = result.get("response")
-                event = progress(
-                    "answer_complete",
-                    "Answer stream complete.",
-                    char_count=len(buffered_answer),
-                    model_used=getattr(response, "model_used", ""),
-                    latency_ms=getattr(response, "latency_ms", 0),
-                    cost_usd=getattr(response, "cost_usd", 0.0),
-                    ephemeral_ui=True,
-                )
-                yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
-            return result
+            return (yield from self._forward_langgraph_stream(gen, progress))
 
         if request.research_level == "deep":
             from queue import Empty, Queue

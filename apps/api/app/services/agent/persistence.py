@@ -48,6 +48,8 @@ logger = logging.getLogger(__name__)
 
 _CONTEXT_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="agent-context")
 _PENDING_CONTEXT_FUTURES: set[Future] = set()
+_RESUME_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="langgraph-resume")
+_PENDING_RESUME_FUTURES: set[Future] = set()
 ASSISTANT_CONTEXT_CHARS = 700
 ASSISTANT_CONTEXT_TAIL_CHARS = 220
 
@@ -127,6 +129,15 @@ def _workspace_priorities(workspace: Workspace | None) -> list[str]:
     if not isinstance(priorities, list):
         return []
     return [str(item) for item in priorities if str(item).strip()][:4]
+
+
+def _workspace_pinned_facts(workspace: Workspace | None) -> list[str]:
+    if workspace is None:
+        return []
+    facts = _loads(workspace.pinned_facts_json, [])
+    if not isinstance(facts, list):
+        return []
+    return [str(item).strip()[:200] for item in facts if str(item).strip()][:12]
 
 
 def _initial_workspace_context(db, user_id: str, workspace: Workspace) -> dict:
@@ -213,6 +224,9 @@ def _render_context(
     if ctx.get("workspace_priorities"):
         lines.append("- Active priorities in this workspace:")
         lines.extend(f"  - {item}" for item in ctx["workspace_priorities"])
+    if ctx.get("pinned_facts"):
+        lines.append("- Pinned facts for this workspace (always remember these):")
+        lines.extend(f"  - {item}" for item in ctx["pinned_facts"])
     conversation = ctx.get("conversation") or {}
     if conversation.get("title"):
         lines.append(f"- Conversation: {conversation['title']}")
@@ -513,6 +527,7 @@ def conversation_context_text(
             # conversation-level ctx below (which carries the global
             # preferences instead).
             workspace_ctx["workspace_priorities"] = _workspace_priorities(workspace)
+            workspace_ctx["pinned_facts"] = _workspace_pinned_facts(workspace)
             workspace_text = _render_context(
                 workspace_ctx,
                 max_chars=max(800, max_chars // 3),
@@ -1214,6 +1229,94 @@ def persist_turn_envelope(
     return True
 
 
+def find_turn_by_langgraph_run_id(langgraph_run_id: str) -> dict[str, Any] | None:
+    db = SessionLocal()
+    try:
+        turn = db.query(Turn).filter(Turn.langgraph_run_id == langgraph_run_id).first()
+        if turn is None:
+            return None
+        return {
+            "id": turn.id,
+            "user_id": turn.user_id,
+            "conversation_id": turn.conversation_id,
+            "objective": turn.objective,
+            "status": turn.status,
+        }
+    finally:
+        db.close()
+
+
+def mark_turn_running_for_resume(turn_id: str) -> None:
+    db = SessionLocal()
+    try:
+        turn = db.get(Turn, turn_id)
+        if turn and turn.status == "paused":
+            turn.status = "running"
+            turn.updated_at = _now()
+            turn.completed_at = None
+            db.commit()
+    finally:
+        db.close()
+
+
+def submit_langgraph_resume(
+    turn_id: str,
+    langgraph_run_id: str,
+    *,
+    approved_by: str,
+    updated_budget_ceiling_usd: float | None,
+    user_id: str,
+) -> None:
+    future = _RESUME_EXECUTOR.submit(
+        _run_langgraph_resume,
+        turn_id,
+        langgraph_run_id,
+        approved_by=approved_by,
+        updated_budget_ceiling_usd=updated_budget_ceiling_usd,
+        user_id=user_id,
+    )
+    _PENDING_RESUME_FUTURES.add(future)
+
+    def _cleanup(done: Future) -> None:
+        _PENDING_RESUME_FUTURES.discard(done)
+        try:
+            done.result()
+        except Exception:
+            logger.exception("LangGraph resume worker failed for turn %s", turn_id)
+
+    future.add_done_callback(_cleanup)
+
+
+def _run_langgraph_resume(
+    turn_id: str,
+    langgraph_run_id: str,
+    *,
+    approved_by: str,
+    updated_budget_ceiling_usd: float | None,
+    user_id: str,
+) -> None:
+    from app.services.agent.runtime import Runtime
+
+    runtime = Runtime()
+    try:
+        for envelope in runtime.resume_langgraph_turn_stream(
+            turn_id,
+            langgraph_run_id,
+            approved_by=approved_by,
+            updated_budget_ceiling_usd=updated_budget_ceiling_usd,
+            user_id=user_id,
+        ):
+            if envelope.type == "error":
+                fail_turn(turn_id, str(envelope.data.get("detail") or envelope.data.get("message") or "Resume failed"))
+                return
+            if not persist_turn_envelope(envelope, turn_id):
+                fail_turn(turn_id, "Could not persist resumed LangGraph turn.")
+                return
+    except Exception as exc:
+        fail_turn(turn_id, str(exc))
+        raise
+
+
 def append_event(event: ProgressEvent) -> None:
     db = SessionLocal()
     try:
@@ -1416,46 +1519,6 @@ def complete_turn(result: TurnResult, *, lease_owner: str | None = None) -> bool
     if should_update_context:
         _submit_context_update(context_snapshot)
     return True
-
-
-def complete_turn_after_langgraph_resume(langgraph_run_id: str, result: dict[str, Any]) -> bool:
-    """Update the original chat Turn after an admin resumes a paused LangGraph run."""
-    db = SessionLocal()
-    try:
-        turn = db.query(Turn).filter(Turn.langgraph_run_id == langgraph_run_id).first()
-        if turn is None:
-            return False
-        langgraph_state = result.get("langgraph_state") or {}
-        still_paused = bool(langgraph_state.get("interrupted"))
-        pause_contract = langgraph_state.get("pause_contract") or {}
-        response = result.get("response")
-        now = datetime.now(timezone.utc)
-
-        turn.status = "paused" if still_paused else "completed"
-        text = getattr(response, "text", "")
-        if text:
-            turn.answer = text
-        turn.model_used = getattr(response, "model_used", turn.model_used) or turn.model_used
-        turn.latency_ms = int((turn.latency_ms or 0) + int(getattr(response, "latency_ms", 0) or 0))
-        turn.cost_usd = float(turn.cost_usd or 0.0) + float(getattr(response, "cost_usd", 0.0) or 0.0)
-        turn.updated_at = now
-        turn.completed_at = None if still_paused else now
-        if still_paused:
-            turn.pause_reason = pause_contract.get("pause_reason")
-        else:
-            turn.pause_reason = None
-            turn.langgraph_run_id = None
-            if turn.conversation_id:
-                conversation = db.get(Conversation, turn.conversation_id)
-                if conversation and conversation.user_id == turn.user_id:
-                    conversation.updated_at = now
-                    workspace = db.get(Workspace, conversation.workspace_id)
-                    if workspace:
-                        workspace.updated_at = now
-        db.commit()
-        return True
-    finally:
-        db.close()
 
 
 def _record_routing_feedback(result: TurnResult) -> None:

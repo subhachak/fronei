@@ -27,12 +27,13 @@ def _as_user(user_id: str):
     app.dependency_overrides[get_current_user_is_admin] = lambda: False
 
 
-def _make_workspace(db, workspace_id: str, user_id: str, *, priorities=None) -> Workspace:
+def _make_workspace(db, workspace_id: str, user_id: str, *, priorities=None, pinned_facts=None) -> Workspace:
     workspace = Workspace(
         id=workspace_id,
         user_id=user_id,
         name=workspace_id,
         priorities_json=json.dumps(priorities or []),
+        pinned_facts_json=json.dumps(pinned_facts or []),
     )
     db.add(workspace)
     db.commit()
@@ -138,7 +139,7 @@ def test_list_workspace_profiles_includes_priorities_and_stats(monkeypatch):
     Session = _sqlite_session()
     monkeypatch.setattr(profile_router, "SessionLocal", Session)
     db = Session()
-    _make_workspace(db, "w1", "u1", priorities=["Roadmap planning"])
+    _make_workspace(db, "w1", "u1", priorities=["Roadmap planning"], pinned_facts=["Customer is Acme"])
     _make_conversation(db, "c1", "u1", "w1")
     _make_turn(db, "u1", "c1", cost_usd=0.5)
     _make_turn(db, "u1", "c1", cost_usd=0.25)
@@ -152,6 +153,7 @@ def test_list_workspace_profiles_includes_priorities_and_stats(monkeypatch):
         workspaces = resp.json()["workspaces"]
         assert len(workspaces) == 1
         assert workspaces[0]["priorities"] == ["Roadmap planning"]
+        assert workspaces[0]["pinned_facts"] == ["Customer is Acme"]
         assert workspaces[0]["turn_count"] == 2
         assert workspaces[0]["total_cost_usd"] == 0.75
     finally:
@@ -173,12 +175,15 @@ def test_cannot_see_or_edit_another_users_workspace(monkeypatch):
 
             patched = client.patch("/profile/workspaces/other_ws/priorities", json={"priorities": ["hijacked"]})
             assert patched.status_code == 404
+            facts = client.patch("/profile/workspaces/other_ws/facts", json={"facts": ["hijacked"]})
+            assert facts.status_code == 404
     finally:
         app.dependency_overrides.clear()
 
     with Session() as db:
         other = db.get(Workspace, "other_ws")
         assert json.loads(other.priorities_json) == ["Confidential project"]
+        assert json.loads(other.pinned_facts_json) == []
 
 
 def test_update_own_workspace_priorities(monkeypatch):
@@ -196,6 +201,57 @@ def test_update_own_workspace_priorities(monkeypatch):
         assert resp.json()["priorities"] == ["New priority"]
     finally:
         app.dependency_overrides.clear()
+
+
+def test_update_own_workspace_pinned_facts(monkeypatch):
+    Session = _sqlite_session()
+    monkeypatch.setattr(profile_router, "SessionLocal", Session)
+    db = Session()
+    _make_workspace(db, "w1", "u1")
+    db.close()
+
+    _as_user("u1")
+    try:
+        with TestClient(app) as client:
+            long_fact = "x" * 250
+            resp = client.patch("/profile/workspaces/w1/facts", json={"facts": [" Customer is Acme ", "", long_fact]})
+            assert resp.status_code == 200
+            assert resp.json()["facts"] == ["Customer is Acme", "x" * 200]
+
+            fetched = client.get("/profile/workspaces")
+            assert fetched.json()["workspaces"][0]["pinned_facts"] == ["Customer is Acme", "x" * 200]
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_workspace_pinned_facts_render_into_context(monkeypatch):
+    from app.services.agent import persistence
+
+    Session = _sqlite_session()
+    monkeypatch.setattr(persistence, "SessionLocal", Session)
+    db = Session()
+    workspace = _make_workspace(
+        db,
+        "w1",
+        "u1",
+        pinned_facts=["Customer is Acme", "Use invoice IDs from ERP"],
+    )
+    _make_conversation(db, "c1", "u1", "w1")
+
+    assert persistence._workspace_pinned_facts(None) == []
+    workspace.pinned_facts_json = json.dumps(["x" * 250 for _ in range(25)])
+    assert len(persistence._workspace_pinned_facts(workspace)) == 12
+    assert persistence._workspace_pinned_facts(workspace)[0] == "x" * 200
+    workspace.pinned_facts_json = "{bad json"
+    assert persistence._workspace_pinned_facts(workspace) == []
+    workspace.pinned_facts_json = json.dumps(["Customer is Acme", "Use invoice IDs from ERP"])
+    db.commit()
+    db.close()
+
+    context = persistence.conversation_context_text("u1", "c1", current_message="hello")
+    assert "Pinned facts for this workspace" in context
+    assert "Customer is Acme" in context
+    assert "Use invoice IDs from ERP" in context
 
 
 def test_usage_report_scoped_to_caller_and_includes_bi_dimensions(monkeypatch):
@@ -242,7 +298,7 @@ def test_export_my_data_includes_turns_workspaces_and_preferences(monkeypatch):
         settings_json=json.dumps({"quality_mode": "executive", "output_format": "pptx"}),
     )
     db.add(user)
-    _make_workspace(db, "w1", "u1", priorities=["Roadmap"])
+    _make_workspace(db, "w1", "u1", priorities=["Roadmap"], pinned_facts=["Customer is Acme"])
     _make_conversation(db, "c1", "u1", "w1")
     _make_turn(db, "u1", "c1", objective="Draft a memo", answer="Here it is")
     db.close()
@@ -256,6 +312,7 @@ def test_export_my_data_includes_turns_workspaces_and_preferences(monkeypatch):
         assert body["preferences"] == ["terse"]
         assert body["settings"] == {"quality_mode": "executive", "output_format": "pptx"}
         assert body["workspaces"][0]["priorities"] == ["Roadmap"]
+        assert body["workspaces"][0]["pinned_facts"] == ["Customer is Acme"]
         assert body["turns"][0]["objective"] == "Draft a memo"
     finally:
         app.dependency_overrides.clear()

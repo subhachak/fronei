@@ -13,6 +13,7 @@ from app.services.agent.langgraph_runtime.nodes import NODE_ORDER
 from app.services.agent.langgraph_runtime.graph import get_compiled_research_graph
 from app.services.agent.langgraph_runtime.runtime import (
     LangGraphResumeConflict,
+    claim_langgraph_run_for_resume,
     resume_langgraph_research,
     run_langgraph_research,
     stream_langgraph_research,
@@ -314,7 +315,7 @@ def test_langgraph_deep_repair_does_not_buffer_replay_after_stream(monkeypatch):
     assert result["events"][-1]["stage"] == "answer_complete"
 
 
-def test_complete_turn_persists_paused_and_resume_updates_original_turn(monkeypatch):
+def test_streaming_resume_persists_original_turn_through_envelopes(monkeypatch):
     _patch_completion(monkeypatch)
     import app.services.agent.langgraph_runtime.nodes as nodes_module
 
@@ -350,8 +351,19 @@ def test_complete_turn_persists_paused_and_resume_updates_original_turn(monkeypa
         assert row.completed_at is None
         assert row.langgraph_run_id == run_id
 
-    resumed = resume_langgraph_research(run_id, approved_by="admin-1")
-    assert persistence.complete_turn_after_langgraph_resume(run_id, resumed) is True
+    claim_langgraph_run_for_resume(run_id, resumed_by="admin-1")
+    persistence.mark_turn_running_for_resume(turn_id)
+    envelopes = list(
+        Runtime(tools=FakeTools()).resume_langgraph_turn_stream(
+            turn_id,
+            run_id,
+            approved_by="admin-1",
+            updated_budget_ceiling_usd=None,
+            user_id="u1",
+        )
+    )
+    for envelope in envelopes:
+        assert persistence.persist_turn_envelope(envelope, turn_id) is True
 
     with SessionLocal() as db:
         row = db.get(Turn, turn_id)
@@ -361,6 +373,10 @@ def test_complete_turn_persists_paused_and_resume_updates_original_turn(monkeypa
         assert row.langgraph_run_id is None
         assert row.pause_reason is None
         assert row.answer
+
+    stages = [envelope.data["stage"] for envelope in envelopes if envelope.type == "progress"]
+    assert "answer_delta" in stages
+    assert envelopes[-1].type == "result"
 
 
 def _pause_a_run(monkeypatch) -> str:

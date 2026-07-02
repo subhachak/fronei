@@ -540,3 +540,72 @@ def resume_langgraph_research(
     _RUN_CONTEXTS.pop(run_id, None)
     _complete_run(run_id)
     return _result_from_state(run_id, result)
+
+
+def stream_resume_langgraph_research(
+    run_id: str,
+    *,
+    approved_by: str,
+    updated_budget_ceiling_usd: float | None = None,
+    progress: Any = None,
+    already_claimed: bool = False,
+):
+    """Streaming twin of resume_langgraph_research."""
+    if not already_claimed:
+        _claim_run_for_resume(run_id, resumed_by=approved_by)
+
+    ctx = _RUN_CONTEXTS.get(run_id) or _load_run_context(run_id) or {}
+    if ctx.get("request") is None:
+        _mark_run_context(run_id, "paused")
+        raise RuntimeError(f"LangGraph run context is missing for run_id={run_id!r}")
+
+    approval: dict[str, Any] = {
+        "approved_by": approved_by,
+        "approved_at": datetime.utcnow().isoformat() + "Z",
+        "approval_audit_event_id": new_id("lgapprove"),
+    }
+    if updated_budget_ceiling_usd is not None:
+        approval["updated_budget_ceiling_usd"] = updated_budget_ceiling_usd
+
+    config = _langgraph_config(run_id, ctx.get("request"), ctx.get("tools"), None)
+    graph = get_compiled_research_graph()
+
+    pause_contract: dict[str, Any] | None = None
+    try:
+        for mode, payload in graph.stream(
+            Command(resume=approval),
+            config=config,
+            stream_mode=["updates", "custom"],
+        ):
+            if mode == "custom":
+                if isinstance(payload, dict) and payload.get("answer_delta"):
+                    source_node = str(payload.get("source_node") or "")
+                    yield ("delta", {"text": str(payload["answer_delta"]), "source_node": source_node})
+                continue
+            pause_contract = _interrupt_payload(payload)
+            if pause_contract is not None:
+                break
+            if not isinstance(payload, dict) or not payload:
+                continue
+            node_name, delta = next(iter(payload.items()))
+            if isinstance(delta, dict):
+                yield ("node", _summarize_node_delta(str(node_name), delta))
+    except BaseException:
+        _mark_run_context(run_id, "paused")
+        raise
+
+    final_state = _snapshot_values(run_id, ctx.get("request"), ctx.get("tools"))
+    if pause_contract is not None:
+        final_state["pause_contract"] = pause_contract
+        final_state["budget_decision"] = BudgetDecision.REQUIRE_HUMAN_APPROVAL
+        final_state["interrupted"] = True
+        _mark_run_context(run_id, "paused")
+        return _result_from_state(run_id, final_state)
+
+    _RUN_CONTEXTS.pop(run_id, None)
+    _complete_run(run_id)
+    return _result_from_state(run_id, final_state)
+
+
+def claim_langgraph_run_for_resume(run_id: str, *, resumed_by: str) -> None:
+    _claim_run_for_resume(run_id, resumed_by=resumed_by)

@@ -114,6 +114,17 @@ def decide_with_options(
             available_routes=available_routes,
             available_tools=available_tools,
         ))
+    if request.comparison_mode:
+        return _normalize_research_decision(request, OrchestratorDecision(
+            route="research_document" if request.output_format != "chat" else "research",
+            confidence=1.0,
+            reason="Comparison matrix mode explicitly requires source-grounded research.",
+            output_format=request.output_format,
+            research_level=choose_research_level(request, "research"),
+            source="guardrail",
+            available_routes=available_routes,
+            available_tools=available_tools,
+        ))
 
     user_payload = json.dumps(
         {

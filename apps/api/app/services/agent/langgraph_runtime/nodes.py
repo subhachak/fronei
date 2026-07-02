@@ -983,6 +983,7 @@ def judge(
     answer = state.get("answer", "")
     evidence = state.get("evidence")
     plan = state.get("plan")
+    coverage_contract = state.get("contract")
     citation_result = state.get("last_citation_verification")
 
     emit_graph_event(
@@ -1008,7 +1009,7 @@ def judge(
             "model_calls_made": 0,
         }
 
-    judge_result = judge_research(request, plan, evidence, answer)
+    judge_result = judge_research(request, plan, evidence, answer, coverage_contract)
 
     # --- Enforce citation verification signals --------------------------------
     # Mirrors the legacy check in _synthesize_verify_and_judge:

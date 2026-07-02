@@ -25,6 +25,7 @@ export function useAgent() {
   const [qualityMode, setQualityMode] = useState<QualityMode>('standard')
   const [outputFormat, setOutputFormat] = useState<OutputFormat>('chat')
   const [researchLevel, setResearchLevel] = useState<ResearchLevel>('auto')
+  const [comparisonMode, setComparisonMode] = useState(false)
   const [copiedKey, setCopiedKey] = useState<string | null>(null)
   const [isAdmin, setIsAdmin] = useState(false)
   // Map of turn_id → feedback rating set by the user this session.
@@ -73,6 +74,7 @@ export function useAgent() {
     qualityMode,
     outputFormat,
     researchLevel,
+    comparisonMode,
     selectedTemplateId,
     selectedTemplateExists: Boolean(templateHook.selectedTemplateExists),
     attachedFile: attachmentHook.attachedFile,
@@ -122,6 +124,11 @@ export function useAgent() {
   function updateResearchLevel(level: ResearchLevel) {
     composerSettingsDirtyRef.current = true
     setResearchLevel(level)
+  }
+
+  function updateComparisonMode(enabled: boolean) {
+    composerSettingsDirtyRef.current = true
+    setComparisonMode(enabled)
   }
 
   async function checkIsAdmin() {
@@ -215,6 +222,8 @@ export function useAgent() {
     setOutputFormat: updateOutputFormat,
     researchLevel,
     setResearchLevel: updateResearchLevel,
+    comparisonMode,
+    setComparisonMode: updateComparisonMode,
     events: turnRunner.events,
     activeEvents: turnRunner.activeEvents,
     result: turnRunner.result,

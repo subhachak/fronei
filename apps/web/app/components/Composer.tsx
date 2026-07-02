@@ -22,6 +22,10 @@ const RESEARCH_OPTIONS = [
   { value: 'regular', label: 'regular' },
   { value: 'deep', label: 'deep' },
 ]
+const FORMAT_OPTIONS = [
+  { value: 'normal', label: 'Normal' },
+  { value: 'matrix', label: 'Comparison matrix' },
+]
 // Admin-only per-turn override. Kept short and curated; "Custom" covers
 // anything else litellm supports.
 const CURATED_MODEL_OPTIONS = [
@@ -43,6 +47,8 @@ export function Composer({
   setOutputFormat,
   researchLevel,
   setResearchLevel,
+  comparisonMode,
+  setComparisonMode,
   running,
   canRun,
   run,
@@ -71,6 +77,8 @@ export function Composer({
   setOutputFormat: (format: OutputFormat) => void
   researchLevel: ResearchLevel
   setResearchLevel: (level: ResearchLevel) => void
+  comparisonMode: boolean
+  setComparisonMode: (enabled: boolean) => void
   running: boolean
   canRun: boolean
   run: () => void
@@ -193,8 +201,14 @@ export function Composer({
             className="flex h-7 min-w-0 flex-shrink-0 items-center gap-1 rounded-md px-1.5 text-[11px] font-medium text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600 dark:text-neutral-500 dark:hover:bg-neutral-800 dark:hover:text-neutral-300"
           >
             <SlidersHorizontal size={13} />
-            {(outputFormat !== 'chat' || researchLevel !== 'auto') && (
-              <span className="truncate">{outputFormat !== 'chat' ? outputFormat : ''}{researchLevel !== 'auto' ? ` · ${researchLevel}` : ''}</span>
+            {(outputFormat !== 'chat' || researchLevel !== 'auto' || comparisonMode) && (
+              <span className="truncate">
+                {[
+                  outputFormat !== 'chat' ? outputFormat : '',
+                  researchLevel !== 'auto' ? researchLevel : '',
+                  comparisonMode ? 'matrix' : '',
+                ].filter(Boolean).join(' · ')}
+              </span>
             )}
           </button>
           {outputFormat === 'pptx' && (
@@ -258,6 +272,12 @@ export function Composer({
           <SelectField label="Quality" value={qualityMode} onChange={value => setQualityMode(value as QualityMode)} options={QUALITY_OPTIONS} />
           <SelectField label="Output" value={outputFormat} onChange={handleOutputFormatChange} options={OUTPUT_OPTIONS} />
           <SelectField label="Research" value={researchLevel} onChange={value => setResearchLevel(value as ResearchLevel)} options={RESEARCH_OPTIONS} />
+          <SelectField
+            label="Format"
+            value={comparisonMode ? 'matrix' : 'normal'}
+            onChange={value => setComparisonMode(value === 'matrix')}
+            options={FORMAT_OPTIONS}
+          />
           {isAdmin && (
             <SelectField
               label="Model"

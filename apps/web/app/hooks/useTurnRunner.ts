@@ -27,6 +27,7 @@ type TurnRunnerOptions = {
   qualityMode: QualityMode
   outputFormat: OutputFormat
   researchLevel: ResearchLevel
+  comparisonMode: boolean
   selectedTemplateId: string
   selectedTemplateExists: boolean
   attachedFile: AttachedFile | null
@@ -67,6 +68,7 @@ export function useTurnRunner(options: TurnRunnerOptions) {
     qualityMode,
     outputFormat,
     researchLevel,
+    comparisonMode,
     selectedTemplateId,
     selectedTemplateExists,
     attachedFile,
@@ -373,6 +375,7 @@ export function useTurnRunner(options: TurnRunnerOptions) {
           template_id: selectedTemplateExists ? selectedTemplateId || undefined : undefined,
           research_level: option?.research_level || researchLevel,
           confirm_deep_research: Boolean(option?.confirm_deep_research),
+          comparison_mode: comparisonMode,
           force_route: option?.force_route || undefined,
           model_overrides: modelOverrides,
           attachment_context: attachmentContext,

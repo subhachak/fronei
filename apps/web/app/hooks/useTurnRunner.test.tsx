@@ -52,6 +52,7 @@ describe('useTurnRunner', () => {
       qualityMode: 'standard',
       outputFormat: 'chat',
       researchLevel: 'auto',
+      comparisonMode: false,
       selectedTemplateId: '',
       selectedTemplateExists: false,
       attachedFile: null,
@@ -95,6 +96,28 @@ describe('useTurnRunner', () => {
       id: 'turn_plan',
       autoStartResearchPlan: true,
     }), 'conv_1')
+  })
+
+  it('sends comparison_mode when comparison matrix format is enabled', async () => {
+    const authorizedFetch = vi.fn()
+      .mockResolvedValueOnce(response({ turn_id: 'turn_matrix', conversation_id: 'conv_1', status: 'running' }))
+      .mockResolvedValueOnce(response([
+        'event: turn',
+        'data: {"turn_id":"turn_matrix","status":"completed","turn":{"turn_id":"turn_matrix","answer":"Done","route":"research","events":[],"sources":[],"artifacts":[]}}',
+        '',
+        '',
+      ].join('\n')))
+    const { result } = renderHook(() => useTurnRunner({
+      ...baseOptions(authorizedFetch),
+      comparisonMode: true,
+    }))
+
+    await act(async () => {
+      await result.current.run()
+    })
+
+    const init = authorizedFetch.mock.calls[0][1] as RequestInit
+    expect(JSON.parse(String(init.body))).toMatchObject({ comparison_mode: true })
   })
 
   it('deduplicates replayed event IDs', async () => {
@@ -542,6 +565,7 @@ function baseOptions(authorizedFetch: (path: string, init?: RequestInit) => Prom
     qualityMode: 'standard' as const,
     outputFormat: 'chat' as const,
     researchLevel: 'auto' as const,
+    comparisonMode: false,
     selectedTemplateId: '',
     selectedTemplateExists: false,
     attachedFile: null,

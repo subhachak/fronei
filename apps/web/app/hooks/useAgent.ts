@@ -237,6 +237,7 @@ export function useAgent() {
     sources,
     canRun: turnRunner.canRun,
     run: turnRunner.run,
+    resumeTurn: turnRunner.resumeTurn,
     cancel: turnRunner.cancel,
     setTurnState: turnRunner.setTurnState,
     expandedWorkspaceIds: workspaceHook.expandedWorkspaceIds,

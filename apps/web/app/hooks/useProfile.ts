@@ -216,6 +216,23 @@ export function useProfile() {
     return updateWorkspacePriorities(workspaceId, next)
   }, [workspaces, updateWorkspacePriorities])
 
+  const updateWorkspaceFacts = useCallback(async (workspaceId: string, facts: string[]) => {
+    const response = await authorizedFetch(`/profile/workspaces/${encodeURIComponent(workspaceId)}/facts`, {
+      method: 'PATCH',
+      body: JSON.stringify({ facts }),
+    })
+    if (!response.ok) throw new Error(await readErrorBody(response, 'Could not update pinned facts'))
+    const payload = await response.json() as { workspace_id: string; facts: string[] }
+    setWorkspaces(prev => prev ? prev.map(w => (w.id === workspaceId ? { ...w, pinned_facts: payload.facts } : w)) : prev)
+    return payload.facts
+  }, [authorizedFetch])
+
+  const removeWorkspaceFact = useCallback(async (workspaceId: string, item: string) => {
+    const workspace = workspaces?.find(w => w.id === workspaceId)
+    const next = (workspace?.pinned_facts || []).filter(fact => fact !== item)
+    return updateWorkspaceFacts(workspaceId, next)
+  }, [workspaces, updateWorkspaceFacts])
+
   const exportMyData = useCallback(async () => {
     const response = await authorizedFetch('/profile/export')
     if (!response.ok) throw new Error(await readErrorBody(response, 'Could not export data'))
@@ -254,6 +271,8 @@ export function useProfile() {
     deleteTemplate,
     updateWorkspacePriorities,
     removeWorkspacePriority,
+    updateWorkspaceFacts,
+    removeWorkspaceFact,
     exportMyData,
     deleteMyData,
   }

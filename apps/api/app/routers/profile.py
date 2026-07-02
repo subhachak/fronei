@@ -49,6 +49,11 @@ def _loads(value: str | None, fallback):
         return fallback
 
 
+def _json_list(value: str | None) -> list:
+    parsed = _loads(value, [])
+    return parsed if isinstance(parsed, list) else []
+
+
 def _fmt(dt: datetime | None) -> str | None:
     return dt.isoformat() if dt else None
 
@@ -80,6 +85,10 @@ class PreferencesUpdate(BaseModel):
 
 class WorkspacePrioritiesUpdate(BaseModel):
     priorities: list[str] = Field(default_factory=list)
+
+
+class WorkspaceFactsUpdate(BaseModel):
+    facts: list[str] = Field(default_factory=list)
 
 
 class SettingsUpdate(BaseModel):
@@ -208,8 +217,9 @@ def list_workspace_profiles(user_id: str = CurrentActiveUser) -> dict:
                 {
                     "id": w.id,
                     "name": w.name,
-                    "priorities": _loads(w.priorities_json, []) if isinstance(_loads(w.priorities_json, []), list) else [],
+                    "priorities": _json_list(w.priorities_json),
                     "priorities_updated_at": _fmt(w.priorities_consolidated_at),
+                    "pinned_facts": _json_list(w.pinned_facts_json),
                     "conversation_count": conversation_counts.get(w.id, 0),
                     "turn_count": turn_stats_map.get(w.id, {}).get("turn_count", 0),
                     "total_cost_usd": round(turn_stats_map.get(w.id, {}).get("total_cost_usd", 0.0), 6),
@@ -238,6 +248,25 @@ def update_workspace_priorities(
         workspace.priorities_json = json.dumps(cleaned)
         db.commit()
         return {"workspace_id": workspace_id, "priorities": cleaned}
+    finally:
+        db.close()
+
+
+@router.patch("/workspaces/{workspace_id}/facts")
+def update_workspace_facts(
+    workspace_id: str,
+    body: WorkspaceFactsUpdate,
+    user_id: str = CurrentActiveUser,
+) -> dict:
+    db = SessionLocal()
+    try:
+        workspace = db.query(Workspace).filter(Workspace.id == workspace_id, Workspace.user_id == user_id).first()
+        if workspace is None:
+            raise HTTPException(status_code=404, detail="Workspace not found")
+        cleaned = [str(item).strip()[:200] for item in body.facts if str(item).strip()][:12]
+        workspace.pinned_facts_json = json.dumps(cleaned)
+        db.commit()
+        return {"workspace_id": workspace_id, "facts": cleaned}
     finally:
         db.close()
 
@@ -355,7 +384,8 @@ def export_my_data(user_id: str = CurrentActiveUser) -> dict:
                 {
                     "id": w.id,
                     "name": w.name,
-                    "priorities": _loads(w.priorities_json, []),
+                    "priorities": _json_list(w.priorities_json),
+                    "pinned_facts": _json_list(w.pinned_facts_json),
                     "created_at": _fmt(w.created_at),
                 }
                 for w in workspaces

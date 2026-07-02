@@ -55,6 +55,7 @@ export function ProfileView({ onClose }: { onClose: () => void }) {
   const [activeTab, setActiveTab] = useState<'settings' | 'templates' | 'workspaces' | 'usage'>('settings')
   const [newPreference, setNewPreference] = useState('')
   const [workspacePriorityDrafts, setWorkspacePriorityDrafts] = useState<Record<string, string>>({})
+  const [workspaceFactDrafts, setWorkspaceFactDrafts] = useState<Record<string, string>>({})
   const [renamingTemplateId, setRenamingTemplateId] = useState<string | null>(null)
   const [templateNameDraft, setTemplateNameDraft] = useState('')
   const [replaceTemplateId, setReplaceTemplateId] = useState<string | null>(null)
@@ -333,6 +334,15 @@ export function ProfileView({ onClose }: { onClose: () => void }) {
                       setWorkspacePriorityDrafts(prev => ({ ...prev, [workspace.id]: '' }))
                     }}
                     onRemovePriority={item => void profile.removeWorkspacePriority(workspace.id, item)}
+                    factDraft={workspaceFactDrafts[workspace.id] || ''}
+                    onFactDraftChange={value => setWorkspaceFactDrafts(prev => ({ ...prev, [workspace.id]: value }))}
+                    onAddFact={() => {
+                      const value = (workspaceFactDrafts[workspace.id] || '').trim()
+                      if (!value) return
+                      void profile.updateWorkspaceFacts(workspace.id, [...(workspace.pinned_facts || []), value])
+                      setWorkspaceFactDrafts(prev => ({ ...prev, [workspace.id]: '' }))
+                    }}
+                    onRemoveFact={item => void profile.removeWorkspaceFact(workspace.id, item)}
                   />
                 ))}
               </div>
@@ -719,12 +729,20 @@ function WorkspaceCard({
   onDraftChange,
   onAddPriority,
   onRemovePriority,
+  factDraft,
+  onFactDraftChange,
+  onAddFact,
+  onRemoveFact,
 }: {
   workspace: ProfileWorkspace
   draft: string
   onDraftChange: (value: string) => void
   onAddPriority: () => void
   onRemovePriority: (item: string) => void
+  factDraft: string
+  onFactDraftChange: (value: string) => void
+  onAddFact: () => void
+  onRemoveFact: (item: string) => void
 }) {
   return (
     <div className="rounded-xl border border-neutral-200 p-3.5 dark:border-neutral-800">
@@ -735,6 +753,7 @@ function WorkspaceCard({
           <Badge>${workspace.total_cost_usd.toFixed(2)}</Badge>
         </div>
       </div>
+      <p className="mt-3 text-[11px] font-bold uppercase tracking-wide text-neutral-400">Active right now</p>
       <div className="mt-2.5 flex flex-wrap gap-2">
         {workspace.priorities.length === 0 && (
           <p className="text-xs text-neutral-400">Nothing active here yet.</p>
@@ -754,6 +773,30 @@ function WorkspaceCard({
             }
           }}
           placeholder="Add what's active in this workspace…"
+          className="min-w-0 flex-1 rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-1.5 text-xs text-neutral-900 outline-none dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-100"
+        />
+      </div>
+
+      <p className="mt-4 text-[11px] font-bold uppercase tracking-wide text-neutral-400">Always remember</p>
+      <div className="mt-2.5 flex flex-wrap gap-2">
+        {(workspace.pinned_facts || []).length === 0 && (
+          <p className="text-xs text-neutral-400">No pinned facts yet. These persist until you remove them.</p>
+        )}
+        {(workspace.pinned_facts || []).map(item => (
+          <RemovableChip key={item} label={item} onRemove={() => onRemoveFact(item)} />
+        ))}
+      </div>
+      <div className="mt-2.5 flex gap-2">
+        <input
+          value={factDraft}
+          onChange={event => onFactDraftChange(event.target.value)}
+          onKeyDown={event => {
+            if (event.key === 'Enter' && factDraft.trim()) {
+              event.preventDefault()
+              onAddFact()
+            }
+          }}
+          placeholder="Add a fact Fronei should always know here..."
           className="min-w-0 flex-1 rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-1.5 text-xs text-neutral-900 outline-none dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-100"
         />
       </div>

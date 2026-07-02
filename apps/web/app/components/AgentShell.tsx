@@ -447,16 +447,13 @@ export function AgentShell() {
                       onRetry={message => void agent.run({ label: 'Retry', message })}
                       onEdit={agent.setMessage}
                     />
-                    {agent.result?.turn_status === 'paused' && (
+                    {agent.result?.turn_status === 'paused' && !agent.running && (
                       <PausedApprovalCard
                         result={agent.result}
                         isAdmin={agent.isAdmin}
                         authorizedFetch={agent.authorizedFetch}
-                        onResolved={updated => {
-                          agent.setTurnState(updated, updated.events || [])
-                          if (agent.activeWorkspace?.id && agent.activeConversation?.id) {
-                            void agent.selectConversation(agent.activeWorkspace.id, agent.activeConversation.id)
-                          }
+                        onApproved={(turnId, conversationId, turnMessage) => {
+                          void agent.resumeTurn(turnId, conversationId || agent.activeConversation?.id || '', turnMessage)
                         }}
                       />
                     )}

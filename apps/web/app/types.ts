@@ -190,6 +190,7 @@ export type ProfileWorkspace = {
   name: string
   priorities: string[]
   priorities_updated_at?: string | null
+  pinned_facts: string[]
   conversation_count: number
   turn_count: number
   total_cost_usd: number

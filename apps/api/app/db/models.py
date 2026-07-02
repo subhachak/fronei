@@ -220,6 +220,10 @@ class Workspace(Base):
     # User.profile_json instead, since those genuinely are workspace-agnostic.
     priorities_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     priorities_consolidated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # User-curated, durable facts this workspace should always remember.
+    # Unlike priorities_json, this is never overwritten by the nightly
+    # consolidator; only the profile facts endpoint edits it.
+    pinned_facts_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(
         DateTime,

@@ -346,19 +346,25 @@ def approve_langgraph_pause(
 ) -> dict:
     if not is_admin:
         raise HTTPException(status_code=403, detail="Admin access required.")
-    from app.services.agent.langgraph_runtime import LangGraphResumeConflict, resume_langgraph_research
+    from app.services.agent.langgraph_runtime import LangGraphResumeConflict, claim_langgraph_run_for_resume
     from app.services.agent import persistence
 
+    turn = persistence.find_turn_by_langgraph_run_id(run_id)
+    if turn is None:
+        raise HTTPException(status_code=404, detail="No turn found for this run.")
     try:
-        result = resume_langgraph_research(
-            run_id,
-            approved_by=user_id,
-            updated_budget_ceiling_usd=(body.updated_budget_ceiling_usd if body else None),
-        )
+        claim_langgraph_run_for_resume(run_id, resumed_by=user_id)
     except LangGraphResumeConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    persistence.complete_turn_after_langgraph_resume(run_id, result)
-    return jsonable_encoder(result)
+    persistence.mark_turn_running_for_resume(turn["id"])
+    persistence.submit_langgraph_resume(
+        turn["id"],
+        run_id,
+        approved_by=user_id,
+        updated_budget_ceiling_usd=(body.updated_budget_ceiling_usd if body else None),
+        user_id=turn["user_id"],
+    )
+    return {"turn_id": turn["id"], "conversation_id": turn["conversation_id"], "status": "running"}
 
 
 @router.get("/workspaces")

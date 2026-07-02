@@ -11,12 +11,12 @@ export function PausedApprovalCard({
   result,
   isAdmin,
   authorizedFetch,
-  onResolved,
+  onApproved,
 }: {
   result: AgentResult
   isAdmin: boolean
   authorizedFetch: AuthorizedFetch
-  onResolved: (updated: AgentResult) => void
+  onApproved: (turnId: string, conversationId: string | null, turnMessage: string) => void
 }) {
   const [approving, setApproving] = useState(false)
   const [error, setError] = useState('')
@@ -31,13 +31,10 @@ export function PausedApprovalCard({
         { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) },
       )
       if (!response.ok) throw new Error(await readErrorBody(response, 'Could not approve this run'))
-      const statusResponse = await authorizedFetch(`/turns/${result.turn_id}/status`)
-      if (!statusResponse.ok) throw new Error(await readErrorBody(statusResponse, 'Could not refresh this turn'))
-      const payload = await statusResponse.json()
-      onResolved(payload.turn as AgentResult)
+      const payload = await response.json() as { turn_id?: string; conversation_id?: string | null }
+      onApproved(payload.turn_id || result.turn_id, payload.conversation_id || null, result.goal?.objective || 'Resumed research')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not approve this run')
-    } finally {
       setApproving(false)
     }
   }

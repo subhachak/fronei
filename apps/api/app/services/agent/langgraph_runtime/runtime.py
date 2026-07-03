@@ -12,6 +12,7 @@ from sqlalchemy.exc import OperationalError
 from app.config import get_settings
 from app.db.models import LangGraphRunContext, SessionLocal
 from app.services.agent import model_client
+from app.services.agent.grounding import log_context_entry_state
 from app.services.agent.langgraph_runtime.graph import (
     get_compiled_research_graph,
     run_stub_graph,  # noqa: F401 - re-exported for tests
@@ -332,6 +333,12 @@ def stream_langgraph_research(request: Any, tools: Any, progress: Any = None):
     dict as run_langgraph_research via StopIteration.value.
     """
     run_id = new_id("lgrun")
+    log_context_entry_state(
+        logger,
+        request=request if isinstance(request, TurnRequest) else None,
+        entry_point="stream_langgraph_research",
+        run_id=run_id,
+    )
     _persist_run_context(run_id, request, tools, status="running")
     _RUN_CONTEXTS[run_id] = {"request": request, "tools": tools, "progress": progress}
     # Progress callbacks are bridged from graph updates below; passing None into
@@ -380,6 +387,11 @@ def stream_langgraph_research(request: Any, tools: Any, progress: Any = None):
 
 def run_langgraph_research(request: Any, tools: Any, progress: Any = None) -> dict[str, Any]:
     """Blocking wrapper over stream_langgraph_research."""
+    log_context_entry_state(
+        logger,
+        request=request if isinstance(request, TurnRequest) else None,
+        entry_point="run_langgraph_research",
+    )
     gen = stream_langgraph_research(request, tools, progress)
     try:
         while True:
@@ -477,6 +489,13 @@ def resume_langgraph_research(
     if ctx.get("request") is None:
         _mark_run_context(run_id, "paused")
         raise RuntimeError(f"LangGraph run context is missing for run_id={run_id!r}")
+    log_context_entry_state(
+        logger,
+        request=ctx.get("request") if isinstance(ctx.get("request"), TurnRequest) else None,
+        entry_point="resume_langgraph_research",
+        run_id=run_id,
+        approved_by=approved_by,
+    )
 
     approval: dict[str, Any] = {
         "approved_by": approved_by,
@@ -522,6 +541,13 @@ def stream_resume_langgraph_research(
     if ctx.get("request") is None:
         _mark_run_context(run_id, "paused")
         raise RuntimeError(f"LangGraph run context is missing for run_id={run_id!r}")
+    log_context_entry_state(
+        logger,
+        request=ctx.get("request") if isinstance(ctx.get("request"), TurnRequest) else None,
+        entry_point="stream_resume_langgraph_research",
+        run_id=run_id,
+        approved_by=approved_by,
+    )
 
     approval: dict[str, Any] = {
         "approved_by": approved_by,

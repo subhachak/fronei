@@ -23,6 +23,14 @@ class TurnRequest(BaseModel):
     message: str = Field(min_length=1)
     conversation_id: str | None = None
     conversation_context: str = ""
+    # Prior completed-turn context only. Unlike conversation_context, this
+    # should not include attachment text or generic workspace/profile context.
+    # It lets routers distinguish real conversational grounding from other
+    # useful context sources. EPIC-03 should materialize this as an L1
+    # ContextItem with scope="conversation" and source_type="prior_turn"; this
+    # field remains the compatibility bridge for current router/orchestrator
+    # call sites.
+    prior_turn_context: str = ""
     quality_mode: Literal["draft", "standard", "executive"] = "standard"
     research_level: ResearchLevel = "auto"
     confirm_deep_research: bool = False

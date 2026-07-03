@@ -3,7 +3,9 @@
     "id": "direct_plain_explanation",
     "category": "routing",
     "description": "Stable explanatory questions should stay on the direct fast path.",
-    "request": {"message": "Explain API rate limiting in plain English."},
+    "request": {
+      "message": "Explain API rate limiting in plain English."
+    },
     "fast_router_candidate": {
       "path": "direct_fast",
       "confidence": 0.92,
@@ -18,7 +20,9 @@
     "id": "current_model_pricing_escalates_to_web",
     "category": "freshness",
     "description": "Current model pricing must not be answered from memory.",
-    "request": {"message": "What is the latest OpenAI API model pricing?"},
+    "request": {
+      "message": "What is the latest OpenAI API model pricing?"
+    },
     "fast_router_candidate": {
       "path": "direct_fast",
       "confidence": 0.9,
@@ -28,7 +32,10 @@
       "fast_path": "web_fast",
       "route": "research",
       "research_level": "easy",
-      "matched_signal_groups": ["currentness", "volatile_product_catalog"],
+      "matched_signal_groups": [
+        "currentness",
+        "volatile_product_catalog"
+      ],
       "web_query_contains": "OpenAI"
     }
   },
@@ -36,7 +43,9 @@
     "id": "current_provider_recommendation_escalates_to_web",
     "category": "freshness",
     "description": "Recommendations among volatile providers require a current lookup.",
-    "request": {"message": "Which LLM provider should I use today for a support chatbot?"},
+    "request": {
+      "message": "Which LLM provider should I use today for a support chatbot?"
+    },
     "fast_router_candidate": {
       "path": "direct_fast",
       "confidence": 0.88,
@@ -46,14 +55,20 @@
       "fast_path": "web_fast",
       "route": "research",
       "research_level": "easy",
-      "matched_signal_groups": ["currentness", "volatile_product_catalog", "recommendation_selection"]
+      "matched_signal_groups": [
+        "currentness",
+        "volatile_product_catalog",
+        "recommendation_selection"
+      ]
     }
   },
   {
     "id": "high_stakes_financial_request_escalates",
     "category": "safety",
     "description": "Financial advice should use the full runtime.",
-    "request": {"message": "Should I invest my retirement savings in this private company?"},
+    "request": {
+      "message": "Should I invest my retirement savings in this private company?"
+    },
     "fast_router_candidate": {
       "path": "direct_fast",
       "confidence": 0.91,
@@ -71,7 +86,9 @@
       "route": "research",
       "research_level": "deep",
       "requires_confirmation": true,
-      "matched_signal_groups": ["high_stakes"]
+      "matched_signal_groups": [
+        "high_stakes"
+      ]
     }
   },
   {
@@ -161,7 +178,9 @@
     "id": "comprehensive_market_analysis_requires_confirmation",
     "category": "research",
     "description": "Broad strategic research is deep and requires confirmation.",
-    "request": {"message": "Conduct a comprehensive market analysis for our board strategy session."},
+    "request": {
+      "message": "Conduct a comprehensive market analysis for our board strategy session."
+    },
     "fast_router_candidate": {
       "path": "agentic",
       "confidence": 0.95,
@@ -230,7 +249,9 @@
     "id": "vague_request_asks_for_clarification",
     "category": "clarification",
     "description": "An ungrounded vague command should not guess.",
-    "request": {"message": "Do it."},
+    "request": {
+      "message": "Do it."
+    },
     "fast_router_candidate": {
       "path": "agentic",
       "confidence": 0.62,
@@ -246,7 +267,9 @@
     "id": "vague_research_request_asks_for_target",
     "category": "clarification",
     "description": "Research without a subject should pause for clarification.",
-    "request": {"message": "Research it."},
+    "request": {
+      "message": "Research it."
+    },
     "fast_router_candidate": {
       "path": "agentic",
       "confidence": 0.7,
@@ -264,7 +287,8 @@
     "description": "A grounded follow-up can remain direct.",
     "request": {
       "message": "Summarize its main tradeoffs.",
-      "conversation_context": "Current conversation topic: PostgreSQL connection pooling and PgBouncer."
+      "conversation_context": "Current conversation topic: PostgreSQL connection pooling and PgBouncer.",
+      "last_turn_route": "direct"
     },
     "fast_router_candidate": {
       "path": "direct_fast",
@@ -280,7 +304,9 @@
     "id": "low_confidence_fast_answer_escalates",
     "category": "routing",
     "description": "Low-confidence fast routing must fail toward the full runtime.",
-    "request": {"message": "Help me choose an approach for the migration."},
+    "request": {
+      "message": "Help me choose an approach for the migration."
+    },
     "fast_router_candidate": {
       "path": "direct_fast",
       "confidence": 0.4,
@@ -331,7 +357,9 @@
     "id": "quick_release_lookup_stays_lightweight",
     "category": "freshness",
     "description": "A narrow release-date lookup should use lightweight web research.",
-    "request": {"message": "When was the latest stable Python release announced?"},
+    "request": {
+      "message": "When was the latest stable Python release announced?"
+    },
     "fast_router_candidate": {
       "path": "web_fast",
       "confidence": 0.86,
@@ -342,8 +370,76 @@
       "fast_path": "web_fast",
       "route": "research",
       "research_level": "easy",
-      "matched_signal_groups": ["currentness"],
+      "matched_signal_groups": [
+        "currentness"
+      ],
       "web_query_contains": "Python"
+    }
+  },
+  {
+    "id": "canary_empty_context_follow_up_must_not_route_direct",
+    "category": "grounding_canary",
+    "description": "A follow-up pronoun question with NO prior conversation context must not route to direct_fast claiming context — should escalate to agentic so the agent can gather real context.",
+    "request": {
+      "message": "What did you find earlier about that?",
+      "conversation_context": ""
+    },
+    "fast_router_candidate": {
+      "path": "direct_fast",
+      "confidence": 0.78,
+      "reason": "Answered from conversation context — prior research visible."
+    },
+    "expected": {
+      "fast_path": "agentic",
+      "route": "research"
+    },
+    "orchestrator_candidate": {
+      "route": "research",
+      "research_level": "regular",
+      "requires_confirmation": false,
+      "reason": "Vague follow-up with no prior context requires research to establish what was discussed."
+    }
+  },
+  {
+    "id": "canary_empty_context_summary_request_must_not_claim_context",
+    "category": "grounding_canary",
+    "description": "A summary request with empty conversation_context must not route to direct_fast via a fabricated context claim.",
+    "request": {
+      "message": "Can you summarize what we discussed?",
+      "conversation_context": ""
+    },
+    "fast_router_candidate": {
+      "path": "direct_fast",
+      "confidence": 0.85,
+      "reason": "Context provides the prior conversation for summarization."
+    },
+    "expected": {
+      "fast_path": "agentic",
+      "route": "research"
+    },
+    "orchestrator_candidate": {
+      "route": "research",
+      "research_level": "regular",
+      "requires_confirmation": false,
+      "reason": "Summary request with no context requires research to gather what to summarize."
+    }
+  },
+  {
+    "id": "canary_empty_context_first_turn_ok_to_direct",
+    "category": "grounding_canary",
+    "description": "A clear standalone question on the first turn (no context needed) may legitimately route to direct_fast without triggering the grounding guard.",
+    "request": {
+      "message": "What is the capital of France?",
+      "conversation_context": ""
+    },
+    "fast_router_candidate": {
+      "path": "direct_fast",
+      "confidence": 0.95,
+      "reason": "Simple factual question answerable from general knowledge."
+    },
+    "expected": {
+      "fast_path": "direct_fast",
+      "route": "direct"
     }
   }
 ]

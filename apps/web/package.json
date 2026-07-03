@@ -12,7 +12,11 @@
     "test:unit:watch": "vitest",
     "test:e2e": "npm run test:e2e:guard && playwright test",
     "test:e2e:guard": "tsx scripts/check-e2e-guard.ts",
-    "test:e2e:ui": "playwright test --ui"
+    "test:e2e:ui": "playwright test --ui",
+    "test:e2e:live:auth": "playwright codegen --browser=chromium --channel=chrome --save-storage=.auth/live-user.json ${PLAYWRIGHT_BASE_URL:-http://127.0.0.1:3100}",
+    "test:e2e:live:auth:cdp": "tsx scripts/save-live-auth-from-cdp.ts",
+    "test:e2e:live": "LIVE_E2E=1 playwright test -c playwright.live.config.ts --headed --project=chrome",
+    "test:e2e:live:ui": "LIVE_E2E=1 playwright test -c playwright.live.config.ts --ui"
   },
   "dependencies": {
     "@clerk/nextjs": "^7.4.3",

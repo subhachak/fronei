@@ -70,6 +70,10 @@ def _build_conversation_context(user_id: str, conversation_id: str, request: Tur
     return f"{base_context}\n\n{attachment_block}" if base_context else attachment_block
 
 
+def _build_prior_turn_context(user_id: str, conversation_id: str, request: TurnRequest) -> str:
+    return persistence.conversation_context_text(user_id, conversation_id, current_message=request.message)
+
+
 _DONE = object()
 
 
@@ -102,6 +106,7 @@ def start_turn(
     request = request.model_copy(
         update={
             "conversation_id": conversation.id,
+            "prior_turn_context": _build_prior_turn_context(user_id, conversation.id, request),
             "conversation_context": _build_conversation_context(user_id, conversation.id, request),
             "last_turn_route": persistence.last_turn_route_for_conversation(user_id, conversation.id),
         }
@@ -150,6 +155,7 @@ def stream_turn(
     request = request.model_copy(
         update={
             "conversation_id": conversation.id,
+            "prior_turn_context": _build_prior_turn_context(user_id, conversation.id, request),
             "conversation_context": _build_conversation_context(user_id, conversation.id, request),
             "last_turn_route": persistence.last_turn_route_for_conversation(user_id, conversation.id),
         }

@@ -9,11 +9,22 @@ from pydantic import BaseModel, Field
 
 from app.services.agent import model_client
 from app.services.agent import routing_policy
+from app.services.agent.context_classifier import classify_context_need
+from app.services.agent.context_registry import get_context_items
 from app.services.agent.models import TurnRequest, Source
 from app.services.agent.research_models import _looks_like_low_value_extraction
 from app.services.agent.tools import source_context
+from app.services.agent.grounding import (
+    CONTEXT_CLAIM_PHRASES,
+    log_grounding_check,
+    log_router_pre_decision,
+    prior_turn_grounded,
+)
+from app.observability import log_event
 
 logger = logging.getLogger(__name__)
+
+_CONTEXT_CLAIM_PHRASES = CONTEXT_CLAIM_PHRASES
 
 
 FastPathName = Literal["direct_fast", "web_fast", "agentic"]
@@ -108,15 +119,51 @@ def decide_fast_path(request: TurnRequest) -> FastPathDecision:
             reason="Deep research confirmation or explicit deep mode requires the full runtime.",
             source="guardrail",
         )
+    context_len = len(request.conversation_context) if request.conversation_context else 0
+    grounded = prior_turn_grounded(request)
+    context_decision = classify_context_need(request)
+    try:
+        context_items = get_context_items(request, context_decision)
+    except NotImplementedError as exc:
+        # L2/L3 scopes (workspace, cross_workspace) are not yet wired — log and
+        # continue with empty items until EPIC-03 lands.
+        logger.warning("context_registry_not_implemented: %s", exc)
+        context_items = []
+    log_event(
+        logger,
+        logging.DEBUG,
+        "context_registry_hydrated",
+        conversation_id=request.conversation_id,
+        context_intent=context_decision.intent,
+        context_item_count=len(context_items),
+        context_layers=sorted({item.layer for item in context_items}),
+        context_scopes=sorted({item.scope for item in context_items}),
+    )
     payload = json.dumps(
         {
             "message": request.message,
+            "prior_turn_context": request.prior_turn_context[-3500:] if request.prior_turn_context else "",
             "conversation_context": request.conversation_context[-3500:] if request.conversation_context else "",
             "quality_mode": request.quality_mode,
             "requested_research_level": request.research_level,
             "requested_output_format": request.output_format,
         },
         ensure_ascii=False,
+    )
+    log_router_pre_decision(
+        logger,
+        request=request,
+        prompt=f"{FAST_ROUTER_PROMPT}\n{payload}",
+        router_name="fast_router",
+        quality_mode=request.quality_mode,
+        research_level=request.research_level,
+        output_format=request.output_format,
+        context_intent=context_decision.intent,
+        context_needs_context=context_decision.needs_context,
+        context_target_scopes=context_decision.target_scopes,
+        context_live_search=context_decision.live_search,
+        context_reason=context_decision.reason,
+        context_max_latency_ms=context_decision.budget.max_latency_ms,
     )
     try:
         response = model_client.complete(
@@ -131,12 +178,44 @@ def decide_fast_path(request: TurnRequest) -> FastPathDecision:
             timeout_s=8,
         )
         parsed = _parse_json(response.text)
-        decision = FastPathDecision.model_validate(parsed)
-        decision.model_used = response.model_used
-        decision.latency_ms = response.latency_ms
-        decision.cost_usd = response.cost_usd
-        decision.source = "llm"
-        return _normalize_fast_decision(request, decision)
+        raw_decision = FastPathDecision.model_validate(parsed)
+        raw_decision.model_used = response.model_used
+        raw_decision.latency_ms = response.latency_ms
+        raw_decision.cost_usd = response.cost_usd
+        raw_decision.source = "llm"
+
+        # Check grounding on the raw LLM output — before normalization can
+        # overwrite reason/path — so the log reflects what the model actually said.
+        fabricated_claim = log_grounding_check(
+            logger,
+            request=request,
+            router_name="fast_router",
+            decision=raw_decision.path,
+            reason=raw_decision.reason,
+            conversation_context_len_at_decision=context_len,
+            raw_decision=raw_decision.path,
+        )
+
+        # Hard guard applied to raw decision before normalization — the LLM
+        # fabricated a context claim that doesn't exist; override immediately
+        # so normalization operates on the corrected path.
+        if fabricated_claim and raw_decision.path == "direct_fast":
+            log_event(
+                logger,
+                logging.WARNING,
+                "router_grounding_override",
+                conversation_id=request.conversation_id,
+                original_reason=raw_decision.reason,
+                action="escalated_to_agentic_no_context",
+            )
+            raw_decision.path = "agentic"
+            raw_decision.reason = (
+                "Router claimed grounded context but no prior conversation turn exists. "
+                "Escalated to agentic to avoid fabricated grounding."
+            )
+
+        decision = _normalize_fast_decision(request, raw_decision)
+        return decision
     except Exception as exc:
         logger.warning("agent fast router failed; using fallback: %s", exc)
         fallback = heuristic_fast_path(request)

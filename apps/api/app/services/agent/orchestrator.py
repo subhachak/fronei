@@ -9,6 +9,8 @@ from pydantic import BaseModel, Field
 
 from app.services.agent import model_client
 from app.services.agent import routing_policy
+from app.services.agent.context_classifier import classify_context_need
+from app.services.agent.grounding import log_grounding_check, log_router_pre_decision
 from app.services.agent.models import RouteName, TurnRequest
 
 # Imported lazily to avoid circular imports — only used inside choose_research_level().
@@ -64,6 +66,10 @@ Pending-intent rule:
   research or research_document), not direct. The user is completing a prior intent, not starting a new one.
 - If the user asks a meta question about the conversation itself (e.g. "are you researching now?", "did you find
   anything?", "what route did you pick?") choose direct — these never need source-grounded research.
+
+Grounding rule:
+- Never claim that prior/current conversation context contains an answer unless the supplied context actually includes
+  prior turns. If no prior turns are present and the user asks a vague follow-up, choose clarify rather than direct.
 
 If the route is research or research_document, also choose exactly one research_level:
 - easy: very narrow freshness check or simple sourced lookup; minimal web use.
@@ -129,6 +135,7 @@ def decide_with_options(
     user_payload = json.dumps(
         {
             "message": request.message,
+            "prior_turn_context": request.prior_turn_context[-5000:] if request.prior_turn_context else "",
             "conversation_context": request.conversation_context[-5000:] if request.conversation_context else "",
             "last_turn_route": request.last_turn_route,
             "quality_mode": request.quality_mode,
@@ -139,6 +146,21 @@ def decide_with_options(
             "available_tools": available_tools,
         },
         ensure_ascii=False,
+    )
+    context_decision = classify_context_need(request)
+    log_router_pre_decision(
+        logger,
+        request=request,
+        prompt=f"{SYSTEM_PROMPT}\n{user_payload}",
+        router_name="orchestrator",
+        available_routes=available_routes,
+        available_tools=available_tools,
+        context_intent=context_decision.intent,
+        context_needs_context=context_decision.needs_context,
+        context_target_scopes=context_decision.target_scopes,
+        context_live_search=context_decision.live_search,
+        context_reason=context_decision.reason,
+        context_max_latency_ms=context_decision.budget.max_latency_ms,
     )
     try:
         response = model_client.complete(
@@ -162,6 +184,24 @@ def decide_with_options(
         decision.source = "llm"
         decision.available_routes = available_routes
         decision.available_tools = available_tools
+        fabricated_claim = log_grounding_check(
+            logger,
+            request=request,
+            router_name="orchestrator",
+            decision=decision.route,
+            reason=decision.reason,
+            raw_decision=decision.route,
+        )
+        if fabricated_claim:
+            if decision.route == "direct":
+                decision.route = "clarify"
+                decision.clarification_question = (
+                    "I do not have prior conversation context for that. What topic should I use?"
+                )
+            decision.reason = (
+                "The router claimed prior conversation context, but no prior turn context is available. "
+                "Failing closed instead of relying on fabricated grounding."
+            )
         decision = _normalize_research_decision(request, decision)
         if decision.route == "clarify" and not decision.clarification_question:
             decision.clarification_question = "Can you clarify what outcome you want and any constraints I should follow?"

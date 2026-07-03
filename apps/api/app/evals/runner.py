@@ -207,6 +207,32 @@ def _print_results(results: list[ScenarioResult], *, github: bool) -> None:
                 print(f"FAIL {result.scenario_id} [{result.category}]: {failure}")
     passed = sum(result.passed for result in results)
     print(f"\nAgent evals: {passed}/{len(results)} passed")
+    _print_per_category_metrics(results)
+
+
+def _print_per_category_metrics(results: list[ScenarioResult]) -> None:
+    from collections import defaultdict
+
+    by_category: dict[str, list[ScenarioResult]] = defaultdict(list)
+    for r in results:
+        by_category[r.category].append(r)
+
+    col = "{:<32} {:>6} {:>6} {:>6} {:>6}"
+    print()
+    print(col.format("category", "total", "pass", "prec", "recall"))
+    print("-" * 60)
+    for cat in sorted(by_category):
+        cat_results = by_category[cat]
+        total = len(cat_results)
+        n_pass = sum(r.passed for r in cat_results)
+        # Within-category precision = passed / total (no false positive concept at this level)
+        # For cross-category false-positive rate we track expected vs actual category outcomes.
+        # Since routing evals don't have a single binary label for precision/recall in the
+        # standard sense, we report pass rate and flag failure count.
+        n_fail = total - n_pass
+        pct = f"{n_pass / total:.0%}" if total else "n/a"
+        fail_str = f"{n_fail} fail" if n_fail else "ok"
+        print(f"  {cat:<30} {total:>5}  {n_pass:>5}  {pct:>5}  {fail_str}")
 
 
 def main() -> int:

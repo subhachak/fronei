@@ -126,6 +126,26 @@ def test_delete_fact_removes_matching_key():
     assert facts == [{"fact_key": "owner", "fact_value": "Subh", "confidence": 1.0}]
 
 
+def test_get_facts_for_type_returns_pinned_before_auto_extracted():
+    Session = _session()
+    with Session() as db:
+        upsert_fact(
+            "user_1",
+            "workspace_1",
+            "workspace",
+            "auto",
+            "Auto-extracted",
+            db=db,
+            source_conversation_id="conv_1",
+        )
+        upsert_fact("user_1", "workspace_1", "workspace", "pinned", "Pinned", db=db)
+        facts = get_facts_for_type("user_1", "workspace", db=db)
+
+    assert [fact["fact_key"] for fact in facts] == ["pinned", "auto"]
+    assert facts[0]["source_conversation_id"] is None
+    assert facts[1]["source_conversation_id"] == "conv_1"
+
+
 def test_context_registry_falls_back_to_l3_facts_when_l2_empty(monkeypatch):
     class RequestWithUser(TurnRequest):
         user_id: str = "user_1"

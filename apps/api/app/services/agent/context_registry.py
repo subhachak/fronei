@@ -21,6 +21,8 @@ from app.services.agent.models import TurnRequest
 
 logger = logging.getLogger(__name__)
 
+MIN_FACT_CONFIDENCE = 0.5
+
 
 def get_context_items(request: TurnRequest, decision: ContextDecision, *, db=None) -> list[ContextItem]:
     if not decision.needs_context:
@@ -81,6 +83,13 @@ def get_context_items(request: TurnRequest, decision: ContextDecision, *, db=Non
             from app.services.agent.known_facts import get_facts_for_type
 
             for fact in get_facts_for_type(user_id, "workspace", db=db):
+                confidence = float(fact.get("confidence") or 1.0)
+                if confidence < MIN_FACT_CONFIDENCE:
+                    logger.debug(
+                        "context_l3_low_confidence_fact_skipped",
+                        extra={"fact_key": fact.get("fact_key")},
+                    )
+                    continue
                 content = _format_fact_content(fact)
                 if not content:
                     continue
@@ -90,7 +99,7 @@ def get_context_items(request: TurnRequest, decision: ContextDecision, *, db=Non
                         scope=SCOPE_WORKSPACE,
                         source_type=SOURCE_FACT,
                         content=content,
-                        confidence=float(fact.get("confidence") or 1.0),
+                        confidence=confidence,
                         provenance=f"L3:fact:{fact.get('entity_id')}:{fact.get('fact_key')}",
                     )
                 )

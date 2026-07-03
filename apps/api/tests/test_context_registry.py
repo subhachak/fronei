@@ -4,11 +4,13 @@ from app.services.agent.context_classifier import ContextDecision
 from app.services.agent.context_contracts import (
     LAYER_L1,
     LAYER_L2,
+    LAYER_L3,
     SCOPE_ATTACHMENT,
     SCOPE_CONVERSATION,
     SCOPE_CROSS_WORKSPACE,
     SCOPE_WORKSPACE,
     SOURCE_ATTACHMENT,
+    SOURCE_FACT,
     SOURCE_PRIOR_TURN,
     SOURCE_SUMMARY,
 )
@@ -146,3 +148,100 @@ def test_workspace_and_cross_workspace_scopes_do_not_duplicate_l2_summaries(monk
 
     assert len(items) == 1
     assert items[0].scope == SCOPE_CROSS_WORKSPACE
+
+
+def test_l3_facts_pinned_appear_before_auto_extracted(monkeypatch):
+    """Pinned facts (source_conversation_id=None) come first in context items."""
+    class RequestWithUser(TurnRequest):
+        user_id: str = "user_1"
+
+    monkeypatch.setattr("app.services.agent.session_memory.recall_similar_sessions", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        "app.services.agent.known_facts.get_facts_for_type",
+        lambda *_args, **_kwargs: [
+            {
+                "id": "fact_pinned",
+                "entity_id": "workspace_1",
+                "entity_type": "workspace",
+                "fact_key": "priority",
+                "fact_value": "Pinned value",
+                "confidence": 1.0,
+                "source_conversation_id": None,
+                "created_at": None,
+                "updated_at": None,
+            },
+            {
+                "id": "fact_auto",
+                "entity_id": "workspace_1",
+                "entity_type": "workspace",
+                "fact_key": "status",
+                "fact_value": "Auto-extracted value",
+                "confidence": 0.9,
+                "source_conversation_id": "conv_1",
+                "created_at": None,
+                "updated_at": None,
+            },
+        ],
+    )
+    decision = ContextDecision(
+        intent="same_workspace_recall",
+        needs_context=True,
+        target_scopes=[SCOPE_WORKSPACE],
+        reason="test",
+    )
+
+    items = get_context_items(RequestWithUser(message="Use the project facts."), decision, db="db")
+
+    assert [item.content for item in items] == [
+        "workspace_1.priority: Pinned value",
+        "workspace_1.status: Auto-extracted value",
+    ]
+    assert all(item.layer == LAYER_L3 for item in items)
+    assert all(item.source_type == SOURCE_FACT for item in items)
+
+
+def test_l3_low_confidence_facts_excluded(monkeypatch):
+    """Facts below 0.5 confidence are not included in context items."""
+    class RequestWithUser(TurnRequest):
+        user_id: str = "user_1"
+
+    monkeypatch.setattr("app.services.agent.session_memory.recall_similar_sessions", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        "app.services.agent.known_facts.get_facts_for_type",
+        lambda *_args, **_kwargs: [
+            {
+                "id": "fact_low",
+                "entity_id": "workspace_1",
+                "entity_type": "workspace",
+                "fact_key": "low",
+                "fact_value": "Excluded",
+                "confidence": 0.3,
+                "source_conversation_id": None,
+                "created_at": None,
+                "updated_at": None,
+            },
+            {
+                "id": "fact_boundary",
+                "entity_id": "workspace_1",
+                "entity_type": "workspace",
+                "fact_key": "boundary",
+                "fact_value": "Included",
+                "confidence": 0.5,
+                "source_conversation_id": None,
+                "created_at": None,
+                "updated_at": None,
+            },
+        ],
+    )
+    decision = ContextDecision(
+        intent="same_workspace_recall",
+        needs_context=True,
+        target_scopes=[SCOPE_WORKSPACE],
+        reason="test",
+    )
+
+    items = get_context_items(RequestWithUser(message="Use the project facts."), decision, db="db")
+
+    assert len(items) == 1
+    assert items[0].content == "workspace_1.boundary: Included"
+    assert items[0].confidence == 0.5

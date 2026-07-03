@@ -120,7 +120,7 @@ def get_facts_for_type(user_id: str, entity_type: str, *, db) -> list[dict]:
                     last_verified_at AS updated_at
                 FROM known_facts
                 WHERE user_id = :user_id AND entity_type = :entity_type
-                ORDER BY entity_id, fact_key
+                ORDER BY (source_conversation_id IS NOT NULL), last_verified_at DESC
                 """
             ),
             {"user_id": user_id, "entity_type": entity_type},

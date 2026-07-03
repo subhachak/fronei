@@ -126,5 +126,11 @@
   {"id": "standalone_use_that_approach_boundary", "category": "standalone", "message": "Use that approach.", "expected_intent": "standalone", "needs_context": false, "live_search": false},
   {"id": "live_current_pgvector_release_trap", "category": "live_current_lookup", "message": "What is the current pgvector release?", "expected_intent": "live_current_lookup", "needs_context": false, "live_search": true},
   {"id": "live_latest_railway_pricing_trap", "category": "live_current_lookup", "message": "Check the latest Railway pricing.", "expected_intent": "live_current_lookup", "needs_context": false, "live_search": true},
-  {"id": "workspace_this_workspace_not_cross_trap", "category": "same_workspace_recall", "message": "What did we decide in this workspace?", "expected_intent": "same_workspace_recall", "needs_context": true, "live_search": false}
+  {"id": "workspace_this_workspace_not_cross_trap", "category": "same_workspace_recall", "message": "What did we decide in this workspace?", "expected_intent": "same_workspace_recall", "needs_context": true, "live_search": false},
+  {"id": "workspace_recall_what_did_we_decide", "category": "same_workspace_recall", "message": "What did we decide earlier in this workspace?", "expected_intent": "same_workspace_recall", "needs_context": true, "live_search": false},
+  {"id": "workspace_recall_use_project_facts", "category": "same_workspace_recall", "message": "Use the project facts.", "expected_intent": "same_workspace_recall", "needs_context": true, "live_search": false},
+  {"id": "workspace_recall_pinned_facts", "category": "same_workspace_recall", "message": "What are the pinned facts for this project?", "expected_intent": "same_workspace_recall", "needs_context": true, "live_search": false},
+  {"id": "workspace_recall_known_facts", "category": "same_workspace_recall", "message": "Apply known facts to this analysis.", "expected_intent": "same_workspace_recall", "needs_context": true, "live_search": false},
+  {"id": "workspace_recall_project_decisions", "category": "same_workspace_recall", "message": "What project decisions have we logged?", "expected_intent": "same_workspace_recall", "needs_context": true, "live_search": false},
+  {"id": "workspace_recall_workspace_memory", "category": "same_workspace_recall", "message": "Check our workspace memory before answering.", "expected_intent": "same_workspace_recall", "needs_context": true, "live_search": false}
 ]

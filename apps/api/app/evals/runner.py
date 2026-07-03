@@ -11,11 +11,13 @@ from typing import Any, Iterator
 from pydantic import BaseModel, Field
 
 from app.services.agent import model_client, routing_policy
+from app.services.agent.context_classifier import classify_context_need
 from app.services.agent.fast_path import FastPathDecision, context_sources_from_items, decide_fast_path
 from app.services.agent.models import TurnRequest
 from app.services.agent.orchestrator import OrchestratorDecision, decide_with_options
 
 DEFAULT_FIXTURE_PATH = Path(__file__).resolve().parents[2] / "evals" / "golden_turns.json"
+DEFAULT_CLASSIFIER_FIXTURE_PATH = Path(__file__).resolve().parents[2] / "evals" / "context_classifier_cases.json"
 AVAILABLE_ROUTES = ["direct", "clarify", "research", "document", "research_document"]
 AVAILABLE_TOOLS = [
     "web_search",
@@ -86,7 +88,10 @@ def evaluate_scenario(scenario: GoldenScenario) -> ScenarioResult:
 
 
 def run_evals(path: Path = DEFAULT_FIXTURE_PATH) -> list[ScenarioResult]:
-    return [evaluate_scenario(scenario) for scenario in load_scenarios(path)]
+    return [
+        *[evaluate_scenario(scenario) for scenario in load_scenarios(path)],
+        *run_context_classifier_evals(),
+    ]
 
 
 def assert_evals_pass(path: Path = DEFAULT_FIXTURE_PATH) -> list[ScenarioResult]:
@@ -99,6 +104,43 @@ def assert_evals_pass(path: Path = DEFAULT_FIXTURE_PATH) -> list[ScenarioResult]
         )
         raise AssertionError(f"{len(failed)} golden scenario(s) failed:\n{details}")
     return results
+
+
+def run_context_classifier_evals(path: Path = DEFAULT_CLASSIFIER_FIXTURE_PATH) -> list[ScenarioResult]:
+    cases = json.loads(path.read_text(encoding="utf-8"))
+    return [_evaluate_context_classifier_case(case) for case in cases]
+
+
+def _evaluate_context_classifier_case(case: dict[str, Any]) -> ScenarioResult:
+    request = TurnRequest(
+        message=case["message"],
+        conversation_context=case.get("conversation_context", ""),
+        attachment_context=case.get("attachment_context", ""),
+        last_turn_route=case.get("last_turn_route"),
+    )
+    decision = classify_context_need(request)
+    actual = {
+        "intent": decision.intent,
+        "needs_context": decision.needs_context,
+        "live_search": decision.live_search,
+        "target_scopes": decision.target_scopes,
+    }
+    failures: list[str] = []
+    expected_needs_context = case.get("expected_needs_context", case.get("needs_context", decision.needs_context))
+    expected_live_search = case.get("expected_live_search", case.get("live_search", decision.live_search))
+    if decision.intent != case["expected_intent"]:
+        failures.append(f"intent: expected {case['expected_intent']!r}, got {decision.intent!r}")
+    if decision.needs_context != expected_needs_context:
+        failures.append(f"needs_context: expected {expected_needs_context!r}, got {decision.needs_context!r}")
+    if decision.live_search != expected_live_search:
+        failures.append(f"live_search: expected {expected_live_search!r}, got {decision.live_search!r}")
+    return ScenarioResult(
+        scenario_id=str(case["id"]),
+        category=str(case["category"]),
+        passed=not failures,
+        failures=tuple(failures),
+        actual=actual,
+    )
 
 
 def _orchestrator_decision(

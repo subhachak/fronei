@@ -1,8 +1,9 @@
 'use client'
 
-import { CheckCircle2, ChevronsLeft, ChevronsRight, Folder, Library, Loader2, Moon, Settings2, Shield, Sparkles, Sun, UserCog, type LucideIcon } from 'lucide-react'
+import { CheckCircle2, ChevronsLeft, ChevronsRight, Database, Folder, Library, Loader2, Moon, Settings2, Shield, Sparkles, Sun, UserCog, type LucideIcon } from 'lucide-react'
 import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { useAgent } from '../hooks/useAgent'
+import { useFacts } from '../hooks/useFacts'
 import { useTheme } from '../hooks/useTheme'
 import { AdminShell } from '../admin/components/AdminShell'
 import { brandAsset } from '../lib/brand'
@@ -10,6 +11,7 @@ import { clamp } from '../lib/format'
 import { engineEventsCopyText } from '../lib/commentary'
 import { Composer } from './Composer'
 import { ContextPanel } from './ContextPanel'
+import { FactsPanel } from './FactsPanel'
 import { LibraryPanel } from './LibraryPanel'
 import { ProfileView } from './ProfileView'
 import { PausedApprovalCard } from './PausedApprovalCard'
@@ -47,6 +49,8 @@ function writeStoredCollapsedState(key: string, value: boolean) {
 
 export function AgentShell() {
   const agent = useAgent()
+  const facts = useFacts({ authorizedFetch: agent.authorizedFetch, enabled: Boolean(agent.isSignedIn) })
+  const { reload: reloadFacts } = facts
   const { theme, toggleTheme } = useTheme()
 
   const [librarySheetOpen, setLibrarySheetOpen] = useState(false)
@@ -56,6 +60,7 @@ export function AgentShell() {
   const [leftRailCollapsed, setLeftRailCollapsed] = useState(false)
   const [workPaneScrolled, setWorkPaneScrolled] = useState(false)
   const [workModalOpen, setWorkModalOpen] = useState(false)
+  const [factsModalOpen, setFactsModalOpen] = useState(false)
   const [prefsPopoverOpen, setPrefsPopoverOpen] = useState(false)
   const [uploadSource, setUploadSource] = useState<'composer' | 'profile'>('profile')
   const [view, setView] = useState<'chat' | 'profile' | 'admin'>('chat')
@@ -88,6 +93,10 @@ export function AgentShell() {
   useEffect(() => {
     writeStoredCollapsedState(LEFT_RAIL_COLLAPSED_KEY, leftRailCollapsed)
   }, [leftRailCollapsed])
+
+  useEffect(() => {
+    if (factsModalOpen) void reloadFacts()
+  }, [factsModalOpen, reloadFacts])
 
   function openTemplateUpload(source: 'composer' | 'profile') {
     setUploadSource(source)
@@ -294,6 +303,14 @@ export function AgentShell() {
                 >
                   <Sparkles size={15} />
                 </button>
+                <button
+                  type="button"
+                  onClick={() => setFactsModalOpen(true)}
+                  aria-label="Pinned facts"
+                  className="grid h-8 w-8 place-items-center rounded-full border border-neutral-200 text-neutral-600 dark:border-neutral-800 dark:text-neutral-300"
+                >
+                  <Database size={15} />
+                </button>
                 <div style={{ position: 'relative' }}>
                   <button
                     type="button"
@@ -397,6 +414,9 @@ export function AgentShell() {
                     </Badge>
                     <Button variant="outline" size="icon-sm" onClick={() => setWorkModalOpen(true)} aria-label="Current work" title="Current work" className="rounded-full text-neutral-500">
                       <Sparkles size={14} />
+                    </Button>
+                    <Button variant="outline" size="icon-sm" onClick={() => setFactsModalOpen(true)} aria-label="Pinned facts" title="Pinned facts" className="rounded-full text-neutral-500">
+                      <Database size={14} />
                     </Button>
                     <div style={{ position: 'relative' }}>
                       <Button variant="outline" size="icon-sm" onClick={() => setPrefsPopoverOpen(v => !v)} aria-label="Quick preferences" title="Quick preferences" className="rounded-full text-neutral-500">
@@ -536,6 +556,19 @@ export function AgentShell() {
         }
       >
         {workContent}
+      </Modal>
+      <Modal
+        open={factsModalOpen}
+        onClose={() => setFactsModalOpen(false)}
+        title="Facts"
+      >
+        <FactsPanel
+          facts={facts.facts}
+          loading={facts.loading}
+          error={facts.error}
+          onDelete={facts.deleteFact}
+          onAdd={facts.putFact}
+        />
       </Modal>
     </div>
   )

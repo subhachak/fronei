@@ -455,6 +455,44 @@ def _submit_context_update(snapshot: dict) -> None:
     future.add_done_callback(_cleanup)
 
 
+def _save_session_memory_for_completed_turn(snapshot: dict) -> None:
+    user_id = str(snapshot.get("user_id") or "")
+    conversation_id = str(snapshot.get("conversation_id") or "")
+    if not user_id or not conversation_id:
+        return
+    messages = [
+        {"role": "user", "content": str(snapshot.get("user") or "")},
+        {"role": "assistant", "content": str(snapshot.get("assistant") or "")},
+    ]
+    try:
+        from app.services.agent.session_memory import save_session_summary, summarize_conversation
+
+        summary = summarize_conversation(messages)
+        if not summary.strip():
+            return
+        db = SessionLocal()
+        try:
+            save_session_summary(user_id, conversation_id, summary, db)
+        finally:
+            db.close()
+    except Exception:
+        logger.exception("Fronei session memory worker failed for turn %s", snapshot.get("turn_id"))
+
+
+def _submit_session_memory_update(snapshot: dict) -> None:
+    future = _CONTEXT_EXECUTOR.submit(_save_session_memory_for_completed_turn, snapshot)
+    _PENDING_CONTEXT_FUTURES.add(future)
+
+    def _cleanup(done: Future) -> None:
+        _PENDING_CONTEXT_FUTURES.discard(done)
+        try:
+            done.result()
+        except Exception:
+            logger.exception("Fronei session memory update worker failed")
+
+    future.add_done_callback(_cleanup)
+
+
 def wait_for_context_updates(timeout_s: float = 5.0) -> None:
     """Drain pending best-effort context updates. Intended for tests/admin checks."""
     for future in list(_PENDING_CONTEXT_FUTURES):
@@ -1518,6 +1556,7 @@ def complete_turn(result: TurnResult, *, lease_owner: str | None = None) -> bool
     _record_routing_feedback(result)
     if should_update_context:
         _submit_context_update(context_snapshot)
+        _submit_session_memory_update(context_snapshot)
     return True
 
 

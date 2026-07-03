@@ -123,7 +123,7 @@ def decide_fast_path(request: TurnRequest) -> FastPathDecision:
     grounded = prior_turn_grounded(request)
     context_decision = classify_context_need(request)
     try:
-        context_items = get_context_items(request, context_decision)
+        context_items = get_context_items(request, context_decision, db=None)
     except NotImplementedError as exc:
         # L2/L3 scopes (workspace, cross_workspace) are not yet wired — log and
         # continue with empty items until EPIC-03 lands.

@@ -150,6 +150,21 @@ def _safe_error_text(exc: Exception) -> str:
     return text[:500]
 
 
+def embed(text: str, *, role: str = "embedding") -> list[float]:
+    """Return a normalized embedding vector via litellm.
+
+    Raises on failure so callers can decide whether to fail closed, degrade, or
+    no-op. `role` is reserved for future telemetry/policy hooks.
+    """
+    _configure_keys()
+    from litellm import embedding
+
+    settings = get_settings()
+    response = embedding(model=settings.embedding_model, input=[text])
+    vector = response.data[0]["embedding"]
+    return [float(value) for value in vector]
+
+
 def complete(
     messages: list[dict[str, str]],
     *,

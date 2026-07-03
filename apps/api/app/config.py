@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     nimble_api_endpoint: str = "https://sdk.nimbleway.com/v1/search"
     planner_model: str = "openrouter/qwen/qwen3.7-max"
     planner_fallback_models: str = "claude-sonnet-4-6,gemini/gemini-2.5-flash"
+    embedding_model: str = "text-embedding-3-small"
     # Fronei model assignment (which model handles each role: fast_router,
     # orchestrator, direct_answer, research_planner, synthesis, document_writer,
     # etc.) is no longer configured here. It is DB-backed and admin-editable at

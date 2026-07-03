@@ -1,14 +1,16 @@
 from __future__ import annotations
 
-import pytest
-
 from app.services.agent.context_classifier import ContextDecision
 from app.services.agent.context_contracts import (
     LAYER_L1,
+    LAYER_L2,
     SCOPE_ATTACHMENT,
     SCOPE_CONVERSATION,
+    SCOPE_CROSS_WORKSPACE,
+    SCOPE_WORKSPACE,
     SOURCE_ATTACHMENT,
     SOURCE_PRIOR_TURN,
+    SOURCE_SUMMARY,
 )
 from app.services.agent.context_registry import get_context_items
 from app.services.agent.models import TurnRequest
@@ -85,10 +87,7 @@ def test_needs_context_false_returns_no_items_even_when_fields_are_populated():
     assert get_context_items(request, decision) == []
 
 
-def test_unsupported_scope_raises_not_implemented():
-    # workspace and cross_workspace are L2/L3 — not yet wired; must raise so
-    # EPIC-03 is forced to implement before these paths go live.
-    from app.services.agent.context_contracts import SCOPE_WORKSPACE
+def test_workspace_scope_without_db_returns_no_items():
     decision = ContextDecision(
         intent="same_workspace_recall",
         needs_context=True,
@@ -96,5 +95,51 @@ def test_unsupported_scope_raises_not_implemented():
         reason="test",
     )
 
-    with pytest.raises(NotImplementedError, match="EPIC-03"):
-        get_context_items(TurnRequest(message="Use the project facts."), decision)
+    assert get_context_items(TurnRequest(message="Use the project facts."), decision, db=None) == []
+
+
+def test_workspace_scope_with_db_wraps_l2_summaries(monkeypatch):
+    class RequestWithUser(TurnRequest):
+        user_id: str = "user_1"
+
+    def fake_recall(user_id, query, *, db=None, limit=3):
+        assert user_id == "user_1"
+        assert db == "db"
+        return ["Prior session summary"]
+
+    monkeypatch.setattr("app.services.agent.session_memory.recall_similar_sessions", fake_recall)
+    decision = ContextDecision(
+        intent="same_workspace_recall",
+        needs_context=True,
+        target_scopes=[SCOPE_WORKSPACE],
+        reason="test",
+    )
+
+    items = get_context_items(RequestWithUser(message="Use the project facts."), decision, db="db")
+
+    assert len(items) == 1
+    assert items[0].layer == LAYER_L2
+    assert items[0].scope == SCOPE_WORKSPACE
+    assert items[0].source_type == SOURCE_SUMMARY
+    assert items[0].content == "Prior session summary"
+
+
+def test_workspace_and_cross_workspace_scopes_do_not_duplicate_l2_summaries(monkeypatch):
+    class RequestWithUser(TurnRequest):
+        user_id: str = "user_1"
+
+    monkeypatch.setattr(
+        "app.services.agent.session_memory.recall_similar_sessions",
+        lambda *_args, **_kwargs: ["Prior session summary"],
+    )
+    decision = ContextDecision(
+        intent="explicit_cross_workspace_recall",
+        needs_context=True,
+        target_scopes=[SCOPE_WORKSPACE, SCOPE_CROSS_WORKSPACE],
+        reason="test",
+    )
+
+    items = get_context_items(RequestWithUser(message="Use all known facts."), decision, db="db")
+
+    assert len(items) == 1
+    assert items[0].scope == SCOPE_CROSS_WORKSPACE

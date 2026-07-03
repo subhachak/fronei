@@ -104,7 +104,7 @@ _VAGUE_FOLLOWUP_PATTERNS = (
     r"\bpick up from\b",
     r"\bgo back to\b",
     r"\bcontinue from\b",
-    r"\buse that\b",
+    r"^use that[.!?]?$",
     r"\bsame as before\b",
     r"\bprevious answer\b",
 )

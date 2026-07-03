@@ -272,12 +272,58 @@ def test_agent_direct_fast_path_skips_orchestrator(monkeypatch):
     assert result["route"] == "direct"
     assert result["answer"] == "Fast answer."
     assert result["tool_calls"] == []
+    assert result["context_sources"] == []
     assert envelopes[1].data["data"]["path"] == "direct_fast"
     assert envelopes[1].data["data"]["model_role"] == "fast_router"
     result_event = next(e.data for e in envelopes if e.type == "progress" and e.data["stage"] == "direct_fast_result")
     assert result_event["data"]["actual_model"] == "fake-direct"
     assert result_event["data"]["preferred_model"] == "gpt-4.1-mini"
     assert result_event["data"]["attempted_models"] == ["gpt-4.1-mini"]
+
+
+def test_agent_direct_fast_path_returns_context_sources(monkeypatch):
+    from app.services.agent import model_client
+
+    def fake_complete(messages, *, preferred_model=None, role=None, quality_mode="standard", timeout_s=30, max_tokens=1200, **_kwargs):
+        return SimpleNamespace(
+            text=json.dumps(
+                {
+                    "path": "direct_fast",
+                    "confidence": 0.92,
+                    "reason": "Grounded follow-up.",
+                }
+            ),
+            model_used="fake-fast-router",
+            latency_ms=2,
+            cost_usd=0.001,
+        )
+
+    def fake_stream_complete(messages, *, max_tokens=1200, **kwargs):
+        assert "[L1 · conversation · prior_turn | L1:prior_turn:conv_conv_1]" in messages[-1]["content"]
+        yield from _stream_response(model_client, "Fast answer.")
+
+    monkeypatch.setattr(model_client, "complete", fake_complete)
+    monkeypatch.setattr(model_client, "stream_complete", fake_stream_complete)
+    runtime = Runtime(tools=FakeTools())
+
+    envelopes = _collect_stream(
+        runtime,
+        TurnRequest(
+            message="Make that shorter.",
+            conversation_id="conv_1",
+            prior_turn_context="User: Explain API rate limits.\nAssistant: They throttle requests.",
+        ),
+    )
+
+    result = next(e.data for e in envelopes if e.type == "result")
+    assert result["context_sources"] == [
+        {
+            "layer": "L1",
+            "scope": "conversation",
+            "source_type": "prior_turn",
+            "provenance": "L1:prior_turn:conv_conv_1",
+        }
+    ]
 
 
 def test_agent_web_fast_path_uses_optional_web_search(monkeypatch):
@@ -326,6 +372,7 @@ def test_agent_web_fast_path_uses_optional_web_search(monkeypatch):
     result = next(e.data for e in envelopes if e.type == "result")
     assert result["route"] == "research"
     assert result["answer"] == "Web fast answer."
+    assert result["context_sources"] == []
     assert [call["name"] for call in result["tool_calls"]] == ["web_search", "read_url"]
     assert result["sources"][0]["content"] == "Detailed evidence"
     assert "orchestrator" not in progress_stages

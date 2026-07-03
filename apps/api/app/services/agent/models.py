@@ -118,6 +118,13 @@ class Artifact(BaseModel):
     size_bytes: int = 0
 
 
+class ContextSource(BaseModel):
+    layer: str
+    scope: str
+    source_type: str
+    provenance: str
+
+
 class TurnResult(BaseModel):
     turn_id: str
     goal: Goal
@@ -129,6 +136,7 @@ class TurnResult(BaseModel):
     required_additional_budget_usd: float | None = None
     model_used: str = ""
     sources: list[Source] = Field(default_factory=list)
+    context_sources: list[ContextSource] = Field(default_factory=list)
     tool_calls: list[ToolCall] = Field(default_factory=list)
     artifacts: list[Artifact] = Field(default_factory=list)
     events: list[ProgressEvent] = Field(default_factory=list)

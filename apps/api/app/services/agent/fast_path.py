@@ -12,7 +12,7 @@ from app.services.agent import routing_policy
 from app.services.agent.context_classifier import classify_context_need
 from app.services.agent.context_contracts import ContextItem
 from app.services.agent.context_registry import get_context_items
-from app.services.agent.models import TurnRequest, Source
+from app.services.agent.models import ContextSource, TurnRequest, Source
 from app.services.agent.research_models import _looks_like_low_value_extraction
 from app.services.agent.tools import source_context
 from app.services.agent.grounding import (
@@ -283,6 +283,19 @@ def _format_context_items(items: list[ContextItem]) -> str:
             label = f"[{item.layer} · {item.scope} · {item.source_type}]"
         parts.append(f"{label}\n{content}")
     return "\n\n".join(parts)
+
+
+def context_sources_from_items(items: list[ContextItem]) -> list[ContextSource]:
+    return [
+        ContextSource(
+            layer=item.layer,
+            scope=item.scope,
+            source_type=item.source_type,
+            provenance=item.provenance,
+        )
+        for item in items
+        if item.provenance
+    ]
 
 
 def answer_web_fast(

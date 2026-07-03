@@ -116,5 +116,15 @@
   {"id": "attachment_policy", "category": "attachment_context", "message": "Extract risks from the attached policy.", "attachment_context": "Policy text...", "expected_intent": "attachment_context", "needs_context": true, "live_search": false},
   {"id": "attachment_email", "category": "attachment_context", "message": "Reply to this attached email.", "attachment_context": "Email body...", "expected_intent": "attachment_context", "needs_context": true, "live_search": false},
   {"id": "attachment_requirements", "category": "attachment_context", "message": "Create acceptance criteria from this attachment.", "attachment_context": "Requirements text...", "expected_intent": "attachment_context", "needs_context": true, "live_search": false},
-  {"id": "attachment_deck", "category": "attachment_context", "message": "Summarize the attached deck.", "attachment_context": "Slide text...", "expected_intent": "attachment_context", "needs_context": true, "live_search": false}
+  {"id": "attachment_deck", "category": "attachment_context", "message": "Summarize the attached deck.", "attachment_context": "Slide text...", "expected_intent": "attachment_context", "needs_context": true, "live_search": false},
+
+  {"id": "standalone_connection_pooling_trap", "category": "standalone", "message": "Tell me about connection pooling.", "expected_intent": "standalone", "needs_context": false, "live_search": false},
+  {"id": "standalone_l1_l2_cache_trap", "category": "standalone", "message": "What is the difference between L1 and L2 cache?", "expected_intent": "standalone", "needs_context": false, "live_search": false},
+  {"id": "standalone_pgvector_railway_trap", "category": "standalone", "message": "How do I set up pgvector on Railway?", "expected_intent": "standalone", "needs_context": false, "live_search": false},
+  {"id": "standalone_last_turn_direct_trap", "category": "standalone", "message": "Explain idempotency.", "last_turn_route": "direct", "expected_intent": "standalone", "needs_context": false, "live_search": false},
+  {"id": "standalone_last_turn_research_trap", "category": "standalone", "message": "What are the CAP theorem tradeoffs?", "last_turn_route": "research", "expected_intent": "standalone", "needs_context": false, "live_search": false},
+  {"id": "standalone_use_that_approach_boundary", "category": "standalone", "message": "Use that approach.", "expected_intent": "standalone", "needs_context": false, "live_search": false},
+  {"id": "live_current_pgvector_release_trap", "category": "live_current_lookup", "message": "What is the current pgvector release?", "expected_intent": "live_current_lookup", "needs_context": false, "live_search": true},
+  {"id": "live_latest_railway_pricing_trap", "category": "live_current_lookup", "message": "Check the latest Railway pricing.", "expected_intent": "live_current_lookup", "needs_context": false, "live_search": true},
+  {"id": "workspace_this_workspace_not_cross_trap", "category": "same_workspace_recall", "message": "What did we decide in this workspace?", "expected_intent": "same_workspace_recall", "needs_context": true, "live_search": false}
 ]

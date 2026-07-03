@@ -25,6 +25,7 @@ from app.services.agent.document_subtree import (
 from app.services.agent.fast_path import (
     DIRECT_FAST_PROMPT,
     WEB_FAST_PROMPT,
+    context_sources_from_items,
     decide_fast_path,
     _format_context_items,
 )
@@ -161,6 +162,7 @@ class Runtime:
                     model_used=response.model_used,
                     tool_calls=[],
                     sources=[],
+                    context_sources=context_sources_from_items(fast_decision.context_items),
                     events=events,
                     latency_ms=int((time.perf_counter() - started) * 1000),
                     cost_usd=response.cost_usd + fast_decision.cost_usd,

@@ -20,6 +20,7 @@ ContextSourceType = Literal[
 
 LAYER_L1: ContextLayer = "L1"
 LAYER_L2: ContextLayer = "L2"
+LAYER_L3: ContextLayer = "L3"
 
 SCOPE_CONVERSATION: ContextScope = "conversation"
 SCOPE_WORKSPACE: ContextScope = "workspace"
@@ -29,6 +30,7 @@ SCOPE_ATTACHMENT: ContextScope = "attachment"
 SOURCE_PRIOR_TURN: ContextSourceType = "prior_turn"
 SOURCE_ATTACHMENT: ContextSourceType = "attachment"
 SOURCE_SUMMARY: ContextSourceType = "summary"
+SOURCE_FACT: ContextSourceType = "fact"
 
 
 class ContextItem(BaseModel):

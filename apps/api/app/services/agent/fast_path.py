@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from app.services.agent import model_client
 from app.services.agent import routing_policy
 from app.services.agent.context_classifier import classify_context_need
+from app.services.agent.context_contracts import ContextItem
 from app.services.agent.context_registry import get_context_items
 from app.services.agent.models import TurnRequest, Source
 from app.services.agent.research_models import _looks_like_low_value_extraction
@@ -44,6 +45,7 @@ class FastPathDecision(BaseModel):
     fallback_reason: str | None = None
     matched_signal_groups: list[str] = Field(default_factory=list)
     matched_signals: list[dict] = Field(default_factory=list)
+    context_items: list[ContextItem] = Field(default_factory=list, exclude=True)
 
 
 FAST_ROUTER_PROMPT = """You are Fronei's fast path router.
@@ -215,11 +217,13 @@ def decide_fast_path(request: TurnRequest) -> FastPathDecision:
             )
 
         decision = _normalize_fast_decision(request, raw_decision)
+        decision.context_items = context_items
         return decision
     except Exception as exc:
         logger.warning("agent fast router failed; using fallback: %s", exc)
         fallback = heuristic_fast_path(request)
         fallback.fallback_reason = str(exc)
+        fallback.context_items = context_items
         return fallback
 
 
@@ -243,10 +247,17 @@ def heuristic_fast_path(request: TurnRequest) -> FastPathDecision:
     return FastPathDecision(path="direct_fast", confidence=0.7, reason="The request looks like ordinary chat.", source="heuristic")
 
 
-def answer_direct_fast(request: TurnRequest) -> model_client.ModelResponse:
+def answer_direct_fast(
+    request: TurnRequest,
+    *,
+    context_items: list[ContextItem] | None = None,
+) -> model_client.ModelResponse:
     user_prompt = request.message
     if request.conversation_context:
         user_prompt = f"{request.conversation_context}\n\nCurrent user request:\n{request.message}"
+    recalled_context = _format_context_items(context_items or [])
+    if recalled_context:
+        user_prompt = f"{recalled_context}\n\n{user_prompt}"
     return model_client.simple_completion(
         DIRECT_FAST_PROMPT,
         user_prompt,
@@ -256,6 +267,19 @@ def answer_direct_fast(request: TurnRequest) -> model_client.ModelResponse:
         overrides=request.model_overrides,
         timeout_s=14,
     )
+
+
+def _format_context_items(items: list[ContextItem]) -> str:
+    if not items:
+        return ""
+    parts = []
+    for item in items:
+        content = item.content.strip()
+        if not content:
+            continue
+        label = f"[{item.layer} · {item.scope} · {item.source_type}]"
+        parts.append(f"{label}\n{content}")
+    return "\n\n".join(parts)
 
 
 def answer_web_fast(

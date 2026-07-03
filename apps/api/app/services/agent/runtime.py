@@ -26,6 +26,7 @@ from app.services.agent.fast_path import (
     DIRECT_FAST_PROMPT,
     WEB_FAST_PROMPT,
     decide_fast_path,
+    _format_context_items,
 )
 from app.services.agent.models import (
     Goal,
@@ -129,6 +130,9 @@ class Runtime:
                 user_prompt = request.message
                 if request.conversation_context:
                     user_prompt = f"{request.conversation_context}\n\nCurrent user request:\n{request.message}"
+                recalled_context = _format_context_items(fast_decision.context_items)
+                if recalled_context:
+                    user_prompt = f"{recalled_context}\n\n{user_prompt}"
                 response = yield from self._stream_model_response(
                     progress,
                     [

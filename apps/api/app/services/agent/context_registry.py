@@ -6,11 +6,13 @@ from app.services.agent.context_classifier import ContextDecision
 from app.services.agent.context_contracts import (
     LAYER_L2,
     LAYER_L1,
+    LAYER_L3,
     SCOPE_ATTACHMENT,
     SCOPE_CONVERSATION,
     SCOPE_CROSS_WORKSPACE,
     SCOPE_WORKSPACE,
     SOURCE_ATTACHMENT,
+    SOURCE_FACT,
     SOURCE_PRIOR_TURN,
     SOURCE_SUMMARY,
     ContextItem,
@@ -75,6 +77,23 @@ def get_context_items(request: TurnRequest, decision: ContextDecision, *, db=Non
                     provenance="session_summaries",
                 )
             )
+        if not summaries and decision.intent == "same_workspace_recall" and l2_scope == SCOPE_WORKSPACE:
+            from app.services.agent.known_facts import get_facts_for_type
+
+            for fact in get_facts_for_type(user_id, "workspace", db=db):
+                content = _format_fact_content(fact)
+                if not content:
+                    continue
+                items.append(
+                    ContextItem(
+                        layer=LAYER_L3,
+                        scope=SCOPE_WORKSPACE,
+                        source_type=SOURCE_FACT,
+                        content=content,
+                        confidence=float(fact.get("confidence") or 1.0),
+                        provenance="known_facts",
+                    )
+                )
     return items
 
 
@@ -85,3 +104,13 @@ def _select_l2_scope(target_scopes: list[str]) -> str | None:
     if SCOPE_WORKSPACE in scopes:
         return SCOPE_WORKSPACE
     return None
+
+
+def _format_fact_content(fact: dict) -> str:
+    fact_key = str(fact.get("fact_key") or "").strip()
+    fact_value = str(fact.get("fact_value") or "").strip()
+    entity_id = str(fact.get("entity_id") or "").strip()
+    if not fact_key or not fact_value:
+        return ""
+    prefix = f"{entity_id}." if entity_id else ""
+    return f"{prefix}{fact_key}: {fact_value}"

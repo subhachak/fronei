@@ -50,6 +50,13 @@ export type Source = {
   content?: string
 }
 
+export type ContextSource = {
+  layer: string
+  scope: string
+  source_type: string
+  provenance: string
+}
+
 export type ResearchPlanPreview = {
   title?: string
   goal?: string
@@ -91,6 +98,7 @@ export type AgentResult = {
   model_used?: string
   latency_ms?: number
   sources?: Source[]
+  context_sources?: ContextSource[]
   artifacts?: Artifact[]
   events?: ProgressEvent[]
   follow_up_options?: FollowUpOption[]

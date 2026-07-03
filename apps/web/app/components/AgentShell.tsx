@@ -185,6 +185,7 @@ export function AgentShell() {
     result: agent.result,
     events: agent.events,
     sources: agent.sources,
+    contextSources: agent.result?.context_sources,
     latestArtifact: agent.latestArtifact,
     activeWorkspace: agent.activeWorkspace,
     activeConversation: agent.activeConversation,

@@ -1,9 +1,9 @@
 'use client'
 
-import { ArrowUpRight, BookOpen, ChevronDown, Clock3, Download, FileText, Settings2, Sliders, Sparkles } from 'lucide-react'
+import { ArrowUpRight, BookOpen, Brain, ChevronDown, Clock3, Download, FileText, Settings2, Sliders, Sparkles } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { eventChips, engineEventsCopyText, buildWorkSummary } from '../lib/commentary'
-import type { AgentResult, Artifact, Conversation, DocumentTemplateOption, OutputFormat, ProfileSettings, ProgressEvent, QualityMode, ResearchLevel, Source, Workspace } from '../types'
+import type { AgentResult, Artifact, ContextSource, Conversation, DocumentTemplateOption, OutputFormat, ProfileSettings, ProgressEvent, QualityMode, ResearchLevel, Source, Workspace } from '../types'
 import { CopyButton } from './ui/CopyButton'
 
 const QUALITY_OPTIONS = [
@@ -30,6 +30,7 @@ export function ContextPanel({
   result,
   events,
   sources,
+  contextSources,
   latestArtifact,
   activeWorkspace,
   activeConversation,
@@ -50,6 +51,7 @@ export function ContextPanel({
   result: AgentResult | null
   events: ProgressEvent[]
   sources: Source[]
+  contextSources?: ContextSource[]
   latestArtifact?: Artifact
   activeWorkspace: Workspace | null
   activeConversation: Conversation | null
@@ -189,6 +191,29 @@ export function ContextPanel({
                 ))}
               </div>
             </Subsection>
+
+            {contextSources && contextSources.length > 0 && (
+              <Subsection title="Memory used" icon={Brain}>
+                <div className="grid gap-1.5">
+                  {contextSources.map((cs, i) => (
+                    <div
+                      key={`${cs.provenance}-${i}`}
+                      className="flex items-start gap-2 rounded-md bg-white px-2.5 py-2 dark:bg-neutral-900"
+                    >
+                      <span className="mt-0.5 shrink-0 rounded bg-violet-100 px-1.5 py-0.5 text-[10px] font-bold text-violet-700 dark:bg-violet-500/15 dark:text-violet-300">
+                        {cs.layer}
+                      </span>
+                      <div className="min-w-0">
+                        <p className="truncate text-xs font-semibold text-neutral-700 dark:text-neutral-200">
+                          {_sourceLabel(cs.source_type)}
+                        </p>
+                        <p className="truncate text-[11px] text-neutral-400">{cs.provenance}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </Subsection>
+            )}
     </div>
   )
 }
@@ -253,6 +278,19 @@ function Subsection({
       {children}
     </div>
   )
+}
+
+function _sourceLabel(sourceType: string): string {
+  const labels: Record<string, string> = {
+    prior_turn: 'Prior turn',
+    summary: 'Session memory',
+    fact: 'Known fact',
+    attachment: 'Attachment',
+    artifact: 'Artifact',
+    profile: 'Profile',
+    current_message: 'Current message',
+  }
+  return labels[sourceType] ?? sourceType
 }
 
 function RailSelect({

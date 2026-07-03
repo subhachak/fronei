@@ -11,7 +11,7 @@ from typing import Any, Iterator
 from pydantic import BaseModel, Field
 
 from app.services.agent import model_client, routing_policy
-from app.services.agent.fast_path import FastPathDecision, decide_fast_path
+from app.services.agent.fast_path import FastPathDecision, context_sources_from_items, decide_fast_path
 from app.services.agent.models import TurnRequest
 from app.services.agent.orchestrator import OrchestratorDecision, decide_with_options
 
@@ -43,6 +43,7 @@ class GoldenScenario(BaseModel):
     request: TurnRequest
     fast_router_candidate: dict[str, Any] | None = None
     orchestrator_candidate: dict[str, Any] | None = None
+    expected_context_sources: list[dict[str, Any]] | None = None
     expected: ExpectedOutcome
 
 
@@ -71,6 +72,10 @@ def evaluate_scenario(scenario: GoldenScenario) -> ScenarioResult:
 
     actual = _actual_outcome(scenario.request, fast_decision, orchestrator_decision)
     failures = _compare(scenario.expected, actual)
+    if scenario.expected_context_sources is not None:
+        ok, reason = _check_context_sources(actual.get("context_sources") or [], scenario.expected_context_sources)
+        if not ok:
+            failures.append(f"context_sources: {reason}")
     return ScenarioResult(
         scenario_id=scenario.id,
         category=scenario.category,
@@ -136,6 +141,10 @@ def _actual_outcome(
         "output_format": request.output_format,
         "matched_signal_groups": sorted(fast_decision.matched_signal_groups),
         "web_query": fast_decision.web_query,
+        "context_sources": [
+            source.model_dump(mode="json")
+            for source in context_sources_from_items(fast_decision.context_items)
+        ],
     }
 
 
@@ -158,6 +167,24 @@ def _compare(expected: ExpectedOutcome, actual: dict[str, Any]) -> list[str]:
                 f"web_query: expected to contain {expected.web_query_contains!r}, got {query!r}"
             )
     return failures
+
+
+def _check_context_sources(
+    actual: list[dict],
+    expected: list[dict],
+) -> tuple[bool, str]:
+    """Return (passed, reason). Expected entries are partial matches."""
+    if not expected:
+        if actual:
+            return False, f"expected no context_sources but got {len(actual)}"
+        return True, ""
+    for exp in expected:
+        if not any(
+            all(act.get(k) == v for k, v in exp.items())
+            for act in actual
+        ):
+            return False, f"no context_source matched {exp!r}"
+    return True, ""
 
 
 @contextmanager

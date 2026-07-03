@@ -286,8 +286,9 @@
     "category": "context",
     "description": "A grounded follow-up can remain direct.",
     "request": {
-      "message": "Summarize its main tradeoffs.",
+      "message": "Summarize that.",
       "conversation_context": "Current conversation topic: PostgreSQL connection pooling and PgBouncer.",
+      "prior_turn_context": "Current conversation topic: PostgreSQL connection pooling and PgBouncer.",
       "last_turn_route": "direct"
     },
     "fast_router_candidate": {
@@ -298,7 +299,10 @@
     "expected": {
       "fast_path": "direct_fast",
       "route": "direct"
-    }
+    },
+    "expected_context_sources": [
+      { "layer": "L1", "source_type": "prior_turn" }
+    ]
   },
   {
     "id": "low_confidence_fast_answer_escalates",
@@ -393,6 +397,7 @@
       "fast_path": "agentic",
       "route": "research"
     },
+    "expected_context_sources": [],
     "orchestrator_candidate": {
       "route": "research",
       "research_level": "regular",
@@ -417,6 +422,7 @@
       "fast_path": "agentic",
       "route": "research"
     },
+    "expected_context_sources": [],
     "orchestrator_candidate": {
       "route": "research",
       "research_level": "regular",
@@ -440,6 +446,7 @@
     "expected": {
       "fast_path": "direct_fast",
       "route": "direct"
-    }
+    },
+    "expected_context_sources": []
   }
 ]

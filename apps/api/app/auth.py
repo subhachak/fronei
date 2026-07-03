@@ -9,7 +9,7 @@ from jwt import PyJWKClient
 
 from app.config import get_settings
 
-security = HTTPBearer()
+security = HTTPBearer(auto_error=False)
 logger = logging.getLogger(__name__)
 
 
@@ -58,8 +58,10 @@ def _decode_token(token: str) -> dict:
 
 
 def get_current_user_payload(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
 ) -> dict:
+    if credentials is None:
+        raise HTTPException(status_code=401, detail="Missing bearer token")
     return _decode_token(credentials.credentials)
 
 

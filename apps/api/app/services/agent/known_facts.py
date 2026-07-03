@@ -108,7 +108,16 @@ def get_facts_for_type(user_id: str, entity_type: str, *, db) -> list[dict]:
         rows = db.execute(
             text(
                 """
-                SELECT entity_id, fact_key, fact_value, confidence
+                SELECT
+                    id,
+                    entity_id,
+                    entity_type,
+                    fact_key,
+                    fact_value,
+                    confidence,
+                    source_conversation_id,
+                    created_at,
+                    last_verified_at AS updated_at
                 FROM known_facts
                 WHERE user_id = :user_id AND entity_type = :entity_type
                 ORDER BY entity_id, fact_key
@@ -118,7 +127,12 @@ def get_facts_for_type(user_id: str, entity_type: str, *, db) -> list[dict]:
         ).mappings()
         return [
             {
+                "id": str(row["id"]),
                 "entity_id": str(row["entity_id"]),
+                "entity_type": str(row["entity_type"]),
+                "source_conversation_id": _string_or_none(row["source_conversation_id"]),
+                "created_at": _string_or_none(row["created_at"]),
+                "updated_at": _string_or_none(row["updated_at"]),
                 **_fact_dict(row),
             }
             for row in rows
@@ -128,9 +142,37 @@ def get_facts_for_type(user_id: str, entity_type: str, *, db) -> list[dict]:
         return []
 
 
+def delete_fact(user_id: str, entity_id: str, fact_key: str, *, db) -> None:
+    try:
+        db.execute(
+            text(
+                """
+                DELETE FROM known_facts
+                WHERE user_id = :user_id
+                  AND entity_id = :entity_id
+                  AND fact_key = :fact_key
+                """
+            ),
+            {"user_id": user_id, "entity_id": entity_id, "fact_key": fact_key},
+        )
+        db.commit()
+    except Exception as exc:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        logger.warning("known_facts_delete_error", extra={"error": str(exc)[:500]})
+
+
 def _fact_dict(row) -> dict:
     return {
         "fact_key": str(row["fact_key"]),
         "fact_value": str(row["fact_value"]),
         "confidence": float(row["confidence"]),
     }
+
+
+def _string_or_none(value) -> str | None:
+    if value is None:
+        return None
+    return str(value)

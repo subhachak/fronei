@@ -6,7 +6,7 @@ from sqlalchemy.orm import sessionmaker
 from app.services.agent.context_classifier import ContextDecision
 from app.services.agent.context_contracts import LAYER_L3, SCOPE_WORKSPACE, SOURCE_FACT
 from app.services.agent.context_registry import get_context_items
-from app.services.agent.known_facts import get_facts, get_facts_for_type, upsert_fact
+from app.services.agent.known_facts import delete_fact, get_facts, get_facts_for_type, upsert_fact
 from app.services.agent.models import TurnRequest
 
 
@@ -82,10 +82,48 @@ def test_get_facts_for_type_returns_multiple_entities():
         upsert_fact("user_1", "workspace_2", "workspace", "project", "Research OS", db=db)
         facts = get_facts_for_type("user_1", "workspace", db=db)
 
-    assert facts == [
-        {"entity_id": "workspace_1", "fact_key": "project", "fact_value": "Context OS", "confidence": 1.0},
-        {"entity_id": "workspace_2", "fact_key": "project", "fact_value": "Research OS", "confidence": 1.0},
+    assert [
+        {
+            "entity_id": fact["entity_id"],
+            "entity_type": fact["entity_type"],
+            "fact_key": fact["fact_key"],
+            "fact_value": fact["fact_value"],
+            "confidence": fact["confidence"],
+            "source_conversation_id": fact["source_conversation_id"],
+        }
+        for fact in facts
+    ] == [
+        {
+            "entity_id": "workspace_1",
+            "entity_type": "workspace",
+            "fact_key": "project",
+            "fact_value": "Context OS",
+            "confidence": 1.0,
+            "source_conversation_id": None,
+        },
+        {
+            "entity_id": "workspace_2",
+            "entity_type": "workspace",
+            "fact_key": "project",
+            "fact_value": "Research OS",
+            "confidence": 1.0,
+            "source_conversation_id": None,
+        },
     ]
+    assert all(fact["id"].startswith("fact_") for fact in facts)
+    assert all(fact["created_at"] for fact in facts)
+    assert all(fact["updated_at"] for fact in facts)
+
+
+def test_delete_fact_removes_matching_key():
+    Session = _session()
+    with Session() as db:
+        upsert_fact("user_1", "workspace_1", "workspace", "project", "Context OS", db=db)
+        upsert_fact("user_1", "workspace_1", "workspace", "owner", "Subh", db=db)
+        delete_fact("user_1", "workspace_1", "project", db=db)
+        facts = get_facts("user_1", "workspace_1", db=db)
+
+    assert facts == [{"fact_key": "owner", "fact_value": "Subh", "confidence": 1.0}]
 
 
 def test_context_registry_falls_back_to_l3_facts_when_l2_empty(monkeypatch):

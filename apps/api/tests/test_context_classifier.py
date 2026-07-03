@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 from collections import Counter
 from pathlib import Path
+from types import SimpleNamespace
 
+from app.services.agent import model_client
 from app.services.agent.context_classifier import classify_context_need
 from app.services.agent.models import TurnRequest
 
@@ -15,16 +17,39 @@ def _request(case: dict) -> TurnRequest:
     return TurnRequest(
         message=case["message"],
         conversation_context=case.get("conversation_context", ""),
+        prior_turn_context=case.get("prior_turn_context", ""),
         attachment_context=case.get("attachment_context", ""),
         last_turn_route=case.get("last_turn_route"),
     )
+
+
+def _classify_case(case: dict):
+    if not case.get("requires_llm_assist"):
+        return classify_context_need(_request(case))
+    original = model_client.simple_completion
+    model_client.simple_completion = lambda *_args, **_kwargs: SimpleNamespace(
+        text=json.dumps(
+            {
+                "intent": case["expected_intent"],
+                "needs_context": case.get("expected_needs_context", case.get("needs_context", False)),
+                "reason": "test_fixture",
+            }
+        ),
+        model_used="test-context-classifier",
+        latency_ms=1,
+        cost_usd=0.0,
+    )
+    try:
+        return classify_context_need(_request(case))
+    finally:
+        model_client.simple_completion = original
 
 
 def test_context_classifier_cases_match_expected_intent():
     cases = json.loads(FIXTURE.read_text(encoding="utf-8"))
     failures: list[str] = []
     for case in cases:
-        decision = classify_context_need(_request(case))
+        decision = _classify_case(case)
         if decision.intent != case["expected_intent"]:
             failures.append(f"{case['id']}: expected intent {case['expected_intent']!r}, got {decision.intent!r}")
         if decision.needs_context != case["needs_context"]:
@@ -58,7 +83,7 @@ def test_context_classifier_precision_recall_thresholds():
     cross_workspace_false_positive = 0
 
     for case in cases:
-        decision = classify_context_need(_request(case))
+        decision = _classify_case(case)
         expected_needs_context = bool(case["needs_context"])
         if decision.needs_context and expected_needs_context:
             true_positive += 1
@@ -86,3 +111,48 @@ def test_context_classifier_precision_recall_thresholds():
     assert precision >= 0.85
     assert vague_recall >= 0.95
     assert cross_workspace_false_positive == 0
+
+
+def test_llm_assist_upgrades_standalone_when_prior_context_exists(monkeypatch):
+    calls: list[dict] = []
+
+    def fake_simple_completion(_system, _user, **kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(
+            text=json.dumps({
+                "intent": "same_workspace_recall",
+                "needs_context": True,
+                "reason": "implicit project constraint question",
+            }),
+            model_used="test-context-classifier",
+            latency_ms=1,
+            cost_usd=0.0,
+        )
+
+    monkeypatch.setattr(model_client, "simple_completion", fake_simple_completion)
+    decision = classify_context_need(TurnRequest(
+        message="Are there any constraints I should be aware of?",
+        prior_turn_context="User: Let's start planning the migration.\nAssistant: Sure, what's the scope?",
+    ))
+
+    assert calls
+    assert calls[0]["role"] == "context_classifier"
+    assert calls[0]["timeout_s"] == 12
+    assert decision.intent == "same_workspace_recall"
+    assert decision.needs_context is True
+    assert decision.reason.startswith("llm_assist_upgrade:")
+
+
+def test_llm_assist_failure_falls_back_to_standalone(monkeypatch):
+    def fail_simple_completion(*_args, **_kwargs):
+        raise RuntimeError("provider timeout")
+
+    monkeypatch.setattr(model_client, "simple_completion", fail_simple_completion)
+    decision = classify_context_need(TurnRequest(
+        message="Are there any constraints I should be aware of?",
+        prior_turn_context="User: Let's start planning the migration.\nAssistant: Sure, what's the scope?",
+    ))
+
+    assert decision.intent == "standalone"
+    assert decision.needs_context is False
+    assert decision.reason == "deterministic_rule: standalone"

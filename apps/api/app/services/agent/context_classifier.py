@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
+import logging
 import re
-from typing import Literal
+from typing import Literal, get_args
 
 from pydantic import BaseModel, Field
 
@@ -17,6 +19,7 @@ from app.services.agent.context_contracts import (
 from app.services.agent.models import TurnRequest
 from app.services.agent.grounding import prior_turn_grounded
 
+logger = logging.getLogger(__name__)
 
 ContextIntent = Literal[
     "standalone",
@@ -107,6 +110,7 @@ _VAGUE_FOLLOWUP_PATTERNS = (
     r"^use that[.!?]?$",
     r"\bsame as before\b",
     r"\bprevious answer\b",
+    r"\bconclusion again\b",
 )
 
 _REFERENTIAL_PATTERNS = (
@@ -118,6 +122,26 @@ _REFERENTIAL_PATTERNS = (
     r"\bthe (?:first|second|third|other|same) one\b",
     r"\bsame question\b",
 )
+
+_ASSIST_SYSTEM_PROMPT = """You are a context-need classifier for an AI assistant.
+
+Given a user message and optional prior turn context, classify the context intent.
+
+Return ONLY a JSON object:
+{
+  "intent": "<one of: standalone|same_conversation_followup|vague_unresolved_followup|same_workspace_recall|explicit_cross_workspace_recall|live_current_lookup|attachment_context>",
+  "needs_context": <true|false>,
+  "reason": "<short phrase>"
+}
+
+Rules:
+- standalone: self-contained question, no prior context needed
+- same_conversation_followup: refers to this conversation's prior turns
+- vague_unresolved_followup: vague reference, no usable prior context available
+- same_workspace_recall: asks about workspace/project facts or decisions
+- live_current_lookup: needs current/live information
+- Be conservative - prefer standalone when uncertain.
+"""
 
 
 def classify_context_need(request: TurnRequest) -> ContextDecision:
@@ -177,12 +201,82 @@ def classify_context_need(request: TurnRequest) -> ContextDecision:
             reason="deterministic_rule: referential_followup_with_prior_turn",
         )
 
-    return ContextDecision(
+    standalone_decision = ContextDecision(
         intent="standalone",
         needs_context=False,
         target_scopes=[],
         layers=[],
         reason="deterministic_rule: standalone",
+    )
+    if _llm_assist_eligible(request, standalone_decision):
+        llm_decision = _llm_classify(request)
+        if llm_decision is not None and llm_decision.intent != "standalone":
+            llm_decision.reason = f"llm_assist_upgrade: {llm_decision.reason}"
+            logger.info(
+                "context_classifier_llm_assist_upgrade",
+                extra={"intent": llm_decision.intent},
+            )
+            return llm_decision
+    return standalone_decision
+
+
+def _llm_assist_eligible(request: TurnRequest, deterministic: ContextDecision) -> bool:
+    if deterministic.intent != "standalone":
+        return False
+    tokens = (request.message or "").split()
+    if len(tokens) < 4:
+        return False
+    if not (request.prior_turn_context or "").strip():
+        return False
+    return True
+
+
+def _llm_classify(request: TurnRequest) -> ContextDecision | None:
+    """Call a fast LLM to classify context need. Returns None on any failure."""
+    try:
+        from app.services.agent import model_client
+
+        payload = json.dumps(
+            {
+                "message": request.message,
+                "prior_turn_context": (request.prior_turn_context or "")[-1500:],
+            },
+            ensure_ascii=False,
+        )
+        response = model_client.simple_completion(
+            _ASSIST_SYSTEM_PROMPT,
+            payload,
+            role="context_classifier",
+            max_tokens=120,
+            timeout_s=12,
+        )
+        parsed = json.loads(response.text.strip())
+        intent = parsed.get("intent", "standalone")
+        if intent not in get_args(ContextIntent):
+            return None
+        needs_context = bool(parsed.get("needs_context", False))
+        return _intent_to_decision(intent, needs_context, parsed.get("reason", "llm_assist"))
+    except Exception as exc:
+        logger.debug("context_classifier_llm_assist_error", extra={"error": str(exc)[:300]})
+        return None
+
+
+def _intent_to_decision(intent: ContextIntent, needs_context: bool, reason: str) -> ContextDecision:
+    scope_map: dict[ContextIntent, list[ContextScope]] = {
+        "standalone": [],
+        "same_conversation_followup": [SCOPE_CONVERSATION],
+        "vague_unresolved_followup": [],
+        "same_workspace_recall": [SCOPE_WORKSPACE],
+        "explicit_cross_workspace_recall": [SCOPE_CROSS_WORKSPACE],
+        "live_current_lookup": [],
+        "attachment_context": [SCOPE_ATTACHMENT],
+    }
+    return ContextDecision(
+        intent=intent,
+        needs_context=needs_context,
+        target_scopes=scope_map.get(intent, []),
+        live_search=(intent == "live_current_lookup"),
+        reason=f"llm_assist: {reason}",
     )
 
 

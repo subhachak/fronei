@@ -115,10 +115,12 @@ def _evaluate_context_classifier_case(case: dict[str, Any]) -> ScenarioResult:
     request = TurnRequest(
         message=case["message"],
         conversation_context=case.get("conversation_context", ""),
+        prior_turn_context=case.get("prior_turn_context", ""),
         attachment_context=case.get("attachment_context", ""),
         last_turn_route=case.get("last_turn_route"),
     )
-    decision = classify_context_need(request)
+    with _deterministic_context_classifier_assist(case):
+        decision = classify_context_need(request)
     actual = {
         "intent": decision.intent,
         "needs_context": decision.needs_context,
@@ -141,6 +143,34 @@ def _evaluate_context_classifier_case(case: dict[str, Any]) -> ScenarioResult:
         failures=tuple(failures),
         actual=actual,
     )
+
+
+@contextmanager
+def _deterministic_context_classifier_assist(case: dict[str, Any]) -> Iterator[None]:
+    if not case.get("requires_llm_assist"):
+        yield
+        return
+    original_simple_completion = model_client.simple_completion
+
+    def fake_simple_completion(_system, _user, **_kwargs) -> SimpleNamespace:
+        return SimpleNamespace(
+            text=json.dumps(
+                {
+                    "intent": case["expected_intent"],
+                    "needs_context": case.get("expected_needs_context", case.get("needs_context", False)),
+                    "reason": "eval_fixture",
+                }
+            ),
+            model_used="eval-context-classifier",
+            latency_ms=1,
+            cost_usd=0.0,
+        )
+
+    model_client.simple_completion = fake_simple_completion
+    try:
+        yield
+    finally:
+        model_client.simple_completion = original_simple_completion
 
 
 def _orchestrator_decision(

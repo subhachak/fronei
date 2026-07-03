@@ -19,6 +19,7 @@ from typing import Any
 
 MODEL_ROLES: tuple[str, ...] = (
     "fast_router",
+    "context_classifier",
     "orchestrator",
     "direct_answer",
     "research_brief",
@@ -43,6 +44,7 @@ MODEL_ROLES: tuple[str, ...] = (
 
 DEFAULT_MODEL_POLICY: dict[str, str] = {
     "fast_router": "gpt-4.1-mini",
+    "context_classifier": "gpt-4.1-mini",
     "orchestrator": "gpt-4.1-mini",
     "direct_answer": "gpt-4.1-mini",
     "research_brief": "claude-sonnet-4-6",

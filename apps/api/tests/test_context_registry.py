@@ -47,6 +47,7 @@ def test_same_conversation_followup_wraps_prior_turn_context():
     assert item.scope == SCOPE_CONVERSATION
     assert item.source_type == SOURCE_PRIOR_TURN
     assert item.content == request.prior_turn_context
+    assert item.provenance == "L1:prior_turn:conv_unknown"
 
 
 def test_attachment_context_wraps_attachment_context():
@@ -69,6 +70,7 @@ def test_attachment_context_wraps_attachment_context():
     assert item.scope == SCOPE_ATTACHMENT
     assert item.source_type == SOURCE_ATTACHMENT
     assert item.content == request.attachment_context
+    assert item.provenance == "L1:attachment:uploaded"
 
 
 def test_needs_context_false_returns_no_items_even_when_fields_are_populated():
@@ -105,7 +107,7 @@ def test_workspace_scope_with_db_wraps_l2_summaries(monkeypatch):
     def fake_recall(user_id, query, *, db=None, limit=3):
         assert user_id == "user_1"
         assert db == "db"
-        return ["Prior session summary"]
+        return [("conv_1", "Prior session summary")]
 
     monkeypatch.setattr("app.services.agent.session_memory.recall_similar_sessions", fake_recall)
     decision = ContextDecision(
@@ -122,6 +124,7 @@ def test_workspace_scope_with_db_wraps_l2_summaries(monkeypatch):
     assert items[0].scope == SCOPE_WORKSPACE
     assert items[0].source_type == SOURCE_SUMMARY
     assert items[0].content == "Prior session summary"
+    assert items[0].provenance == "L2:summary:conv_conv_1"
 
 
 def test_workspace_and_cross_workspace_scopes_do_not_duplicate_l2_summaries(monkeypatch):
@@ -130,7 +133,7 @@ def test_workspace_and_cross_workspace_scopes_do_not_duplicate_l2_summaries(monk
 
     monkeypatch.setattr(
         "app.services.agent.session_memory.recall_similar_sessions",
-        lambda *_args, **_kwargs: ["Prior session summary"],
+        lambda *_args, **_kwargs: [("conv_1", "Prior session summary")],
     )
     decision = ContextDecision(
         intent="explicit_cross_workspace_recall",

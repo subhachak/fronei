@@ -277,7 +277,10 @@ def _format_context_items(items: list[ContextItem]) -> str:
         content = item.content.strip()
         if not content:
             continue
-        label = f"[{item.layer} · {item.scope} · {item.source_type}]"
+        if item.provenance:
+            label = f"[{item.layer} · {item.scope} · {item.source_type} | {item.provenance}]"
+        else:
+            label = f"[{item.layer} · {item.scope} · {item.source_type}]"
         parts.append(f"{label}\n{content}")
     return "\n\n".join(parts)
 

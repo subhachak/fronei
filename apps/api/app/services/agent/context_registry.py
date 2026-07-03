@@ -36,7 +36,7 @@ def get_context_items(request: TurnRequest, decision: ContextDecision, *, db=Non
                 scope=SCOPE_CONVERSATION,
                 source_type=SOURCE_PRIOR_TURN,
                 content=request.prior_turn_context,
-                provenance="TurnRequest.prior_turn_context",
+                provenance=f"L1:prior_turn:conv_{request.conversation_id or 'unknown'}",
             )
         )
     if SCOPE_ATTACHMENT in decision.target_scopes and request.attachment_context:
@@ -46,7 +46,7 @@ def get_context_items(request: TurnRequest, decision: ContextDecision, *, db=Non
                 scope=SCOPE_ATTACHMENT,
                 source_type=SOURCE_ATTACHMENT,
                 content=request.attachment_context,
-                provenance="TurnRequest.attachment_context",
+                provenance="L1:attachment:uploaded",
             )
         )
     l2_scope = _select_l2_scope(decision.target_scopes)
@@ -67,14 +67,14 @@ def get_context_items(request: TurnRequest, decision: ContextDecision, *, db=Non
         from app.services.agent.session_memory import recall_similar_sessions
 
         summaries = recall_similar_sessions(user_id, request.message, db=db)
-        for summary in summaries:
+        for conversation_id, summary in summaries:
             items.append(
                 ContextItem(
                     layer=LAYER_L2,
                     scope=l2_scope,
                     source_type=SOURCE_SUMMARY,
                     content=summary,
-                    provenance="session_summaries",
+                    provenance=f"L2:summary:conv_{conversation_id}" if conversation_id else "L2:summary:unknown",
                 )
             )
         if not summaries and decision.intent == "same_workspace_recall" and l2_scope == SCOPE_WORKSPACE:
@@ -91,7 +91,7 @@ def get_context_items(request: TurnRequest, decision: ContextDecision, *, db=Non
                         source_type=SOURCE_FACT,
                         content=content,
                         confidence=float(fact.get("confidence") or 1.0),
-                        provenance="known_facts",
+                        provenance=f"L3:fact:{fact.get('entity_id')}:{fact.get('fact_key')}",
                     )
                 )
     return items

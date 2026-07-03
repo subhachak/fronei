@@ -65,10 +65,12 @@ def test_answer_direct_fast_prepends_l2_context(monkeypatch):
         scope=SCOPE_WORKSPACE,
         source_type=SOURCE_SUMMARY,
         content="Prior session decided to use pgvector for summaries.",
+        provenance="L2:summary:conv_conv_1",
     )
 
     answer_direct_fast(TurnRequest(message="Continue the plan."), context_items=[item])
 
     assert captured["user"].startswith(
-        "[L2 · workspace · summary]\nPrior session decided to use pgvector for summaries.\n\nContinue the plan."
+        "[L2 · workspace · summary | L2:summary:conv_conv_1]\n"
+        "Prior session decided to use pgvector for summaries.\n\nContinue the plan."
     )

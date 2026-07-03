@@ -41,7 +41,7 @@ class _Db:
 
 class _Result:
     def fetchall(self):
-        return [("Prior session summary",)]
+        return [("conv_1", "Prior session summary")]
 
 
 def test_recall_similar_sessions_returns_empty_on_sqlite(monkeypatch):

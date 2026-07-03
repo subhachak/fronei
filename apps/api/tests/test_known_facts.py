@@ -118,3 +118,4 @@ def test_context_registry_falls_back_to_l3_facts_when_l2_empty(monkeypatch):
     assert items[0].source_type == SOURCE_FACT
     assert items[0].content == "workspace_1.project: Context OS"
     assert items[0].confidence == 0.8
+    assert items[0].provenance == "L3:fact:workspace_1:project"

@@ -461,10 +461,11 @@ def _save_session_memory_for_completed_turn(snapshot: dict) -> None:
     if not user_id or not conversation_id:
         return
     messages = [
-        {"role": "user", "content": str(snapshot.get("user") or "")},
-        {"role": "assistant", "content": str(snapshot.get("assistant") or "")},
+        {"role": "user", "content": str(snapshot.get("objective") or "")},
+        {"role": "assistant", "content": str(snapshot.get("answer") or "")},
     ]
     try:
+        from app.services.agent.fact_extractor import extract_and_store_facts
         from app.services.agent.session_memory import save_session_summary, summarize_conversation
 
         summary = summarize_conversation(messages)
@@ -473,6 +474,9 @@ def _save_session_memory_for_completed_turn(snapshot: dict) -> None:
         db = SessionLocal()
         try:
             save_session_summary(user_id, conversation_id, summary, db)
+            assistant_text = str(snapshot.get("answer") or "")
+            if snapshot.get("route") in {"research", "research_document"} and assistant_text.strip():
+                extract_and_store_facts(user_id, conversation_id, assistant_text, db=db)
         finally:
             db.close()
     except Exception:

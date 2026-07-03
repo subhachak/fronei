@@ -53,8 +53,8 @@ def save_session_summary(user_id: str, conversation_id: str, summary: str, db) -
         logger.warning("session_memory_error", extra={"error": str(exc)[:500], "operation": "save"})
 
 
-def recall_similar_sessions(user_id: str, query: str, *, db=None, limit: int = 3) -> list[str]:
-    """Return up to `limit` summary strings most similar to query.
+def recall_similar_sessions(user_id: str, query: str, *, db=None, limit: int = 3) -> list[tuple[str, str]]:
+    """Return up to `limit` (conversation_id, summary) tuples most similar to query.
 
     Returns [] on any failure. SQLite/local dev returns [] immediately because
     pgvector similarity is unavailable there.
@@ -68,7 +68,7 @@ def recall_similar_sessions(user_id: str, query: str, *, db=None, limit: int = 3
         rows = db.execute(
             text(
                 """
-                SELECT summary
+                SELECT conversation_id, summary
                 FROM session_summaries
                 WHERE user_id = :user_id AND embedding IS NOT NULL
                 ORDER BY embedding <=> CAST(:embedding AS vector)
@@ -88,7 +88,7 @@ def recall_similar_sessions(user_id: str, query: str, *, db=None, limit: int = 3
                 extra={"elapsed_ms": elapsed_ms, "limit": limit},
             )
             return []
-        return [str(row[0]) for row in rows[:limit] if row and row[0]]
+        return [(str(row[0]), str(row[1])) for row in rows[:limit] if row and row[0] and row[1]]
     except Exception as exc:
         logger.warning("session_memory_error", extra={"error": str(exc)[:500], "operation": "recall"})
         return []

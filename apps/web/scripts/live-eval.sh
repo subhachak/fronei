@@ -2,6 +2,7 @@
 set -euo pipefail
 
 BASE_URL="${1:-https://www.fronei.com}"
+SUITE="${2:-${LIVE_E2E_SUITE:-smoke}}"
 CDP_PORT=9222
 CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 CHROME_TMP_DIR="/tmp/chrome-debug-fronei"
@@ -9,6 +10,20 @@ AUTH_FILE=".auth/live-user.json"
 AUTH_MAX_AGE_SECONDS=3600
 
 cd "$(dirname "$0")/.."
+
+if [[ "$SUITE" != "smoke" && "$SUITE" != "full" ]]; then
+  echo "Unknown suite '$SUITE'. Use 'smoke' or 'full'."
+  echo "Examples:"
+  echo "  bash scripts/live-eval.sh"
+  echo "  bash scripts/live-eval.sh https://www.fronei.com full"
+  exit 2
+fi
+
+if [[ "$SUITE" == "full" ]]; then
+  TEST_TARGET="e2e-live/manual-real-eval.spec.ts"
+else
+  TEST_TARGET="e2e-live/smoke-live.spec.ts"
+fi
 
 needs_auth=true
 if [[ -f "$AUTH_FILE" ]]; then
@@ -51,10 +66,10 @@ if [[ "$needs_auth" == true ]]; then
 fi
 
 echo ""
-echo "Running live evals against $BASE_URL..."
+echo "Running live evals against $BASE_URL (suite: $SUITE)..."
 set +e
-PLAYWRIGHT_BASE_URL="$BASE_URL" LIVE_E2E=1 \
-  npx playwright test -c playwright.live.config.ts --headed --project=chrome
+PLAYWRIGHT_BASE_URL="$BASE_URL" LIVE_E2E=1 LIVE_E2E_SUITE="$SUITE" \
+  npx playwright test -c playwright.live.config.ts --headed --project=chrome "$TEST_TARGET"
 TEST_STATUS=$?
 set -e
 

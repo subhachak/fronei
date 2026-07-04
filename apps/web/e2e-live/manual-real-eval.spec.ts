@@ -9,6 +9,7 @@ const LIVE_CONNECTION_DROPPED_RE = /live connection dropped/i
 type TurnBaseline = {
   footerCount: number
   assistantCount: number
+  userCount: number
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -16,6 +17,8 @@ type TurnBaseline = {
 // ──────────────────────────────────────────────────────────────────────────────
 
 test.describe('Fronei regression suite — live', () => {
+  test.skip(process.env.LIVE_E2E_SUITE !== 'full', 'Full live eval suite only runs with LIVE_E2E_SUITE=full.')
+
   test.beforeAll(() => {
     if (process.env.LIVE_E2E !== '1' && process.env.LIVE_E2E !== 'true') {
       throw new Error(
@@ -44,7 +47,6 @@ test.describe('Fronei regression suite — live', () => {
       await openLibBtn.click()
     }
     await page.getByRole('button', { name: 'New conversation', exact: true }).first().click()
-    await expect(page.getByText('This conversation is empty.').last()).toBeVisible({ timeout: 10_000 })
     await expect(
       page.getByRole('button', { name: 'Start', exact: true }),
     ).toBeDisabled({ timeout: 10_000 })
@@ -508,7 +510,7 @@ async function submitPromptAndWaitForAcceptance(page: Page, prompt: string): Pro
   const promptPreview = prompt.slice(0, 80)
   const deadline = Date.now() + 30_000
   while (Date.now() < deadline) {
-    if (await page.getByText(promptPreview).last().isVisible().catch(() => false)) {
+    if (await hasAcceptedTurnAfter(page, baseline, prompt)) {
       return baseline
     }
     await throwIfTerminalTurnError(page)
@@ -576,7 +578,19 @@ async function currentTurnBaseline(page: Page): Promise<TurnBaseline> {
   return {
     footerCount: await page.getByText(COMPLETION_FOOTER_RE).count(),
     assistantCount: await page.getByTestId('assistant-turn').count().catch(() => 0),
+    userCount: await page.getByTestId('user-turn').count().catch(() => 0),
   }
+}
+
+async function hasAcceptedTurnAfter(page: Page, baseline: TurnBaseline, prompt: string): Promise<boolean> {
+  const userCount = await page.getByTestId('user-turn').count().catch(() => 0)
+  if (userCount > baseline.userCount) return true
+  const liveUser = page.getByTestId('live-user-turn').last()
+  if (await liveUser.isVisible().catch(() => false)) {
+    const text = await liveUser.innerText().catch(() => '')
+    if (text.includes(prompt.slice(0, 80))) return true
+  }
+  return false
 }
 
 async function hasCompletedTurnAfter(page: Page, baseline: TurnBaseline): Promise<boolean> {

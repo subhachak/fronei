@@ -310,7 +310,11 @@ function TurnPair({
   const durationLabel = responseDurationLabel(turn)
   return (
     <div className="flex flex-col gap-2.5">
-      <div className="self-end max-w-[min(88%,860px)] rounded-2xl rounded-br-md bg-neutral-900 px-4 py-3 text-white dark:bg-white dark:text-neutral-900">
+      <div
+        data-testid="user-turn"
+        data-turn-id={turn.id}
+        className="self-end max-w-[min(88%,860px)] rounded-2xl rounded-br-md bg-neutral-900 px-4 py-3 text-white dark:bg-white dark:text-neutral-900"
+      >
         <p className="whitespace-pre-wrap text-[15px] leading-relaxed [overflow-wrap:anywhere]">{turn.message || turn.title}</p>
         <div className="mt-2 flex items-center justify-end gap-2">
           <span className="text-[11px] text-white/40 dark:text-neutral-400">{formatTime(turn.createdAt)}</span>
@@ -446,7 +450,10 @@ function LiveTurn({
 
   return (
     <div className="flex flex-col gap-2.5">
-      <div className="self-end max-w-[min(88%,860px)] rounded-2xl rounded-br-md bg-neutral-900 px-4 py-3 text-white dark:bg-white dark:text-neutral-900">
+      <div
+        data-testid="live-user-turn"
+        className="self-end max-w-[min(88%,860px)] rounded-2xl rounded-br-md bg-neutral-900 px-4 py-3 text-white dark:bg-white dark:text-neutral-900"
+      >
         <div className="mb-1.5">
           <p className="text-[11px] font-bold uppercase tracking-wide text-white/55 dark:text-neutral-500">You</p>
         </div>
@@ -456,7 +463,10 @@ function LiveTurn({
         </div>
       </div>
 
-      <div className="w-full max-w-[860px] rounded-2xl rounded-bl-md border border-neutral-200 bg-white p-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+      <div
+        data-testid="live-assistant-turn"
+        className="w-full max-w-[860px] rounded-2xl rounded-bl-md border border-neutral-200 bg-white p-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900"
+      >
         <div className="mb-3.5 flex items-start gap-3">
           <span className="av3-pulse-ring grid h-9 w-9 flex-shrink-0 place-items-center rounded-full bg-neutral-900 text-white dark:bg-white dark:text-neutral-900">
             <Sparkles size={16} />

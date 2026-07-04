@@ -22,31 +22,23 @@ CI-safe UI coverage.
 No API routes are mocked. The live config does not start the E2E auth-bypass
 web server and does not set `E2E_AUTH_BYPASS`.
 
-## One-Time Auth Setup
+## Auth Setup
 
-Start or deploy the app you want to test, then save a real browser session:
+The normal trigger handles auth freshness automatically. If `.auth/live-user.json`
+is missing or stale, it opens Chrome and prompts you to log in.
 
 ```bash
 cd apps/web
-PLAYWRIGHT_BASE_URL=http://127.0.0.1:3100 npm run test:e2e:live:auth
+npm run test:e2e:live
 ```
 
 Log in normally in the opened browser, wait until the workbench is usable, then
-close the browser. Playwright writes `.auth/live-user.json`, which is ignored by
-git.
+press Enter in the terminal. Playwright writes `.auth/live-user.json`, which is
+ignored by git.
 
 The auth helper launches installed Google Chrome (`--channel=chrome`) rather
 than Playwright's bundled Chromium. Google OAuth often rejects bundled
 automation browsers with "This browser or app may not be secure."
-
-For a deployed environment, replace `PLAYWRIGHT_BASE_URL` with that URL.
-
-Production example:
-
-```bash
-cd apps/web
-PLAYWRIGHT_BASE_URL=https://fronei.com npm run test:e2e:live:auth
-```
 
 ### If Google OAuth Still Blocks Login
 
@@ -75,31 +67,47 @@ saves `.auth/live-user.json` from that real Chrome session.
 
 ## Run The Eval
 
+Single trigger for the stable production smoke suite:
+
 ```bash
 cd apps/web
-PLAYWRIGHT_BASE_URL=http://127.0.0.1:3100 npm run test:e2e:live
+npm run test:e2e:live
 ```
 
-Production example:
+This runs a small live canary against `https://www.fronei.com` by default:
+authenticated workbench load, facts modal, quick preferences, and one cheap
+direct turn. The shell/modal checks use the browser UI; the direct-turn canary
+uses the authenticated browser session to create an isolated temporary
+workspace/conversation through the API and poll backend status, so it is not
+coupled to whichever real conversation is selected in the sidebar.
+
+To run against a different frontend URL:
 
 ```bash
 cd apps/web
-PLAYWRIGHT_BASE_URL=https://fronei.com npm run test:e2e:live
+bash scripts/live-eval.sh http://127.0.0.1:3100
+```
+
+The old expensive matrix is intentionally opt-in:
+
+```bash
+cd apps/web
+npm run test:e2e:live:full
 ```
 
 For Playwright UI mode:
 
 ```bash
 cd apps/web
-PLAYWRIGHT_BASE_URL=http://127.0.0.1:3100 npm run test:e2e:live:ui
+npm run test:e2e:live:ui
 ```
 
 ## Current Scenarios
 
-- real comparison-matrix research turn
-- real repair-pressure research turn
-- real short affirmative follow-up after an offered next step
+- smoke suite: authenticated workbench controls, facts modal, quick preferences,
+  and one cheap direct model turn
+- full suite: expensive live matrix covering research, document generation,
+  multi-turn continuity, facts CRUD, and Context OS scenarios
 
-Each scenario waits for the turn to complete or pause. If the backend returns a
-budget approval pause and the logged-in user is an admin, the test clicks
-`Approve and continue` and waits for the resumed completion.
+The full suite is not the default regression gate because it shares real
+production state and makes many live model/tool calls.

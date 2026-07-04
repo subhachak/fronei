@@ -15,8 +15,10 @@
     "test:e2e:ui": "playwright test --ui",
     "test:e2e:live:auth": "playwright codegen --browser=chromium --channel=chrome --save-storage=.auth/live-user.json ${PLAYWRIGHT_BASE_URL:-http://127.0.0.1:3100}",
     "test:e2e:live:auth:cdp": "tsx scripts/save-live-auth-from-cdp.ts",
-    "test:e2e:live": "LIVE_E2E=1 playwright test -c playwright.live.config.ts --headed --project=chrome",
-    "test:e2e:live:ui": "LIVE_E2E=1 playwright test -c playwright.live.config.ts --ui"
+    "test:e2e:live": "bash scripts/live-eval.sh",
+    "test:e2e:live:full": "bash scripts/live-eval.sh https://www.fronei.com full",
+    "test:e2e:live:ui": "LIVE_E2E=1 LIVE_E2E_SUITE=smoke playwright test -c playwright.live.config.ts --ui e2e-live/smoke-live.spec.ts",
+    "test:e2e:live:full:ui": "LIVE_E2E=1 LIVE_E2E_SUITE=full playwright test -c playwright.live.config.ts --ui e2e-live/manual-real-eval.spec.ts"
   },
   "dependencies": {
     "@clerk/nextjs": "^7.4.3",

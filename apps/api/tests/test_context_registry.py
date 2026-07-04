@@ -200,6 +200,45 @@ def test_l3_facts_pinned_appear_before_auto_extracted(monkeypatch):
     assert all(item.source_type == SOURCE_FACT for item in items)
 
 
+def test_l3_facts_are_included_with_l2_summaries(monkeypatch):
+    """Workspace facts should not be suppressed just because L2 summaries exist."""
+    class RequestWithUser(TurnRequest):
+        user_id: str = "user_1"
+
+    monkeypatch.setattr(
+        "app.services.agent.session_memory.recall_similar_sessions",
+        lambda *_args, **_kwargs: [("conv_1", "Prior workspace summary")],
+    )
+    monkeypatch.setattr(
+        "app.services.agent.known_facts.get_facts_for_type",
+        lambda *_args, **_kwargs: [
+            {
+                "id": "fact_pinned",
+                "entity_id": "h2-test",
+                "entity_type": "workspace",
+                "fact_key": "preferred-language",
+                "fact_value": "Rust",
+                "confidence": 1.0,
+                "source_conversation_id": None,
+                "created_at": None,
+                "updated_at": None,
+            },
+        ],
+    )
+    decision = ContextDecision(
+        intent="same_workspace_recall",
+        needs_context=True,
+        target_scopes=[SCOPE_WORKSPACE],
+        reason="test",
+    )
+
+    items = get_context_items(RequestWithUser(message="Use the workspace facts."), decision, db="db")
+
+    assert [item.layer for item in items] == [LAYER_L2, LAYER_L3]
+    assert [item.source_type for item in items] == [SOURCE_SUMMARY, SOURCE_FACT]
+    assert items[1].content == "h2-test.preferred-language: Rust"
+
+
 def test_l3_low_confidence_facts_excluded(monkeypatch):
     """Facts below 0.5 confidence are not included in context items."""
     class RequestWithUser(TurnRequest):

@@ -79,30 +79,8 @@ def get_context_items(request: TurnRequest, decision: ContextDecision, *, db=Non
                     provenance=f"L2:summary:conv_{conversation_id}" if conversation_id else "L2:summary:unknown",
                 )
             )
-        if not summaries and decision.intent == "same_workspace_recall" and l2_scope == SCOPE_WORKSPACE:
-            from app.services.agent.known_facts import get_facts_for_type
-
-            for fact in get_facts_for_type(user_id, "workspace", db=db):
-                confidence = float(fact.get("confidence") or 1.0)
-                if confidence < MIN_FACT_CONFIDENCE:
-                    logger.debug(
-                        "context_l3_low_confidence_fact_skipped",
-                        extra={"fact_key": fact.get("fact_key")},
-                    )
-                    continue
-                content = _format_fact_content(fact)
-                if not content:
-                    continue
-                items.append(
-                    ContextItem(
-                        layer=LAYER_L3,
-                        scope=SCOPE_WORKSPACE,
-                        source_type=SOURCE_FACT,
-                        content=content,
-                        confidence=confidence,
-                        provenance=f"L3:fact:{fact.get('entity_id')}:{fact.get('fact_key')}",
-                    )
-                )
+        if decision.intent == "same_workspace_recall" and l2_scope == SCOPE_WORKSPACE:
+            items.extend(_workspace_fact_items(user_id, db=db))
     return items
 
 
@@ -123,3 +101,31 @@ def _format_fact_content(fact: dict) -> str:
         return ""
     prefix = f"{entity_id}." if entity_id else ""
     return f"{prefix}{fact_key}: {fact_value}"
+
+
+def _workspace_fact_items(user_id: str, *, db) -> list[ContextItem]:
+    from app.services.agent.known_facts import get_facts_for_type
+
+    items: list[ContextItem] = []
+    for fact in get_facts_for_type(user_id, "workspace", db=db):
+        confidence = float(fact.get("confidence") or 1.0)
+        if confidence < MIN_FACT_CONFIDENCE:
+            logger.debug(
+                "context_l3_low_confidence_fact_skipped",
+                extra={"fact_key": fact.get("fact_key")},
+            )
+            continue
+        content = _format_fact_content(fact)
+        if not content:
+            continue
+        items.append(
+            ContextItem(
+                layer=LAYER_L3,
+                scope=SCOPE_WORKSPACE,
+                source_type=SOURCE_FACT,
+                content=content,
+                confidence=confidence,
+                provenance=f"L3:fact:{fact.get('entity_id')}:{fact.get('fact_key')}",
+            )
+        )
+    return items

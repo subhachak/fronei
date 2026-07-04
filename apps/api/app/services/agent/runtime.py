@@ -6,6 +6,7 @@ import queue
 import threading
 import time
 from collections.abc import Iterator
+from types import SimpleNamespace
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -14,6 +15,10 @@ LANGGRAPH_STREAM_HEARTBEAT_SECONDS = 2.5
 LANGGRAPH_STREAM_QUEUE_POLL_SECONDS = 0.25
 
 from app.services.agent import model_client
+from app.db.models import SessionLocal
+from app.services.agent.context_classifier import classify_context_need
+from app.services.agent.context_contracts import ContextItem
+from app.services.agent.context_registry import get_context_items
 from app.services.agent.deck_subtree import plan_deck
 from app.services.agent.document_subtree import (
     build_artifact,
@@ -66,6 +71,25 @@ _LANGGRAPH_NODE_MESSAGES: dict[str, str] = {
     "judge": "Reviewing answer quality...",
     "repair": "Improving the answer...",
 }
+
+
+def _hydrate_runtime_context_items(request: TurnRequest, *, user_id: str) -> list[ContextItem]:
+    decision = classify_context_need(request)
+    if not decision.needs_context:
+        return []
+
+    db = SessionLocal()
+    try:
+        context_request = SimpleNamespace(**request.model_dump(mode="python"), user_id=user_id)
+        return get_context_items(context_request, decision, db=db)
+    except Exception as exc:
+        logger.warning(
+            "runtime_context_hydration_error",
+            extra={"error": str(exc)[:500], "context_intent": decision.intent},
+        )
+        return []
+    finally:
+        db.close()
 
 
 class Runtime:
@@ -131,7 +155,8 @@ class Runtime:
                 user_prompt = request.message
                 if request.conversation_context:
                     user_prompt = f"{request.conversation_context}\n\nCurrent user request:\n{request.message}"
-                recalled_context = _format_context_items(fast_decision.context_items)
+                context_items = _hydrate_runtime_context_items(request, user_id=user_id) or fast_decision.context_items
+                recalled_context = _format_context_items(context_items)
                 if recalled_context:
                     user_prompt = f"{recalled_context}\n\n{user_prompt}"
                 response = yield from self._stream_model_response(
@@ -162,7 +187,7 @@ class Runtime:
                     model_used=response.model_used,
                     tool_calls=[],
                     sources=[],
-                    context_sources=context_sources_from_items(fast_decision.context_items),
+                    context_sources=context_sources_from_items(context_items),
                     events=events,
                     latency_ms=int((time.perf_counter() - started) * 1000),
                     cost_usd=response.cost_usd + fast_decision.cost_usd,
@@ -298,7 +323,7 @@ class Runtime:
             elif route == "direct":
                 event = progress("direct_answer", "Drafting a direct response.")
                 yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
-                result = yield from self._run_direct(request, goal, turn_id, events, progress)
+                result = yield from self._run_direct(request, goal, turn_id, events, progress, user_id=user_id)
             elif route == "research":
                 research = yield from self._run_research_subtree(request, progress)
                 response = research["response"]
@@ -791,10 +816,14 @@ class Runtime:
             cost_usd=decision.cost_usd,
         )
 
-    def _run_direct(self, request, goal, turn_id, events, progress) -> TurnResult:
+    def _run_direct(self, request, goal, turn_id, events, progress, *, user_id: str) -> TurnResult:
         user_prompt = request.message
         if request.conversation_context:
             user_prompt = f"{request.conversation_context}\n\nCurrent user request:\n{request.message}"
+        context_items = _hydrate_runtime_context_items(request, user_id=user_id)
+        recalled_context = _format_context_items(context_items)
+        if recalled_context:
+            user_prompt = f"{recalled_context}\n\n{user_prompt}"
         response = yield from self._stream_model_response(
             progress,
             [
@@ -820,6 +849,7 @@ class Runtime:
                 overrides=request.model_overrides,
             ),
             events=events,
+            context_sources=context_sources_from_items(context_items),
             latency_ms=response.latency_ms,
             cost_usd=response.cost_usd,
         )

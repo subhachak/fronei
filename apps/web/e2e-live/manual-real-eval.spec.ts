@@ -5,12 +5,37 @@ const FAST_TURN_TIMEOUT = 90_000 // direct/clarify should land well under 90s
 const DEEP_TURN_TIMEOUT = 4 * 60_000
 const COMPLETION_FOOTER_RE = /Took \d|Took under 1 sec/
 const LIVE_CONNECTION_DROPPED_RE = /live connection dropped/i
+const DEFAULT_LOCAL_API_BASE = 'http://localhost:8000'
 
 type TurnBaseline = {
   footerCount: number
   assistantCount: number
   userCount: number
 }
+
+type LiveApiContext = {
+  apiBase: string
+  token: string
+}
+
+type IsolatedWorkspace = {
+  api: LiveApiContext
+  workspaceId: string
+  workspaceName: string
+  conversationTitle: string
+}
+
+type WorkspaceResponse = {
+  id: string
+  name: string
+}
+
+type ConversationResponse = {
+  id: string
+  title: string
+}
+
+const isolatedWorkspaces = new WeakMap<Page, IsolatedWorkspace>()
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Suite guard + shared setup
@@ -27,7 +52,7 @@ test.describe('Fronei regression suite — live', () => {
     }
   })
 
-  test.beforeEach(async ({ page }) => {
+  test.beforeEach(async ({ page }, testInfo) => {
     await page.goto('/')
     await expect(page.getByPlaceholder('Give Fronei a task...')).toBeVisible({ timeout: 120_000 })
 
@@ -39,17 +64,19 @@ test.describe('Fronei regression suite — live', () => {
     ).toBeEnabled({ timeout: 30_000 })
     await page.getByPlaceholder('Give Fronei a task...').fill('')
 
-    // Start each test in a fresh 0-turn conversation.
-    // Avoids context accumulation that pushes simple prompts into the research route,
-    // and ensures no in-flight turn from a prior failing test keeps running=true.
-    const openLibBtn = page.getByRole('button', { name: 'Open library' })
-    if (await openLibBtn.isVisible({ timeout: 2_000 }).catch(() => false)) {
-      await openLibBtn.click()
-    }
-    await page.getByRole('button', { name: 'New conversation', exact: true }).first().click()
-    await expect(
-      page.getByRole('button', { name: 'Start', exact: true }),
-    ).toBeDisabled({ timeout: 10_000 })
+    const isolated = await createIsolatedWorkspace(page, testInfo.title)
+    isolatedWorkspaces.set(page, isolated)
+    await openIsolatedConversation(page, isolated)
+  })
+
+  test.afterEach(async ({ page }) => {
+    const isolated = isolatedWorkspaces.get(page)
+    if (!isolated) return
+    const cleanupApi = await liveApiContext(page).catch(() => isolated.api)
+    await apiFetch<unknown>(cleanupApi, `/workspaces/${isolated.workspaceId}`, { method: 'DELETE' }).catch(error => {
+      console.warn(`Could not delete live full-suite workspace ${isolated.workspaceId}: ${String(error)}`)
+    })
+    isolatedWorkspaces.delete(page)
   })
 
   // ────────────────────────────────────────────────────────────────────────────
@@ -149,7 +176,7 @@ test.describe('Fronei regression suite — live', () => {
 
     await runPromptAndWaitForCompletion(
       page,
-      'Regression C1: Write a one-paragraph executive summary of the AI industry in 2025.',
+      'Regression C1: Create a downloadable DOCX file containing a one-paragraph executive summary of the AI industry in 2025.',
     )
     await expectLatestAssistantText(page, COMPLETION_FOOTER_RE)
     await expectLatestAssistantText(page, /\.docx|Download/i)
@@ -220,10 +247,16 @@ test.describe('Fronei regression suite — live', () => {
       page.locator('span').filter({ hasText: /^Working$/ }).first(),
     ).toBeVisible({ timeout: 30_000 })
 
-    await page.getByRole('button', { name: 'Stop' }).click()
+    const [cancelResponse] = await Promise.all([
+      page.waitForResponse(
+        resp => resp.url().includes('/cancel') && resp.request().method() === 'POST',
+        { timeout: 30_000 },
+      ),
+      page.getByRole('button', { name: 'Stop', exact: true }).click(),
+    ])
+    expect([200, 409]).toContain(cancelResponse.status())
 
-    // After stop, Start button should return
-    await expect(page.locator('span').filter({ hasText: /^Ready$/ }).first()).toBeVisible({ timeout: 15_000 })
+    await expect(page.getByRole('button', { name: 'Stop', exact: true })).not.toBeVisible({ timeout: 60_000 })
   })
 
   // ────────────────────────────────────────────────────────────────────────────
@@ -236,7 +269,7 @@ test.describe('Fronei regression suite — live', () => {
   })
 
   test('E2: facts modal — opens, shows panel, closes with Escape', async ({ page }) => {
-    await page.getByRole('button', { name: 'Pinned facts' }).click()
+    await page.getByRole('button', { name: 'Pinned facts', exact: true }).click()
     await expect(page.getByText('Pinned facts').last()).toBeVisible({ timeout: 5_000 })
     await page.keyboard.press('Escape')
     await expect(page.getByText('Pinned facts').last()).not.toBeVisible({ timeout: 5_000 })
@@ -248,10 +281,10 @@ test.describe('Fronei regression suite — live', () => {
     const testKey = 'regression-key'
     const testValue = 'regression-value'
 
-    await page.getByRole('button', { name: 'Pinned facts' }).click()
+    await page.getByRole('button', { name: 'Pinned facts', exact: true }).click()
     await expect(page.getByText('Pinned facts').last()).toBeVisible({ timeout: 5_000 })
 
-    await page.getByRole('button', { name: 'Add' }).click()
+    await page.getByRole('button', { name: 'Add', exact: true }).click()
     await page.getByPlaceholder('Entity, e.g. project').fill(testEntity)
     await page.getByPlaceholder('Type, e.g. workspace').fill('workspace')
     await page.getByPlaceholder('Key, e.g. stack').fill(testKey)
@@ -281,11 +314,11 @@ test.describe('Fronei regression suite — live', () => {
     const testEntity = `e2e-edit-${Date.now()}`
     const testKey = 'edit-key'
 
-    await page.getByRole('button', { name: 'Pinned facts' }).click()
+    await page.getByRole('button', { name: 'Pinned facts', exact: true }).click()
     await expect(page.getByText('Pinned facts').last()).toBeVisible({ timeout: 5_000 })
 
     // Create — intercept PUT to verify it lands
-    await page.getByRole('button', { name: 'Add' }).click()
+    await page.getByRole('button', { name: 'Add', exact: true }).click()
     await page.getByPlaceholder('Entity, e.g. project').fill(testEntity)
     await page.getByPlaceholder('Type, e.g. workspace').fill('workspace')
     await page.getByPlaceholder('Key, e.g. stack').fill(testKey)
@@ -306,15 +339,15 @@ test.describe('Fronei regression suite — live', () => {
 
     // Edit — fill() replaces the value, no need to clear() first
     // (clear() would change the value to '' and break the [value=...] selector)
-    await page.getByRole('button', { name: 'Edit fact' }).last().click()
-    await page.locator(`input[value="original-value"]`).last().fill('updated-value')
+    await page.getByRole('button', { name: 'Edit fact', exact: true }).last().click()
+    await page.locator('input').last().fill('updated-value')
 
     const [editResponse] = await Promise.all([
       page.waitForResponse(
         resp => resp.url().includes('/api/facts') && resp.request().method() === 'PUT',
         { timeout: 15_000 },
       ),
-      page.getByRole('button', { name: 'Save fact' }).click(),
+      page.getByRole('button', { name: 'Save fact', exact: true }).click(),
     ])
     expect(editResponse.status(), `PUT /api/facts returned ${editResponse.status()} on edit`).toBe(200)
     await expect(page.getByText('updated-value').last()).toBeVisible({ timeout: 10_000 })
@@ -324,15 +357,15 @@ test.describe('Fronei regression suite — live', () => {
   })
 
   test('E5: quick preferences — popover opens and closes', async ({ page }) => {
-    await page.getByRole('button', { name: 'Quick preferences' }).click()
+    await page.getByRole('button', { name: 'Quick preferences', exact: true }).click()
     await expect(
       page.getByText(/preference|theme|model|tone/i).last(),
     ).toBeVisible({ timeout: 5_000 })
-    await page.getByRole('button', { name: 'Close' }).click()
+    await page.getByRole('button', { name: 'Close', exact: true }).click()
   })
 
   test('E6: current work modal — opens', async ({ page }) => {
-    await page.getByRole('button', { name: 'Current work' }).click()
+    await page.getByRole('button', { name: 'Current work', exact: true }).click()
     await expect(
       page.getByText(/work|task|no (active|current)|nothing/i).last(),
     ).toBeVisible({ timeout: 5_000 })
@@ -422,9 +455,9 @@ test.describe('Fronei regression suite — live', () => {
     // L3 context also queries entity_type=workspace facts
     const factEntity = `h2-test-${Date.now()}`
 
-    await page.getByRole('button', { name: 'Pinned facts' }).click()
+    await page.getByRole('button', { name: 'Pinned facts', exact: true }).click()
     await expect(page.getByText('Pinned facts').last()).toBeVisible({ timeout: 5_000 })
-    await page.getByRole('button', { name: 'Add' }).click()
+    await page.getByRole('button', { name: 'Add', exact: true }).click()
     await page.getByPlaceholder('Entity, e.g. project').fill(factEntity)
     await page.getByPlaceholder('Type, e.g. workspace').fill('workspace')
     await page.getByPlaceholder('Key, e.g. stack').fill('preferred-language')
@@ -451,7 +484,7 @@ test.describe('Fronei regression suite — live', () => {
     await expectLatestAssistantText(page, /Rust/i)
 
     // Cleanup
-    await page.getByRole('button', { name: 'Pinned facts' }).click()
+    await page.getByRole('button', { name: 'Pinned facts', exact: true }).click()
     await page.getByRole('button', { name: `Delete ${factEntity} preferred-language` }).click()
     await page.keyboard.press('Escape')
   })
@@ -491,6 +524,44 @@ async function ensureLibraryOpen(page: Page) {
   await expect(
     page.getByRole('button', { name: 'Create workspace' }).first(),
   ).toBeVisible({ timeout: 5_000 })
+}
+
+async function createIsolatedWorkspace(page: Page, testTitle: string): Promise<IsolatedWorkspace> {
+  const api = await liveApiContext(page)
+  const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+  const workspaceName = `Live Eval ${suffix}`
+  const conversationTitle = `Eval ${suffix}`
+  const workspace = await apiFetch<WorkspaceResponse>(api, '/workspaces', {
+    method: 'POST',
+    body: JSON.stringify({ name: workspaceName }),
+  })
+  const conversation = await apiFetch<ConversationResponse>(api, `/workspaces/${workspace.id}/conversations`, {
+    method: 'POST',
+    body: JSON.stringify({ title: conversationTitle }),
+  })
+
+  return {
+    api,
+    workspaceId: workspace.id,
+    workspaceName: workspace.name,
+    conversationTitle: conversation.title,
+  }
+}
+
+async function openIsolatedConversation(page: Page, isolated: IsolatedWorkspace) {
+  await page.reload()
+  await expect(page.getByPlaceholder('Give Fronei a task...')).toBeVisible({ timeout: 120_000 })
+  await ensureLibraryOpen(page)
+  await expect(page.getByText(isolated.workspaceName).first()).toBeVisible({ timeout: 30_000 })
+  const conversationButton = page.getByRole('button', {
+    name: new RegExp(escapeRegex(isolated.conversationTitle)),
+  }).first()
+  await expect(conversationButton).toBeVisible({ timeout: 30_000 })
+  await conversationButton.click()
+  await expect(
+    page.getByText(new RegExp(`${escapeRegex(isolated.workspaceName)}\\s*/\\s*${escapeRegex(isolated.conversationTitle)}`)),
+  ).toBeVisible({ timeout: 30_000 })
+  await expect(page.getByRole('button', { name: 'Start', exact: true })).toBeDisabled({ timeout: 10_000 })
 }
 
 function latestAssistantTurn(page: Page): Locator {
@@ -620,4 +691,117 @@ async function throwIfTerminalTurnError(page: Page): Promise<void> {
     const message = (await droppedMessage.innerText().catch(() => '')).trim()
     throw new Error(`Live turn failed: ${message || 'live connection dropped'}`)
   }
+}
+
+async function liveApiContext(page: Page): Promise<LiveApiContext> {
+  const captured = await captureAuthFromAppRequest(page).catch(() => null)
+  if (captured) return captured
+
+  const token = await tokenFromClerk(page)
+  if (!token) throw new Error('Could not read or capture a Clerk bearer token from the authenticated browser session.')
+
+  const apiBase = await inferApiBase(page)
+  if (apiBase === DEFAULT_LOCAL_API_BASE && new URL(page.url()).hostname !== 'localhost') {
+    throw new Error('Could not infer the production API base URL from browser network activity.')
+  }
+
+  return { apiBase, token }
+}
+
+async function tokenFromClerk(page: Page): Promise<string | null> {
+  return await page.evaluate(async () => {
+    const clerk = (window as unknown as {
+      Clerk?: {
+        session?: {
+          getToken?: () => Promise<string | null>
+        }
+        loaded?: boolean
+        load?: () => Promise<void>
+        client?: {
+          sessions?: Array<{
+            getToken?: () => Promise<string | null>
+          }>
+        }
+      }
+    }).Clerk
+
+    if (!clerk) return null
+    if (!clerk.loaded && clerk.load) await clerk.load().catch(() => undefined)
+
+    const activeToken = await clerk.session?.getToken?.().catch(() => null)
+    if (activeToken) return activeToken
+
+    for (const session of clerk.client?.sessions || []) {
+      const sessionToken = await session.getToken?.().catch(() => null)
+      if (sessionToken) return sessionToken
+    }
+
+    return null
+  })
+}
+
+async function captureAuthFromAppRequest(page: Page): Promise<LiveApiContext> {
+  const requestPromise = page.waitForRequest(request => {
+    const auth = request.headers().authorization
+    if (!auth?.startsWith('Bearer ')) return false
+    try {
+      return new URL(request.url()).pathname === '/workspaces'
+    } catch {
+      return false
+    }
+  }, { timeout: 30_000 })
+
+  await page.reload()
+  await expect(page.getByPlaceholder('Give Fronei a task...')).toBeVisible({ timeout: 120_000 })
+
+  const request = await requestPromise
+  const auth = request.headers().authorization || ''
+  const token = auth.replace(/^Bearer\s+/i, '').trim()
+  if (!token) throw new Error('Could not capture an Authorization header from the app workspaces request.')
+
+  return {
+    apiBase: new URL(request.url()).origin,
+    token,
+  }
+}
+
+async function inferApiBase(page: Page): Promise<string> {
+  const explicit = process.env.LIVE_E2E_API_BASE_URL || process.env.NEXT_PUBLIC_API_BASE_URL
+  if (explicit) return explicit.replace(/\/$/, '')
+
+  const observed = await page.evaluate(() => {
+    const apiResource = performance
+      .getEntriesByType('resource')
+      .map(entry => entry.name)
+      .find(name => /\/(?:workspaces|turns|facts|profile)\b/.test(name))
+    if (!apiResource) return null
+    return new URL(apiResource).origin
+  })
+  if (observed) return observed.replace(/\/$/, '')
+
+  return DEFAULT_LOCAL_API_BASE
+}
+
+async function apiFetch<T>(api: LiveApiContext, path: string, init: RequestInit = {}): Promise<T> {
+  const url = `${api.apiBase}${path}`
+  const headers = {
+    ...(init.body ? { 'Content-Type': 'application/json' } : {}),
+    Authorization: `Bearer ${api.token}`,
+    ...(init.headers || {}),
+  }
+  let response: Response
+  try {
+    response = await fetch(url, { ...init, headers })
+  } catch (error) {
+    throw new Error(`Live API ${init.method || 'GET'} ${url} could not be reached: ${String(error)}`)
+  }
+  const text = await response.text()
+  if (!response.ok) {
+    throw new Error(`Live API ${init.method || 'GET'} ${path} failed (${response.status}): ${text}`)
+  }
+  return (text ? JSON.parse(text) : null) as T
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }

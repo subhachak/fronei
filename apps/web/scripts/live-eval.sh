@@ -8,6 +8,7 @@ CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 CHROME_TMP_DIR="/tmp/chrome-debug-fronei"
 AUTH_FILE=".auth/live-user.json"
 AUTH_MAX_AGE_SECONDS=3600
+OPEN_REPORT="${LIVE_E2E_OPEN_REPORT:-0}"
 
 cd "$(dirname "$0")/.."
 
@@ -74,13 +75,15 @@ TEST_STATUS=$?
 set -e
 
 echo ""
-echo "Opening results in Chrome..."
-# Start the report server in the background, then open it in Chrome.
-# The server keeps running until this script is killed (Ctrl+C).
-npx playwright show-report --port 9323 &
-REPORT_PID=$!
-sleep 2
-open -a "Google Chrome" "http://localhost:9323"
-echo "Report open at http://localhost:9323 — press Ctrl+C to close."
-wait "$REPORT_PID" || true
+if [[ "$OPEN_REPORT" == "1" || "$OPEN_REPORT" == "true" ]]; then
+  echo "Opening results in Chrome..."
+  npx playwright show-report --port 9323 &
+  REPORT_PID=$!
+  sleep 2
+  open -a "Google Chrome" "http://localhost:9323" || true
+  echo "Report open at http://localhost:9323 — press Ctrl+C to close."
+  wait "$REPORT_PID" || true
+else
+  echo "HTML report not opened automatically. Run 'npx playwright show-report' to inspect it."
+fi
 exit "$TEST_STATUS"

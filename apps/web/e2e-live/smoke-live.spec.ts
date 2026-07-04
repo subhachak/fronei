@@ -33,6 +33,13 @@ type TurnStatusResponse = {
   }
 }
 
+type FactResponse = {
+  entity_id: string
+  entity_type: string
+  fact_key: string
+  fact_value: string
+}
+
 test.describe('Fronei production smoke — live', () => {
   test.skip(process.env.LIVE_E2E_SUITE === 'full', 'Smoke suite is skipped when the full live suite is requested.')
 
@@ -60,6 +67,46 @@ test.describe('Fronei production smoke — live', () => {
     await expect(page.getByText('Pinned facts').last()).toBeVisible({ timeout: 10_000 })
     await page.keyboard.press('Escape')
     await expect(page.getByText('Pinned facts').last()).not.toBeVisible({ timeout: 10_000 })
+  })
+
+  test('facts API creates, updates, lists, and deletes a pinned fact', async ({ page }) => {
+    const api = await liveApiContext(page)
+    const entityId = `smoke-fact-${Date.now()}`
+    const factKey = 'preferred-language'
+
+    await apiFetch<FactResponse>(api, '/api/facts', {
+      method: 'PUT',
+      body: JSON.stringify({
+        entity_id: entityId,
+        entity_type: 'workspace',
+        fact_key: factKey,
+        fact_value: 'Rust',
+      }),
+    })
+
+    const updated = await apiFetch<FactResponse>(api, '/api/facts', {
+      method: 'PUT',
+      body: JSON.stringify({
+        entity_id: entityId,
+        entity_type: 'workspace',
+        fact_key: factKey,
+        fact_value: 'TypeScript',
+      }),
+    })
+    expect(updated.fact_value).toBe('TypeScript')
+
+    const facts = await apiFetch<FactResponse[]>(api, '/api/facts?entity_type=workspace')
+    expect(facts.some(fact => fact.entity_id === entityId && fact.fact_key === factKey && fact.fact_value === 'TypeScript')).toBe(true)
+
+    const deleteResponse = await apiRequest(
+      api,
+      `/api/facts/${encodeURIComponent(entityId)}/${encodeURIComponent(factKey)}`,
+      { method: 'DELETE' },
+    )
+    expect(deleteResponse.status).toBe(204)
+
+    const afterDelete = await apiFetch<FactResponse[]>(api, '/api/facts?entity_type=workspace')
+    expect(afterDelete.some(fact => fact.entity_id === entityId && fact.fact_key === factKey)).toBe(false)
   })
 
   test('quick preferences opens and closes', async ({ page }) => {
@@ -200,6 +247,15 @@ async function inferApiBase(page: Page): Promise<string> {
 }
 
 async function apiFetch<T>(api: LiveApiContext, path: string, init: RequestInit = {}): Promise<T> {
+  const response = await apiRequest(api, path, init)
+  const text = await response.text()
+  if (!response.ok) {
+    throw new Error(`Live API ${init.method || 'GET'} ${path} failed (${response.status}): ${text}`)
+  }
+  return (text ? JSON.parse(text) : null) as T
+}
+
+async function apiRequest(api: LiveApiContext, path: string, init: RequestInit = {}): Promise<Response> {
   const url = `${api.apiBase}${path}`
   const headers = {
     ...(init.body ? { 'Content-Type': 'application/json' } : {}),
@@ -212,11 +268,7 @@ async function apiFetch<T>(api: LiveApiContext, path: string, init: RequestInit 
   } catch (error) {
     throw new Error(`Live API ${init.method || 'GET'} ${url} could not be reached: ${String(error)}`)
   }
-  const text = await response.text()
-  if (!response.ok) {
-    throw new Error(`Live API ${init.method || 'GET'} ${path} failed (${response.status}): ${text}`)
-  }
-  return (text ? JSON.parse(text) : null) as T
+  return response
 }
 
 async function pollTurnCompletion(api: LiveApiContext, turnId: string): Promise<TurnStatusResponse> {

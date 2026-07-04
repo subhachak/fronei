@@ -370,7 +370,25 @@ test.describe('Fronei regression suite — live', () => {
     await page.getByRole('button', { name: `Delete ${testEntity} ${testKey}` }).click()
   })
 
-  test('E5: quick preferences — popover opens and closes', async ({ page }) => {
+  test('E5: response feedback — good response is persisted', async ({ page }) => {
+    await runPromptAndWaitForCompletion(
+      page,
+      'Regression E5: Reply with exactly the phrase feedback-ready.',
+      { turnTimeout: FAST_TURN_TIMEOUT },
+    )
+    await expectLatestAssistantText(page, /feedback-ready/i)
+
+    const [feedbackResponse] = await Promise.all([
+      page.waitForResponse(
+        resp => resp.url().includes('/feedback') && resp.request().method() === 'POST',
+        { timeout: 15_000 },
+      ),
+      latestAssistantTurn(page).getByRole('button', { name: 'Good response', exact: true }).click(),
+    ])
+    expect(feedbackResponse.status(), `POST feedback returned ${feedbackResponse.status()}`).toBe(200)
+  })
+
+  test('E6: quick preferences — popover opens and closes', async ({ page }) => {
     await page.getByRole('button', { name: 'Quick preferences', exact: true }).click()
     await expect(
       page.getByText(/preference|theme|model|tone/i).last(),
@@ -378,7 +396,7 @@ test.describe('Fronei regression suite — live', () => {
     await page.getByRole('button', { name: 'Close', exact: true }).click()
   })
 
-  test('E6: current work modal — opens', async ({ page }) => {
+  test('E7: current work modal — opens', async ({ page }) => {
     await page.getByRole('button', { name: 'Current work', exact: true }).click()
     await expect(
       page.getByText(/work|task|no (active|current)|nothing/i).last(),
@@ -386,7 +404,7 @@ test.describe('Fronei regression suite — live', () => {
     await page.keyboard.press('Escape')
   })
 
-  test('E7: theme toggle — dark/light mode switches', async ({ page }) => {
+  test('E8: theme toggle — dark/light mode switches', async ({ page }) => {
     const toggleBtn = page.getByRole('button', { name: /Switch to (dark|light) theme/ })
     await expect(toggleBtn).toBeVisible()
     const labelBefore = await toggleBtn.getAttribute('aria-label')
@@ -396,13 +414,13 @@ test.describe('Fronei regression suite — live', () => {
     await toggleBtn.click() // restore
   })
 
-  test('E8: workspace search — opens search input', async ({ page }) => {
+  test('E9: workspace search — opens search input', async ({ page }) => {
     await ensureLibraryOpen(page)
     await page.getByRole('button', { name: 'Search workspaces' }).click()
     await expect(page.getByPlaceholder('Search workspaces...')).toBeVisible({ timeout: 5_000 })
   })
 
-  test('E9: new conversation — composer resets after creating a conversation', async ({ page }) => {
+  test('E10: new conversation — composer resets after creating a conversation', async ({ page }) => {
     await ensureLibraryOpen(page)
     const newConvBtn = page.getByRole('button', { name: 'New conversation', exact: true }).first()
     await expect(newConvBtn).toBeVisible({ timeout: 5_000 })

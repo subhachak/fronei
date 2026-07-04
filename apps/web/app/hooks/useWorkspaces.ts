@@ -480,6 +480,7 @@ export function useWorkspaces(options: WorkspaceOptions) {
     workspacesLoading,
     setWorkspacesLoading,
     workspaceAction,
+    setWorkspaceAction,
     conversationLoading,
     activeWorkspace,
     activeConversation,

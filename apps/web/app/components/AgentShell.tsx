@@ -481,7 +481,11 @@ export function AgentShell() {
                   </>
                 )}
                 {agent.error && (
-                  <div className="rounded-lg border-l-4 border-red-400 bg-red-50 px-4 py-3 text-sm text-red-700 dark:bg-red-500/10 dark:text-red-400">
+                  <div
+                    role="alert"
+                    data-testid="turn-error"
+                    className="rounded-lg border-l-4 border-red-400 bg-red-50 px-4 py-3 text-sm text-red-700 dark:bg-red-500/10 dark:text-red-400"
+                  >
                     {agent.error}
                   </div>
                 )}

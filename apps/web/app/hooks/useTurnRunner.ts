@@ -347,6 +347,41 @@ export function useTurnRunner(options: TurnRunnerOptions) {
     }
   }
 
+  async function reconcileTurnStatusOnce(
+    turnId: string,
+    conversationId: string,
+    turnMessage: string,
+    option?: FollowUpOption,
+  ): Promise<boolean> {
+    const response = await authorizedFetch(`/turns/${turnId}/status`)
+    if (!response.ok) return false
+    const payload = await response.json() as AgentTurnStatus
+    const nextEvents = payload.turn.events || []
+    eventsRef.current = nextEvents
+    setEvents(nextEvents)
+    const polledAnswer = payload.turn.answer || answerFromEvents(nextEvents)
+    liveAnswerRef.current = polledAnswer
+    setLiveAnswer(polledAnswer)
+    return applyTerminalStatus(payload, conversationId, turnMessage, option)
+  }
+
+  async function recoverDroppedConnection(
+    err: unknown,
+    turnId: string | null,
+    conversationId: string,
+    turnMessage: string,
+    option?: FollowUpOption,
+  ) {
+    if (turnId) {
+      try {
+        if (await reconcileTurnStatusOnce(turnId, conversationId, turnMessage, option)) return
+      } catch {
+        // Fall through to the user-facing connection error below.
+      }
+    }
+    setError(streamErrorMessage(err))
+  }
+
   async function run(option?: FollowUpOption) {
     if (!isLoaded || !isSignedIn || running) return
     const runMessage = (option?.message || message).trim()
@@ -357,8 +392,10 @@ export function useTurnRunner(options: TurnRunnerOptions) {
     setRunning(true)
     setMessage('')
     clearAttachment()
+    let activeConversation = ''
     try {
       const conversationId = await ensureActiveConversation(runMessage)
+      activeConversation = conversationId
       const modelOverrides = isAdmin && modelOverride
         ? Object.fromEntries(MODEL_OVERRIDE_ROLES.map(role => [role, modelOverride]))
         : undefined
@@ -384,11 +421,17 @@ export function useTurnRunner(options: TurnRunnerOptions) {
       if (!response.ok) throw new Error(await readErrorBody(response, 'Fronei job could not start'))
       const started = await response.json() as { turn_id: string; conversation_id: string; status: string }
       activeTurnIdRef.current = started.turn_id
-      const activeConversation = started.conversation_id || conversationId
+      activeConversation = started.conversation_id || conversationId
       const streamed = await streamTurnStatus(started.turn_id, activeConversation, runMessage, option)
       if (!streamed) await pollTurnStatus(started.turn_id, activeConversation, runMessage, option)
     } catch (err) {
-      setError(streamErrorMessage(err))
+      await recoverDroppedConnection(
+        err,
+        activeTurnIdRef.current,
+        activeConversation,
+        runMessage,
+        option,
+      )
     } finally {
       setRunning(false)
       activeRunMessageRef.current = null
@@ -406,7 +449,7 @@ export function useTurnRunner(options: TurnRunnerOptions) {
       const streamed = await streamTurnStatus(turnId, conversationId, turnMessage)
       if (!streamed) await pollTurnStatus(turnId, conversationId, turnMessage)
     } catch (err) {
-      setError(streamErrorMessage(err))
+      await recoverDroppedConnection(err, turnId, conversationId, turnMessage)
     } finally {
       setRunning(false)
       activeRunMessageRef.current = null

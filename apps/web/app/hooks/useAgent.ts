@@ -102,8 +102,16 @@ export function useAgent() {
       return
     }
     composerSettingsDirtyRef.current = false
-    void workspaceHook.loadWorkspaces().catch(err => {
-      turnRunner.setError(err instanceof Error ? err.message : 'Could not load Fronei workspaces')
+    // Keep initial workspace-load errors out of the turn banner, but do not
+    // swallow them invisibly. The library/status area can surface the issue and
+    // the next explicit workspace action will retry through loadWorkspaces().
+    void workspaceHook.loadWorkspaces().catch(error => {
+      console.warn('Fronei workspace load failed', error)
+      workspaceHook.setWorkspaceAction(
+        error instanceof Error && error.message
+          ? error.message
+          : 'Could not load Fronei workspaces.',
+      )
     })
     void templateHook.loadTemplates()
     void checkIsAdmin()

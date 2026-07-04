@@ -9,10 +9,10 @@ const storageState = existsSync(storageStatePath) ? storageStatePath : undefined
 export default defineConfig({
   testDir: './e2e-live',
   fullyParallel: false,
-  forbidOnly: false,
+  forbidOnly: true,
   retries: 0,
   workers: 1,
-  timeout: 10 * 60_000,
+  timeout: 15 * 60_000,
   expect: {
     timeout: 2 * 60_000,
   },

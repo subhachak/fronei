@@ -182,6 +182,58 @@ describe('useTurnRunner', () => {
     }
   })
 
+  it('reconciles a completed turn before showing a dropped-connection error', async () => {
+    vi.useFakeTimers()
+    try {
+      let streamAttempts = 0
+      let shouldCompleteStatus = false
+      const authorizedFetch = vi.fn(async path => {
+        if (path === '/turns') {
+          return response({ turn_id: 'turn_1', conversation_id: 'conv_1', status: 'running' })
+        }
+        if (path === '/turns/turn_1/stream') {
+          streamAttempts += 1
+          throw new Error(`stream unavailable ${streamAttempts}`)
+        }
+        if (path === '/turns/turn_1/status') {
+          if (shouldCompleteStatus) {
+            return response({
+              turn_id: 'turn_1',
+              status: 'completed',
+              turn: {
+                turn_id: 'turn_1',
+                answer: 'Completed on the server',
+                route: 'direct',
+                events: [],
+                sources: [],
+                artifacts: [],
+              },
+            })
+          }
+          if (Date.now() >= 20 * 60 * 1000) {
+            shouldCompleteStatus = true
+          }
+          throw new Error('status unavailable')
+        }
+        throw new Error(`Unexpected fetch ${path}`)
+      })
+      const appendTurn = vi.fn()
+      const { result } = renderHook(() => useTurnRunner({ ...baseOptions(authorizedFetch), appendTurn }))
+
+      await act(async () => {
+        const runPromise = result.current.run()
+        await vi.runAllTimersAsync()
+        await runPromise
+      })
+
+      expect(result.current.error).toBeNull()
+      expect(result.current.result?.answer).toBe('Completed on the server')
+      expect(appendTurn).toHaveBeenCalledOnce()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('stops streaming on a paused turn without appending a completed conversation item', async () => {
     const appendTurn = vi.fn()
     const authorizedFetch = vi.fn()

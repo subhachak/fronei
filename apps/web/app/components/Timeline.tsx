@@ -331,7 +331,11 @@ function TurnPair({
         </div>
       </div>
 
-      <div className="w-full max-w-[860px] rounded-2xl rounded-bl-md border border-neutral-200 bg-white p-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+      <div
+        data-testid="assistant-turn"
+        data-turn-id={turn.id}
+        className="w-full max-w-[860px] rounded-2xl rounded-bl-md border border-neutral-200 bg-white p-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900"
+      >
         <div className="mb-3.5 flex items-start gap-3">
           <span className="grid h-9 w-9 flex-shrink-0 place-items-center rounded-full bg-neutral-900 text-white dark:bg-white dark:text-neutral-900">
             <Sparkles size={16} />

@@ -92,6 +92,15 @@ def _hydrate_runtime_context_items(request: TurnRequest, *, user_id: str) -> lis
         db.close()
 
 
+def _request_with_recalled_context_for_routing(request: TurnRequest, context_items: list[ContextItem]) -> TurnRequest:
+    recalled_context = _format_context_items(context_items)
+    if not recalled_context:
+        return request
+    conversation_context = request.conversation_context or ""
+    next_context = f"{recalled_context}\n\n{conversation_context}" if conversation_context else recalled_context
+    return request.model_copy(update={"conversation_context": next_context})
+
+
 class Runtime:
     """Canonical Fronei turn runtime."""
 
@@ -267,7 +276,9 @@ class Runtime:
             yield StreamEnvelope(type="done", data={"turn_id": turn_id, "latency_ms": result.latency_ms})
             return
 
-        decision = decide_with_options(request, available_routes=available_routes, available_tools=available_tools)
+        routing_context_items = _hydrate_runtime_context_items(request, user_id=user_id)
+        routing_request = _request_with_recalled_context_for_routing(request, routing_context_items)
+        decision = decide_with_options(routing_request, available_routes=available_routes, available_tools=available_tools)
         request = self._apply_decision(request, decision)
         route = decision.route
         goal = Goal(

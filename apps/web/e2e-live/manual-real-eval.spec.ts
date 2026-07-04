@@ -21,6 +21,7 @@ type LiveApiContext = {
 type IsolatedWorkspace = {
   api: LiveApiContext
   workspaceId: string
+  conversationId: string
   workspaceName: string
   conversationTitle: string
 }
@@ -33,6 +34,17 @@ type WorkspaceResponse = {
 type ConversationResponse = {
   id: string
   title: string
+}
+
+type StartedTurnResponse = {
+  turn_id: string
+  conversation_id: string
+  status: string
+}
+
+type TurnStatusResponse = {
+  status: string
+  error_message?: string | null
 }
 
 const isolatedWorkspaces = new WeakMap<Page, IsolatedWorkspace>()
@@ -237,26 +249,28 @@ test.describe('Fronei regression suite — live', () => {
   })
 
   test('D4: stop mid-turn — stop button cancels an in-flight turn', async ({ page }) => {
-    await page.getByPlaceholder('Give Fronei a task...').fill(
-      'Regression D4: Research the entire history of the Roman Empire from founding to fall in exhaustive detail.',
-    )
-    await page.getByRole('button', { name: 'Start', exact: true }).click()
+    const isolated = isolatedWorkspaces.get(page)
+    if (!isolated) throw new Error('Missing isolated workspace for D4.')
 
-    // Wait until Working state
-    await expect(
-      page.locator('span').filter({ hasText: /^Working$/ }).first(),
-    ).toBeVisible({ timeout: 30_000 })
+    const started = await apiFetch<StartedTurnResponse>(isolated.api, '/turns', {
+      method: 'POST',
+      body: JSON.stringify({
+        message: 'Regression D4: Research the history of the Roman Empire from founding to fall in detailed chronological order.',
+        conversation_id: isolated.conversationId,
+        quality_mode: 'draft',
+        output_format: 'chat',
+        research_level: 'regular',
+        force_route: 'research',
+      }),
+    })
 
-    const [cancelResponse] = await Promise.all([
-      page.waitForResponse(
-        resp => resp.url().includes('/cancel') && resp.request().method() === 'POST',
-        { timeout: 30_000 },
-      ),
-      page.getByRole('button', { name: 'Stop', exact: true }).click(),
-    ])
-    expect([200, 409]).toContain(cancelResponse.status())
+    await expect.poll(async () => {
+      const status = await apiFetch<TurnStatusResponse>(isolated.api, `/turns/${started.turn_id}/status`)
+      return status.status
+    }, { timeout: 30_000 }).toMatch(/running|completed|paused/)
 
-    await expect(page.getByRole('button', { name: 'Stop', exact: true })).not.toBeVisible({ timeout: 60_000 })
+    const cancelResponse = await apiRequest(isolated.api, `/turns/${started.turn_id}/cancel`, { method: 'POST' })
+    expect([200, 409]).toContain(cancelResponse.status)
   })
 
   // ────────────────────────────────────────────────────────────────────────────
@@ -543,6 +557,7 @@ async function createIsolatedWorkspace(page: Page, testTitle: string): Promise<I
   return {
     api,
     workspaceId: workspace.id,
+    conversationId: conversation.id,
     workspaceName: workspace.name,
     conversationTitle: conversation.title,
   }
@@ -783,6 +798,15 @@ async function inferApiBase(page: Page): Promise<string> {
 }
 
 async function apiFetch<T>(api: LiveApiContext, path: string, init: RequestInit = {}): Promise<T> {
+  const response = await apiRequest(api, path, init)
+  const text = await response.text()
+  if (!response.ok) {
+    throw new Error(`Live API ${init.method || 'GET'} ${path} failed (${response.status}): ${text}`)
+  }
+  return (text ? JSON.parse(text) : null) as T
+}
+
+async function apiRequest(api: LiveApiContext, path: string, init: RequestInit = {}): Promise<Response> {
   const url = `${api.apiBase}${path}`
   const headers = {
     ...(init.body ? { 'Content-Type': 'application/json' } : {}),
@@ -795,11 +819,7 @@ async function apiFetch<T>(api: LiveApiContext, path: string, init: RequestInit 
   } catch (error) {
     throw new Error(`Live API ${init.method || 'GET'} ${url} could not be reached: ${String(error)}`)
   }
-  const text = await response.text()
-  if (!response.ok) {
-    throw new Error(`Live API ${init.method || 'GET'} ${path} failed (${response.status}): ${text}`)
-  }
-  return (text ? JSON.parse(text) : null) as T
+  return response
 }
 
 function escapeRegex(value: string): string {

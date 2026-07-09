@@ -57,6 +57,20 @@ Prefer sourceable, specific questions. Do not answer the request.
 The payload includes "current_date". If a generated search query involves a relative date
 ("tomorrow", "this weekend", "next quarter"), resolve it to an explicit date using current_date
 as the anchor rather than passing the relative term through into the query string.
+
+Query hygiene: when building a search_query string, do not echo the user's literal phrasing
+verbatim if a phrase could collide with an unrelated well-known proper noun (a movie, book, song,
+or brand title). Common idioms like "the day after," "the last of us," or "breaking bad news" can
+literally match famous titles in web search. Rephrase using concrete anchors instead — the
+resolved date, the subject matter (e.g. "games," "schedule," "matches"), and the specific domain —
+so the query can't be misread as a title search.
+
+Subject completeness: when a request broadly asks what's scheduled, playing, or happening without
+naming a specific league or event, and a major internationally prominent tournament or event is
+plausibly relevant to the request (e.g. a World Cup, Olympics, or similarly large-scale active
+tournament), give it its own explicitly named search worker rather than folding it into a generic
+category like "international sports" or "international soccer." A vague bucket query for a major
+named event is far more likely to return nothing useful than a specific one.
 """
 
 SYNTHESIS_PROMPT = """You are the Fronei synthesis agent.

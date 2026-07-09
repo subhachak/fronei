@@ -38,6 +38,7 @@ from app.services.agent.research_utils import temporal_context
 from app.services.agent.models import (
     Goal,
     ProgressEvent,
+    ResearchQualitySignals,
     Source,
     StreamEnvelope,
     TurnRequest,
@@ -667,6 +668,22 @@ class Runtime:
             events=events,
             latency_ms=response.latency_ms + sum(call.latency_ms for call in research["tool_calls"]),
             cost_usd=response.cost_usd,
+            quality_signals=self._research_quality_signals(research),
+        )
+
+    def _research_quality_signals(self, research: dict[str, Any]) -> ResearchQualitySignals | None:
+        evidence = research.get("evidence")
+        has_evidence = evidence is not None and bool(evidence.items)
+        langgraph_state = research.get("langgraph_state") or {}
+        citation_result = langgraph_state.get("last_citation_verification")
+        if not has_evidence and citation_result is None:
+            return None
+        claims = evidence.claims if evidence is not None else []
+        return ResearchQualitySignals(
+            coverage_ratio=evidence.coverage if has_evidence else None,
+            verified_claim_count=citation_result.verified_claims if citation_result is not None else 0,
+            unsupported_claim_count=len(citation_result.unsupported_claims) if citation_result is not None else 0,
+            has_stale_evidence=any(claim.staleness == "stale" for claim in claims),
         )
 
     def resume_langgraph_turn_stream(

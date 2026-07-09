@@ -83,6 +83,13 @@ export type FollowUpOption = {
   output_format?: OutputFormat
 }
 
+export type ResearchQualitySignals = {
+  coverage_ratio?: number | null
+  verified_claim_count?: number
+  unsupported_claim_count?: number
+  has_stale_evidence?: boolean
+}
+
 export type AgentResult = {
   turn_id: string
   goal?: {
@@ -103,6 +110,7 @@ export type AgentResult = {
   events?: ProgressEvent[]
   follow_up_options?: FollowUpOption[]
   research_plan_preview?: ResearchPlanPreview | null
+  quality_signals?: ResearchQualitySignals | null
   created_at?: string
 }
 

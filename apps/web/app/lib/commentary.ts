@@ -76,7 +76,16 @@ export function buildConfidenceCues(events: ProgressEvent[], result: AgentResult
   const judge = [...events].reverse().find(event => event.stage === 'document_judge_result')
   if (judge?.data?.status) cues.push(`Document judge: ${String(judge.data.status)}`)
   if (result?.artifacts?.length) cues.push('Artifact saved to library')
+  const signals = result?.quality_signals
+  const totalClaims = (signals?.verified_claim_count || 0) + (signals?.unsupported_claim_count || 0)
+  if (totalClaims > 0) cues.push(`${signals?.verified_claim_count || 0} of ${totalClaims} claims source-verified`)
   return cues.slice(0, 4)
+}
+
+/** Understated staleness caution -- separate from confidenceCues since it's a warning, not a confirmation. */
+export function buildStalenessWarning(result: AgentResult | null): string | null {
+  if (!result?.quality_signals?.has_stale_evidence) return null
+  return 'Some evidence behind this answer may be outdated.'
 }
 
 export function eventChips(event: ProgressEvent): string[] {

@@ -142,6 +142,20 @@ class ContextSource(BaseModel):
     provenance: str
 
 
+class ResearchQualitySignals(BaseModel):
+    """Compact accuracy/trust signals for a research-derived answer.
+
+    These are computed internally during the research run (evidence
+    coverage, citation verification, per-claim staleness) but were
+    previously discarded before the turn response reached the frontend.
+    Kept deliberately small -- a trust badge, not a full research report.
+    """
+    coverage_ratio: float | None = None
+    verified_claim_count: int = 0
+    unsupported_claim_count: int = 0
+    has_stale_evidence: bool = False
+
+
 class TurnResult(BaseModel):
     turn_id: str
     goal: Goal
@@ -161,6 +175,7 @@ class TurnResult(BaseModel):
     cost_usd: float = 0.0
     follow_up_options: list[dict[str, Any]] = Field(default_factory=list)
     research_plan_preview: dict[str, Any] | None = None
+    quality_signals: ResearchQualitySignals | None = None
     created_at: datetime = Field(default_factory=utc_now)
 
 

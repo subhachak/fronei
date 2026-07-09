@@ -2,9 +2,9 @@
 
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
-import { CheckCircle2, Download, Pencil, RefreshCw, Sparkles } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, Download, Pencil, RefreshCw, Sparkles } from 'lucide-react'
 import { useEffect, useMemo, useRef } from 'react'
-import { assistantTurnCopyText, buildConfidenceCues, eventChips, plainCommentary, plainCommentaryForEvent } from '../lib/commentary'
+import { assistantTurnCopyText, buildConfidenceCues, buildStalenessWarning, eventChips, plainCommentary, plainCommentaryForEvent } from '../lib/commentary'
 import { appTimestampMs, formatAppTime, formatRelativeTime, humanizeStage } from '../lib/format'
 import type { Artifact, FollowUpOption, ProgressEvent, WorkItem } from '../types'
 import { CopyButton } from './ui/CopyButton'
@@ -306,6 +306,7 @@ function TurnPair({
   const userCopy = turn.message || turn.title
   const assistantCopy = assistantTurnCopyText(turn)
   const confidenceCues = buildConfidenceCues(turn.events || [], turn.result || null)
+  const stalenessWarning = buildStalenessWarning(turn.result || null)
   const userCopied = copiedKey === `${turn.id}:user`
   const durationLabel = responseDurationLabel(turn)
   return (
@@ -358,6 +359,13 @@ function TurnPair({
                 {cue}
               </div>
             ))}
+          </div>
+        )}
+
+        {stalenessWarning && (
+          <div className="mb-3.5 flex items-center gap-2 rounded-lg bg-amber-50 px-3 py-2 text-[13px] font-medium text-amber-800 dark:bg-amber-500/10 dark:text-amber-400">
+            <AlertTriangle size={15} className="flex-shrink-0" />
+            {stalenessWarning}
           </div>
         )}
 

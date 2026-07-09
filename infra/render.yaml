@@ -1,19 +1,40 @@
+# NOTE: Render's Blueprint auto-detection looks for `render.yaml` at the repo
+# root by default -- that root file (not this one) is what "New -> Blueprint"
+# picks up automatically. This copy exists only for anyone whose Render
+# service was originally pointed at this path; it MUST be kept identical to
+# the root render.yaml. If you're setting up a new deployment, use the root
+# render.yaml and docs/deployment.md instead.
 services:
   - type: web
     name: fronei-api
     env: python
     rootDir: apps/api
-    buildCommand: pip install -e .
+    # Node.js + pptxgenjs are required by the AgentDeck PptxGenJS renderer
+    # (pptx_render/). Without a `node` binary on PATH,
+    # _agentdeck_renderer_available() is always False and
+    # generate_agentdeck_pptx_bytes() raises "agentdeck renderer unavailable"
+    # for every presentation request. Render's python env build runs as a
+    # non-root user, so install a local Node toolchain instead of apt-get.
+    buildCommand: |
+      pip install -e .
+      curl -fsSL https://nodejs.org/dist/v20.18.0/node-v20.18.0-linux-x64.tar.xz -o /tmp/node.tar.xz
+      mkdir -p ./node-runtime
+      tar -xJf /tmp/node.tar.xz -C ./node-runtime --strip-components=1
+      cd pptx_render && ../node-runtime/bin/npm install --omit=dev
     # Run Alembic migrations before starting the server so schema is always
     # up to date. create_all() is disabled in production (models.py init_db),
     # so this is the only mechanism that applies pending migrations on deploy.
     preDeployCommand: alembic upgrade head
-    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    startCommand: PATH="$PWD/node-runtime/bin:$PATH" uvicorn app.main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: APP_ENV
         value: production
       - key: DATABASE_URL
-        sync: false          # paste your Postgres URL from Supabase / Neon / Render DB
+        sync: false          # REQUIRED: paste a real Postgres URL (Neon/Supabase/Render Postgres).
+                              # Leaving this unset defaults to sqlite, and app startup will now
+                              # refuse to boot in production with a sqlite:// DATABASE_URL --
+                              # Render's filesystem is ephemeral, so sqlite here means data loss
+                              # on every redeploy/restart. See docs/deployment.md Step 1.
       - key: ALLOWED_ORIGINS
         sync: false          # set to your Vercel frontend URL, e.g. https://fronei.vercel.app
       - key: DEFAULT_PROFILE
@@ -24,6 +45,8 @@ services:
         sync: false
       - key: CLERK_AUDIENCE
         sync: false          # required when APP_ENV=production — API will not start without this
+      - key: CLERK_AUTHORIZED_PARTIES
+        sync: false          # comma-separated frontend origins checked against the Clerk token azp claim
       - key: ADMIN_USER_IDS
         sync: false          # comma-separated Clerk user IDs allowed to access /admin
       - key: ADMIN_EMAILS

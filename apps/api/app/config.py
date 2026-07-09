@@ -277,6 +277,15 @@ def check_production_config() -> None:
         raise RuntimeError("ARTIFACT_STORAGE_BACKEND must be 'local' or 's3'.")
     if backend == "s3" and not settings.artifact_s3_bucket:
         raise RuntimeError("ARTIFACT_S3_BUCKET must be set when ARTIFACT_STORAGE_BACKEND=s3.")
+    if settings.database_url.strip().lower().startswith("sqlite"):
+        raise RuntimeError(
+            "DATABASE_URL is sqlite in production (either unset, falling back to "
+            "the local-dev default, or explicitly set to a sqlite:// URL). "
+            "Render/most PaaS filesystems are ephemeral, so a sqlite file is wiped "
+            "on every redeploy/restart. Set DATABASE_URL to a real Postgres "
+            "connection string (Neon, Supabase, or Render Postgres) before "
+            "deploying to production -- see docs/deployment.md."
+        )
     if backend == "local":
         logger.warning(
             "Production artifact storage uses the local filesystem. "

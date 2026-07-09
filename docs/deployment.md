@@ -35,14 +35,16 @@ Keep this URL handy — you'll need it in Steps 2 and 3.
 ## Step 2 — Deploy API to Render
 
 1. Push this repo to GitHub.
-2. Go to [render.com](https://render.com) → **New → Web Service** → connect your repo.
-3. Render will detect `infra/render.yaml` automatically. Click **Apply**.
+2. Go to [render.com](https://render.com) → **New → Blueprint** → connect your repo.
+3. Render auto-detects `render.yaml` at the repo root (a synced copy also
+   lives at `infra/render.yaml` for legacy setups pointed at that path — keep
+   both in sync if you ever edit one). Click **Apply**.
 4. In the Render dashboard for `fronei-api`, go to **Environment** and fill in the `sync: false` vars:
 
 | Key | Value |
 |-----|-------|
-| `APP_ENV` | Set to `production`. This enables startup checks for production authentication and storage configuration. |
-| `DATABASE_URL` | Your Postgres connection string from Step 1 |
+| `APP_ENV` | Set to `production`. This enables startup checks for production authentication, storage, and database configuration. |
+| `DATABASE_URL` | **Required in production.** Your Postgres connection string from Step 1. The API now refuses to start in production if this is unset or points at sqlite — Render's filesystem is ephemeral, so a sqlite file there is wiped on every redeploy/restart. |
 | `ALLOWED_ORIGINS` | Your Vercel URL (add after Step 3, e.g. `https://fronei.vercel.app`) |
 | `CLERK_ISSUER` | Your Clerk issuer/frontend API URL |
 | `CLERK_AUDIENCE` | **Required in production.** Set this to your Clerk app's API audience (or configure an `aud` claim in your Clerk JWT template). Without it, JWT audience verification is disabled — the API will fail to start in production until this is set. |

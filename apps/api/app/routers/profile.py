@@ -30,6 +30,8 @@ from app.db.models import (
     Workspace,
 )
 from app.services.agent import persistence
+from app.services.agent.known_facts import delete_facts_for_user
+from app.services.agent.session_memory import delete_session_summaries_for_user
 from app.services.document_templates import list_document_templates, template_path_for_row
 
 router = APIRouter(prefix="/profile", tags=["profile"])
@@ -414,9 +416,10 @@ def export_my_data(user_id: str = CurrentActiveUser) -> dict:
 @router.post("/privacy-delete")
 def delete_my_data(body: PrivacyDeleteConfirm, user_id: str = CurrentActiveUser) -> dict:
     """Self-service "delete my data": every workspace/conversation/turn/
-    artifact, consolidated preferences, and uploaded document templates for
-    the authenticated user. Irreversible -- requires an explicit confirm
-    flag rather than acting on a bare POST."""
+    artifact, consolidated preferences, uploaded document templates,
+    extracted facts, and cross-session (L2) memory summaries for the
+    authenticated user. Irreversible -- requires an explicit confirm flag
+    rather than acting on a bare POST."""
     if not body.confirm:
         raise HTTPException(status_code=400, detail="Set confirm=true to proceed. This cannot be undone.")
     db = SessionLocal()
@@ -443,6 +446,13 @@ def delete_my_data(body: PrivacyDeleteConfirm, user_id: str = CurrentActiveUser)
                 logger.warning("Failed to delete template file for %s", row.public_id, exc_info=True)
             db.delete(row)
         deleted["document_templates"] = len(template_rows)
+
+        # L3 extracted facts and L2 cross-session summaries are keyed by
+        # user_id directly (not FK-linked to turns), so they need an explicit
+        # purge -- otherwise a "delete my data" request leaves derived memory
+        # behind after the source turns are gone.
+        deleted["known_facts"] = delete_facts_for_user(user_id, db=db)
+        deleted["session_summaries"] = delete_session_summaries_for_user(user_id, db=db)
 
         user = db.query(User).filter(User.clerk_id == user_id).first()
         if user is not None:

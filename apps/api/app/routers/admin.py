@@ -13,7 +13,7 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, text
 
 from app.auth import AdminPrincipal, RequireAdmin, is_env_admin
 from app.config import get_settings
@@ -33,6 +33,8 @@ from app.db.models import (
 )
 from app.services.agent import model_policy, persistence, prompt_library, routing_policy
 from app.services.agent.job_worker import turn_job_worker
+from app.services.agent.known_facts import delete_facts_for_user
+from app.services.agent.session_memory import delete_session_summaries_for_user
 from app.services.clerk import fetch_clerk_user
 from app.services.document_templates import template_path_for_row
 from app.services.llm_gateway import (
@@ -135,11 +137,21 @@ def _ensure_target_user_id(user_id: str) -> None:
 def _privacy_counts(db, user_id: str) -> dict[str, int]:
     user = db.query(User).filter(User.clerk_id == user_id).first()
     has_preferences = bool(user and user.profile_json not in ("", "{}", None))
+    known_facts_count = db.execute(
+        text("SELECT COUNT(*) FROM known_facts WHERE user_id = :user_id"),
+        {"user_id": user_id},
+    ).scalar() or 0
+    session_summaries_count = db.execute(
+        text("SELECT COUNT(*) FROM session_summaries WHERE user_id = :user_id"),
+        {"user_id": user_id},
+    ).scalar() or 0
     return {
         "document_templates": db.query(DocumentTemplate).filter(DocumentTemplate.user_id == user_id).count(),
         "workspaces": db.query(Workspace).filter(Workspace.user_id == user_id).count(),
         "turns": db.query(Turn).filter(Turn.user_id == user_id).count(),
         "consolidated_preferences": 1 if has_preferences else 0,
+        "known_facts": known_facts_count,
+        "session_summaries": session_summaries_count,
     }
 
 
@@ -720,6 +732,11 @@ def privacy_delete(
                 target_user.profile_json = "{}"
                 target_user.profile_consolidated_at = None
                 deleted["consolidated_preferences"] = 1
+            # L3 extracted facts and L2 cross-session summaries are keyed by
+            # user_id directly (not FK-linked to turns), so they need an
+            # explicit purge alongside the rest of the agent-derived data.
+            deleted["known_facts"] = delete_facts_for_user(user_id, db=db)
+            deleted["session_summaries"] = delete_session_summaries_for_user(user_id, db=db)
         _audit(db, admin, "user.privacy_delete", user_id, {"deleted": deleted})
         db.commit()
         return {"user_id": user_id, "deleted": deleted}

@@ -1,3 +1,7 @@
+# Canonical Render Blueprint -- Render auto-detects render.yaml at the repo
+# root, so this is the file "New -> Blueprint" picks up. A copy is kept at
+# infra/render.yaml for any deployment still pointed at that legacy path;
+# keep the two in sync if you change one.
 services:
   - type: web
     name: fronei-api
@@ -24,7 +28,11 @@ services:
       - key: APP_ENV
         value: production
       - key: DATABASE_URL
-        sync: false          # paste your Postgres URL from Supabase / Neon / Render DB
+        sync: false          # REQUIRED: paste a real Postgres URL (Neon/Supabase/Render Postgres).
+                              # Leaving this unset defaults to sqlite, and app startup will now
+                              # refuse to boot in production with a sqlite:// DATABASE_URL --
+                              # Render's filesystem is ephemeral, so sqlite here means data loss
+                              # on every redeploy/restart. See docs/deployment.md Step 1.
       - key: ALLOWED_ORIGINS
         sync: false          # set to your Vercel frontend URL, e.g. https://fronei.vercel.app
       - key: DEFAULT_PROFILE

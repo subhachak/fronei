@@ -170,6 +170,20 @@ def delete_fact(user_id: str, entity_id: str, fact_key: str, *, db) -> None:
         logger.warning("known_facts_delete_error", extra={"error": str(exc)[:500]})
 
 
+def delete_facts_for_user(user_id: str, *, db) -> int:
+    """Delete every fact for a user (privacy-delete / right-to-erasure path).
+
+    Unlike delete_fact/upsert_fact, this does NOT swallow errors or commit --
+    it's called as one step of a larger all-or-nothing deletion transaction
+    that the caller commits once at the end.
+    """
+    result = db.execute(
+        text("DELETE FROM known_facts WHERE user_id = :user_id"),
+        {"user_id": user_id},
+    )
+    return result.rowcount or 0
+
+
 def _fact_dict(row) -> dict:
     return {
         "fact_key": str(row["fact_key"]),

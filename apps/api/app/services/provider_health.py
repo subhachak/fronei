@@ -1,4 +1,10 @@
-"""Shared provider classification and in-process circuit-breaker state."""
+"""Shared provider classification and in-process circuit-breaker state.
+
+Per-process only, same caveat as app/services/rate_limit.py: fine for a
+single-worker deployment (which is what every deployment config in this repo
+currently is -- see docs/known_limitations.md), but each process gets its own
+independent circuit state if Fronei is ever scaled to multiple instances.
+"""
 
 import threading
 import time

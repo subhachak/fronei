@@ -2,7 +2,7 @@ import json
 from datetime import datetime, timedelta, timezone
 
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -19,6 +19,39 @@ def _sqlite_session():
         poolclass=StaticPool,
     )
     Base.metadata.create_all(bind=engine)
+    # known_facts and session_summaries are raw-SQL tables (see
+    # alembic/versions/f0b1c2d3e4f6_*, f0a1b2c3d4e5_*), not ORM-mapped, so
+    # Base.metadata.create_all() above doesn't create them.
+    with engine.begin() as connection:
+        connection.execute(text(
+            """
+            CREATE TABLE known_facts (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                entity_id TEXT NOT NULL,
+                entity_type TEXT NOT NULL,
+                fact_key TEXT NOT NULL,
+                fact_value TEXT NOT NULL,
+                source_conversation_id TEXT,
+                confidence REAL NOT NULL DEFAULT 1.0,
+                as_of_date TEXT,
+                last_verified_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        ))
+        connection.execute(text(
+            """
+            CREATE TABLE session_summaries (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                conversation_id TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                embedding TEXT,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        ))
     return sessionmaker(bind=engine)
 
 
@@ -348,6 +381,22 @@ def test_privacy_delete_removes_everything_for_caller_only(monkeypatch):
     _make_turn(db, "u1", "c1")
     _make_workspace(db, "w2", "u2")
     db.add(DocumentTemplate(user_id="u1", name="My deck", storage_key="templates/u1/deck.pptx"))
+    db.execute(text(
+        "INSERT INTO known_facts (id, user_id, entity_id, entity_type, fact_key, fact_value) "
+        "VALUES ('f1', 'u1', 'acme', 'workspace', 'stack', 'Postgres')"
+    ))
+    db.execute(text(
+        "INSERT INTO known_facts (id, user_id, entity_id, entity_type, fact_key, fact_value) "
+        "VALUES ('f2', 'u2', 'acme', 'workspace', 'stack', 'keep me')"
+    ))
+    db.execute(text(
+        "INSERT INTO session_summaries (id, user_id, conversation_id, summary) "
+        "VALUES ('s1', 'u1', 'c1', 'Discussed the roadmap.')"
+    ))
+    db.execute(text(
+        "INSERT INTO session_summaries (id, user_id, conversation_id, summary) "
+        "VALUES ('s2', 'u2', 'c2', 'keep me')"
+    ))
     db.commit()
     db.close()
 
@@ -362,6 +411,8 @@ def test_privacy_delete_removes_everything_for_caller_only(monkeypatch):
         assert deleted["consolidated_preferences"] == 1
         assert deleted["settings"] == 1
         assert deleted["document_templates"] == 1
+        assert deleted["known_facts"] == 1
+        assert deleted["session_summaries"] == 1
     finally:
         app.dependency_overrides.clear()
 
@@ -372,7 +423,11 @@ def test_privacy_delete_removes_everything_for_caller_only(monkeypatch):
         u1 = db.query(User).filter(User.clerk_id == "u1").first()
         assert json.loads(u1.profile_json) == {}
         assert json.loads(u1.settings_json) == {}
+        assert db.execute(text("SELECT COUNT(*) FROM known_facts WHERE user_id = 'u1'")).scalar() == 0
+        assert db.execute(text("SELECT COUNT(*) FROM session_summaries WHERE user_id = 'u1'")).scalar() == 0
         # The other user's data must be untouched.
         assert db.query(Workspace).filter(Workspace.user_id == "u2").count() == 1
         u2 = db.query(User).filter(User.clerk_id == "u2").first()
         assert json.loads(u2.profile_json)["preferences"] == ["keep me"]
+        assert db.execute(text("SELECT fact_value FROM known_facts WHERE user_id = 'u2'")).scalar() == "keep me"
+        assert db.execute(text("SELECT summary FROM session_summaries WHERE user_id = 'u2'")).scalar() == "keep me"

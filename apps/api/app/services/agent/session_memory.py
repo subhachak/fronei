@@ -53,6 +53,21 @@ def save_session_summary(user_id: str, conversation_id: str, summary: str, db) -
         logger.warning("session_memory_error", extra={"error": str(exc)[:500], "operation": "save"})
 
 
+def delete_session_summaries_for_user(user_id: str, *, db) -> int:
+    """Delete every L2 session summary for a user (privacy-delete /
+    right-to-erasure path).
+
+    Unlike save_session_summary, this does NOT swallow errors or commit --
+    it's called as one step of a larger all-or-nothing deletion transaction
+    that the caller commits once at the end.
+    """
+    result = db.execute(
+        text("DELETE FROM session_summaries WHERE user_id = :user_id"),
+        {"user_id": user_id},
+    )
+    return result.rowcount or 0
+
+
 def recall_similar_sessions(user_id: str, query: str, *, db=None, limit: int = 3) -> list[tuple[str, str]]:
     """Return up to `limit` (conversation_id, summary) tuples most similar to query.
 

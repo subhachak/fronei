@@ -17,6 +17,7 @@ import hashlib
 import json
 import logging
 import re
+from datetime import datetime
 from typing import Any, Literal
 from urllib.parse import urlparse
 
@@ -44,6 +45,7 @@ from app.services.agent.research_utils import (
     classify_source_type,
     score_source_authority,
     score_technical_density,
+    temporal_context,
 )
 
 logger = logging.getLogger(__name__)
@@ -156,6 +158,7 @@ def classify_claims_llm(
                             "source_url": item.url,
                             "source_title": item.title,
                             "sentences": sentences,
+                            **temporal_context(),
                         },
                         ensure_ascii=False,
                     ),
@@ -272,6 +275,66 @@ def _extract_published_date(source: Source) -> tuple[str | None, Literal["known"
             return m.group(1), "inferred"
 
     return None, "unknown"
+
+
+_STALENESS_DATE_FORMATS = (
+    "%A, %B %d, %Y",  # temporal_context()'s current_date, e.g. "Thursday, July 09, 2026"
+    "%Y-%m-%d",
+    "%Y-%m",
+    "%Y",
+    "%B %d, %Y",  # "March 15, 2024"
+    "%B %d %Y",
+)
+
+
+def _parse_flexible_date(value: str | None):
+    """Best-effort parse of the date formats _extract_published_date and
+    temporal_context() can produce. Returns None (not a raised error) on
+    anything unparseable, so callers can treat it as "unknown"."""
+    cleaned = (value or "").strip()
+    if not cleaned:
+        return None
+    for fmt in _STALENESS_DATE_FORMATS:
+        try:
+            return datetime.strptime(cleaned, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def compute_staleness(
+    published_date: str | None,
+    freshness_risk: str,
+    current_date: str,
+) -> Literal["stale", "aging", "current", "unknown"]:
+    """Combine a source's published_date age with a claim's freshness_risk into
+    one actionable staleness signal.
+
+    Unknown published_date is NOT penalised (per _extract_published_date's
+    docstring note) -- it returns "unknown", never "stale".
+    """
+    published = _parse_flexible_date(published_date)
+    current = _parse_flexible_date(current_date)
+    if published is None or current is None:
+        return "unknown"
+    age_months = max(0, (current - published).days) / 30.44
+
+    if freshness_risk == "low":
+        # Stable subjects rarely go stale regardless of age.
+        return "current"
+    if freshness_risk == "high":
+        if age_months > 3:
+            return "stale"
+        if age_months > 1:
+            return "aging"
+        return "current"
+    if freshness_risk == "medium":
+        if age_months > 12:
+            return "stale"
+        if age_months > 6:
+            return "aging"
+        return "current"
+    return "unknown"
 
 
 # ---------------------------------------------------------------------------
@@ -477,6 +540,7 @@ def extract_evidence_claims(
     """
     claims: list[EvidenceClaim] = []
     query_terms = _claim_query_terms(plan)
+    current_date = temporal_context()["current_date"]
     for item in evidence.items:
         item_claim_limit = _max_claims_for_item(item, plan, default=max_claims_per_item)
         candidates: list[tuple[float, str]] = []
@@ -493,6 +557,7 @@ def extract_evidence_claims(
 
         for i, (score, sentence) in enumerate(candidates[:item_claim_limit]):
             llm = llm_results[i] if i < len(llm_results) else {}
+            freshness_risk = llm.get("freshness_risk") or _freshness_risk_for_text(sentence)
             claims.append(
                 EvidenceClaim(
                     source_id=item.source_id,
@@ -500,7 +565,8 @@ def extract_evidence_claims(
                     quote=sentence[:500],
                     claim_type=llm.get("claim_type") or _claim_type_for_text(sentence),
                     claim_role=llm.get("claim_role") or _claim_role_for_text(sentence, item),
-                    freshness_risk=llm.get("freshness_risk") or _freshness_risk_for_text(sentence),
+                    freshness_risk=freshness_risk,
+                    staleness=compute_staleness(item.published_date, freshness_risk, current_date),
                     confidence=max(0.35, min(0.94, item.confidence + min(0.20, score * 0.05))),
                     source_title=item.title,
                     source_url=item.url,

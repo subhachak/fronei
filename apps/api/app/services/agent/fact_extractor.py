@@ -5,6 +5,7 @@ import logging
 
 from app.services.agent import model_client
 from app.services.agent.known_facts import upsert_fact
+from app.services.agent.research_utils import temporal_context
 
 logger = logging.getLogger(__name__)
 
@@ -12,7 +13,7 @@ logger = logging.getLogger(__name__)
 FACT_EXTRACTOR_PROMPT = """Extract structured facts from the research synthesis.
 
 Return only a JSON array of up to 10 objects:
-[{"entity_id":"...","entity_type":"...","fact_key":"...","fact_value":"..."}]
+[{"entity_id":"...","entity_type":"...","fact_key":"...","fact_value":"...","as_of_date":"..."}]
 
 Rules:
 - Include only facts explicitly stated in the synthesis.
@@ -20,6 +21,8 @@ Rules:
 - Use stable, short snake_case fact_key values.
 - Use concise fact_value strings.
 - Return [] when there are no durable facts worth storing.
+- "as_of_date" is supplied to you as context (the current date) -- copy it through
+  as-is for every fact. Do not invent or compute your own date.
 """
 
 
@@ -38,9 +41,10 @@ def extract_and_store_facts(
     try:
         if not user_id.strip() or not conversation_id.strip() or not synthesis.strip():
             return 0
+        current_date = temporal_context().get("current_date", "")
         response = model_client.simple_completion(
             FACT_EXTRACTOR_PROMPT,
-            synthesis,
+            f"Current date: {current_date}\n\n{synthesis}",
             role="fact_extractor",
             max_tokens=512,
             timeout_s=14,
@@ -70,6 +74,7 @@ def extract_and_store_facts(
                 fact_key,
                 fact_value,
                 source_conversation_id=conversation_id,
+                as_of_date=current_date,
                 db=db,
             )
             stored += 1

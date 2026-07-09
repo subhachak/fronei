@@ -54,6 +54,9 @@ Create a compact multi-agent research plan for the user request. Return only JSO
   "repair_iterations": 0-2
 }
 Prefer sourceable, specific questions. Do not answer the request.
+The payload includes "current_date". If a generated search query involves a relative date
+("tomorrow", "this weekend", "next quarter"), resolve it to an explicit date using current_date
+as the anchor rather than passing the relative term through into the query string.
 """
 
 SYNTHESIS_PROMPT = """You are the Fronei synthesis agent.

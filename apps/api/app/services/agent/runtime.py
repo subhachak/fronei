@@ -34,6 +34,7 @@ from app.services.agent.fast_path import (
     decide_fast_path,
     _format_context_items,
 )
+from app.services.agent.research_utils import temporal_context
 from app.services.agent.models import (
     Goal,
     ProgressEvent,
@@ -168,6 +169,8 @@ class Runtime:
                 recalled_context = _format_context_items(context_items)
                 if recalled_context:
                     user_prompt = f"{recalled_context}\n\n{user_prompt}"
+                current_date = temporal_context(request.user_timezone)["current_date"]
+                user_prompt = f"Current date: {current_date}\n\n{user_prompt}"
                 response = yield from self._stream_model_response(
                     progress,
                     [
@@ -237,6 +240,7 @@ class Runtime:
                         "content": json.dumps(
                             {
                                 "message": request.message,
+                                **temporal_context(request.user_timezone),
                                 "web_query": web_query,
                                 "source_context": source_context(merged_web_sources[:3]),
                                 "conversation_context": request.conversation_context[-1800:] if request.conversation_context else "",

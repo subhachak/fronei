@@ -213,6 +213,23 @@ BOOTSTRAP_SIGNAL_GROUPS: tuple[SignalGroup, ...] = (
         ),
         description="Plainly-phrased queries about current real-world wait/processing times need source-grounded lookup, not general knowledge.",
     ),
+    # Enumeration/count queries ("how many X are there tomorrow", "list of Y on date Z")
+    # need multi-source synthesis to itemize correctly — a 2-source web_fast pass tends
+    # to fabricate a confident count from a general schedule/overview page.
+    SignalGroup(
+        id="enumeration_count_query",
+        suggested_route="agentic",
+        terms=(
+            "how many",
+            "number of",
+            "list of",
+            "which matches",
+            "which games",
+            "which events",
+            "which flights",
+        ),
+        description="Enumeration/count/list queries need the fuller research runtime's multi-source synthesis, not a 2-source quick pass.",
+    ),
 )
 
 _GROUPS_BY_ID = {group.id: group for group in BOOTSTRAP_SIGNAL_GROUPS}

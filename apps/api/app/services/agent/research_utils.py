@@ -9,9 +9,31 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime
 from urllib.parse import urlparse
+from zoneinfo import ZoneInfo
 
 from app.services.agent.models import Source
+
+# Deliberate single-owner-usage default while Fronei has one real user: falls
+# back to the owner's timezone rather than UTC so "today"/"tomorrow" resolve
+# correctly even when a request has no user_timezone. Revisit (switch to a
+# UTC fallback, make frontend timezone capture mandatory) once Fronei has
+# broader multi-user traffic.
+_DEFAULT_TZ = "America/New_York"
+
+
+def temporal_context(tz: str | None = None) -> dict:
+    """Current date/time context injected into every model-facing payload."""
+    try:
+        zone = ZoneInfo(tz) if tz else ZoneInfo(_DEFAULT_TZ)
+    except Exception:
+        zone = ZoneInfo(_DEFAULT_TZ)
+    now = datetime.now(zone)
+    return {
+        "current_date": now.strftime("%A, %B %d, %Y"),
+        "current_datetime_iso": now.isoformat(),
+    }
 
 
 def _dedupe(values: list[str]) -> list[str]:
@@ -168,4 +190,5 @@ __all__ = [
     "classify_source_type",
     "score_source_authority",
     "score_technical_density",
+    "temporal_context",
 ]

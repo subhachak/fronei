@@ -581,6 +581,11 @@ class EvidenceClaim(BaseModel):
         "background_context",
     ] = "background_context"
     freshness_risk: Literal["low", "medium", "high", "unknown"] = "unknown"
+    # Combines freshness_risk with the source's published_date age (see
+    # research_evidence.compute_staleness). Distinct from freshness_risk: that
+    # field is a topic-level "how fast could this change" judgment, this is a
+    # per-claim "has it likely already changed" verdict.
+    staleness: Literal["stale", "aging", "current", "unknown"] = "unknown"
     confidence: float = 0.5
     source_title: str = ""
     source_url: str = ""
@@ -827,6 +832,9 @@ class CitationVerification(BaseModel):
     # Phase 9 — LLM judgment: True when the answer ends by asking the user to authorize
     # or approve further research, a deeper dive, or a second pass — regardless of phrasing.
     asks_permission_to_continue: bool = False
+    # Citations to claims whose evidence is compute_staleness()="stale" but the
+    # answer presents them as current without flagging the staleness.
+    unflagged_stale_claims: list[str] = Field(default_factory=list)
 
 
 __all__ = [

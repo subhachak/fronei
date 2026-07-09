@@ -402,6 +402,7 @@ export function useTurnRunner(options: TurnRunnerOptions) {
       const attachmentContext = fileForThisTurn
         ? `Attached file: ${fileForThisTurn.name}\n\n${fileForThisTurn.text}`
         : undefined
+      const userTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone
       const response = await authorizedFetch('/turns', {
         method: 'POST',
         body: JSON.stringify({
@@ -416,6 +417,7 @@ export function useTurnRunner(options: TurnRunnerOptions) {
           force_route: option?.force_route || undefined,
           model_overrides: modelOverrides,
           attachment_context: attachmentContext,
+          user_timezone: userTimezone,
         }),
       })
       if (!response.ok) throw new Error(await readErrorBody(response, 'Fronei job could not start'))

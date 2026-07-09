@@ -29,6 +29,7 @@ def _session_factory():
                     fact_value TEXT NOT NULL,
                     source_conversation_id TEXT,
                     confidence REAL NOT NULL DEFAULT 1.0,
+                    as_of_date TEXT,
                     last_verified_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )

@@ -50,6 +50,7 @@ from app.services.agent.research_utils import (
     classify_source_type,
     score_source_authority,
     score_technical_density,
+    temporal_context,
 )
 
 logger = logging.getLogger(__name__)
@@ -129,7 +130,10 @@ def build_synthesis_prompt(request: TurnRequest, plan: ResearchPlan, evidence: E
     )
     import dataclasses
     prompt = dataclasses.replace(prompt, system_prompt=prompt.system_prompt + CLAIM_ROLE_SYNTHESIS_PARAGRAPH)
+    current_date = temporal_context(request.user_timezone)["current_date"]
     user_prompt = (
+        f"Current date: {current_date}\n\n"
+    ) + (
         f"{request.conversation_context}\n\n" if request.conversation_context else ""
     ) + (
         f"User request:\n{request.message}\n\n"

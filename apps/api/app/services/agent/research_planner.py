@@ -57,6 +57,7 @@ from app.services.agent.research_utils import (
     _dedupe,
     _parse_json,
     score_technical_density,
+    temporal_context,
 )
 from app.services.agent.models import Source
 
@@ -128,6 +129,9 @@ For each factual claim with a [S#] citation, verify:
      permission-seeking research solicitation.
    Only flag asks_permission_to_continue when the system is offering to do more automated
    research/information-gathering that it could have already done within the current run.
+7. STALENESS CHECK: if a cited claim's evidence is marked staleness="stale" in claim_staleness_summary,
+   the answer MUST flag that explicitly (e.g. "as of a source from over a year ago" / "may be outdated")
+   rather than presenting it as current. Treat an unflagged stale claim like an unsupported claim.
 
 Return only JSON:
 {
@@ -136,6 +140,7 @@ Return only JSON:
   "hallucinated_citations": ["S# references that appear in the answer but are not in the evidence pack"],
   "role_mismatch_issues": ["description of any official_policy vs operational_reality conflicts not named in the answer"],
   "unresolved_conflicts": ["description of any evidence conflicts silently blended rather than explicitly named"],
+  "unflagged_stale_claims": ["S# citations to staleness=\"stale\" evidence that the answer presents as current without flagging it"],
   "leads_with_disclaimer": false,
   "asks_permission_to_continue": false,
   "repair_needed": true|false,
@@ -402,6 +407,7 @@ def plan_research(request: TurnRequest) -> ResearchPlan:
                     "content": json.dumps(
                         {
                             "message": request.message,
+                            **temporal_context(request.user_timezone),
                             "conversation_context": request.conversation_context[-5000:] if request.conversation_context else "",
                             "quality_mode": request.quality_mode,
                             "research_level": request.research_level,
@@ -634,6 +640,7 @@ def reflect(request: TurnRequest, state: ResearchStateStore) -> ReflectionDecisi
                     "content": json.dumps(
                         {
                             "objective": state.brief.objective,
+                            **temporal_context(request.user_timezone),
                             "coverage_ratio": coverage,
                             "open_cells": [{"subject": cell.subject, "dimension": cell.dimension, "attempts": cell.attempts} for cell in open_cells[:14]],
                             "partial_cells": [{"subject": cell.subject, "dimension": cell.dimension, "notes": cell.notes} for cell in partial_cells[:8]],
@@ -731,6 +738,15 @@ def verify_citations_semantically(
         claim_roles = sorted({c.claim_role for c in (evidence.claims or [])})
         if claim_roles:
             user_payload["claim_roles_in_evidence"] = claim_roles
+        # Phase 2c — stale-evidence claims the verifier must check are flagged, not
+        # presented as current (see compute_staleness in research_evidence.py).
+        stale_claims = [
+            {"source_id": c.source_id, "text": c.text[:200]}
+            for c in (evidence.claims or [])
+            if c.staleness == "stale"
+        ]
+        if stale_claims:
+            user_payload["claim_staleness_summary"] = stale_claims
         response = model_client.complete(
             [
                 {"role": "system", "content": prompt.system_prompt},
@@ -756,6 +772,7 @@ def verify_citations_semantically(
             or result.unresolved_conflicts
             or result.leads_with_disclaimer
             or result.asks_permission_to_continue
+            or result.unflagged_stale_claims
         )
         if result.repair_needed and not result.repair_instruction:
             result.repair_instruction = _citation_repair_instruction(result)
@@ -1604,6 +1621,8 @@ def _citation_repair_instruction(result: CitationVerification) -> str:
         parts.append("Correct or remove unsupported claims: " + "; ".join(result.unsupported_claims[:3]))
     if result.hallucinated_citations:
         parts.append("Remove or fix hallucinated citation markers: " + ", ".join(result.hallucinated_citations[:6]))
+    if result.unflagged_stale_claims:
+        parts.append("Flag these citations as potentially outdated instead of presenting them as current: " + ", ".join(result.unflagged_stale_claims[:6]))
     return " ".join(parts) or "Repair citation support."
 
 

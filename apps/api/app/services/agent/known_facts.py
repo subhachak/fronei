@@ -19,6 +19,7 @@ def upsert_fact(
     db,
     source_conversation_id: str | None = None,
     confidence: float = 1.0,
+    as_of_date: str | None = None,
 ) -> None:
     """Insert or update a structured fact.
 
@@ -40,6 +41,7 @@ def upsert_fact(
                     fact_value,
                     source_conversation_id,
                     confidence,
+                    as_of_date,
                     last_verified_at
                 )
                 VALUES (
@@ -51,6 +53,7 @@ def upsert_fact(
                     :fact_value,
                     :source_conversation_id,
                     :confidence,
+                    :as_of_date,
                     CURRENT_TIMESTAMP
                 )
                 ON CONFLICT (user_id, entity_id, fact_key)
@@ -59,6 +62,7 @@ def upsert_fact(
                     fact_value = excluded.fact_value,
                     source_conversation_id = excluded.source_conversation_id,
                     confidence = excluded.confidence,
+                    as_of_date = excluded.as_of_date,
                     last_verified_at = CURRENT_TIMESTAMP
                 """
             ),
@@ -71,6 +75,7 @@ def upsert_fact(
                 "fact_value": fact_value,
                 "source_conversation_id": source_conversation_id,
                 "confidence": max(0.0, min(1.0, float(confidence))),
+                "as_of_date": as_of_date,
             },
         )
         db.commit()
@@ -88,7 +93,7 @@ def get_facts(user_id: str, entity_id: str, *, db) -> list[dict]:
         rows = db.execute(
             text(
                 """
-                SELECT fact_key, fact_value, confidence
+                SELECT fact_key, fact_value, confidence, as_of_date
                 FROM known_facts
                 WHERE user_id = :user_id AND entity_id = :entity_id
                 ORDER BY fact_key
@@ -115,6 +120,7 @@ def get_facts_for_type(user_id: str, entity_type: str, *, db) -> list[dict]:
                     fact_key,
                     fact_value,
                     confidence,
+                    as_of_date,
                     source_conversation_id,
                     created_at,
                     last_verified_at AS updated_at
@@ -169,6 +175,7 @@ def _fact_dict(row) -> dict:
         "fact_key": str(row["fact_key"]),
         "fact_value": str(row["fact_value"]),
         "confidence": float(row["confidence"]),
+        "as_of_date": _string_or_none(row["as_of_date"]),
     }
 
 

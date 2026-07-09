@@ -12,6 +12,7 @@ from app.services.agent import routing_policy
 from app.services.agent.context_classifier import classify_context_need
 from app.services.agent.grounding import log_grounding_check, log_router_pre_decision
 from app.services.agent.models import RouteName, TurnRequest
+from app.services.agent.research_utils import temporal_context
 
 # Imported lazily to avoid circular imports — only used inside choose_research_level().
 def _get_extract_named_comparison_subjects():  # type: ignore[misc]
@@ -135,6 +136,7 @@ def decide_with_options(
     user_payload = json.dumps(
         {
             "message": request.message,
+            **temporal_context(request.user_timezone),
             "prior_turn_context": request.prior_turn_context[-5000:] if request.prior_turn_context else "",
             "conversation_context": request.conversation_context[-5000:] if request.conversation_context else "",
             "last_turn_route": request.last_turn_route,

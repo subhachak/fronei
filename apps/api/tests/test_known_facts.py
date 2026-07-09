@@ -25,6 +25,7 @@ def _session():
                     fact_value TEXT NOT NULL,
                     source_conversation_id TEXT,
                     confidence REAL NOT NULL DEFAULT 1.0,
+                    as_of_date TEXT,
                     last_verified_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )
@@ -56,7 +57,23 @@ def test_upsert_fact_then_get_facts_round_trip_on_sqlite():
         upsert_fact("user_1", "workspace_1", "workspace", "project", "Context OS", db=db, confidence=0.9)
         facts = get_facts("user_1", "workspace_1", db=db)
 
-    assert facts == [{"fact_key": "project", "fact_value": "Context OS", "confidence": 0.9}]
+    assert facts == [{"fact_key": "project", "fact_value": "Context OS", "confidence": 0.9, "as_of_date": None}]
+
+
+def test_upsert_fact_stores_as_of_date():
+    Session = _session()
+    with Session() as db:
+        upsert_fact("user_1", "workspace_1", "workspace", "project", "Context OS", db=db, as_of_date="Thursday, July 09, 2026")
+        facts = get_facts("user_1", "workspace_1", db=db)
+
+    assert facts == [
+        {
+            "fact_key": "project",
+            "fact_value": "Context OS",
+            "confidence": 1.0,
+            "as_of_date": "Thursday, July 09, 2026",
+        }
+    ]
 
 
 def test_upsert_fact_updates_existing_key_without_duplicate():
@@ -66,7 +83,7 @@ def test_upsert_fact_updates_existing_key_without_duplicate():
         upsert_fact("user_1", "workspace_1", "workspace", "project", "New", db=db)
         facts = get_facts("user_1", "workspace_1", db=db)
 
-    assert facts == [{"fact_key": "project", "fact_value": "New", "confidence": 1.0}]
+    assert facts == [{"fact_key": "project", "fact_value": "New", "confidence": 1.0, "as_of_date": None}]
 
 
 def test_get_facts_unknown_entity_returns_empty():
@@ -123,7 +140,7 @@ def test_delete_fact_removes_matching_key():
         delete_fact("user_1", "workspace_1", "project", db=db)
         facts = get_facts("user_1", "workspace_1", db=db)
 
-    assert facts == [{"fact_key": "owner", "fact_value": "Subh", "confidence": 1.0}]
+    assert facts == [{"fact_key": "owner", "fact_value": "Subh", "confidence": 1.0, "as_of_date": None}]
 
 
 def test_get_facts_for_type_returns_pinned_before_auto_extracted():

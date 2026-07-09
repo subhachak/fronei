@@ -14,6 +14,7 @@ from app.services.agent.context_contracts import ContextItem
 from app.services.agent.context_registry import get_context_items
 from app.services.agent.models import ContextSource, TurnRequest, Source
 from app.services.agent.research_models import _looks_like_low_value_extraction
+from app.services.agent.research_utils import temporal_context
 from app.services.agent.tools import source_context
 from app.services.agent.grounding import (
     CONTEXT_CLAIM_PHRASES,
@@ -61,6 +62,7 @@ Rules:
 - Use web_fast only for quick current facts or one narrow lookup. Do not use it for full research.
 - Use web_fast for current AI model/provider/pricing/API recommendation questions, because model catalogs and prices change frequently.
 - For vague follow-ups, use direct_fast only if the current conversation context clearly contains the target. Otherwise choose agentic.
+- The payload includes "current_date" (today's date, UTC). If the request or web_query involves a relative date ("today", "tomorrow", "this weekend", "this week"), resolve it to an explicit calendar date using current_date as the anchor and write that explicit date into web_query. Never let "today"/"tomorrow"/"this weekend" pass through literally into web_query.
 
 Return only compact JSON:
 {
@@ -83,12 +85,16 @@ Default quality bar:
 - For "explain", "what is", "how does", and plain-English technical questions, give a practical answer with a definition, analogy or example, why it matters, common variants/details when useful, and a crisp one-sentence takeaway.
 - Use Markdown headings or bullets when they make the answer easier to scan.
 - Keep it focused; do not turn ordinary chat into research or a formal report.
+
+If you're not confident in a specific fact, number, date, or current status, say so plainly rather than stating it with unwarranted confidence. Prefer "I'm not certain, but..." over a fabricated-sounding specific answer.
 """
 
 
 WEB_FAST_PROMPT = """You are Fronei, answering with a quick web check.
 
-Use only the provided source context for current factual claims. Keep the answer concise and include source links naturally. If the sources are insufficient, say what is missing and avoid pretending this was full deep research.
+Use only the provided source context for current factual claims. The payload includes "current_date" (today's date, UTC) — use it to resolve any relative dates ("today", "tomorrow", "this weekend") in the message or sources instead of guessing. Keep the answer concise and include source links naturally. If the sources are insufficient, say what is missing and avoid pretending this was full deep research.
+
+Never state a specific count, total, or itemized list unless the source content explicitly itemizes it. If the sources are a general schedule/overview page without date-level or item-level detail, say the exact number could not be confirmed from the sources retrieved, rather than estimating or inferring one.
 """
 
 
@@ -144,6 +150,7 @@ def decide_fast_path(request: TurnRequest) -> FastPathDecision:
     payload = json.dumps(
         {
             "message": request.message,
+            **temporal_context(request.user_timezone),
             "prior_turn_context": request.prior_turn_context[-3500:] if request.prior_turn_context else "",
             "conversation_context": request.conversation_context[-3500:] if request.conversation_context else "",
             "quality_mode": request.quality_mode,
@@ -258,6 +265,8 @@ def answer_direct_fast(
     recalled_context = _format_context_items(context_items or [])
     if recalled_context:
         user_prompt = f"{recalled_context}\n\n{user_prompt}"
+    current_date = temporal_context(request.user_timezone)["current_date"]
+    user_prompt = f"Current date: {current_date}\n\n{user_prompt}"
     return model_client.simple_completion(
         DIRECT_FAST_PROMPT,
         user_prompt,
@@ -310,6 +319,7 @@ def answer_web_fast(
     user_prompt = json.dumps(
         {
             "message": request.message,
+            **temporal_context(request.user_timezone),
             "web_query": web_query,
             "source_context": context,
             "conversation_context": request.conversation_context[-1800:] if request.conversation_context else "",

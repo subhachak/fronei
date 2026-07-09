@@ -3,8 +3,9 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Literal
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 RouteName = Literal["direct", "clarify", "research", "document", "research_document"]
@@ -59,6 +60,22 @@ class TurnRequest(BaseModel):
     # "last turn was clarify, user is now answering the clarification" → inherit
     # the original research/document intent rather than routing to direct.
     last_turn_route: str | None = None
+    # IANA tz name (e.g. "America/New_York") captured client-side from the
+    # browser. Used to ground relative-date phrasing ("today", "tomorrow") in
+    # temporal_context() (research_utils.py). A bad/unrecognized value degrades
+    # to None rather than rejecting the request -- see _validate_user_timezone.
+    user_timezone: str | None = None
+
+    @field_validator("user_timezone")
+    @classmethod
+    def _validate_user_timezone(cls, value: str | None) -> str | None:
+        if not value:
+            return None
+        try:
+            ZoneInfo(value)
+        except Exception:
+            return None
+        return value
 
 
 class Goal(BaseModel):

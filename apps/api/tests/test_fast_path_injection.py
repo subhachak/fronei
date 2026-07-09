@@ -14,9 +14,10 @@ from app.services.agent.context_contracts import (
 )
 from app.services.agent.fast_path import answer_direct_fast
 from app.services.agent.models import TurnRequest
+from app.services.agent.research_utils import temporal_context
 
 
-def test_answer_direct_fast_without_items_keeps_prompt_unchanged(monkeypatch):
+def test_answer_direct_fast_without_items_prepends_current_date(monkeypatch):
     captured = {}
 
     def fake_simple_completion(system, user, **kwargs):
@@ -27,7 +28,8 @@ def test_answer_direct_fast_without_items_keeps_prompt_unchanged(monkeypatch):
 
     answer_direct_fast(TurnRequest(message="Explain caching."))
 
-    assert captured["user"] == "Explain caching."
+    current_date = temporal_context()["current_date"]
+    assert captured["user"] == f"Current date: {current_date}\n\nExplain caching."
 
 
 def test_answer_direct_fast_prepends_l1_context(monkeypatch):
@@ -47,7 +49,9 @@ def test_answer_direct_fast_prepends_l1_context(monkeypatch):
 
     answer_direct_fast(TurnRequest(message="Make that shorter."), context_items=[item])
 
-    assert captured["user"].startswith(
+    current_date = temporal_context()["current_date"]
+    assert captured["user"] == (
+        f"Current date: {current_date}\n\n"
         "[L1 · conversation · prior_turn]\nUser asked about API gateway limits.\n\nMake that shorter."
     )
 
@@ -70,7 +74,9 @@ def test_answer_direct_fast_prepends_l2_context(monkeypatch):
 
     answer_direct_fast(TurnRequest(message="Continue the plan."), context_items=[item])
 
-    assert captured["user"].startswith(
+    current_date = temporal_context()["current_date"]
+    assert captured["user"] == (
+        f"Current date: {current_date}\n\n"
         "[L2 · workspace · summary | L2:summary:conv_conv_1]\n"
         "Prior session decided to use pgvector for summaries.\n\nContinue the plan."
     )

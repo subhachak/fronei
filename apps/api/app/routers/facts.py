@@ -25,6 +25,7 @@ class FactOut(BaseModel):
     fact_key: str
     fact_value: str
     confidence: float
+    as_of_date: str | None = None
     source_conversation_id: str | None
     created_at: str | None
     updated_at: str | None

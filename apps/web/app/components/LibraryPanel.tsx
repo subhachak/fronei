@@ -94,7 +94,7 @@ export function LibraryPanel({
   return (
     <div className="flex h-full flex-col">
       <a
-        href="/"
+        href="/app"
         aria-label="Go to Fronei home"
         title="Go to Fronei home"
         className="mb-4 flex h-11 w-fit max-w-full items-center rounded-lg pr-2 transition-opacity hover:opacity-80"

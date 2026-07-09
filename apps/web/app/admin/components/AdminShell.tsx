@@ -62,7 +62,7 @@ export function AdminShell({ embedded = false, onClose }: { embedded?: boolean; 
               </button>
             ) : (
               <a
-                href="/"
+                href="/app"
                 className="grid h-8 w-8 flex-shrink-0 place-items-center rounded-full border border-neutral-200 text-neutral-500 hover:bg-neutral-100 dark:border-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-800"
                 aria-label="Back to studio"
                 title="Back to studio"
@@ -131,7 +131,7 @@ export function AdminShell({ embedded = false, onClose }: { embedded?: boolean; 
               </button>
             ) : (
               <a
-                href="/"
+                href="/app"
                 className="mt-4 inline-flex items-center gap-1.5 rounded-lg bg-neutral-900 px-4 py-2 text-sm font-semibold text-white dark:bg-white dark:text-neutral-900"
               >
                 <ArrowLeft size={14} /> Back to studio

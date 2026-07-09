@@ -630,7 +630,7 @@ function CollapsedLibraryRail({
   return (
     <div className="flex h-full flex-col items-center gap-2 px-2 py-3">
       <a
-        href="/"
+        href="/app"
         aria-label="Go to Fronei home"
         title="Go to Fronei home"
         className="grid h-10 w-10 place-items-center rounded-lg border border-neutral-200 bg-white hover:bg-neutral-100 dark:border-neutral-800 dark:bg-neutral-900 dark:hover:bg-neutral-800"

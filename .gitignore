@@ -9,3 +9,4 @@ node_modules
 .DS_Store
 apps/web/tsconfig.tsbuildinfo
 *.db-journal
+.claude/settings.local.json

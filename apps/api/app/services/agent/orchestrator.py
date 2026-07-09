@@ -261,7 +261,7 @@ def heuristic_decide(
         route = "research"
     else:
         route = "direct"
-    research_level = choose_research_level(request, route)
+    research_level = choose_research_level(request, route, signal_decision)
     return OrchestratorDecision(
         route=route,
         confidence=0.64,
@@ -277,7 +277,11 @@ def heuristic_decide(
     )
 
 
-def choose_research_level(request: TurnRequest, route: RouteName) -> Literal["easy", "regular", "deep"]:
+def choose_research_level(
+    request: TurnRequest,
+    route: RouteName,
+    signal_decision: routing_policy.RoutingSignalDecision | None = None,
+) -> Literal["easy", "regular", "deep"]:
     if route not in {"research", "research_document"}:
         return "regular"
     if request.research_level in {"easy", "regular", "deep"}:
@@ -314,6 +318,24 @@ def choose_research_level(request: TurnRequest, route: RouteName) -> Literal["ea
     easy_terms = ["quick", "briefly", "check", "current", "latest", "what is", "when is", "find out"]
     asks_doc = _asks_for_document_artifact(text)
     if any(term in text for term in deep_terms) or any(term in text for term in high_stakes_terms):
+        return "deep"
+    # Enumeration/count/list queries (routing_policy's enumeration_count_query signal
+    # group) already escalate suggested_route to "agentic", but that never fed into
+    # research_level, so it silently fell back to "regular" — not enough search breadth
+    # for same-day multi-event lookups (e.g. sports schedules, multi-flight listings).
+    # Reuses the existing signal evaluation rather than duplicating routing_policy's term
+    # lists. Checked here — before the easy_terms fallback below — so a query like "how
+    # many World Cup matches are there tomorrow" isn't pulled back down to "easy" just
+    # because it also contains "current" or "what is".
+    #
+    # time_sensitive_factual (the "how long is" / "backlog" group directly above
+    # enumeration_count_query in routing_policy.py) was checked for the same gap and does
+    # NOT have it: its suggested_route is "web_fast", not "agentic" — it was deliberately
+    # designed to stay on the lightweight path, not the fuller research runtime, so there
+    # is no research_level to wire it into.
+    if signal_decision is None:
+        signal_decision = routing_policy.evaluate_routing_signals(request.message)
+    if any(match.signal_group == "enumeration_count_query" for match in signal_decision.matched_signals):
         return "deep"
     # Phase 9 / Phase 11 — two independent structural signals, either alone → "deep".
     # Extract subjects and count dimensions once; both checks share the result.
@@ -396,7 +418,7 @@ def _normalize_research_decision(request: TurnRequest, decision: OrchestratorDec
     if request.research_level in {"easy", "regular", "deep"}:
         decision.research_level = request.research_level  # type: ignore[assignment]
     elif decision.route in {"research", "research_document"}:
-        decision.research_level = choose_research_level(request, decision.route)
+        decision.research_level = choose_research_level(request, decision.route, signal_decision)
     else:
         decision.research_level = "regular"
     if decision.route in {"research", "research_document"} and decision.research_level == "deep":

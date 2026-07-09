@@ -49,9 +49,9 @@ const STATUS_STYLES: Record<CitationStatus, { marker: string; ring: string; dot:
     dot: 'bg-red-600',
   },
   stale: {
-    marker: 'border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100',
-    ring: 'border-amber-200 bg-amber-50',
-    dot: 'bg-amber-600',
+    marker: 'border-slate-300 bg-slate-100 text-slate-700 hover:bg-slate-200',
+    ring: 'border-slate-300 bg-slate-100',
+    dot: 'bg-slate-500',
   },
 }
 
@@ -122,7 +122,7 @@ export function CitationDemo() {
       <div className="mt-6 flex flex-wrap gap-4 border-t border-stone-100 pt-4 text-xs font-medium text-stone-500">
         <span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-emerald-600" /> Verified against source</span>
         <span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-red-600" /> Conflicting sources</span>
-        <span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-amber-600" /> Stale source</span>
+        <span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-slate-500" /> Stale source</span>
       </div>
     </div>
   )

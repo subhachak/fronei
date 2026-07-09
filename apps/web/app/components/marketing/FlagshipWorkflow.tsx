@@ -7,7 +7,7 @@ const REPORT_ROWS = [
 const STATUS_DOT: Record<string, string> = {
   verified: 'bg-emerald-600',
   conflict: 'bg-red-600',
-  stale: 'bg-amber-600',
+  stale: 'bg-slate-500',
 }
 
 const STATUS_LABEL: Record<string, string> = {

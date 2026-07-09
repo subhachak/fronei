@@ -1,7 +1,7 @@
 const CARDS = [
   {
     status: 'stale',
-    accent: 'border-amber-200 bg-amber-50 text-amber-800',
+    accent: 'border-slate-300 bg-slate-100 text-slate-700',
     title: 'Staleness',
     body: 'Sources have a shelf life. Fronei tracks how old each piece of evidence is relative to how fast that domain changes, and flags anything you’d be wrong to treat as current.',
   },

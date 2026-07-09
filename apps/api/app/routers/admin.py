@@ -32,6 +32,7 @@ from app.db.models import (
     get_monthly_spend,
 )
 from app.services.agent import model_policy, persistence, prompt_library, routing_policy
+from app.services.agent.context_contracts import ContextTokenBudget
 from app.services.agent.job_worker import turn_job_worker
 from app.services.agent.known_facts import delete_facts_for_user
 from app.services.agent.session_memory import delete_session_summaries_for_user
@@ -111,6 +112,15 @@ def _start_for_range(range_value: str) -> datetime | None:
 
 def _fmt(dt: datetime | None) -> str | None:
     return dt.isoformat() if dt else None
+
+
+def _loads(value: str | None, fallback):
+    if not value:
+        return fallback
+    try:
+        return json.loads(value)
+    except Exception:
+        return fallback
 
 
 def _audit(db, admin: AdminPrincipal, action: str, target_user_id: str | None = None, details: dict | None = None) -> None:
@@ -226,15 +236,41 @@ def overview(admin: AdminPrincipal = RequireAdmin) -> dict:
         turns_today = db.query(Turn).filter(Turn.created_at >= start)
         requests_today = turns_today.count()
         spend_today = turns_today.with_entities(func.coalesce(func.sum(Turn.cost_usd), 0.0)).scalar() or 0.0
+        input_tokens_today = turns_today.with_entities(func.coalesce(func.sum(Turn.input_tokens), 0)).scalar() or 0
+        output_tokens_today = turns_today.with_entities(func.coalesce(func.sum(Turn.output_tokens), 0)).scalar() or 0
         errors_today = db.query(Turn).filter(
             Turn.status == "failed",
             Turn.created_at >= start,
         ).count()
         running_turns = db.query(Turn).filter(Turn.status.in_(["pending", "running"])).count()
+        # Grouped by the actual Turn.route values (direct/research/document/
+        # research_document/clarify) -- there's no separate fast_path/agentic
+        # column, route is the real routing-decision breakdown that exists.
+        tokens_by_route_today = {
+            route: {
+                "requests": int(count or 0),
+                "input_tokens": int(input_sum or 0),
+                "output_tokens": int(output_sum or 0),
+            }
+            for route, count, input_sum, output_sum in (
+                db.query(
+                    Turn.route,
+                    func.count(Turn.id),
+                    func.coalesce(func.sum(Turn.input_tokens), 0),
+                    func.coalesce(func.sum(Turn.output_tokens), 0),
+                )
+                .filter(Turn.created_at >= start)
+                .group_by(Turn.route)
+                .all()
+            )
+        }
         return {
             "users": len(_all_known_user_ids(db)),
             "requests_today": int(requests_today),
             "spend_today": round(float(spend_today), 6),
+            "input_tokens_today": int(input_tokens_today),
+            "output_tokens_today": int(output_tokens_today),
+            "tokens_by_route_today": tokens_by_route_today,
             "errors_today": errors_today,
             "running_research_runs": running_turns,
             "total_conversations": db.query(Workspace).count(),
@@ -499,6 +535,8 @@ def users(
         workspace_counts = dict(db.query(Workspace.user_id, func.count(Workspace.id)).filter(Workspace.user_id.in_(page)).group_by(Workspace.user_id).all())
         turn_counts = dict(db.query(Turn.user_id, func.count(Turn.id)).filter(Turn.user_id.in_(page)).group_by(Turn.user_id).all())
         turn_costs = dict(db.query(Turn.user_id, func.coalesce(func.sum(Turn.cost_usd), 0.0)).filter(Turn.user_id.in_(page)).group_by(Turn.user_id).all())
+        turn_input_tokens = dict(db.query(Turn.user_id, func.coalesce(func.sum(Turn.input_tokens), 0)).filter(Turn.user_id.in_(page)).group_by(Turn.user_id).all())
+        turn_output_tokens = dict(db.query(Turn.user_id, func.coalesce(func.sum(Turn.output_tokens), 0)).filter(Turn.user_id.in_(page)).group_by(Turn.user_id).all())
         month_start = _today_start().replace(day=1)
         month_turn_costs = dict(
             db.query(Turn.user_id, func.coalesce(func.sum(Turn.cost_usd), 0.0))
@@ -522,6 +560,8 @@ def users(
                 "conversation_count": workspace_counts.get(user_id, 0),
                 "request_count": turn_counts.get(user_id, 0),
                 "total_spend": round(float(turn_costs.get(user_id, 0) or 0), 6),
+                "total_input_tokens": int(turn_input_tokens.get(user_id, 0) or 0),
+                "total_output_tokens": int(turn_output_tokens.get(user_id, 0) or 0),
                 "memory_count": 0,
                 "writing_sample_count": 0,
                 "research_run_count": 0,
@@ -571,6 +611,10 @@ def user_detail(user_id: str, admin: AdminPrincipal = RequireAdmin) -> dict:
                 user_name = user_row.name
         control_out = _control_out(control)
         control_out["role"] = _effective_role(user_id, control.role if control else None, user_email)
+        total_input_tokens, total_output_tokens = db.query(
+            func.coalesce(func.sum(Turn.input_tokens), 0),
+            func.coalesce(func.sum(Turn.output_tokens), 0),
+        ).filter(Turn.user_id == user_id).one()
         result = {
             "user_id": user_id,
             "email": user_email,
@@ -585,6 +629,8 @@ def user_detail(user_id: str, admin: AdminPrincipal = RequireAdmin) -> dict:
                 "writing_samples": 0,
                 "twin_profiles": 0,
                 "research_runs": db.query(Turn).filter(Turn.user_id == user_id, Turn.route == "research").count(),
+                "total_input_tokens": int(total_input_tokens or 0),
+                "total_output_tokens": int(total_output_tokens or 0),
             },
             "recent_conversations": [
                 {
@@ -597,6 +643,19 @@ def user_detail(user_id: str, admin: AdminPrincipal = RequireAdmin) -> dict:
                 for w in workspaces
             ],
             "recent_research_runs": [],
+            "recent_turns": [
+                {
+                    "id": t.id,
+                    "created_at": _fmt(t.created_at),
+                    "route": t.route,
+                    "model_used": t.model_used,
+                    "cost_usd": round(t.cost_usd, 6),
+                    "input_tokens": t.input_tokens,
+                    "output_tokens": t.output_tokens,
+                    "context_tokens": _loads(t.context_tokens_json, {}),
+                }
+                for t in recent_turns
+            ],
             "recent_errors": [
                 {
                     "id": t.id,
@@ -812,15 +871,20 @@ def usage(
         summary_row = base.with_entities(
             func.coalesce(func.sum(Turn.cost_usd), 0.0),
             func.count(Turn.id),
+            func.coalesce(func.sum(Turn.input_tokens), 0),
+            func.coalesce(func.sum(Turn.output_tokens), 0),
         ).one()
         total_cost = float(summary_row[0] or 0)
         total_requests = int(summary_row[1] or 0)
+        total_tokens = int(summary_row[2] or 0) + int(summary_row[3] or 0)
         return {
             "range": range,
             "summary": {
                 "total_cost": round(total_cost, 6),
                 "requests": total_requests,
-                "tokens": 0,
+                "tokens": total_tokens,
+                "input_tokens": int(summary_row[2] or 0),
+                "output_tokens": int(summary_row[3] or 0),
                 "users": len(by_user),
             },
             "cost_by_day": [
@@ -855,6 +919,115 @@ def usage(
                 [{"task_type": t, "count": c} for t, c in by_task.items()],
                 key=lambda x: -x["count"],
             ),
+        }
+    finally:
+        db.close()
+
+
+_CONTEXT_LAYERS = ("conversation", "facts", "evidence")
+
+
+@router.get("/context-usage")
+def context_usage(
+    range: str = Query(default="7d", pattern="^(1d|7d|30d|all)$"),
+    admin: AdminPrincipal = RequireAdmin,
+) -> dict:
+    """Per-layer token usage across turns -- the validation data for whether
+    ContextTokenBudget's conversation/facts/evidence shares (Part 1) are
+    reasonable, or whether a layer is starved/overprovisioned relative to
+    what it actually uses. Parses Turn.context_tokens_json in Python rather
+    than via DB-native JSON functions, matching this router's existing
+    fetch-then-aggregate style (see by_day/by_user/by_model in usage()
+    above) rather than introducing a new query pattern."""
+    db = SessionLocal()
+    try:
+        start = _start_for_range(range)
+        query = db.query(Turn.context_tokens_json).filter(Turn.context_tokens_json != "{}")
+        if start:
+            query = query.filter(Turn.created_at >= start)
+        rows = query.all()
+
+        samples: dict[str, list[int]] = {layer: [] for layer in _CONTEXT_LAYERS}
+        for (context_tokens_json,) in rows:
+            parsed = _loads(context_tokens_json, {})
+            if not isinstance(parsed, dict):
+                continue
+            for layer in _CONTEXT_LAYERS:
+                tokens = parsed.get(layer)
+                if isinstance(tokens, (int, float)):
+                    samples[layer].append(int(tokens))
+
+        # Reference budget shares for comparison -- not any specific turn's
+        # actual resolved model, just the default split's own reference point.
+        reference_budget = ContextTokenBudget.for_model("gpt-4.1-mini")
+        layers = {}
+        for layer in _CONTEXT_LAYERS:
+            values = samples[layer]
+            layers[layer] = {
+                "sample_count": len(values),
+                "avg_tokens": round(sum(values) / len(values), 1) if values else 0,
+                "max_tokens": max(values) if values else 0,
+                "budget_share_tokens": getattr(reference_budget, f"{layer}_tokens"),
+                "budget_share_pct": getattr(reference_budget, f"{layer}_share"),
+            }
+        return {
+            "range": range,
+            "turns_with_context_data": len(rows),
+            "layers": layers,
+        }
+    finally:
+        db.close()
+
+
+@router.get("/context-pressure")
+def context_pressure(
+    range: str = Query(default="7d", pattern="^(1d|7d|30d|all)$"),
+    limit: int = Query(default=50, ge=1, le=200),
+    admin: AdminPrincipal = RequireAdmin,
+) -> dict:
+    """Turns where context-budget eviction actually triggered (Part 1's
+    prioritized eviction in context_registry.py) -- tells you whether context
+    governance is a rare edge case or a routine occurrence, and which layer
+    is under the most pressure."""
+    db = SessionLocal()
+    try:
+        start = _start_for_range(range)
+        query = db.query(Turn.id, Turn.user_id, Turn.route, Turn.created_at, Turn.context_tokens_json).filter(
+            Turn.context_tokens_json != "{}"
+        )
+        if start:
+            query = query.filter(Turn.created_at >= start)
+        rows = query.order_by(Turn.created_at.desc()).all()
+
+        evicted_layer_counts: dict[str, int] = defaultdict(int)
+        pressured_turns: list[dict] = []
+        for turn_id, user_id, route, created_at, context_tokens_json in rows:
+            parsed = _loads(context_tokens_json, {})
+            evicted = parsed.get("evicted") if isinstance(parsed, dict) else None
+            if not isinstance(evicted, dict) or not evicted:
+                continue
+            for layer, count in evicted.items():
+                if isinstance(count, (int, float)):
+                    evicted_layer_counts[layer] += int(count)
+            pressured_turns.append({
+                "turn_id": turn_id,
+                "user_id": user_id,
+                "route": route,
+                "created_at": _fmt(created_at),
+                "evicted": evicted,
+            })
+
+        return {
+            "range": range,
+            "turns_scanned": len(rows),
+            "turns_with_eviction": len(pressured_turns),
+            "most_evicted_layer": (
+                max(evicted_layer_counts, key=lambda layer: evicted_layer_counts[layer])
+                if evicted_layer_counts
+                else None
+            ),
+            "evicted_item_counts_by_layer": dict(evicted_layer_counts),
+            "turns": pressured_turns[:limit],
         }
     finally:
         db.close()

@@ -24,6 +24,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from app.services.agent import model_client
+from app.services.agent.context_contracts import ContextTokenBudget
 from app.services.agent.models import Source, TurnRequest
 from app.services.agent.prompt_library import resolve_prompt
 from app.services.agent.research_models import (
@@ -99,12 +100,38 @@ disagreement. Never silently blend them into a single hedged claim.
 """
 
 
+
+# Rough average-tokens-per-item estimates used to derive evidence-layer caps
+# from ContextTokenBudget.evidence_tokens (see _evidence_item_caps) instead of
+# the flat 40/18 constants this replaces. Architecture cards render ~10 lines
+# each vs. one line per claim, hence the higher estimate.
+_AVG_CLAIM_TOKENS = 180
+_AVG_ARCHITECTURE_CARD_TOKENS = 220
+_MIN_CLAIMS, _MAX_CLAIMS = 10, 60
+_MIN_CARDS, _MAX_CARDS = 5, 30
+
+
+def _evidence_item_caps(request: TurnRequest, plan: ResearchPlan) -> tuple[int, int]:
+    """Derive (max_claims, max_architecture_cards) from the resolved model's
+    actual context window instead of the flat 40/18 this replaces, so a
+    smaller-window model doesn't get flooded relative to what it can use,
+    and a larger one isn't needlessly capped."""
+    model = model_client.model_for_role(
+        "synthesis", quality_mode=request.quality_mode, overrides=request.model_overrides
+    ) or "gpt-4.1-mini"
+    budget = ContextTokenBudget.for_model(model)
+    max_claims = max(_MIN_CLAIMS, min(_MAX_CLAIMS, budget.evidence_tokens // _AVG_CLAIM_TOKENS))
+    max_cards = max(_MIN_CARDS, min(_MAX_CARDS, budget.evidence_tokens // _AVG_ARCHITECTURE_CARD_TOKENS))
+    return max_claims, max_cards
+
+
 def build_synthesis_prompt(request: TurnRequest, plan: ResearchPlan, evidence: EvidencePack) -> tuple[str, str]:
-    architecture_context = _architecture_cards_context(evidence)
+    max_claims, max_cards = _evidence_item_caps(request, plan)
+    architecture_context = _architecture_cards_context(evidence, max_cards=max_cards)
     claim_context = "\n".join(
         f"[{claim.source_id}] {claim.claim_type}/{claim.claim_role} "
         f"(confidence={claim.confidence:.2f}, freshness={claim.freshness_risk}): {claim.text}"
-        for claim in evidence.claims[:40]
+        for claim in evidence.claims[:max_claims]
     )
     if not claim_context:
         claim_context = "No typed evidence claims were extracted. Lean on the evidence passages and disclose limits."
@@ -1155,11 +1182,14 @@ def source_context_from_evidence(evidence: EvidencePack) -> str:
     return passage_context
 
 
-def _architecture_cards_context(evidence: EvidencePack) -> str:
+_DEFAULT_MAX_ARCHITECTURE_CARDS = 18
+
+
+def _architecture_cards_context(evidence: EvidencePack, *, max_cards: int | None = None) -> str:
     if not evidence.architecture_cards:
         return "No architecture extraction cards were built. Use typed claims and passages, but disclose missing implementation detail."
     lines: list[str] = []
-    for card in evidence.architecture_cards[:18]:
+    for card in evidence.architecture_cards[: max_cards or _DEFAULT_MAX_ARCHITECTURE_CARDS]:
         lines.append(
             "\n".join(
                 [

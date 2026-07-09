@@ -283,6 +283,13 @@ class Turn(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     langgraph_run_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     pause_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Token-budget governance (see context_contracts.ContextTokenBudget). Best-
+    # effort estimates via research_utils.estimate_tokens(), not exact
+    # provider-billed usage -- see docs note on complete_turn().
+    input_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    output_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Per-layer breakdown, e.g. {"conversation": 412, "facts": 890, "evidence": 3120}.
+    context_tokens_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
 
 
 class LangGraphRunContext(Base):

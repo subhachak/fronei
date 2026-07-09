@@ -4,6 +4,10 @@ export type AdminOverview = {
   users: number
   requests_today: number
   spend_today: number
+  input_tokens_today: number
+  output_tokens_today: number
+  /** Keyed by the real Turn.route values (direct/research/document/research_document/clarify). */
+  tokens_by_route_today: Record<string, { requests: number; input_tokens: number; output_tokens: number }>
   errors_today: number
   running_research_runs: number
   total_conversations: number
@@ -124,6 +128,8 @@ export type AdminUserRow = {
   conversation_count: number
   request_count: number
   total_spend: number
+  total_input_tokens: number
+  total_output_tokens: number
   memory_count: number
   writing_sample_count: number
   research_run_count: number
@@ -157,19 +163,66 @@ export type AdminUserDetail = {
     writing_samples: number
     twin_profiles: number
     research_runs: number
+    total_input_tokens: number
+    total_output_tokens: number
   }
   recent_conversations: Array<{ id: string; title: string; profile: string; message_count: number; updated_at: string | null }>
   recent_research_runs: Array<{ id: string; query: string; mode: string; status: string; source_count: number; claim_count: number; confidence: number | null; updated_at: string | null }>
+  /** Per-turn token breakdown (context_tokens is the ContextTokenBudget
+   *  layer split, e.g. {"conversation": 412, "facts": 890, "evidence": 3120}). */
+  recent_turns: Array<{
+    id: string
+    created_at: string | null
+    route: string
+    model_used: string
+    cost_usd: number
+    input_tokens: number
+    output_tokens: number
+    context_tokens: Record<string, number | Record<string, number>>
+  }>
   recent_errors: Array<{ id: string; created_at: string | null; task_type: string; selected_model: string; error: string }>
 }
 
 export type AdminUsage = {
   range: string
-  summary: { total_cost: number; requests: number; tokens: number; users: number }
+  summary: { total_cost: number; requests: number; tokens: number; input_tokens: number; output_tokens: number; users: number }
   cost_by_day: Array<{ date: string; cost: number; requests: number }>
   top_users: Array<{ user_id: string; email: string | null; name: string | null; cost: number; requests: number }>
   model_usage: Array<{ model: string; cost: number; requests: number; avg_latency_ms: number }>
   task_distribution: Array<{ task_type: string; count: number }>
+}
+
+export type ContextLayerName = 'conversation' | 'facts' | 'evidence'
+
+/** GET /admin/context-usage -- validation data for whether ContextTokenBudget's
+ *  conversation/facts/evidence shares are reasonable given real turns. */
+export type AdminContextUsage = {
+  range: string
+  turns_with_context_data: number
+  layers: Record<ContextLayerName, {
+    sample_count: number
+    avg_tokens: number
+    max_tokens: number
+    budget_share_tokens: number
+    budget_share_pct: number
+  }>
+}
+
+/** GET /admin/context-pressure -- turns where budget eviction actually
+ *  triggered (Part 1's prioritized eviction in context_registry.py). */
+export type AdminContextPressure = {
+  range: string
+  turns_scanned: number
+  turns_with_eviction: number
+  most_evicted_layer: string | null
+  evicted_item_counts_by_layer: Record<string, number>
+  turns: Array<{
+    turn_id: string
+    user_id: string
+    route: string
+    created_at: string | null
+    evicted: Record<string, number>
+  }>
 }
 
 export type AdminSystem = {

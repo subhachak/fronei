@@ -17,8 +17,12 @@ LANGGRAPH_STREAM_QUEUE_POLL_SECONDS = 0.25
 from app.services.agent import model_client
 from app.db.models import SessionLocal
 from app.services.agent.context_classifier import classify_context_need
-from app.services.agent.context_contracts import ContextItem
-from app.services.agent.context_registry import get_context_items
+from app.services.agent.context_contracts import ContextItem, ContextTokenBudget
+from app.services.agent.context_registry import (
+    context_tokens_breakdown,
+    get_context_items,
+    get_context_items_with_eviction,
+)
 from app.services.agent.deck_subtree import plan_deck
 from app.services.agent.document_subtree import (
     build_artifact,
@@ -34,7 +38,7 @@ from app.services.agent.fast_path import (
     decide_fast_path,
     _format_context_items,
 )
-from app.services.agent.research_utils import temporal_context
+from app.services.agent.research_utils import estimate_tokens, temporal_context
 from app.services.agent.models import (
     Goal,
     ProgressEvent,
@@ -76,20 +80,27 @@ _LANGGRAPH_NODE_MESSAGES: dict[str, str] = {
 
 
 def _hydrate_runtime_context_items(request: TurnRequest, *, user_id: str) -> list[ContextItem]:
+    items, _evicted_counts = _hydrate_runtime_context_items_with_eviction(request, user_id=user_id)
+    return items
+
+
+def _hydrate_runtime_context_items_with_eviction(
+    request: TurnRequest, *, user_id: str
+) -> tuple[list[ContextItem], dict[str, int]]:
     decision = classify_context_need(request)
     if not decision.needs_context:
-        return []
+        return [], {}
 
     db = SessionLocal()
     try:
         context_request = SimpleNamespace(**request.model_dump(mode="python"), user_id=user_id)
-        return get_context_items(context_request, decision, db=db)
+        return get_context_items_with_eviction(context_request, decision, db=db)
     except Exception as exc:
         logger.warning(
             "runtime_context_hydration_error",
             extra={"error": str(exc)[:500], "context_intent": decision.intent},
         )
-        return []
+        return [], {}
     finally:
         db.close()
 
@@ -166,7 +177,10 @@ class Runtime:
                 user_prompt = request.message
                 if request.conversation_context:
                     user_prompt = f"{request.conversation_context}\n\nCurrent user request:\n{request.message}"
-                context_items = _hydrate_runtime_context_items(request, user_id=user_id) or fast_decision.context_items
+                context_items, evicted_counts = _hydrate_runtime_context_items_with_eviction(request, user_id=user_id)
+                if not context_items:
+                    context_items = fast_decision.context_items
+                    evicted_counts = {}
                 recalled_context = _format_context_items(context_items)
                 if recalled_context:
                     user_prompt = f"{recalled_context}\n\n{user_prompt}"
@@ -192,6 +206,9 @@ class Runtime:
                     **model_client.telemetry_for_response(response, overrides=request.model_overrides),
                 )
                 yield StreamEnvelope(type="progress", data=event.model_dump(mode="json"))
+                context_tokens = context_tokens_breakdown(context_items)
+                if evicted_counts:
+                    context_tokens["evicted"] = evicted_counts
                 result = TurnResult(
                     turn_id=turn_id,
                     goal=goal,
@@ -204,6 +221,9 @@ class Runtime:
                     events=events,
                     latency_ms=int((time.perf_counter() - started) * 1000),
                     cost_usd=response.cost_usd + fast_decision.cost_usd,
+                    input_tokens=estimate_tokens(user_prompt),
+                    output_tokens=estimate_tokens(response.text),
+                    context_tokens=context_tokens,
                 )
                 yield StreamEnvelope(type="result", data=result.model_dump(mode="json"))
                 yield StreamEnvelope(type="done", data={"turn_id": turn_id, "latency_ms": result.latency_ms})
@@ -218,11 +238,22 @@ class Runtime:
             public_urls = [source.url for source in sources[:2] if source.url]
             extracted_sources: list[Source] = []
             read_call = None
+            web_fast_model = model_client.model_for_role(
+                "direct_answer", quality_mode=request.quality_mode, overrides=request.model_overrides
+            ) or "gpt-4.1-mini"
+            web_fast_budget = ContextTokenBudget.for_model(web_fast_model)
+            # evidence_tokens split across the up-to-3 sources that end up in
+            # source_context, then converted from a token count back to a char
+            # limit (replaces the flat 1800/2500 char caps this used to be
+            # regardless of the resolved model's actual window). Capped at 6000
+            # so a large-context model doesn't turn the "quick web check" path
+            # into a slow, expensive one -- web_fast is meant to stay fast.
+            max_chars_per_source = max(800, min(6000, (web_fast_budget.evidence_tokens // 3) * 4))
             if public_urls:
                 extracted_sources, read_call = yield from self._run_tool(
                     progress,
                     "read_url",
-                    {"urls": public_urls, "max_chars_per_source": 1800},
+                    {"urls": public_urls, "max_chars_per_source": max_chars_per_source},
                 )
             event = progress(
                 "web_fast_answer",
@@ -243,7 +274,7 @@ class Runtime:
                                 "message": request.message,
                                 **temporal_context(request.user_timezone),
                                 "web_query": web_query,
-                                "source_context": source_context(merged_web_sources[:3]),
+                                "source_context": source_context(merged_web_sources[:3], max_chars_per_source=max_chars_per_source),
                                 "conversation_context": request.conversation_context[-1800:] if request.conversation_context else "",
                             },
                             ensure_ascii=False,
@@ -651,6 +682,7 @@ class Runtime:
         langgraph_state = research.get("langgraph_state") or {}
         is_paused = bool(langgraph_state.get("interrupted"))
         pause_contract = langgraph_state.get("pause_contract") or {}
+        evidence_tokens = self._research_evidence_tokens(research)
         return TurnResult(
             turn_id=turn_id,
             goal=goal,
@@ -669,6 +701,22 @@ class Runtime:
             latency_ms=response.latency_ms + sum(call.latency_ms for call in research["tool_calls"]),
             cost_usd=response.cost_usd,
             quality_signals=self._research_quality_signals(research),
+            # Evidence dominates a research turn's input by design (60% of
+            # ContextTokenBudget) -- conversation/facts context is hydrated
+            # separately for routing earlier in run_stream and isn't re-derived
+            # here, so context_tokens only reports the "evidence" bucket for
+            # this route. Doesn't include system-prompt/plan-metadata overhead.
+            input_tokens=evidence_tokens,
+            output_tokens=estimate_tokens(response.text),
+            context_tokens={"evidence": evidence_tokens} if evidence_tokens else {},
+        )
+
+    def _research_evidence_tokens(self, research: dict[str, Any]) -> int:
+        evidence = research.get("evidence")
+        if evidence is None:
+            return 0
+        return sum(estimate_tokens(item.evidence) for item in evidence.items) + sum(
+            estimate_tokens(claim.text) for claim in evidence.claims
         )
 
     def _research_quality_signals(self, research: dict[str, Any]) -> ResearchQualitySignals | None:
@@ -852,7 +900,7 @@ class Runtime:
         user_prompt = request.message
         if request.conversation_context:
             user_prompt = f"{request.conversation_context}\n\nCurrent user request:\n{request.message}"
-        context_items = _hydrate_runtime_context_items(request, user_id=user_id)
+        context_items, evicted_counts = _hydrate_runtime_context_items_with_eviction(request, user_id=user_id)
         recalled_context = _format_context_items(context_items)
         if recalled_context:
             user_prompt = f"{recalled_context}\n\n{user_prompt}"
@@ -884,6 +932,12 @@ class Runtime:
             context_sources=context_sources_from_items(context_items),
             latency_ms=response.latency_ms,
             cost_usd=response.cost_usd,
+            input_tokens=estimate_tokens(user_prompt),
+            output_tokens=estimate_tokens(response.text),
+            context_tokens={
+                **context_tokens_breakdown(context_items),
+                **({"evicted": evicted_counts} if evicted_counts else {}),
+            },
         )
 
     def _run_document(

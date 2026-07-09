@@ -176,6 +176,15 @@ class TurnResult(BaseModel):
     follow_up_options: list[dict[str, Any]] = Field(default_factory=list)
     research_plan_preview: dict[str, Any] | None = None
     quality_signals: ResearchQualitySignals | None = None
+    # Token-budget governance (research_utils.estimate_tokens(), not exact
+    # provider-billed usage). context_tokens breaks input_tokens down by
+    # ContextTokenBudget layer, e.g. {"conversation": 412, "facts": 890,
+    # "evidence": 3120}. Only populated on paths that actually run context
+    # assembly (direct/research); other routes (clarify, paused, etc.) leave
+    # these at their zero/empty defaults.
+    input_tokens: int = 0
+    output_tokens: int = 0
+    context_tokens: dict[str, int] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=utc_now)
 
 

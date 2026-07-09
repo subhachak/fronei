@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import datetime
+from functools import lru_cache
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
@@ -34,6 +35,31 @@ def temporal_context(tz: str | None = None) -> dict:
         "current_date": now.strftime("%A, %B %d, %Y"),
         "current_datetime_iso": now.isoformat(),
     }
+
+
+@lru_cache(maxsize=1)
+def _tiktoken_encoding():
+    import tiktoken
+
+    return tiktoken.get_encoding("cl100k_base")
+
+
+def estimate_tokens(text: str) -> int:
+    """Rough token estimate for context-budget governance.
+
+    tiktoken is already installed transitively via litellm, so this uses its
+    cl100k_base encoding as a cheap, provider-agnostic approximation --
+    exact for OpenAI models, close enough for Anthropic/Gemini for budgeting
+    purposes. Falls back to a chars/4 heuristic if tiktoken is unavailable
+    for any reason. Deliberately cheap since this runs on every
+    context-assembly pass, not meant to match provider-billed token counts.
+    """
+    if not text:
+        return 1
+    try:
+        return max(1, len(_tiktoken_encoding().encode(text)))
+    except Exception:
+        return max(1, len(text) // 4)
 
 
 def _dedupe(values: list[str]) -> list[str]:
@@ -188,6 +214,7 @@ __all__ = [
     "_looks_like_substantive_claim",
     "_parse_json",
     "classify_source_type",
+    "estimate_tokens",
     "score_source_authority",
     "score_technical_density",
     "temporal_context",

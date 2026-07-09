@@ -58,6 +58,31 @@ def _candidate_models(preferred: str | None = None) -> list[str]:
     return models or ["gpt-4.1-mini"]
 
 
+# Conservative fallback for an unrecognized model string -- deliberately
+# smaller than most current models' real windows so an unmapped model
+# undershoots its context budget rather than silently overshooting it.
+_FALLBACK_CONTEXT_WINDOW = 32_000
+
+
+def resolve_context_window(model: str) -> int:
+    """Return the max context window (in tokens) for a resolved model.
+
+    Backed by litellm's own model metadata (model_prices_and_context_window.json),
+    so this stays current as litellm's provider catalog updates rather than
+    hardcoding a model->window table here. Falls back to a conservative
+    constant for any model litellm doesn't recognize.
+    """
+    try:
+        import litellm
+
+        window = litellm.get_max_tokens(model)
+        if window and window > 0:
+            return int(window)
+    except Exception as exc:
+        logger.debug("resolve_context_window fallback for %s: %s", model, exc)
+    return _FALLBACK_CONTEXT_WINDOW
+
+
 def model_for_role(
     role: str | None,
     *,

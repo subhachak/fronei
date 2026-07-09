@@ -100,6 +100,7 @@ export function UsersTab({ authorizedFetch }: { authorizedFetch: AuthorizedFetch
                 <th className="px-3 py-2.5">Status</th>
                 <th className="px-3 py-2.5">Role</th>
                 <th className="px-3 py-2.5">Spend (mo)</th>
+                <th className="px-3 py-2.5">Tokens</th>
                 <th className="px-3 py-2.5">Conversations</th>
                 <th className="px-3 py-2.5">Last seen</th>
               </tr>
@@ -126,13 +127,16 @@ export function UsersTab({ authorizedFetch }: { authorizedFetch: AuthorizedFetch
                     )}
                   </td>
                   <td className="px-3 py-2.5 text-neutral-600 dark:text-neutral-300">${row.month_spend.toFixed(2)}</td>
+                  <td className="px-3 py-2.5 text-xs text-neutral-500 dark:text-neutral-400">
+                    {(row.total_input_tokens + row.total_output_tokens).toLocaleString()}
+                  </td>
                   <td className="px-3 py-2.5 text-neutral-600 dark:text-neutral-300">{row.conversation_count}</td>
                   <td className="px-3 py-2.5 text-xs text-neutral-400">{formatAppDate(row.last_seen_at)}</td>
                 </tr>
               ))}
               {!loading && sorted.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="px-3 py-8 text-center text-sm text-neutral-400">No matching users.</td>
+                  <td colSpan={7} className="px-3 py-8 text-center text-sm text-neutral-400">No matching users.</td>
                 </tr>
               )}
             </tbody>
@@ -260,6 +264,10 @@ function UserDetailModal({
               <Stat label="Memories" value={detail.counts.memories} />
               <Stat label="Research runs" value={detail.counts.research_runs} />
             </div>
+            <div className="grid grid-cols-2 gap-2 text-center">
+              <Stat label="Input tokens" value={detail.counts.total_input_tokens} />
+              <Stat label="Output tokens" value={detail.counts.total_output_tokens} />
+            </div>
 
             <div className="grid gap-2.5 rounded-xl border border-neutral-200 p-3.5 dark:border-neutral-800">
               <div className="grid grid-cols-2 gap-2.5">
@@ -323,6 +331,20 @@ function UserDetailModal({
                 </button>
               )}
             </div>
+
+            {detail.recent_turns.length > 0 && (
+              <div className="rounded-xl border border-neutral-200 p-3.5 dark:border-neutral-800">
+                <p className="text-xs font-bold uppercase tracking-wide text-neutral-400">Recent turns (tokens)</p>
+                <div className="mt-2 grid gap-1.5">
+                  {detail.recent_turns.slice(0, 5).map(turn => (
+                    <div key={turn.id} className="flex items-center justify-between gap-2 text-xs">
+                      <span className="truncate font-semibold text-neutral-600 dark:text-neutral-300">{turn.route}</span>
+                      <span className="text-neutral-400">{turn.input_tokens.toLocaleString()} in / {turn.output_tokens.toLocaleString()} out</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {detail.recent_errors.length > 0 && (
               <div className="rounded-xl border border-neutral-200 p-3.5 dark:border-neutral-800">

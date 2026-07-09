@@ -413,11 +413,15 @@ def _clean_slide_text(value: str) -> str:
     return text.strip()
 
 
-def source_context(sources: list[Source]) -> str:
+_DEFAULT_SOURCE_CONTEXT_MAX_CHARS = 2500
+
+
+def source_context(sources: list[Source], *, max_chars_per_source: int | None = None) -> str:
+    cap = max_chars_per_source or _DEFAULT_SOURCE_CONTEXT_MAX_CHARS
     lines: list[str] = []
     for idx, source in enumerate(sources, start=1):
         body = source.content or source.snippet
-        lines.append(f"[S{idx}] {source.title}\nURL: {source.url}\n{body[:2500]}")
+        lines.append(f"[S{idx}] {source.title}\nURL: {source.url}\n{body[:cap]}")
     return "\n\n".join(lines)
 
 

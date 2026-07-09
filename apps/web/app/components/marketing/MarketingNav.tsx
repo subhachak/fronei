@@ -8,7 +8,7 @@ export function MarketingNav() {
     <header className="border-b border-stone-200 bg-stone-50/90 backdrop-blur">
       <div className="mx-auto flex h-16 w-full max-w-6xl items-center justify-between px-6">
         <Link href="/" className="flex items-center gap-2.5">
-          <Image src={brandAsset('/fronei-icon.svg')} alt="Fronei" width={28} height={28} priority />
+          <Image src={brandAsset('/fronei-icon-32.svg')} alt="Fronei" width={28} height={28} priority />
           <span className="font-[family-name:var(--font-marketing-serif)] text-lg font-semibold text-stone-900">
             Fronei
           </span>

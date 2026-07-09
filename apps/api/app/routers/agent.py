@@ -109,6 +109,7 @@ def start_turn(
             "prior_turn_context": _build_prior_turn_context(user_id, conversation.id, request),
             "conversation_context": _build_conversation_context(user_id, conversation.id, request),
             "last_turn_route": persistence.last_turn_route_for_conversation(user_id, conversation.id),
+            "last_turn_had_gaps": persistence.had_unresolved_gaps_for_conversation(user_id, conversation.id),
         }
     )
     turn_id = new_id("turn")
@@ -158,6 +159,7 @@ def stream_turn(
             "prior_turn_context": _build_prior_turn_context(user_id, conversation.id, request),
             "conversation_context": _build_conversation_context(user_id, conversation.id, request),
             "last_turn_route": persistence.last_turn_route_for_conversation(user_id, conversation.id),
+            "last_turn_had_gaps": persistence.had_unresolved_gaps_for_conversation(user_id, conversation.id),
         }
     )
 

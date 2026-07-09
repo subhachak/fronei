@@ -60,6 +60,13 @@ class TurnRequest(BaseModel):
     # "last turn was clarify, user is now answering the clarification" → inherit
     # the original research/document intent rather than routing to direct.
     last_turn_route: str | None = None
+    # Whether the immediately preceding completed turn's research left an
+    # unresolved gap (evidence.gaps was non-empty). Populated server-side
+    # (agent.py) from the Turn record / context_json; never sent by clients.
+    # Lets the orchestrator distinguish "prior turn verified X" from "prior
+    # turn failed to find X and flagged it as an open gap" -- both otherwise
+    # look identical as "prior_turn_context mentions this topic."
+    last_turn_had_gaps: bool = False
     # IANA tz name (e.g. "America/New_York") captured client-side from the
     # browser. Used to ground relative-date phrasing ("today", "tomorrow") in
     # temporal_context() (research_utils.py). A bad/unrecognized value degrades
@@ -185,6 +192,10 @@ class TurnResult(BaseModel):
     input_tokens: int = 0
     output_tokens: int = 0
     context_tokens: dict[str, int] = Field(default_factory=dict)
+    # True if this turn's research left an unresolved gap (evidence.gaps was
+    # non-empty). Only set on research/research_document routes that actually
+    # had an EvidencePack in scope; other routes leave this at its default.
+    had_unresolved_gaps: bool = False
     created_at: datetime = Field(default_factory=utc_now)
 
 

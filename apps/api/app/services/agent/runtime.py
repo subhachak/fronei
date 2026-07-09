@@ -709,7 +709,12 @@ class Runtime:
             input_tokens=evidence_tokens,
             output_tokens=estimate_tokens(response.text),
             context_tokens={"evidence": evidence_tokens} if evidence_tokens else {},
+            had_unresolved_gaps=self._research_had_unresolved_gaps(research),
         )
+
+    def _research_had_unresolved_gaps(self, research: dict[str, Any]) -> bool:
+        evidence = research.get("evidence")
+        return bool(evidence.gaps) if evidence is not None else False
 
     def _research_evidence_tokens(self, research: dict[str, Any]) -> int:
         evidence = research.get("evidence")
@@ -952,6 +957,7 @@ class Runtime:
         research_answer: str | None = None,
         evidence: EvidencePack | None = None,
     ) -> TurnResult:
+        had_unresolved_gaps = bool(evidence.gaps) if evidence is not None else False
         event = progress(
             "document_planner",
             "Planning document structure.",
@@ -1073,6 +1079,7 @@ class Runtime:
                     events=events,
                     latency_ms=plan.latency_ms + deck.latency_ms + artifact_call.latency_ms,
                     cost_usd=plan.cost_usd + deck.cost_usd,
+                    had_unresolved_gaps=had_unresolved_gaps,
                 )
             event = progress(
                 "artifact_result",
@@ -1097,6 +1104,7 @@ class Runtime:
                 events=events,
                 latency_ms=plan.latency_ms + deck.latency_ms + artifact_call.latency_ms,
                 cost_usd=plan.cost_usd + deck.cost_usd,
+                had_unresolved_gaps=had_unresolved_gaps,
             )
 
         event = progress("document_writer", "Writing document draft.", plan_title=plan.title)
@@ -1180,6 +1188,7 @@ class Runtime:
                 events=events,
                 latency_ms=plan.latency_ms + draft.latency_ms,
                 cost_usd=plan.cost_usd + draft.cost_usd,
+                had_unresolved_gaps=had_unresolved_gaps,
             )
 
         event = progress(
@@ -1212,6 +1221,7 @@ class Runtime:
                 events=events,
                 latency_ms=plan.latency_ms + draft.latency_ms + artifact_call.latency_ms,
                 cost_usd=plan.cost_usd + draft.cost_usd,
+                had_unresolved_gaps=had_unresolved_gaps,
             )
         event = progress(
             "artifact_result",
@@ -1235,6 +1245,7 @@ class Runtime:
             events=events,
             latency_ms=plan.latency_ms + draft.latency_ms + artifact_call.latency_ms,
             cost_usd=plan.cost_usd + draft.cost_usd,
+            had_unresolved_gaps=had_unresolved_gaps,
         )
 
     def _merge_sources(self, search_sources: list[Source], extracted_sources: list[Source]) -> list[Source]:

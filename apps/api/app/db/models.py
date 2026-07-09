@@ -290,6 +290,11 @@ class Turn(Base):
     output_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     # Per-layer breakdown, e.g. {"conversation": 412, "facts": 890, "evidence": 3120}.
     context_tokens_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    # True if this turn's research (evidence.gaps) left something unresolved --
+    # e.g. couldn't confirm a schedule/fixture/price for a requested date. Lets a
+    # later turn in the same conversation know the prior "couldn't confirm X" was
+    # an open gap, not a verified negative, so it isn't restated as settled fact.
+    had_unresolved_gaps: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
 
 class LangGraphRunContext(Base):

@@ -72,6 +72,13 @@ Grounding rule:
 - Never claim that prior/current conversation context contains an answer unless the supplied context actually includes
   prior turns. If no prior turns are present and the user asks a vague follow-up, choose clarify rather than direct.
 
+Gap rule:
+- If last_turn_had_gaps=true and the current message concerns the same subject as the prior turn, do not treat the
+  prior turn's unresolved gap as a confirmed answer. Route to research again (or clarify if the prior gap's target
+  needs narrowing) — an inability to confirm something is not evidence that it doesn't exist, especially for
+  time-sensitive facts (schedules, prices, availability, current status) that can change or become discoverable
+  with a different search approach. Do not answer direct by restating a prior gap as a settled negative.
+
 If the route is research or research_document, also choose exactly one research_level:
 - easy: very narrow freshness check or simple sourced lookup; minimal web use.
 - regular: normal source-grounded research, comparison, recommendation, or briefing.
@@ -140,6 +147,7 @@ def decide_with_options(
             "prior_turn_context": request.prior_turn_context[-5000:] if request.prior_turn_context else "",
             "conversation_context": request.conversation_context[-5000:] if request.conversation_context else "",
             "last_turn_route": request.last_turn_route,
+            "last_turn_had_gaps": request.last_turn_had_gaps,
             "quality_mode": request.quality_mode,
             "requested_research_level": request.research_level,
             "deep_research_confirmed": request.confirm_deep_research,
@@ -258,6 +266,12 @@ def heuristic_decide(
     elif asks_doc or request.output_format in {"docx", "markdown", "pptx"}:
         route = "document"
     elif signal_decision.suggested_route:
+        route = "research"
+    elif request.last_turn_had_gaps and _concerns_same_subject_as_prior_turn(request):
+        # Same backstop as _normalize_research_decision's gap-rule override --
+        # this path (heuristic fallback) doesn't run through that function, so
+        # it needs its own copy rather than silently reintroducing the bug
+        # whenever the orchestrator's LLM call fails.
         route = "research"
     else:
         route = "direct"
@@ -407,6 +421,25 @@ def _normalize_research_decision(request: TurnRequest, decision: OrchestratorDec
         decision.route = "research"
         decision.reason = f"Resolving prior clarification; continuing with research. {decision.reason}".strip()
         asks_research = True
+    # Gap-rule backstop: if the prior turn's research left an unresolved gap, a
+    # "direct" decision now can't actually verify anything new -- it can only
+    # restate the prior gap, confidently or not, as if it were a settled
+    # negative. Unlike the low-confidence override above, this fires
+    # regardless of confidence, because the live trace that motivated this
+    # rule had confidence 1.0. Gated on _concerns_same_subject_as_prior_turn
+    # rather than firing unconditionally, so an unrelated new topic right
+    # after a gapped turn isn't needlessly forced into research.
+    if (
+        decision.source != "forced"
+        and decision.route == "direct"
+        and request.last_turn_had_gaps
+        and _concerns_same_subject_as_prior_turn(request)
+    ):
+        decision.route = "research"
+        decision.reason = (
+            f"Prior turn had an unresolved research gap; re-researching rather than treating it as confirmed. {decision.reason}"
+        ).strip()
+        asks_research = True
     if request.output_format == "chat" and _asks_research_about_document_tools(text):
         decision.route = "research"
         decision.output_format = "chat"
@@ -482,6 +515,26 @@ def _referent_resolves_from_context(query: str, conversation_context: str) -> bo
     if not has_referent:
         return False
     return len(conversation_context.strip()) > 50
+
+
+_SAME_SUBJECT_MAX_WORDS = 12
+
+
+def _concerns_same_subject_as_prior_turn(request: TurnRequest) -> bool:
+    """Lightweight proxy for "the current message is continuing the prior
+    turn's topic, not starting an unrelated new one." Used to gate the gap-rule
+    backstop so an unrelated question right after a gapped turn isn't needlessly
+    forced into research. Reuses _referent_resolves_from_context (a referential
+    word like "that"/"it"/"same" plus real prior context) rather than inventing
+    new detection logic; a short message is the other common shape a same-topic
+    follow-up takes (a genuinely new, self-contained question tends to be
+    longer). Intentionally conservative in favor of over-firing: an unnecessary
+    research pass is a far safer failure mode than confidently restating a
+    false negative as fact.
+    """
+    if _referent_resolves_from_context(request.message, request.conversation_context):
+        return True
+    return len(request.message.split()) <= _SAME_SUBJECT_MAX_WORDS
 
 
 def _looks_too_vague(text: str) -> bool:

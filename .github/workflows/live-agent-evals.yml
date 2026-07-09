@@ -33,7 +33,7 @@ jobs:
       LIVE_EVAL_MAX_BUDGET_USD: ${{ inputs.max_budget_usd || '0.25' }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-python@v6
         with:

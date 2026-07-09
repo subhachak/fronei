@@ -9,7 +9,7 @@ description = "Fronei — personal AI assistant API"
 requires-python = ">=3.11"
 dependencies = [
   "fastapi>=0.111.0",
-  "uvicorn[standard]>=0.30.0",
+  "uvicorn[standard]>=0.51.0",
   "pydantic>=2.7.0",
   "pydantic-settings>=2.3.0",
   "litellm>=1.40.0",

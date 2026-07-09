@@ -7,7 +7,7 @@ import { assertNoProductionE2EBypass, e2eAuthBypassEnabled } from './lib/e2e'
 
 export const metadata = {
   title: 'Fronei',
-  description: 'Your AI personal assistant',
+  description: 'The evidentiary research engine for regulated decisions — verified citations, conflict surfacing, and staleness flagging for vendor, legal, financial, and compliance diligence.',
 }
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

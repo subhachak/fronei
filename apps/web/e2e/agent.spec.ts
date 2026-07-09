@@ -6,7 +6,7 @@ test.beforeEach(async ({ page }) => {
 })
 
 test('loads the root agent workbench', async ({ page }, testInfo) => {
-  await page.goto('/')
+  await page.goto('/app')
 
   if (testInfo.project.name === 'mobile-chrome') {
     await expect(page.getByAltText('Fronei').first()).toBeVisible()
@@ -19,7 +19,7 @@ test('loads the root agent workbench', async ({ page }, testInfo) => {
 })
 
 test('runs a mocked agent turn from the composer', async ({ page }) => {
-  await page.goto('/')
+  await page.goto('/app')
 
   await page.getByPlaceholder('Give Fronei a task...').fill('Draft a launch plan')
   await page.getByRole('button', { name: 'Start' }).click()
@@ -29,7 +29,7 @@ test('runs a mocked agent turn from the composer', async ({ page }) => {
 
 test('renders the mobile agent shell controls', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
-  await page.goto('/')
+  await page.goto('/app')
 
   await expect(page.getByAltText('Fronei').first()).toBeVisible()
   await expect(page.getByRole('button', { name: 'Open library' })).toBeVisible()

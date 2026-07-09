@@ -50,7 +50,7 @@ test.describe('Fronei production smoke — live', () => {
   })
 
   test.beforeEach(async ({ page }) => {
-    await page.goto('/')
+    await page.goto('/app')
     await expect(page.getByPlaceholder('Give Fronei a task...')).toBeVisible({ timeout: 120_000 })
     await expect(page.getByRole('button', { name: 'Current work' })).toBeVisible({ timeout: 30_000 })
     await expect(page.getByRole('button', { name: 'Pinned facts' })).toBeVisible({ timeout: 30_000 })

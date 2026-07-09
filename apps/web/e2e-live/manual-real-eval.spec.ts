@@ -65,7 +65,7 @@ test.describe('Fronei regression suite — live', () => {
   })
 
   test.beforeEach(async ({ page }, testInfo) => {
-    await page.goto('/')
+    await page.goto('/app')
     await expect(page.getByPlaceholder('Give Fronei a task...')).toBeVisible({ timeout: 120_000 })
 
     // Ensure Clerk session is resolved (isSignedIn=true) before any test action.

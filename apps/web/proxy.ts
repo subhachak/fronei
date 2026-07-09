@@ -2,7 +2,7 @@ import { clerkMiddleware, createRouteMatcher } from '@clerk/nextjs/server'
 import { NextResponse } from 'next/server'
 import { assertNoProductionE2EBypass, e2eProxyBypassEnabled } from './app/lib/e2e'
 
-const isPublic = createRouteMatcher(['/sign-in(.*)', '/sign-up(.*)'])
+const isPublic = createRouteMatcher(['/', '/sign-in(.*)', '/sign-up(.*)'])
 
 assertNoProductionE2EBypass()
 

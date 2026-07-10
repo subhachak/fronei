@@ -24,9 +24,12 @@ Covers:
     a user's embedded answer-formatting preferences ("3-5 bullets max then
     supporting detail by numbered above") echoed verbatim into a search query
     and literally collided with the JDK `javah` tool
-  - langgraph_runtime.nodes.search_worker's unconditional debug trace of the
-    literal query string right before it hits web_search -- independent of
-    any query-construction fix, so a bad query is always visible in logs
+
+Note: an earlier, unconditional backend debug log of every dispatched query
+(langgraph_runtime.nodes.search_worker) was added and then removed once the
+literal query was wired into the frontend trace directly (event.data.query,
+surfaced via eventChips() and a dedicated query row in ContextPanel.tsx) --
+that's the real, permanent place this belongs, not a standalone log line.
 """
 from __future__ import annotations
 
@@ -322,32 +325,3 @@ def test_plan_node_calls_the_self_check_regardless_of_planning_path(monkeypatch)
     nodes_module.plan(state, run_id="r1", request=request, tools=None, progress=None)
 
     assert called.get("invoked") is True
-
-
-# ---------------------------------------------------------------------------
-# search_worker's unconditional query-dispatch trace
-# ---------------------------------------------------------------------------
-
-def test_search_worker_logs_the_literal_query_right_before_dispatch(caplog):
-    """Independent of any query-construction fix: whatever string search_worker
-    is about to hand to web_search must be visible in logs, so a future bad
-    query is never only inferable after the fact from search results."""
-    from test_agent_runtime import FakeTools
-
-    from app.services.agent.langgraph_runtime import nodes as nodes_module
-
-    worker = SearchWorkerPlan(question="What is on the schedule?", query="javah section 3-5 then by", rationale="", max_results=4)
-    state = {
-        "worker_index": 0,
-        "worker_plan": worker.model_dump(mode="json"),
-        "visited_nodes": [],
-        "artifacts": {},
-    }
-    request = TurnRequest(message="irrelevant for this test")
-
-    with caplog.at_level(logging.DEBUG, logger="app.services.agent.langgraph_runtime.nodes"):
-        nodes_module.search_worker(state, run_id="r1", request=request, tools=FakeTools(), progress=None)
-
-    matching = [r for r in caplog.records if "search_worker_dispatching_query" in r.message]
-    assert matching, "expected a debug log right before the web_search call"
-    assert matching[0].query == "javah section 3-5 then by"

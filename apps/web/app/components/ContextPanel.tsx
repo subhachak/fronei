@@ -148,6 +148,11 @@ export function ContextPanel({
                       <span className="absolute -left-[17px] top-[15px] h-2 w-2 rounded-full border-2 border-white bg-emerald-600 dark:border-neutral-900" />
                       <p className="text-[11px] font-bold uppercase tracking-wide text-neutral-400">{event.stage}</p>
                       <p className="mt-1 text-sm leading-relaxed text-neutral-700 dark:text-neutral-300">{event.message}</p>
+                      {typeof event.data?.query === 'string' && event.data.query && (
+                        <p className="mt-1.5 break-words rounded-md bg-neutral-100 px-2 py-1 font-mono text-[11px] text-neutral-600 dark:bg-neutral-900 dark:text-neutral-300">
+                          {event.data.query}
+                        </p>
+                      )}
                       {eventChips(event).length > 0 && (
                         <div className="mt-2 flex flex-wrap gap-1.5">
                           {eventChips(event).map(chip => (

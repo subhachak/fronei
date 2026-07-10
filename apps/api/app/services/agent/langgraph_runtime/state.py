@@ -25,6 +25,7 @@ GraphNodeName = Literal[
     "plan",
     "dispatch_search",
     "search_worker",
+    "relevance_gate",
     "rank",
     "read",
     "classify_claims",
@@ -116,6 +117,15 @@ class ResearchGraphState(TypedDict, total=False):
     source_inventory: list[str]      # canonical URL set
     query_history: list[str]         # search queries issued
     ranked_source_urls: list[str]    # output of rank node, consumed by read node
+
+    # ---- relevance_gate output ---------------------------------------------
+    # True when aggregated search results scored below RELEVANCE_THRESHOLD
+    # against the research target even after one retry. When true,
+    # relevance_gate routes straight to budget_gate_pre_synthesis (skipping
+    # rank/read/classify_claims/expand_source_graph/bind) and sets "evidence"
+    # itself to a gap-only EvidencePack, since bind (which normally sets it)
+    # never runs on this path.
+    insufficient_relevant_evidence: bool
 
     # ---- Budget counters (LangGraph add reducers) -------------------------
     cost_usd_spent: Annotated[float, operator.add]

@@ -26,6 +26,7 @@ MODEL_ROLES: tuple[str, ...] = (
     "coverage_contract",
     "research_planner",
     "query_author",
+    "relevance_gate",
     "reflection",
     "citation_verifier",
     "repair",
@@ -58,6 +59,11 @@ DEFAULT_MODEL_POLICY: dict[str, str] = {
     # and a subtle one (e.g. echoing an answer-formatting instruction) can
     # silently collide with an unrelated real-world term. Same tier as synthesis.
     "query_author": "claude-opus-4-8",
+    # Judges aggregate relevance of titles/snippets against the research
+    # target -- a cheap classification call (short text in, one float out),
+    # not a generation task, and it runs on every search fan-out. Mini-tier
+    # by default for the same cost-leverage reason as direct_answer/fast_router.
+    "relevance_gate": "gpt-4.1-mini",
     "reflection": "claude-sonnet-4-6",
     "citation_verifier": "claude-sonnet-4-6",
     "repair": "claude-sonnet-4-6",

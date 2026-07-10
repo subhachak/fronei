@@ -36,7 +36,9 @@ logger = logging.getLogger(__name__)
 # NODE_ORDER defines both the canonical visit sequence and the order in which
 # sequential edges are built in graph.py.
 # NOTE: dispatch_search → search_worker is a Send fan-out, not a linear edge.
-#       search_worker → rank is a direct edge added separately in graph.py.
+#       search_worker → relevance_gate is a direct edge (fan-in join point).
+#       relevance_gate → {rank, budget_gate_pre_synthesis} is a conditional
+#       edge added separately in graph.py.
 NODE_ORDER: tuple[GraphNodeName, ...] = (
     "brief",
     "subject_derivation",
@@ -44,6 +46,7 @@ NODE_ORDER: tuple[GraphNodeName, ...] = (
     "plan",
     "dispatch_search",
     "search_worker",
+    "relevance_gate",
     "rank",
     "read",
     "classify_claims",
@@ -418,6 +421,192 @@ def search_worker(
         "cost_usd_spent": 0.0,
         "model_calls_made": 0,
     }
+
+
+def _relevance_gate_target(state: ResearchGraphState) -> str:
+    """The "original target entity/topic" to judge search results against.
+
+    There's no single "query_generator" module in this codebase (query
+    construction is split across plan_from_contract/_targeted_query and the
+    anchor-query functions in research_planner.py) -- the closest equivalent
+    to "the target the queries were built around" is the coverage contract's
+    named subjects, since every query-building path is ultimately anchored
+    on those. Falls back to subject_derivation's named_subjects, then the
+    brief's objective, for contracts/paths that don't populate subjects.
+    """
+    contract = state.get("contract")
+    if contract is not None and contract.subjects:
+        return ", ".join(contract.subjects[:3])
+    named_subjects = state.get("named_subjects") or []
+    if named_subjects:
+        return ", ".join(named_subjects[:3])
+    brief = state.get("brief")
+    if brief is not None and brief.objective:
+        return brief.objective[:120]
+    return ""
+
+
+def _rerun_search_workers(
+    workers: list,
+    tools: Tools,
+    *,
+    run_id: str,
+    progress: ProgressCallback | None,
+) -> tuple[list, list, list, int]:
+    """The one-retry re-search step: re-runs tools.search_web for each
+    (already narrowed) worker query, mirroring search_worker's own per-worker
+    call. Done as a direct loop rather than a graph Send fan-out, since this
+    is a single bounded retry, not a new parallel stage."""
+    from app.services.agent.models import ToolCall
+    from app.services.agent.research_models import SearchWorkerReport
+
+    new_sources: list = []
+    new_reports: list = []
+    new_calls: list = []
+    tool_calls_count = 0
+    for i, worker in enumerate(workers):
+        try:
+            sources, call = tools.search_web(worker.query, worker.max_results)
+            tool_calls_count += 1
+        except Exception as exc:
+            logger.warning("relevance_gate retry: search failed for worker %d: %s", i, exc)
+            sources = []
+            call = ToolCall(name="web_search", input={"query": worker.query}, ok=False, error=str(exc))
+        new_sources.extend(sources)
+        new_calls.append(call)
+        new_reports.append(
+            SearchWorkerReport(
+                worker_id=worker.worker_id,
+                question=worker.question,
+                query=worker.query,
+                sources=sources,
+                source_count=len(sources),
+                ok=len(sources) > 0,
+            )
+        )
+
+    emit_graph_event(
+        progress,
+        run_id=run_id,
+        node_name="relevance_gate",
+        message=f"Retry search: {len(new_sources)} result(s) from {len(workers)} narrowed quer{'y' if len(workers) == 1 else 'ies'}.",
+        retry_source_count=len(new_sources),
+        cost_usd_spent=0.0,
+        tool_calls_made=tool_calls_count,
+        model_calls_made=0,
+    )
+    return new_sources, new_reports, new_calls, tool_calls_count
+
+
+def relevance_gate(
+    state: ResearchGraphState,
+    *,
+    run_id: str,
+    request: TurnRequest,
+    tools: Tools | None = None,
+    progress: ProgressCallback | None = None,
+) -> dict:
+    """Score aggregated search_worker results against the research target
+    before paying for read/classify_claims/expand_source_graph/bind.
+
+    One retry with a narrower, exact-phrase-biased reformulation of each
+    worker's query if the first pass falls below RELEVANCE_THRESHOLD. If
+    still below threshold after the retry, routes to budget_gate_pre_synthesis
+    (see graph.py's _relevance_gate_router) instead of rank -- skipping the
+    expensive per-source stages on evidence that isn't worth reading -- and
+    sets state["evidence"] itself to a gap-only EvidencePack, since bind
+    (which normally sets it) never runs on that path and synthesize()
+    requires evidence to be non-None.
+    """
+    from app.services.agent.research_models import EvidencePack
+    from app.services.agent.research_relevance import (
+        RELEVANCE_THRESHOLD,
+        reformulate_queries_for_exact_match,
+        score_search_relevance,
+    )
+
+    prior = state.get("visited_nodes") or []
+    if (state.get("worker_reports") or []) and "search_worker" not in prior:
+        prior = [*prior, "search_worker"]
+    visited = [*prior, "relevance_gate"]
+
+    target = _relevance_gate_target(state)
+    sources = state.get("sources") or []
+
+    assessment = score_search_relevance(sources, target, request)
+    total_model_calls = assessment.model_calls_made
+    total_cost = assessment.cost_usd
+    total_tool_calls = 0
+    retried = False
+    retry_sources: list = []
+    retry_reports: list = []
+    retry_calls: list = []
+
+    if not assessment.sufficient and tools is not None:
+        research_plan = state.get("plan")
+        workers = research_plan.workers if research_plan else []
+        if workers:
+            retried = True
+            narrowed_workers = reformulate_queries_for_exact_match(workers, target)
+            retry_sources, retry_reports, retry_calls, total_tool_calls = _rerun_search_workers(
+                narrowed_workers, tools, run_id=run_id, progress=progress,
+            )
+            assessment = score_search_relevance(sources + retry_sources, target, request)
+            total_model_calls += assessment.model_calls_made
+            total_cost += assessment.cost_usd
+
+    sufficient = assessment.sufficient
+
+    emit_graph_event(
+        progress,
+        run_id=run_id,
+        node_name="relevance_gate",
+        message=(
+            f"Relevance check: {assessment.relevance_fraction:.0%} of results relate to "
+            f"'{target or 'the research target'}'"
+            + (" after retry" if retried else "")
+            + ("." if sufficient else f" — below {RELEVANCE_THRESHOLD:.0%} threshold; skipping to synthesis with a gap note.")
+        ),
+        target=target,
+        relevance_score=assessment.relevance_fraction,
+        reasoning=assessment.reasoning,
+        retried=retried,
+        threshold=RELEVANCE_THRESHOLD,
+        sufficient=sufficient,
+        cost_usd_spent=total_cost,
+        tool_calls_made=total_tool_calls,
+        model_calls_made=total_model_calls,
+    )
+
+    result: dict = {
+        "visited_nodes": visited,
+        "artifacts": {
+            **state.get("artifacts", {}),
+            "relevance_gate": {
+                "status": "done",
+                "relevance_score": assessment.relevance_fraction,
+                "retried": retried,
+                "sufficient": sufficient,
+            },
+        },
+        "sources": retry_sources,
+        "worker_reports": retry_reports,
+        "tool_calls": retry_calls,
+        "cost_usd_spent": total_cost,
+        "tool_calls_made": total_tool_calls,
+        "model_calls_made": total_model_calls,
+        "insufficient_relevant_evidence": not sufficient,
+    }
+
+    if not sufficient:
+        gap_note = (
+            f"Insufficient relevant evidence found for '{target or 'the research target'}' "
+            f"after search{' and one retry' if retried else ''} "
+            f"(relevance {assessment.relevance_fraction:.0%}, threshold {RELEVANCE_THRESHOLD:.0%})."
+        )
+        result["evidence"] = EvidencePack(items=[], gaps=[gap_note])
+
+    return result
 
 
 # ---------------------------------------------------------------------------

@@ -82,6 +82,22 @@ def _budget_gate_router(state: ResearchGraphState) -> str:
     return "continue"
 
 
+def _relevance_gate_router(state: ResearchGraphState) -> str:
+    """Conditional edge: route after relevance_gate scores aggregated search
+    results.
+
+    "insufficient" → budget_gate_pre_synthesis → synthesize (skips rank/read/
+        classify_claims/expand_source_graph/bind; relevance_gate already set
+        state["evidence"] to a gap-only EvidencePack for this path, and
+        routing through the existing budget gate rather than straight to
+        synthesize preserves its cost/approval checks instead of bypassing them)
+    "continue"      → rank (normal path)
+    """
+    if state.get("insufficient_relevant_evidence"):
+        return "insufficient"
+    return "continue"
+
+
 def _judge_router(state: ResearchGraphState) -> str:
     """Conditional edge: route after the judge fires, keyed on next_action.
 
@@ -147,8 +163,17 @@ def get_compiled_research_graph() -> Any:  # langgraph.graph.compiled.CompiledSt
       dispatch_search ──(Send×N)──► search_worker (parallel)
                                          │
                                          ▼
-      rank → read → classify_claims → expand_source_graph →
-      bind → [budget_gate_pre_synthesis] → synthesize → verify →
+      relevance_gate → [_relevance_gate_router] →
+          "continue"     → rank → read → classify_claims → expand_source_graph →
+                            bind → [budget_gate_pre_synthesis] → synthesize → ...
+          "insufficient" → budget_gate_pre_synthesis → synthesize → ...
+              (one retry already attempted inside relevance_gate itself before
+              this routing decision; skips rank/read/classify_claims/
+              expand_source_graph/bind on evidence that scored below
+              RELEVANCE_THRESHOLD against the research target even after the
+              retry -- relevance_gate sets state["evidence"] to a gap-only
+              EvidencePack itself for this path, since bind never runs)
+      synthesize → verify →
       judge → [_judge_router] →
           "publish_end"  → END           (judge approved or unrecoverable fail)
           "repair_gate"  → budget_gate_pre_repair →
@@ -189,7 +214,18 @@ def get_compiled_research_graph() -> Any:  # langgraph.graph.compiled.CompiledSt
         "dispatch_search",
         _router_adapter("dispatch_search_router"),
     )
-    graph.add_edge("search_worker", "rank")
+    # search_worker → relevance_gate is the fan-in join point (all Send
+    # invocations complete before relevance_gate runs once with the full
+    # aggregated state["sources"]).
+    graph.add_edge("search_worker", "relevance_gate")
+    graph.add_conditional_edges(
+        "relevance_gate",
+        _relevance_gate_router,
+        {
+            "continue": "rank",
+            "insufficient": "budget_gate_pre_synthesis",
+        },
+    )
 
     # --- Linear post-search edges through bind ------------------------------
     post_search_sequence = [

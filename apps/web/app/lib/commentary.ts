@@ -1,6 +1,11 @@
 import type { AgentResult, Conversation, ProgressEvent, Source, WorkItem } from '../types'
 import { formatDuration, titleFromMessage } from './format'
 
+function truncateForDisplay(value: string, maxLength: number): string {
+  const collapsed = value.trim().replace(/\s+/g, ' ')
+  return collapsed.length > maxLength ? `${collapsed.slice(0, maxLength - 1)}…` : collapsed
+}
+
 export function plainCommentaryForEvent(event: ProgressEvent): string | null {
   const data = event.data || {}
   switch (event.stage) {
@@ -17,6 +22,10 @@ export function plainCommentaryForEvent(event: ProgressEvent): string | null {
     case 'search_worker_provider': {
       const provider = typeof data.provider === 'string' ? data.provider : ''
       return provider ? `I’m checking the web with ${provider}.` : 'I’m checking the web for current information.'
+    }
+    case 'search_worker': {
+      const query = typeof data.query === 'string' ? data.query : ''
+      return query ? `Searching: “${truncateForDisplay(query, 80)}”` : 'I’m checking the web for current information.'
     }
     case 'source_selection': {
       const count = data.unique_count || data.source_count
@@ -91,6 +100,12 @@ export function buildStalenessWarning(result: AgentResult | null): string | null
 export function eventChips(event: ProgressEvent): string[] {
   const data = event.data || {}
   const chips: string[] = []
+  // Surfaced first (and truncated) so the literal query a search worker is
+  // about to run is visible in the trace, not just in backend logs -- the
+  // other chips below are short enough not to need truncation.
+  if (typeof data.query === 'string' && data.query) {
+    chips.push(`query: ${truncateForDisplay(data.query, 40)}`)
+  }
   for (const key of ['provider', 'tool_name', 'status', 'route', 'source_count', 'worker_index', 'filename']) {
     const value = data[key]
     if (value !== undefined && value !== null && value !== '') chips.push(`${key.replace('_', ' ')}: ${String(value)}`)

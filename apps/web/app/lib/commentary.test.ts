@@ -1,12 +1,20 @@
 import { describe, expect, it } from 'vitest'
-import { buildConfidenceCues, buildStalenessWarning } from './commentary'
-import type { AgentResult } from '../types'
+import { buildConfidenceCues, buildStalenessWarning, eventChips, plainCommentaryForEvent } from './commentary'
+import type { AgentResult, ProgressEvent } from '../types'
 
 function result(overrides: Partial<AgentResult> = {}): AgentResult {
   return {
     turn_id: 'turn_1',
     answer: 'Answer',
     route: 'research',
+    ...overrides,
+  }
+}
+
+function progressEvent(overrides: Partial<ProgressEvent> = {}): ProgressEvent {
+  return {
+    stage: 'search_worker',
+    message: 'Searching the web...',
     ...overrides,
   }
 }
@@ -54,5 +62,58 @@ describe('buildStalenessWarning', () => {
 
   it('returns null when there are no quality_signals at all', () => {
     expect(buildStalenessWarning(result())).toBeNull()
+  })
+})
+
+describe('plainCommentaryForEvent', () => {
+  it('surfaces the literal search query for a search_worker event', () => {
+    const commentary = plainCommentaryForEvent(progressEvent({
+      stage: 'search_worker',
+      data: { query: 'FIFA World Cup match schedule 2026-07-11' },
+    }))
+
+    expect(commentary).toContain('FIFA World Cup match schedule 2026-07-11')
+  })
+
+  it('truncates a long query rather than showing it in full', () => {
+    const longQuery = 'a'.repeat(200)
+    const commentary = plainCommentaryForEvent(progressEvent({
+      stage: 'search_worker',
+      data: { query: longQuery },
+    }))
+
+    expect(commentary).not.toContain(longQuery)
+    expect(commentary?.length ?? 0).toBeLessThan(longQuery.length)
+  })
+
+  it('falls back to a generic message when a search_worker event has no query', () => {
+    const commentary = plainCommentaryForEvent(progressEvent({ stage: 'search_worker', data: {} }))
+
+    expect(commentary).toBe('I’m checking the web for current information.')
+  })
+})
+
+describe('eventChips', () => {
+  it('surfaces a truncated query chip for a search_worker event', () => {
+    const chips = eventChips(progressEvent({
+      stage: 'search_worker',
+      data: { query: 'javah section 3-5 then by', worker_index: 2, source_count: 11 },
+    }))
+
+    expect(chips[0]).toMatch(/^query: /)
+    expect(chips[0]).toContain('javah section 3-5 then by')
+  })
+
+  it('truncates a long query chip instead of overflowing it', () => {
+    const longQuery = 'b'.repeat(200)
+    const chips = eventChips(progressEvent({ stage: 'search_worker', data: { query: longQuery } }))
+
+    expect(chips[0].length).toBeLessThan(longQuery.length)
+  })
+
+  it('omits the query chip entirely when no query is present', () => {
+    const chips = eventChips(progressEvent({ stage: 'search_worker', data: { worker_index: 1 } }))
+
+    expect(chips.some(chip => chip.startsWith('query:'))).toBe(false)
   })
 })

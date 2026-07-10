@@ -254,6 +254,68 @@ def _author_contract_queries(
         return {}
 
 
+SUBJECT_PHRASE_PROMPT = """You are the Fronei research subject extractor.
+
+Given the user's original request, extract a short, concrete phrase (a few
+words) naming the real subject to research -- the company, product,
+technology, market, or topic the request is actually about.
+
+Return only JSON: {"subject": "<short subject phrase>"}
+
+Rules:
+- Name the real subject as specifically as the request allows (e.g. a company
+  or product name), not a generic category.
+- Never include instructions about how the FINAL ANSWER should be formatted
+  (e.g. "3-5 bullets max," "no numbered lists") -- that is not part of the
+  subject.
+- Keep it under 15 words.
+"""
+
+
+def _author_research_subject_phrase(request: TurnRequest) -> str | None:
+    """LLM-authored replacement for _compact_search_subject() at the deep-
+    research anchor-query and domain-discovery call sites (_tech_arch_
+    anchor_queries, _vendor_comparison_anchor_queries, _market_landscape_
+    anchor_queries, _policy_regulatory_anchor_queries, _strategy_brief_
+    anchor_queries, _implementation_plan_anchor_queries,
+    _domain_discovery_workers). Same rationale as _author_contract_queries():
+    these all combine _compact_search_subject()'s output with a fixed
+    domain-expertise suffix template (e.g. "regulation official guidance
+    site:gov OR site:europa.eu"), and _compact_search_subject() is string-
+    concatenation that can't reliably tell a formatting instruction from the
+    actual subject.
+
+    Returns None (never raises) on any failure so callers fall back to
+    _compact_search_subject() -- computed once per plan_from_contract() call
+    and threaded through every consuming function via subject_override,
+    rather than repeating the model call per anchor function.
+    """
+    try:
+        prompt = resolve_prompt(
+            "agent.research.subject_phrase.default",
+            agent_id="query_author",
+            fallback_system_prompt=SUBJECT_PHRASE_PROMPT,
+            variables=["message"],
+        )
+        response = model_client.complete(
+            [
+                {"role": "system", "content": prompt.system_prompt},
+                {"role": "user", "content": json.dumps({"message": request.message}, ensure_ascii=False)},
+            ],
+            role="query_author",
+            quality_mode=request.quality_mode,
+            overrides=request.model_overrides,
+            max_tokens=200,
+            timeout_s=12,
+        )
+        payload = _parse_json(response.text)
+        subject = str(payload.get("subject", "")).strip()
+        return subject[:140] if subject else None
+    except Exception as exc:
+        logger.warning("agent subject-phrase authoring failed; falling back to _compact_search_subject: %s", exc)
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Planning
 # ---------------------------------------------------------------------------
@@ -297,8 +359,11 @@ def plan_from_contract(
         "strategy_brief": _strategy_brief_anchor_queries,
         "implementation_plan": _implementation_plan_anchor_queries,
     }
+    authored_subject: str | None = None
+    if request.research_level == "deep":
+        authored_subject = _author_research_subject_phrase(request)
     if profile in _anchor_query_fns and request.research_level == "deep":
-        anchor_queries = _anchor_query_fns[profile](request.message)
+        anchor_queries = _anchor_query_fns[profile](request.message, subject_override=authored_subject)
         existing_queries = {w.query for w in workers}
         anchor_workers = [
             SearchWorkerPlan(
@@ -316,7 +381,7 @@ def plan_from_contract(
     if request.research_level == "deep":
         existing_queries = {w.query for w in workers} | {w.query for w in anchor_workers}
         domain_workers = [
-            worker for worker in _domain_discovery_workers(request, profile, budget)
+            worker for worker in _domain_discovery_workers(request, profile, budget, subject_override=authored_subject)
             if worker.query not in existing_queries
         ]
 
@@ -1193,7 +1258,7 @@ def _answer_internal_consistency_issues(state: ResearchStateStore, answer: str) 
 # Query construction helpers
 # ---------------------------------------------------------------------------
 
-def _tech_arch_anchor_queries(original_message: str) -> list[str]:
+def _tech_arch_anchor_queries(original_message: str, *, subject_override: str | None = None) -> list[str]:
     msg_lower = (original_message or "").lower()
     if _is_framework_comparison_request(original_message):
         return [
@@ -1208,10 +1273,11 @@ def _tech_arch_anchor_queries(original_message: str) -> list[str]:
         return ["multi-agent LLM orchestration architecture patterns", "multi-agent AI system design orchestrator planner executor", "agentic workflow multi-agent framework implementation site:github.com", "agentic workflow multi-agent framework implementation site:arxiv.org"]
     if "rag" in msg_lower or "retrieval" in msg_lower:
         return ["RAG architecture retrieval augmented generation production implementation", "agentic RAG planning retrieval evidence grounding 2024", "retrieval augmented generation system design components site:arxiv.org"]
-    return [f"{original_message[:80]} architecture implementation", f"{original_message[:60]} system design components site:arxiv.org", f"{original_message[:60]} system design components site:github.com"]
+    subject = subject_override or _compact_search_subject(original_message)
+    return [f"{subject} architecture implementation", f"{subject} system design components site:arxiv.org", f"{subject} system design components site:github.com"]
 
 
-def _vendor_comparison_anchor_queries(original_message: str) -> list[str]:
+def _vendor_comparison_anchor_queries(original_message: str, *, subject_override: str | None = None) -> list[str]:
     if _llm_vendor_comparison_subject(original_message):
         return ["OpenAI API models pricing official docs GPT chatbot", "Anthropic Claude API models pricing official docs chatbot", "Google Gemini API models pricing official docs chatbot", "LLM API model pricing comparison OpenAI Anthropic Google Gemini Claude GPT"]
     entities = _extract_named_comparison_subjects(original_message)
@@ -1223,27 +1289,27 @@ def _vendor_comparison_anchor_queries(original_message: str) -> list[str]:
             f"{subject} {focus} pricing official docs",
             f"{subject} {focus} comparison limitations",
         ]
-    subject = _compact_search_subject(original_message)
+    subject = subject_override or _compact_search_subject(original_message)
     return [f"{subject} pricing comparison official docs", f"{subject} vs alternatives review site:g2.com OR site:capterra.com", f"{subject} analyst comparison 2024 2025"]
 
 
-def _market_landscape_anchor_queries(original_message: str) -> list[str]:
-    subject = _compact_search_subject(original_message)
+def _market_landscape_anchor_queries(original_message: str, *, subject_override: str | None = None) -> list[str]:
+    subject = subject_override or _compact_search_subject(original_message)
     return [f"{subject} market size growth forecast 2024 2025", f"{subject} competitive landscape report site:gartner.com OR site:forrester.com OR site:idc.com", f"{subject} industry analysis market share"]
 
 
-def _policy_regulatory_anchor_queries(original_message: str) -> list[str]:
-    subject = _compact_search_subject(original_message)
+def _policy_regulatory_anchor_queries(original_message: str, *, subject_override: str | None = None) -> list[str]:
+    subject = subject_override or _compact_search_subject(original_message)
     return [f"{subject} regulation official guidance site:gov OR site:europa.eu", f"{subject} enforcement action penalty compliance requirement", f"{subject} regulatory update 2024 2025"]
 
 
-def _strategy_brief_anchor_queries(original_message: str) -> list[str]:
-    subject = _compact_search_subject(original_message)
+def _strategy_brief_anchor_queries(original_message: str, *, subject_override: str | None = None) -> list[str]:
+    subject = subject_override or _compact_search_subject(original_message)
     return [f"{subject} strategic analysis business case", f"{subject} case study ROI outcomes"]
 
 
-def _implementation_plan_anchor_queries(original_message: str) -> list[str]:
-    subject = _compact_search_subject(original_message)
+def _implementation_plan_anchor_queries(original_message: str, *, subject_override: str | None = None) -> list[str]:
+    subject = subject_override or _compact_search_subject(original_message)
     return [f"{subject} implementation guide best practices", f"{subject} rollout plan milestones lessons learned"]
 
 
@@ -1328,8 +1394,14 @@ def _status_check_queries(message: str, budget: ResearchBudget) -> list[SearchWo
     return workers
 
 
-def _domain_discovery_workers(request: TurnRequest, profile: ResearchProfile, budget: ResearchBudget) -> list[SearchWorkerPlan]:
-    subject = _compact_search_subject(request.message)
+def _domain_discovery_workers(
+    request: TurnRequest,
+    profile: ResearchProfile,
+    budget: ResearchBudget,
+    *,
+    subject_override: str | None = None,
+) -> list[SearchWorkerPlan]:
+    subject = subject_override or _compact_search_subject(request.message)
     # Phase 8 — generalized: use _is_multi_subject_comparison() (via _is_framework_comparison_request alias)
     # so this path fires for any N≥3 named-entity comparison in technical_architecture context,
     # not just the hardcoded AI framework list.
@@ -1963,7 +2035,9 @@ __all__ = [
     "CITATION_VERIFICATION_PROMPT",
     "QUERY_AUTHOR_PROMPT",
     "REFLECTION_PROMPT",
+    "SUBJECT_PHRASE_PROMPT",
     "_author_contract_queries",
+    "_author_research_subject_phrase",
     "_cell_terms",
     "_citation_repair_instruction",
     "_compact_search_subject",

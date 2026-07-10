@@ -35,6 +35,16 @@ Covers:
     failure (no credentials in tests, malformed JSON, a missing subject in the
     response, ...), so the tests above that never mock model_client.complete
     still exercise and guard that fallback.
+  - research_planner._author_research_subject_phrase() -- the same fix applied
+    to the deep-research-only anchor-query functions (_tech_arch_anchor_queries,
+    _vendor_comparison_anchor_queries, _market_landscape_anchor_queries,
+    _policy_regulatory_anchor_queries, _strategy_brief_anchor_queries,
+    _implementation_plan_anchor_queries) and _domain_discovery_workers, all of
+    which combine _compact_search_subject()'s output with a fixed suffix
+    template. Computed once per plan_from_contract() call and threaded through
+    via each function's new subject_override kwarg (default None, so every
+    existing caller that doesn't pass it is unaffected and still exercises the
+    _compact_search_subject() fallback).
 
 Note: an earlier, unconditional backend debug log of every dispatched query
 (langgraph_runtime.nodes.search_worker) was added and then removed once the
@@ -54,12 +64,16 @@ from app.services.agent.research_contracts import COVERAGE_CONTRACT_PROMPT, gene
 from app.services.agent.research_models import CoverageCell, CoverageContract, ResearchBrief, ResearchBudget, ResearchPlan, SearchWorkerPlan
 from app.services.agent.research_planner import (
     QUERY_AUTHOR_PROMPT,
+    SUBJECT_PHRASE_PROMPT,
     _author_contract_queries,
+    _author_research_subject_phrase,
     _compact_search_subject,
     _domain_discovery_workers,
     _policy_regulatory_anchor_queries,
     _strip_meta_instruction_terms,
     _targeted_query,
+    _tech_arch_anchor_queries,
+    _vendor_comparison_anchor_queries,
     flag_untargeted_worker_queries,
     plan_from_contract,
 )
@@ -413,6 +427,116 @@ def test_plan_from_contract_uses_llm_authored_query_when_available(monkeypatch):
     plan = plan_from_contract(request, contract)
 
     assert plan.workers[0].query == "javah project Corebridge Financial modernization status"
+
+
+# ---------------------------------------------------------------------------
+# _author_research_subject_phrase() -- the same LLM-authoring fix applied to
+# the deep-research anchor-query functions and _domain_discovery_workers
+# ---------------------------------------------------------------------------
+
+def test_subject_phrase_prompt_warns_against_formatting_instructions():
+    assert "format" in SUBJECT_PHRASE_PROMPT.lower()
+
+
+def test_author_research_subject_phrase_uses_model_output_when_valid(monkeypatch):
+    def _fake_complete(messages, **kwargs):
+        assert kwargs.get("role") == "query_author"
+        return ModelResponse(text=json.dumps({"subject": "Corebridge Financial JAVAH modernization"}), model_used="test", latency_ms=5, cost_usd=0.001)
+
+    monkeypatch.setattr(model_client, "complete", _fake_complete)
+
+    subject = _author_research_subject_phrase(TurnRequest(message="Assess javah for Corebridge Financial", user_timezone=TZ))
+
+    assert subject == "Corebridge Financial JAVAH modernization"
+
+
+def test_author_research_subject_phrase_falls_back_to_none_on_model_error(monkeypatch):
+    def _fake_complete(messages, **kwargs):
+        raise RuntimeError("provider timeout")
+
+    monkeypatch.setattr(model_client, "complete", _fake_complete)
+
+    subject = _author_research_subject_phrase(TurnRequest(message="Assess javah for Corebridge Financial", user_timezone=TZ))
+
+    assert subject is None
+
+
+def test_anchor_query_functions_prefer_subject_override_over_compact_search_subject():
+    """subject_override, when given, should be used verbatim instead of
+    re-deriving via _compact_search_subject() -- this is what lets a single
+    authored subject-phrase call feed every anchor function."""
+    message = "javah 3-5 bullets max then supporting detail by numbered above"
+
+    queries = _policy_regulatory_anchor_queries(message, subject_override="Corebridge Financial JAVAH modernization")
+    assert queries[0] == "Corebridge Financial JAVAH modernization regulation official guidance site:gov OR site:europa.eu"
+
+    tech_queries = _tech_arch_anchor_queries(message, subject_override="Corebridge Financial JAVAH modernization")
+    assert tech_queries[0] == "Corebridge Financial JAVAH modernization architecture implementation"
+
+    vendor_queries = _vendor_comparison_anchor_queries(message, subject_override="Corebridge Financial JAVAH modernization")
+    assert vendor_queries[0] == "Corebridge Financial JAVAH modernization pricing comparison official docs"
+
+
+def test_anchor_query_functions_fall_back_to_compact_search_subject_when_no_override():
+    """No subject_override passed (the pre-existing calling convention) must
+    behave exactly as before -- every current caller that doesn't pass it."""
+    message = "Compare API pricing tiers"
+
+    assert _policy_regulatory_anchor_queries(message) == _policy_regulatory_anchor_queries(message, subject_override=None)
+
+
+def test_domain_discovery_workers_accepts_subject_override():
+    request = TurnRequest(message="javah 3-5 bullets max then supporting detail by numbered above", user_timezone=TZ)
+    budget = ResearchBudget(
+        max_results_per_worker=4, max_search_workers=8, max_sources=8,
+        min_evidence_items=2, judge_threshold=0.7, repair_iterations=1,
+    )
+
+    workers = _domain_discovery_workers(request, "general", budget, subject_override="Corebridge Financial JAVAH modernization")
+
+    assert workers
+    for worker in workers:
+        assert "Corebridge Financial JAVAH modernization" in worker.query
+        assert "bullets" not in worker.query.lower()
+
+
+def test_plan_from_contract_deep_research_uses_authored_subject_in_anchor_queries(monkeypatch):
+    """End-to-end: a deep-research plan_from_contract() call should thread the
+    authored subject phrase into the profile anchor queries, replacing the
+    residual noise _compact_search_subject() would otherwise leave in
+    (confirmed live-trace shape: 'javah 3-5 then by regulation official
+    guidance')."""
+    def _fake_complete(messages, **kwargs):
+        user_payload = json.loads(messages[1]["content"])
+        if "subjects" in user_payload:
+            return ModelResponse(
+                text=json.dumps({"queries": [{"subject": "javah", "query": "javah modernization Corebridge Financial section overview"}]}),
+                model_used="test", latency_ms=5, cost_usd=0.001,
+            )
+        return ModelResponse(
+            text=json.dumps({"subject": "Corebridge Financial JAVAH modernization"}),
+            model_used="test", latency_ms=5, cost_usd=0.001,
+        )
+
+    monkeypatch.setattr(model_client, "complete", _fake_complete)
+
+    request = TurnRequest(
+        message="Assess javah 3-5 bullets max then supporting detail by numbered above.",
+        user_timezone=TZ,
+        research_level="deep",
+    )
+    contract = CoverageContract(
+        subjects=["javah"],
+        dimensions=["section"],
+        cells=[CoverageCell(subject="javah", dimension="section")],
+        source="profile:policy_regulatory",
+    )
+
+    plan = plan_from_contract(request, contract)
+
+    anchor_queries = [w.query for w in plan.workers if w.query.startswith("Corebridge Financial JAVAH modernization")]
+    assert anchor_queries, f"expected an authored-subject anchor query among: {[w.query for w in plan.workers]!r}"
+    assert not any("3-5" in q or "then by" in q for q in (w.query for w in plan.workers))
 
 
 # ---------------------------------------------------------------------------

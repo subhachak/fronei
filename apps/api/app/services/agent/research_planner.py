@@ -1264,11 +1264,19 @@ def _compact_search_subject(message: str) -> str:
         return "LLM API models OpenAI Anthropic Google Gemini Claude GPT chatbot"
     subject_phrase = _extract_search_subject_phrase(message)
     if subject_phrase:
-        return subject_phrase
+        return _strip_meta_instruction_terms(subject_phrase)
     stop = {"a", "an", "and", "are", "as", "be", "by", "conduct", "create", "deep", "detailed", "do", "easy", "explaining", "explain", "for", "from", "generate", "give", "in", "into", "latest", "like", "me", "of", "on", "perform", "regular", "report", "research", "the", "to", "with"}
     tokens = [token for token in re.findall(r"[a-z0-9.]{2,}", (message or "").lower()) if token not in stop]
     cleaned = " ".join(_dedupe(tokens)[:16])
-    return cleaned[:140] or (message or "")[:110] or "research topic"
+    result = cleaned[:140] or (message or "")[:110] or "research topic"
+    # _extract_search_subject_phrase's stop-marker list and this function's own
+    # stopword set both predate the meta-instruction-leak fix -- neither
+    # excludes words like "bullets"/"numbered"/"supporting detail", so a
+    # trailing answer-formatting instruction in the user's message can survive
+    # into the "subject" this function returns, which feeds directly into
+    # _domain_discovery_workers and every *_anchor_queries() function. Route
+    # through the same filter _targeted_query() uses rather than duplicating it.
+    return _strip_meta_instruction_terms(result)
 
 
 # Generic output-formatting/meta-instruction vocabulary -- describes how the

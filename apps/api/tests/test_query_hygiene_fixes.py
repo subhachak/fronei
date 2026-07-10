@@ -40,8 +40,10 @@ from app.services.agent import model_client
 from app.services.agent.model_client import ModelResponse
 from app.services.agent.models import TurnRequest
 from app.services.agent.research_contracts import COVERAGE_CONTRACT_PROMPT, generate_coverage_contract
-from app.services.agent.research_models import CoverageCell, CoverageContract, ResearchBrief, ResearchPlan, SearchWorkerPlan
+from app.services.agent.research_models import CoverageCell, CoverageContract, ResearchBrief, ResearchBudget, ResearchPlan, SearchWorkerPlan
 from app.services.agent.research_planner import (
+    _compact_search_subject,
+    _domain_discovery_workers,
     _strip_meta_instruction_terms,
     _targeted_query,
     flag_untargeted_worker_queries,
@@ -178,6 +180,67 @@ def test_strip_meta_instruction_terms_leaves_ordinary_text_unchanged():
 
 def test_strip_meta_instruction_terms_empty_text_returns_empty():
     assert _strip_meta_instruction_terms("") == ""
+
+
+# ---------------------------------------------------------------------------
+# _compact_search_subject() -- a second, previously unpatched leak site.
+# Confirmed by a second live trace with the same collision: the answer named
+# the exact malformed question "Domain lane: primary evidence for javah
+# section 3-5 bullets max then supporting detail by numbered above", which
+# matches _domain_discovery_workers' general-fallback template
+# (f"Domain lane: {domain} evidence for {subject}") with domain="primary" --
+# not _targeted_query() at all. _compact_search_subject() is shared by
+# _domain_discovery_workers and every *_anchor_queries() function (7+ call
+# sites), so it needed its own fix rather than relying on _targeted_query()'s.
+# ---------------------------------------------------------------------------
+
+def test_compact_search_subject_strips_formatting_instructions_via_tokenizer_fallback():
+    """Message shaped to skip _extract_search_subject_phrase's "for X" match
+    (no clean prepositional phrase) and fall through to the stopword-tokenizer
+    path, which previously had no meta-instruction filtering at all."""
+    subject = _compact_search_subject("javah. 3-5 bullets max then supporting detail by numbered above.")
+
+    assert "bullets" not in subject
+    assert "supporting" not in subject
+    assert "numbered" not in subject
+    assert "javah" in subject
+
+
+def test_compact_search_subject_strips_formatting_instructions_via_phrase_extraction():
+    """Message shaped to hit _extract_search_subject_phrase's "for X" match --
+    that path returned its result unfiltered before this fix."""
+    subject = _compact_search_subject(
+        "Assess modernization for javah section 3-5 bullets max then supporting detail by numbered above."
+    )
+
+    assert "bullets" not in subject
+    assert "numbered" not in subject
+
+
+def test_domain_discovery_workers_do_not_leak_formatting_instructions():
+    """Regression test replaying the second live trace's exact malformed
+    question shape end-to-end through _domain_discovery_workers (the deep-
+    research-only worker source _targeted_query()'s fix doesn't touch)."""
+    request = TurnRequest(
+        message="javah. 3-5 bullets max then supporting detail by numbered above.",
+        user_timezone=TZ,
+    )
+    budget = ResearchBudget(
+        max_results_per_worker=4,
+        max_search_workers=8,
+        max_sources=8,
+        min_evidence_items=2,
+        judge_threshold=0.7,
+        repair_iterations=1,
+    )
+
+    workers = _domain_discovery_workers(request, "general", budget)
+
+    assert workers, "expected at least one domain-lane worker"
+    for worker in workers:
+        assert "bullets" not in worker.question.lower(), f"leaked into question: {worker.question!r}"
+        assert "bullets" not in worker.query.lower(), f"leaked into query: {worker.query!r}"
+        assert "supporting detail" not in worker.question.lower()
 
 
 # ---------------------------------------------------------------------------

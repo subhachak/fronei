@@ -56,6 +56,7 @@ from app.services.agent.research_contracts import (
 from app.services.agent.research_utils import (
     _dedupe,
     _parse_json,
+    resolve_relative_date_phrases,
     score_technical_density,
     temporal_context,
 )
@@ -164,7 +165,7 @@ def plan_from_contract(
     for subject in _dedupe([cell.subject for cell in open_cells]):
         subject_cells = [cell for cell in open_cells if cell.subject == subject]
         dimensions = _dedupe([cell.dimension for cell in subject_cells])[:4]
-        query = _targeted_query(subject, dimensions, request.message)
+        query = _targeted_query(subject, dimensions, request.message, tz=request.user_timezone)
         workers.append(
             SearchWorkerPlan(
                 question=f"Research {subject}: {', '.join(dimensions)}",
@@ -600,7 +601,7 @@ def reflect(request: TurnRequest, state: ResearchStateStore) -> ReflectionDecisi
         relevance_issue = _topical_relevance_check(state)
         if relevance_issue:
             targeted_queries = [
-                _targeted_query(subject, [state.contract.dimensions[0] if state.contract.dimensions else "overview"], request.message)
+                _targeted_query(subject, [state.contract.dimensions[0] if state.contract.dimensions else "overview"], request.message, tz=request.user_timezone)
                 for subject in state.contract.subjects
                 if not any(
                     (token := re.split(r"\s+", subject.lower())[0]) and token in (
@@ -690,7 +691,7 @@ def reflect(request: TurnRequest, state: ResearchStateStore) -> ReflectionDecisi
                 decision.terminate_reason = None
                 if not decision.targeted_queries:
                     decision.targeted_queries = [
-                        _targeted_query(subject, [state.contract.dimensions[0] if state.contract.dimensions else "overview"], request.message)
+                        _targeted_query(subject, [state.contract.dimensions[0] if state.contract.dimensions else "overview"], request.message, tz=request.user_timezone)
                         for subject in (decision.open_subjects or state.contract.subjects)[:4]
                     ]
                 if not decision.open_subjects:
@@ -698,7 +699,7 @@ def reflect(request: TurnRequest, state: ResearchStateStore) -> ReflectionDecisi
         return decision
     except Exception as exc:
         logger.warning("agent reflection failed; using deterministic follow-up: %s", exc)
-        queries = [_targeted_query(cell.subject, [cell.dimension], request.message) for cell in open_cells[:4]]
+        queries = [_targeted_query(cell.subject, [cell.dimension], request.message, tz=request.user_timezone) for cell in open_cells[:4]]
         return ReflectionDecision(sufficient=not queries, open_dimensions=_dedupe([cell.dimension for cell in open_cells]), open_subjects=_dedupe([cell.subject for cell in open_cells]), targeted_queries=queries, terminate_reason=f"Reflection agent failed: {exc}" if not queries else None, coverage_ratio=coverage, next_action="continue" if queries else "stop_with_gaps", source="heuristic")
 
 
@@ -1348,7 +1349,7 @@ def _domain_for_query(query: str) -> Literal["general", "academic", "repository"
     return "general"
 
 
-def _targeted_query(subject: str, dimensions: list[str], original: str) -> str:
+def _targeted_query(subject: str, dimensions: list[str], original: str, tz: str | None = None) -> str:
     raw_subject = " ".join(str(subject or "").split())
     if _is_owner_reliability_query(original):
         focus = " ".join(str(dim) for dim in dimensions if dim).lower()
@@ -1381,7 +1382,13 @@ def _targeted_query(subject: str, dimensions: list[str], original: str) -> str:
         grounding = _tech_arch_grounding_term(raw_subject)
         return f"{subject} {primary_dim} {grounding}".strip()[:180]
     base = f"{subject} {primary_dim}".strip()
-    return f"{base} {original}".strip()[:220]
+    # Deterministic counterpart to PLAN_PROMPT's query-hygiene/date-resolution
+    # rules -- this code path has no LLM call to instruct, so a literal idiom
+    # like "the day after" would otherwise echo straight into the query and
+    # collide with an unrelated proper noun (e.g. the movie The Day After
+    # Tomorrow). See research_utils.resolve_relative_date_phrases.
+    resolved_original = resolve_relative_date_phrases(original, tz)
+    return f"{base} {resolved_original}".strip()[:220]
 
 
 def _is_owner_reliability_query(message: str) -> bool:
@@ -1727,6 +1734,32 @@ def _fallback_plan(request: TurnRequest, goal: ResearchGoal | None = None) -> Re
     )
 
 
+def flag_untargeted_worker_queries(plan: ResearchPlan, request: TurnRequest) -> None:
+    """Query-hygiene self-check: log if a worker's query is just the user's
+    raw message verbatim, with no subject/dimension targeting applied.
+
+    Not a hardcoded proper-noun/collision blocklist -- a generic signal that
+    a worker never got properly targeted, which is the anti-pattern that
+    produced the original "the day after" / movie-title collision bug (a
+    literal, untargeted echo of the user's message into a search query).
+    Called once on the final plan from the LangGraph "plan" node
+    (langgraph_runtime/nodes.py) so it covers both plan_research() (LLM-direct)
+    and plan_from_contract() (contract-driven) output, since only the plan
+    node is a choke point both paths pass through -- _normalize_plan() is not
+    called by plan_from_contract().
+    """
+    raw_message = " ".join((request.message or "").strip().lower().split())
+    if not raw_message:
+        return
+    for worker in plan.workers:
+        query_normalized = " ".join((worker.query or "").strip().lower().split())
+        if query_normalized and query_normalized == raw_message:
+            logger.debug(
+                "research_plan_untargeted_worker_query",
+                extra={"worker_id": worker.worker_id, "question": worker.question, "query": worker.query},
+            )
+
+
 def _normalize_plan(plan: ResearchPlan, request: TurnRequest, goal: ResearchGoal | None = None) -> ResearchPlan:
     goal = goal or create_research_goal(request)
     if plan.research_profile == "general":
@@ -1797,6 +1830,7 @@ __all__ = [
     "_text_supports_cell",
     "_vendor_comparison_anchor_queries",
     "build_research_plan_preview",
+    "flag_untargeted_worker_queries",
     "judge_research_final",
     "plan_from_brief_contract",
     "plan_from_contract",

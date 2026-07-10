@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import lru_cache
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
@@ -35,6 +35,49 @@ def temporal_context(tz: str | None = None) -> dict:
         "current_date": now.strftime("%A, %B %d, %Y"),
         "current_datetime_iso": now.isoformat(),
     }
+
+
+# Longest/most-specific phrases first so "the day after tomorrow" isn't left
+# half-replaced by a shorter "tomorrow" or "the day after" match underneath it.
+# "the day after" / "day after" (standalone, no trailing "tomorrow") is treated
+# as a colloquial short form of "the day after tomorrow" (offset 2) rather than
+# a literal "day after today" (offset 1) -- in typical phrasing like "tomorrow
+# and the day after", the second phrase continues from "tomorrow", not "today".
+_RELATIVE_DATE_PHRASES: tuple[tuple[str, int], ...] = (
+    (r"\bthe day after tomorrow\b", 2),
+    (r"\bday after tomorrow\b", 2),
+    (r"\bthe day after\b", 2),
+    (r"\bday after\b", 2),
+    (r"\btomorrow\b", 1),
+    (r"\btoday\b", 0),
+)
+
+
+def resolve_relative_date_phrases(text: str, tz: str | None = None) -> str:
+    """Replace single-day relative-date idioms ("tomorrow", "the day after",
+    "the day after tomorrow") with resolved calendar dates.
+
+    Deterministic counterpart to the query-hygiene/date-resolution rules
+    already given to the planning LLM (PLAN_PROMPT in research_profiles.py)
+    -- those only cover the LLM-driven planning path. The coverage-contract
+    path (research_planner._targeted_query) builds queries with no LLM call
+    at all, so a literal idiom like "the day after" would otherwise pass
+    straight into a search query and collide with an unrelated proper noun
+    (e.g. the movie *The Day After Tomorrow*). Resolving it to an explicit
+    date removes the collision risk instead of trying to maintain a list of
+    known-colliding phrases.
+    """
+    if not text:
+        return text
+    try:
+        zone = ZoneInfo(tz) if tz else ZoneInfo(_DEFAULT_TZ)
+    except Exception:
+        zone = ZoneInfo(_DEFAULT_TZ)
+    anchor = datetime.now(zone).date()
+    resolved = text
+    for pattern, offset in _RELATIVE_DATE_PHRASES:
+        resolved = re.sub(pattern, (anchor + timedelta(days=offset)).isoformat(), resolved, flags=re.IGNORECASE)
+    return resolved
 
 
 @lru_cache(maxsize=1)

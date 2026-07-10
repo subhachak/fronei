@@ -40,6 +40,13 @@ Return only JSON:
   ]
 }
 Generate one cell per dimension × subject combination. Mark required=false only when obviously not applicable.
+
+Subject completeness: when the brief broadly asks what's scheduled, playing, or happening without
+naming a specific league or event, and a major internationally prominent tournament or event is
+plausibly relevant (e.g. a World Cup, Olympics, or similarly large-scale active tournament), name it
+as its own explicit subject rather than folding it into a generic subject like "international sports"
+or "international soccer." A vague bucket subject is far more likely to produce useless search
+coverage downstream than a specific, named one.
 """
 
 

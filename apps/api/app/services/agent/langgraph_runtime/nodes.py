@@ -227,6 +227,9 @@ def plan(
     else:
         research_plan = plan_from_contract(request, coverage_contract)
 
+    from app.services.agent.research_planner import flag_untargeted_worker_queries
+    flag_untargeted_worker_queries(research_plan, request)
+
     emit_graph_event(
         progress,
         run_id=run_id,

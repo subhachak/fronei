@@ -119,7 +119,7 @@ class ResearchGraphState(TypedDict, total=False):
     ranked_source_urls: list[str]    # output of rank node, consumed by read node
 
     # ---- relevance_gate output ---------------------------------------------
-    # True when aggregated search results scored below RELEVANCE_THRESHOLD
+    # True when aggregated search results scored below the configured relevance threshold
     # against the research target even after one retry. When true,
     # relevance_gate routes straight to budget_gate_pre_synthesis (skipping
     # rank/read/classify_claims/expand_source_graph/bind) and sets "evidence"

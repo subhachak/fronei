@@ -10,7 +10,9 @@ a narrower query first, or give up and disclose the gap.
 
 Responsibilities:
   - score_search_relevance: one LLM call judging aggregate relevance
-  - reformulate_queries_for_exact_match: the one-retry query narrowing step
+  - regenerate_queries_after_low_relevance: the one-retry query rewrite step
+    (LLM-based, given the judge's failure reasoning; falls back to plain
+    exact-phrase quoting on any failure)
 """
 from __future__ import annotations
 
@@ -18,6 +20,7 @@ import json
 import logging
 from dataclasses import dataclass
 
+from app.config import get_settings
 from app.services.agent import model_client
 from app.services.agent.models import Source
 from app.services.agent.models import TurnRequest
@@ -26,9 +29,6 @@ from app.services.agent.research_models import SearchWorkerPlan
 from app.services.agent.research_utils import _parse_json
 
 logger = logging.getLogger(__name__)
-
-# "<50% relevant" in the task spec that motivated this module.
-RELEVANCE_THRESHOLD = 0.5
 
 RELEVANCE_GATE_PROMPT = """You are the Fronei search-relevance gate.
 
@@ -44,6 +44,33 @@ share a name or word with the target does NOT count as relevant, even if it
 superficially matches on search terms.
 """
 
+QUERY_RETRY_PROMPT = """You are the Fronei search query author, retrying after a failed search.
+
+The first search for this target returned results a relevance judge scored as
+mostly irrelevant. You are given the original queries, the target entity/
+topic, and the judge's explanation of why the results didn't match. Rewrite
+each query to fix the problem.
+
+Usually the fix is anchoring more tightly to the target's exact proper name
+and dropping generic or jargon terms that could match an unrelated topic,
+tool, or product entirely -- not just adding quotes around the same words.
+If a query's own subject or wording looks like the actual defect (not just
+"too broad"), rebuild it from the target name rather than lightly editing it.
+
+Return only JSON: {"queries": [{"index": 0, "query": "<rewritten query>"}, ...]}
+
+One entry per original query (by its 0-based index in the input list), in
+any order. Do not skip an index.
+"""
+
+
+def relevance_threshold() -> float:
+    """Minimum relevance_fraction to proceed past the gate. Reads Settings
+    fresh on every call (not a frozen module constant) so it's tunable via
+    the RELEVANCE_GATE_THRESHOLD env var without a code change or redeploy --
+    e.g. to loosen/tighten it empirically after running against more queries."""
+    return get_settings().relevance_gate_threshold
+
 
 @dataclass
 class RelevanceAssessment:
@@ -54,7 +81,7 @@ class RelevanceAssessment:
 
     @property
     def sufficient(self) -> bool:
-        return self.relevance_fraction >= RELEVANCE_THRESHOLD
+        return self.relevance_fraction >= relevance_threshold()
 
 
 def score_search_relevance(
@@ -116,9 +143,12 @@ def reformulate_queries_for_exact_match(
     workers: list[SearchWorkerPlan],
     target: str,
 ) -> list[SearchWorkerPlan]:
-    """The one-retry narrowing step: force exact-phrase matching on the
-    target entity so the retry search can't drift onto an unrelated
-    same-word topic the way the first pass did."""
+    """Deterministic fallback narrowing step: force exact-phrase matching on
+    the target entity. Cheap and guaranteed-safe, but only fixes an
+    over-broad query -- it can't fix a query whose actual defect is a bad or
+    incomplete target extraction, since it just quotes the same target
+    string rather than rebuilding the query. Used when
+    regenerate_queries_after_low_relevance()'s LLM call fails."""
     if not target:
         return workers
     quoted = f'"{target}"'
@@ -131,10 +161,82 @@ def reformulate_queries_for_exact_match(
     return reformulated
 
 
+def regenerate_queries_after_low_relevance(
+    workers: list[SearchWorkerPlan],
+    target: str,
+    reasoning: str,
+    request: TurnRequest,
+) -> tuple[list[SearchWorkerPlan], int, float]:
+    """The one-retry query rewrite step. Given the relevance judge's failure
+    reasoning, asks the query_author role to rebuild each worker's query --
+    this catches a genuinely bad/incomplete target extraction, not just an
+    over-broad query, which reformulate_queries_for_exact_match() alone
+    cannot fix (it only quote-wraps the same target string).
+
+    Falls back to reformulate_queries_for_exact_match() on any failure
+    (missing credentials, malformed JSON, a missing index in the response),
+    so the retry never comes back empty-handed. Returns
+    (workers, model_calls_made, cost_usd) so the caller can fold the retry's
+    cost into its own budget accounting.
+    """
+    if not workers:
+        return workers, 0, 0.0
+    try:
+        prompt = resolve_prompt(
+            "agent.research.query_retry.default",
+            agent_id="query_author",
+            fallback_system_prompt=QUERY_RETRY_PROMPT,
+            variables=["target", "reasoning", "queries"],
+        )
+        response = model_client.complete(
+            [
+                {"role": "system", "content": prompt.system_prompt},
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "target": target,
+                            "reasoning": reasoning or "results did not plausibly relate to the target",
+                            "queries": [{"index": i, "query": w.query} for i, w in enumerate(workers)],
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            ],
+            role="query_author",
+            quality_mode=request.quality_mode,
+            overrides=request.model_overrides,
+            max_tokens=600,
+            timeout_s=15,
+        )
+        payload = _parse_json(response.text)
+        entries = payload.get("queries")
+        if not isinstance(entries, list):
+            raise ValueError("malformed query_retry response: missing 'queries' list")
+        by_index: dict[int, str] = {}
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            idx = entry.get("index")
+            query = str(entry.get("query", "")).strip()
+            if isinstance(idx, int) and query:
+                by_index[idx] = query[:220]
+        regenerated = [
+            worker.model_copy(update={"query": by_index[i]}) if i in by_index else worker
+            for i, worker in enumerate(workers)
+        ]
+        return regenerated, 1, response.cost_usd or 0.0
+    except Exception as exc:
+        logger.warning("relevance_gate: query regeneration failed, falling back to exact-phrase retry: %s", exc)
+        return reformulate_queries_for_exact_match(workers, target), 0, 0.0
+
+
 __all__ = [
+    "QUERY_RETRY_PROMPT",
     "RELEVANCE_GATE_PROMPT",
-    "RELEVANCE_THRESHOLD",
     "RelevanceAssessment",
     "reformulate_queries_for_exact_match",
+    "regenerate_queries_after_low_relevance",
+    "relevance_threshold",
     "score_search_relevance",
 ]

@@ -40,6 +40,11 @@ class Settings(BaseSettings):
     # that controlled the same thing.
     document_writer_concurrency: int = 3
     longform_timeout_s: int = 300
+    # Minimum fraction of aggregated search results the relevance_gate node
+    # must judge as relevant to the research target before proceeding to
+    # rank/read/classify_claims/expand_source_graph/bind. Tunable via env var
+    # so the threshold can be adjusted empirically without a redeploy.
+    relevance_gate_threshold: float = 0.5
     clerk_issuer: str = ""
     # Required in production. When unset, JWT audience verification (`verify_aud`)
     # is disabled in app/auth.py — acceptable for local dev only.

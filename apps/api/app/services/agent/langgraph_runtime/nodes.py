@@ -509,19 +509,23 @@ def relevance_gate(
     """Score aggregated search_worker results against the research target
     before paying for read/classify_claims/expand_source_graph/bind.
 
-    One retry with a narrower, exact-phrase-biased reformulation of each
-    worker's query if the first pass falls below RELEVANCE_THRESHOLD. If
-    still below threshold after the retry, routes to budget_gate_pre_synthesis
-    (see graph.py's _relevance_gate_router) instead of rank -- skipping the
-    expensive per-source stages on evidence that isn't worth reading -- and
-    sets state["evidence"] itself to a gap-only EvidencePack, since bind
-    (which normally sets it) never runs on that path and synthesize()
-    requires evidence to be non-None.
+    One retry if the first pass falls below the configured relevance
+    threshold: regenerate_queries_after_low_relevance() rewrites each
+    worker's query via an LLM call given the judge's failure reasoning
+    (falling back to plain exact-phrase quoting if that call fails), then
+    the retry's results are scored again. If still below threshold after the
+    retry, routes to budget_gate_pre_synthesis (see graph.py's
+    _relevance_gate_router) instead of rank -- skipping the expensive
+    per-source stages on evidence that isn't worth reading -- and sets
+    state["evidence"] itself to a gap-only EvidencePack that names the
+    attempted queries and the judge's reasoning, since bind (which normally
+    sets evidence) never runs on that path and synthesize() requires
+    evidence to be non-None.
     """
     from app.services.agent.research_models import EvidencePack
     from app.services.agent.research_relevance import (
-        RELEVANCE_THRESHOLD,
-        reformulate_queries_for_exact_match,
+        regenerate_queries_after_low_relevance,
+        relevance_threshold,
         score_search_relevance,
     )
 
@@ -532,6 +536,10 @@ def relevance_gate(
 
     target = _relevance_gate_target(state)
     sources = state.get("sources") or []
+    threshold = relevance_threshold()
+
+    research_plan = state.get("plan")
+    attempted_queries = [w.query for w in (research_plan.workers if research_plan else [])]
 
     assessment = score_search_relevance(sources, target, request)
     total_model_calls = assessment.model_calls_made
@@ -543,11 +551,15 @@ def relevance_gate(
     retry_calls: list = []
 
     if not assessment.sufficient and tools is not None:
-        research_plan = state.get("plan")
         workers = research_plan.workers if research_plan else []
         if workers:
             retried = True
-            narrowed_workers = reformulate_queries_for_exact_match(workers, target)
+            narrowed_workers, regen_model_calls, regen_cost = regenerate_queries_after_low_relevance(
+                workers, target, assessment.reasoning, request,
+            )
+            total_model_calls += regen_model_calls
+            total_cost += regen_cost
+            attempted_queries += [w.query for w in narrowed_workers]
             retry_sources, retry_reports, retry_calls, total_tool_calls = _rerun_search_workers(
                 narrowed_workers, tools, run_id=run_id, progress=progress,
             )
@@ -565,13 +577,13 @@ def relevance_gate(
             f"Relevance check: {assessment.relevance_fraction:.0%} of results relate to "
             f"'{target or 'the research target'}'"
             + (" after retry" if retried else "")
-            + ("." if sufficient else f" — below {RELEVANCE_THRESHOLD:.0%} threshold; skipping to synthesis with a gap note.")
+            + ("." if sufficient else f" — below {threshold:.0%} threshold; skipping to synthesis with a gap note.")
         ),
         target=target,
         relevance_score=assessment.relevance_fraction,
         reasoning=assessment.reasoning,
         retried=retried,
-        threshold=RELEVANCE_THRESHOLD,
+        threshold=threshold,
         sufficient=sufficient,
         cost_usd_spent=total_cost,
         tool_calls_made=total_tool_calls,
@@ -599,10 +611,16 @@ def relevance_gate(
     }
 
     if not sufficient:
+        queries_text = "; ".join(f'"{q}"' for q in attempted_queries[:6]) or "no queries were issued"
         gap_note = (
-            f"Insufficient relevant evidence found for '{target or 'the research target'}' "
-            f"after search{' and one retry' if retried else ''} "
-            f"(relevance {assessment.relevance_fraction:.0%}, threshold {RELEVANCE_THRESHOLD:.0%})."
+            f"Insufficient relevant evidence for '{target or 'the research target'}': "
+            f"searched {len(attempted_queries)} quer{'y' if len(attempted_queries) == 1 else 'ies'} "
+            f"({queries_text}), but only {assessment.relevance_fraction:.0%} of results "
+            f"(threshold {threshold:.0%}) were judged relevant"
+            + (", including after retrying with an exact-phrase query" if retried else "")
+            + (f". Relevance judge noted: {assessment.reasoning}" if assessment.reasoning else "")
+            + ". State plainly that a targeted search for this subject did not surface usable "
+              "evidence, rather than filling the gap with general or inferred content."
         )
         result["evidence"] = EvidencePack(items=[], gaps=[gap_note])
 

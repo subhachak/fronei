@@ -170,7 +170,7 @@ def get_compiled_research_graph() -> Any:  # langgraph.graph.compiled.CompiledSt
               (one retry already attempted inside relevance_gate itself before
               this routing decision; skips rank/read/classify_claims/
               expand_source_graph/bind on evidence that scored below
-              RELEVANCE_THRESHOLD against the research target even after the
+              the configured relevance threshold against the research target even after the
               retry -- relevance_gate sets state["evidence"] to a gap-only
               EvidencePack itself for this path, since bind never runs)
       synthesize → verify →

@@ -37,9 +37,10 @@ from app.services.agent.research_models import (
 )
 from app.services.agent.research_relevance import (
     RELEVANCE_GATE_PROMPT,
-    RELEVANCE_THRESHOLD,
     RelevanceAssessment,
     reformulate_queries_for_exact_match,
+    regenerate_queries_after_low_relevance,
+    relevance_threshold,
     score_search_relevance,
 )
 
@@ -157,6 +158,32 @@ def test_relevance_gate_prompt_asks_for_a_fraction_and_reasoning():
 
 
 # ---------------------------------------------------------------------------
+# relevance_threshold() -- tunable via Settings/env var, not hardcoded
+# ---------------------------------------------------------------------------
+
+def test_relevance_threshold_reads_from_settings(monkeypatch):
+    import app.services.agent.research_relevance as research_relevance_module
+    from app.config import Settings
+
+    monkeypatch.setattr(research_relevance_module, "get_settings", lambda: Settings(relevance_gate_threshold=0.8))
+
+    assert relevance_threshold() == 0.8
+
+
+def test_relevance_assessment_sufficient_respects_configured_threshold(monkeypatch):
+    import app.services.agent.research_relevance as research_relevance_module
+    from app.config import Settings
+
+    assessment = RelevanceAssessment(relevance_fraction=0.6, reasoning="", model_calls_made=0, cost_usd=0.0)
+
+    monkeypatch.setattr(research_relevance_module, "get_settings", lambda: Settings(relevance_gate_threshold=0.9))
+    assert assessment.sufficient is False
+
+    monkeypatch.setattr(research_relevance_module, "get_settings", lambda: Settings(relevance_gate_threshold=0.5))
+    assert assessment.sufficient is True
+
+
+# ---------------------------------------------------------------------------
 # reformulate_queries_for_exact_match()
 # ---------------------------------------------------------------------------
 
@@ -180,6 +207,68 @@ def test_reformulate_queries_is_noop_without_target():
     workers = [SearchWorkerPlan(question="q", query="javah modernization status")]
 
     assert reformulate_queries_for_exact_match(workers, "") == workers
+
+
+# ---------------------------------------------------------------------------
+# regenerate_queries_after_low_relevance() -- LLM-based retry rewrite,
+# with fallback to reformulate_queries_for_exact_match() on failure
+# ---------------------------------------------------------------------------
+
+def test_regenerate_queries_uses_model_output(monkeypatch):
+    def _fake_complete(messages, **kwargs):
+        assert kwargs.get("role") == "query_author"
+        payload = json.loads(messages[1]["content"])
+        assert payload["target"] == "JAVAH"
+        assert payload["reasoning"] == "results were about the JDK tool"
+        assert payload["queries"] == [{"index": 0, "query": "javah 3-5 then by"}]
+        return SimpleNamespace(text=json.dumps({"queries": [{"index": 0, "query": "JAVAH modernization project status"}]}), model_used="t", latency_ms=1, cost_usd=0.003)
+
+    monkeypatch.setattr(model_client, "complete", _fake_complete)
+    workers = [SearchWorkerPlan(question="q", query="javah 3-5 then by")]
+
+    regenerated, model_calls, cost = regenerate_queries_after_low_relevance(workers, "JAVAH", "results were about the JDK tool", REQUEST)
+
+    assert regenerated[0].query == "JAVAH modernization project status"
+    assert model_calls == 1
+    assert cost == 0.003
+
+
+def test_regenerate_queries_falls_back_on_malformed_response(monkeypatch):
+    monkeypatch.setattr(model_client, "complete", lambda *a, **k: SimpleNamespace(text="not json", model_used="t", latency_ms=1, cost_usd=0.0))
+    workers = [SearchWorkerPlan(question="q", query="javah 3-5 then by")]
+
+    regenerated, model_calls, cost = regenerate_queries_after_low_relevance(workers, "JAVAH", "reasoning", REQUEST)
+
+    assert regenerated == reformulate_queries_for_exact_match(workers, "JAVAH")
+    assert model_calls == 0
+    assert cost == 0.0
+
+
+def test_regenerate_queries_falls_back_on_model_error(monkeypatch):
+    def _fake_complete(*a, **k):
+        raise RuntimeError("provider timeout")
+
+    monkeypatch.setattr(model_client, "complete", _fake_complete)
+    workers = [SearchWorkerPlan(question="q", query="javah 3-5 then by")]
+
+    regenerated, model_calls, cost = regenerate_queries_after_low_relevance(workers, "JAVAH", "reasoning", REQUEST)
+
+    assert regenerated == reformulate_queries_for_exact_match(workers, "JAVAH")
+    assert model_calls == 0
+    assert cost == 0.0
+
+
+def test_regenerate_queries_empty_workers_is_noop_without_a_model_call(monkeypatch):
+    def _fake_complete(*a, **k):
+        raise AssertionError("should not be called")
+
+    monkeypatch.setattr(model_client, "complete", _fake_complete)
+
+    regenerated, model_calls, cost = regenerate_queries_after_low_relevance([], "JAVAH", "reasoning", REQUEST)
+
+    assert regenerated == []
+    assert model_calls == 0
+    assert cost == 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -212,26 +301,31 @@ def test_relevance_gate_sufficient_score_does_not_retry(monkeypatch):
 
 
 def test_relevance_gate_low_score_retries_and_recovers(monkeypatch):
-    calls = {"n": 0}
+    """Retry now involves two model calls (regenerate the query, then
+    re-score), not one -- see regenerate_queries_after_low_relevance()."""
+    score_calls = {"n": 0}
 
-    def _fake_complete(messages, **kwargs):
-        calls["n"] += 1
-        fraction = 0.1 if calls["n"] == 1 else 0.9
+    def _fake_complete(messages, *, role=None, **kwargs):
+        if role == "query_author":
+            return SimpleNamespace(text=json.dumps({"queries": [{"index": 0, "query": "JAVAH status update"}]}), model_used="t", latency_ms=1, cost_usd=0.001)
+        score_calls["n"] += 1
+        fraction = 0.1 if score_calls["n"] == 1 else 0.9
         return SimpleNamespace(text=json.dumps({"relevance_fraction": fraction}), model_used="t", latency_ms=1, cost_usd=0.001)
 
     monkeypatch.setattr(model_client, "complete", _fake_complete)
 
     result = relevance_gate(_state(), run_id="rg-test", request=REQUEST, tools=FakeTools())
 
-    assert calls["n"] == 2
+    assert score_calls["n"] == 2
     assert result["insufficient_relevant_evidence"] is False
     assert "evidence" not in result
     assert result["sources"], "expected the retry's sources as the returned delta"
+    assert result["model_calls_made"] == 3  # initial score + regenerate + re-score
     assert result["artifacts"]["relevance_gate"]["retried"] is True
 
 
 def test_relevance_gate_still_insufficient_after_retry_sets_gap_evidence(monkeypatch):
-    monkeypatch.setattr(model_client, "complete", lambda *a, **k: SimpleNamespace(text=json.dumps({"relevance_fraction": 0.1}), model_used="t", latency_ms=1, cost_usd=0.001))
+    monkeypatch.setattr(model_client, "complete", lambda *a, **k: SimpleNamespace(text=json.dumps({"relevance_fraction": 0.1, "reasoning": "results were about the JDK javah tool, not the project"}), model_used="t", latency_ms=1, cost_usd=0.001))
 
     result = relevance_gate(_state(), run_id="rg-test", request=REQUEST, tools=FakeTools())
 
@@ -239,7 +333,14 @@ def test_relevance_gate_still_insufficient_after_retry_sets_gap_evidence(monkeyp
     assert isinstance(result["evidence"], EvidencePack)
     assert result["evidence"].items == []
     assert result["evidence"].gaps
-    assert "JAVAH" in result["evidence"].gaps[0]
+    gap_note = result["evidence"].gaps[0]
+    assert "JAVAH" in gap_note
+    # The gap note must carry enough structure for synthesis to say "I searched
+    # X, Y, Z and none matched" instead of hallucinating filler -- not just a
+    # bare "insufficient evidence" line.
+    assert "javah status" in gap_note  # the original worker query
+    assert '"JAVAH" javah status' in gap_note  # the retry's narrowed query
+    assert "JDK javah tool" in gap_note  # the relevance judge's reasoning
     assert result["artifacts"]["relevance_gate"]["retried"] is True
 
 

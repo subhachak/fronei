@@ -43,6 +43,7 @@ def test_research_roles_default_to_frontier_tier(policy_db):
         "research_brief",
         "coverage_contract",
         "research_planner",
+        "query_author",
         "reflection",
         "citation_verifier",
         "repair",
@@ -52,6 +53,7 @@ def test_research_roles_default_to_frontier_tier(policy_db):
 
     assert all("mini" not in model_policy.DEFAULT_MODEL_POLICY[role] for role in research_roles)
     assert model_policy.DEFAULT_MODEL_POLICY["synthesis"] == "claude-opus-4-8"
+    assert model_policy.DEFAULT_MODEL_POLICY["query_author"] == "claude-opus-4-8"
 
 
 def test_fallback_models_have_provider_prefix(policy_db):

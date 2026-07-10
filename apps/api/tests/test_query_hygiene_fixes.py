@@ -24,6 +24,17 @@ Covers:
     a user's embedded answer-formatting preferences ("3-5 bullets max then
     supporting detail by numbered above") echoed verbatim into a search query
     and literally collided with the JDK `javah` tool
+  - research_planner._author_contract_queries() -- the durable fix: rather than
+    keep patching _targeted_query()/_compact_search_subject()'s string-concat
+    against each new leak shape, plan_from_contract() now asks a model (role
+    "query_author", top-tier by default) to author each worker's query
+    directly from the subject/dimensions/original message, since a model that
+    reads the request doesn't confuse "what to research" with "how to format
+    the answer" the way concatenation does. Falls back to the deterministic
+    _targeted_query()/_compact_search_subject() path per-subject on any
+    failure (no credentials in tests, malformed JSON, a missing subject in the
+    response, ...), so the tests above that never mock model_client.complete
+    still exercise and guard that fallback.
 
 Note: an earlier, unconditional backend debug log of every dispatched query
 (langgraph_runtime.nodes.search_worker) was added and then removed once the
@@ -42,6 +53,8 @@ from app.services.agent.models import TurnRequest
 from app.services.agent.research_contracts import COVERAGE_CONTRACT_PROMPT, generate_coverage_contract
 from app.services.agent.research_models import CoverageCell, CoverageContract, ResearchBrief, ResearchBudget, ResearchPlan, SearchWorkerPlan
 from app.services.agent.research_planner import (
+    QUERY_AUTHOR_PROMPT,
+    _author_contract_queries,
     _compact_search_subject,
     _domain_discovery_workers,
     _policy_regulatory_anchor_queries,
@@ -268,12 +281,151 @@ def test_domain_discovery_workers_do_not_leak_formatting_instructions():
 
 
 # ---------------------------------------------------------------------------
+# _author_contract_queries() -- the LLM query-authoring path
+# ---------------------------------------------------------------------------
+
+def test_query_author_prompt_warns_against_formatting_instructions():
+    assert "formatted" in QUERY_AUTHOR_PROMPT.lower() or "format" in QUERY_AUTHOR_PROMPT.lower()
+    assert "relative date" in QUERY_AUTHOR_PROMPT.lower() or "current_date" in QUERY_AUTHOR_PROMPT.lower()
+
+
+def test_author_contract_queries_empty_input_returns_empty_without_a_model_call(monkeypatch):
+    called = False
+
+    def _fake_complete(*args, **kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("should not be called")
+
+    monkeypatch.setattr(model_client, "complete", _fake_complete)
+
+    result = _author_contract_queries(TurnRequest(message="hi", user_timezone=TZ), [])
+
+    assert result == {}
+    assert called is False
+
+
+def test_author_contract_queries_uses_the_model_output_when_valid(monkeypatch):
+    """Meaningful mock: only returns clean, subject-matched queries if the
+    system prompt it was sent actually contains the anti-formatting-instruction
+    rule -- so this fails against a gutted QUERY_AUTHOR_PROMPT, not just
+    against broken plumbing."""
+    def _fake_complete(messages, **kwargs):
+        system_prompt = messages[0]["content"]
+        assert kwargs.get("role") == "query_author"
+        if "formatting" not in system_prompt.lower() and "format" not in system_prompt.lower():
+            return ModelResponse(text=json.dumps({"queries": []}), model_used="test", latency_ms=1, cost_usd=0.0)
+        return ModelResponse(
+            text=json.dumps({
+                "queries": [
+                    {"subject": "javah", "query": "javah modernization project Corebridge Financial section overview"},
+                ]
+            }),
+            model_used="test",
+            latency_ms=5,
+            cost_usd=0.001,
+        )
+
+    monkeypatch.setattr(model_client, "complete", _fake_complete)
+
+    result = _author_contract_queries(
+        TurnRequest(message="Assess javah 3-5 bullets max then supporting detail by numbered above.", user_timezone=TZ),
+        [("javah", ["section"])],
+    )
+
+    assert result == {"javah": "javah modernization project Corebridge Financial section overview"}
+
+
+def test_author_contract_queries_omits_subjects_missing_from_model_output(monkeypatch):
+    """Partial-failure handling: a model reply that only covers some subjects
+    should not discard the ones it did author correctly."""
+    def _fake_complete(messages, **kwargs):
+        return ModelResponse(
+            text=json.dumps({"queries": [{"subject": "MLB", "query": "MLB schedule 2026"}]}),
+            model_used="test",
+            latency_ms=5,
+            cost_usd=0.001,
+        )
+
+    monkeypatch.setattr(model_client, "complete", _fake_complete)
+
+    result = _author_contract_queries(
+        TurnRequest(message="schedules", user_timezone=TZ),
+        [("MLB", ["schedule"]), ("international soccer", ["schedule"])],
+    )
+
+    assert result == {"MLB": "MLB schedule 2026"}
+    assert "international soccer" not in result
+
+
+def test_author_contract_queries_falls_back_to_empty_on_malformed_response(monkeypatch):
+    def _fake_complete(messages, **kwargs):
+        return ModelResponse(text="not json", model_used="test", latency_ms=5, cost_usd=0.001)
+
+    monkeypatch.setattr(model_client, "complete", _fake_complete)
+
+    result = _author_contract_queries(
+        TurnRequest(message="schedules", user_timezone=TZ),
+        [("MLB", ["schedule"])],
+    )
+
+    assert result == {}
+
+
+def test_author_contract_queries_falls_back_to_empty_on_model_error(monkeypatch):
+    def _fake_complete(messages, **kwargs):
+        raise RuntimeError("provider timeout")
+
+    monkeypatch.setattr(model_client, "complete", _fake_complete)
+
+    result = _author_contract_queries(
+        TurnRequest(message="schedules", user_timezone=TZ),
+        [("MLB", ["schedule"])],
+    )
+
+    assert result == {}
+
+
+def test_plan_from_contract_uses_llm_authored_query_when_available(monkeypatch):
+    """End-to-end: plan_from_contract() should use the LLM-authored query
+    over the deterministic template when the model call succeeds."""
+    def _fake_complete(messages, **kwargs):
+        return ModelResponse(
+            text=json.dumps({"queries": [{"subject": "javah", "query": "javah project Corebridge Financial modernization status"}]}),
+            model_used="test",
+            latency_ms=5,
+            cost_usd=0.001,
+        )
+
+    monkeypatch.setattr(model_client, "complete", _fake_complete)
+
+    request = TurnRequest(
+        message="Assess JAVAH modernization for Corebridge Financial. 3-5 bullets max then supporting detail by numbered above.",
+        user_timezone=TZ,
+    )
+    contract = CoverageContract(
+        subjects=["javah"],
+        dimensions=["section"],
+        cells=[CoverageCell(subject="javah", dimension="section")],
+        source="test",
+    )
+
+    plan = plan_from_contract(request, contract)
+
+    assert plan.workers[0].query == "javah project Corebridge Financial modernization status"
+
+
+# ---------------------------------------------------------------------------
 # plan_from_contract() end-to-end -- the actual code path from the live trace
 # ---------------------------------------------------------------------------
 
 def test_plan_from_contract_avoids_idiom_collision_in_worker_queries():
     """Regression test replaying the trace's shape through the real contract-
-    driven planning path (no LLM call in this path at all -- fully deterministic)."""
+    driven planning path. plan_from_contract() now tries an LLM query-author
+    call first (see _author_contract_queries()), but with no mocking that call
+    fails fast in the test environment and falls back to the deterministic
+    _targeted_query() path this test originally covered -- so this still
+    exercises (and guards) that fallback."""
     request = TurnRequest(
         message="Which games are scheduled for tomorrow and the day after?",
         user_timezone=TZ,

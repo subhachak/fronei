@@ -151,6 +151,110 @@ Return only JSON:
 
 
 # ---------------------------------------------------------------------------
+# Query authoring
+# ---------------------------------------------------------------------------
+
+QUERY_AUTHOR_PROMPT = """You are the Fronei search query author.
+
+You are given the user's original request, plus a list of research subjects the
+coverage plan has already decided must be covered (each with its required
+dimensions). For EACH subject, write one precise, literal web-search-engine
+query string that will actually surface useful results for that subject and
+its dimensions.
+
+Return only JSON:
+{"queries": [{"subject": "<exact subject as given>", "query": "<search query>"}, ...]}
+
+One entry per subject, in the same order given. Do not skip a subject.
+
+Rules:
+- Write queries the way you'd type them into a search engine -- concrete nouns,
+  named entities, and the dimensions to cover. Do not write a natural-language
+  question and do not just restate the subject and dimension unchanged.
+- The user's original request may contain instructions about how the FINAL
+  ANSWER should be formatted (e.g. "3-5 bullets max," "no numbered lists,"
+  "keep it short"). Never fold that kind of instruction into a query -- it
+  isn't something to search for, and it can accidentally match an unrelated
+  real-world title, product, or tool name in web search.
+- If the request implies a relative date ("tomorrow," "this weekend," "next
+  quarter"), resolve it to an explicit date using current_date as the anchor
+  rather than passing the relative term through.
+- Keep each query under 220 characters.
+"""
+
+
+def _author_contract_queries(
+    request: TurnRequest,
+    subjects_with_dimensions: list[tuple[str, list[str]]],
+) -> dict[str, str]:
+    """LLM-authored replacement for gluing subject + dimension + the raw
+    message together (_targeted_query()'s default branch). That kind of
+    concatenation can't distinguish "what to research" from "how to format
+    the answer," so a user's own answer-formatting instructions embedded in
+    the same message would get echoed verbatim into a search query and could
+    collide with an unrelated real-world proper noun (confirmed root cause of
+    repeated live-trace collisions with the JDK `javah` tool). A model that
+    actually reads the request doesn't make that mistake.
+
+    Returns {} (never raises) on any failure -- missing subjects, malformed
+    JSON, or a request/model error -- so callers can fall back to
+    _targeted_query() per subject with no special-casing. Also omits
+    individual subjects the model didn't return a usable entry for, so one
+    bad entry doesn't discard queries the model got right.
+    """
+    if not subjects_with_dimensions:
+        return {}
+    try:
+        prompt = resolve_prompt(
+            "agent.research.query_author.default",
+            agent_id="query_author",
+            fallback_system_prompt=QUERY_AUTHOR_PROMPT,
+            variables=["message", "subjects"],
+        )
+        response = model_client.complete(
+            [
+                {"role": "system", "content": prompt.system_prompt},
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "message": request.message,
+                            **temporal_context(request.user_timezone),
+                            "subjects": [
+                                {"subject": subject, "dimensions": dimensions}
+                                for subject, dimensions in subjects_with_dimensions
+                            ],
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            ],
+            role="query_author",
+            quality_mode=request.quality_mode,
+            overrides=request.model_overrides,
+            max_tokens=800,
+            timeout_s=15,
+        )
+        payload = _parse_json(response.text)
+        entries = payload.get("queries")
+        if not isinstance(entries, list):
+            return {}
+        valid_subjects = {subject for subject, _ in subjects_with_dimensions}
+        authored: dict[str, str] = {}
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            subject = str(entry.get("subject", "")).strip()
+            query = str(entry.get("query", "")).strip()
+            if subject in valid_subjects and query:
+                authored[subject] = query[:220]
+        return authored
+    except Exception as exc:
+        logger.warning("agent query authoring failed; falling back to templated queries: %s", exc)
+        return {}
+
+
+# ---------------------------------------------------------------------------
 # Planning
 # ---------------------------------------------------------------------------
 
@@ -161,11 +265,17 @@ def plan_from_contract(
 ) -> ResearchPlan:
     budget = budget or research_budget_for(request)
     open_cells = contract.open_cells()
-    workers: list[SearchWorkerPlan] = []
-    for subject in _dedupe([cell.subject for cell in open_cells]):
+    subjects_with_dimensions: list[tuple[str, list[str]]] = []
+    for subject in _dedupe([cell.subject for cell in open_cells])[: budget.max_search_workers]:
         subject_cells = [cell for cell in open_cells if cell.subject == subject]
         dimensions = _dedupe([cell.dimension for cell in subject_cells])[:4]
-        query = _targeted_query(subject, dimensions, request.message, tz=request.user_timezone)
+        subjects_with_dimensions.append((subject, dimensions))
+    authored_queries = _author_contract_queries(request, subjects_with_dimensions)
+    workers: list[SearchWorkerPlan] = []
+    for subject, dimensions in subjects_with_dimensions:
+        query = authored_queries.get(subject) or _targeted_query(
+            subject, dimensions, request.message, tz=request.user_timezone
+        )
         workers.append(
             SearchWorkerPlan(
                 question=f"Research {subject}: {', '.join(dimensions)}",
@@ -174,8 +284,6 @@ def plan_from_contract(
                 max_results=budget.max_results_per_worker,
             )
         )
-        if len(workers) >= budget.max_search_workers:
-            break
     if not workers:
         workers = _fallback_plan(request, create_research_goal(request)).workers
 
@@ -1853,7 +1961,9 @@ def _normalize_plan(plan: ResearchPlan, request: TurnRequest, goal: ResearchGoal
 
 __all__ = [
     "CITATION_VERIFICATION_PROMPT",
+    "QUERY_AUTHOR_PROMPT",
     "REFLECTION_PROMPT",
+    "_author_contract_queries",
     "_cell_terms",
     "_citation_repair_instruction",
     "_compact_search_subject",

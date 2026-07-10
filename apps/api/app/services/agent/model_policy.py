@@ -25,6 +25,7 @@ MODEL_ROLES: tuple[str, ...] = (
     "research_brief",
     "coverage_contract",
     "research_planner",
+    "query_author",
     "reflection",
     "citation_verifier",
     "repair",
@@ -50,6 +51,13 @@ DEFAULT_MODEL_POLICY: dict[str, str] = {
     "research_brief": "claude-sonnet-4-6",
     "coverage_contract": "claude-sonnet-4-6",
     "research_planner": "claude-sonnet-4-6",
+    # Authors the literal search-engine query string for every contract-driven
+    # worker (plan_from_contract -- the path that runs on almost every research
+    # turn). Upgraded to the top model tier deliberately: this call is what
+    # actually hits web_search, so a bad query wastes the whole worker's budget
+    # and a subtle one (e.g. echoing an answer-formatting instruction) can
+    # silently collide with an unrelated real-world term. Same tier as synthesis.
+    "query_author": "claude-opus-4-8",
     "reflection": "claude-sonnet-4-6",
     "citation_verifier": "claude-sonnet-4-6",
     "repair": "claude-sonnet-4-6",

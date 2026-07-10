@@ -195,6 +195,7 @@ def _normalize_context(ctx: dict, *, max_chars: int = 6000) -> dict:
                 "artifacts": turn.get("artifacts") if isinstance(turn.get("artifacts"), list) else [],
                 "source_count": int(turn.get("source_count") or 0),
                 "had_unresolved_gaps": bool(turn.get("had_unresolved_gaps") or False),
+                "offered_deep_research": bool(turn.get("offered_deep_research") or False),
             }
         )
     ctx["recent_turns"] = normalized_turns
@@ -335,6 +336,7 @@ def _update_context_with_snapshot(ctx: dict, snapshot: dict, *, conversation_tit
         "artifacts": artifact_names,
         "source_count": int(snapshot.get("source_count") or 0),
         "had_unresolved_gaps": bool(snapshot.get("had_unresolved_gaps") or False),
+        "offered_deep_research": bool(snapshot.get("offered_deep_research") or False),
     }
     if conversation_title:
         turn_entry["conversation"] = conversation_title
@@ -371,6 +373,7 @@ def _context_snapshot_from_result(result: TurnResult) -> dict:
         "artifact_filenames": [artifact.filename for artifact in result.artifacts],
         "source_count": len(result.sources),
         "had_unresolved_gaps": result.had_unresolved_gaps,
+        "offered_deep_research": result.offered_deep_research,
         "completed_at": _now().isoformat(),
     }
 
@@ -404,6 +407,7 @@ def _merge_live_recent_turns(db, ctx: dict, conversation: Conversation, *, limit
                 "artifacts": [],
                 "source_count": len(_loads(turn.sources_json, [])),
                 "had_unresolved_gaps": bool(turn.had_unresolved_gaps),
+                "offered_deep_research": bool(turn.offered_deep_research),
             }
         )
         seen_ids.add(turn.id)
@@ -545,6 +549,27 @@ def had_unresolved_gaps_for_conversation(user_id: str, conversation_id: str | No
         if not recent_turns:
             return False
         return bool(recent_turns[-1].get("had_unresolved_gaps") or False)
+    finally:
+        db.close()
+
+
+def last_turn_offered_deep_research_for_conversation(user_id: str, conversation_id: str | None) -> bool:
+    """Return whether the most recently completed turn offered a deep-research
+    confirmation, or False if no turns exist yet or the conversation doesn't
+    belong to user_id. Mirrors had_unresolved_gaps_for_conversation's read
+    pattern (context_json.recent_turns) rather than a separate Turn-table query."""
+    if not conversation_id:
+        return False
+    db = SessionLocal()
+    try:
+        conversation = db.get(Conversation, conversation_id)
+        if conversation is None or conversation.user_id != user_id:
+            return False
+        ctx = _loads(conversation.context_json, {})
+        recent_turns = ctx.get("recent_turns") or []
+        if not recent_turns:
+            return False
+        return bool(recent_turns[-1].get("offered_deep_research") or False)
     finally:
         db.close()
 
@@ -1476,6 +1501,7 @@ def complete_turn(result: TurnResult, *, lease_owner: str | None = None) -> bool
         Turn.input_tokens: result.input_tokens,
         Turn.output_tokens: result.output_tokens,
         Turn.had_unresolved_gaps: result.had_unresolved_gaps,
+        Turn.offered_deep_research: result.offered_deep_research,
         Turn.context_tokens_json: _dumps(result.context_tokens),
         Turn.completed_at: None if is_paused else completed_at,
         Turn.updated_at: completed_at,

@@ -852,6 +852,7 @@ class Runtime:
             latency_ms=decision.latency_ms,
             cost_usd=decision.cost_usd,
             research_plan_preview=preview,
+            offered_deep_research=True,
             follow_up_options=[
                 {
                     "label": "Start research",

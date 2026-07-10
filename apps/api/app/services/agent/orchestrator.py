@@ -448,13 +448,37 @@ def _normalize_research_decision(request: TurnRequest, decision: OrchestratorDec
     if decision.route == "research" and asks_research and asks_doc:
         decision.route = "research_document"
         decision.output_format = decision.output_format or request.output_format
-    if request.research_level in {"easy", "regular", "deep"}:
+    # Deep-research confirmation carry-forward: if the previous turn offered a
+    # deep-research confirmation and the current message is a short reply
+    # confirming it (not a new substantive request with its own explicit
+    # research_level), restore research_level="deep" rather than letting
+    # choose_research_level() recompute a tier from the bare reply alone --
+    # it can't detect "deep" signals in something like "Yes", so left alone it
+    # silently downgrades to "regular". Confirmed root cause of a live gap: a
+    # "Yes" reply to a deep-research offer executed at research_level=
+    # "regular" instead of the "deep" tier the user had just been asked to
+    # confirm. Mirrors the pending-intent carry-forward pattern above.
+    deep_confirmation_carry_forward = (
+        decision.route in {"research", "research_document"}
+        and request.last_turn_route == "clarify"
+        and request.last_turn_offered_deep_research
+        and len(request.message.split()) <= 25
+        and request.research_level not in {"easy", "regular", "deep"}
+    )
+    if deep_confirmation_carry_forward:
+        decision.research_level = "deep"
+        decision.reason = f"Confirming prior deep-research offer. {decision.reason}".strip()
+    elif request.research_level in {"easy", "regular", "deep"}:
         decision.research_level = request.research_level  # type: ignore[assignment]
     elif decision.route in {"research", "research_document"}:
         decision.research_level = choose_research_level(request, decision.route, signal_decision)
     else:
         decision.research_level = "regular"
-    if decision.route in {"research", "research_document"} and decision.research_level == "deep":
+    if (
+        decision.route in {"research", "research_document"}
+        and decision.research_level == "deep"
+        and not deep_confirmation_carry_forward
+    ):
         decision.requires_confirmation = True
         decision.confirmation_message = decision.confirmation_message or _deep_confirmation_message()
     elif decision.research_level != "deep":

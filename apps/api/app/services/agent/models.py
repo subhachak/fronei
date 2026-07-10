@@ -67,6 +67,15 @@ class TurnRequest(BaseModel):
     # turn failed to find X and flagged it as an open gap" -- both otherwise
     # look identical as "prior_turn_context mentions this topic."
     last_turn_had_gaps: bool = False
+    # Whether the immediately preceding completed turn offered a deep-research
+    # confirmation (requires_confirmation=True; see runtime.py's
+    # _run_deep_research_confirmation). Populated server-side (agent.py) from
+    # context_json; never sent by clients. Lets the orchestrator restore
+    # research_level="deep" when the current message is a short reply
+    # confirming that offer (e.g. "Yes") -- left alone, choose_research_level()
+    # can't detect "deep" signals in a bare reply and silently downgrades to
+    # "regular".
+    last_turn_offered_deep_research: bool = False
     # IANA tz name (e.g. "America/New_York") captured client-side from the
     # browser. Used to ground relative-date phrasing ("today", "tomorrow") in
     # temporal_context() (research_utils.py). A bad/unrecognized value degrades
@@ -196,6 +205,13 @@ class TurnResult(BaseModel):
     # non-empty). Only set on research/research_document routes that actually
     # had an EvidencePack in scope; other routes leave this at its default.
     had_unresolved_gaps: bool = False
+    # True when this turn's answer was a deep-research confirmation offer
+    # (route="clarify" from _run_deep_research_confirmation). Lets the next
+    # turn's orchestrator distinguish "the user is confirming a deep-research
+    # offer" from any other clarify exchange, so a short reply like "Yes" can
+    # restore research_level="deep" instead of it being recomputed from the
+    # reply text alone.
+    offered_deep_research: bool = False
     created_at: datetime = Field(default_factory=utc_now)
 
 

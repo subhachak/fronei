@@ -295,6 +295,12 @@ class Turn(Base):
     # later turn in the same conversation know the prior "couldn't confirm X" was
     # an open gap, not a verified negative, so it isn't restated as settled fact.
     had_unresolved_gaps: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # True if this turn's answer was a deep-research confirmation offer. Lets a
+    # later turn's orchestrator distinguish "the user is confirming a deep-
+    # research offer" from any other clarify exchange, so a short reply like
+    # "Yes" can restore research_level="deep" instead of it being recomputed
+    # from the reply text alone.
+    offered_deep_research: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
 
 class LangGraphRunContext(Base):

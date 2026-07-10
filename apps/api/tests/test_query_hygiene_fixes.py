@@ -44,6 +44,7 @@ from app.services.agent.research_models import CoverageCell, CoverageContract, R
 from app.services.agent.research_planner import (
     _compact_search_subject,
     _domain_discovery_workers,
+    _policy_regulatory_anchor_queries,
     _strip_meta_instruction_terms,
     _targeted_query,
     flag_untargeted_worker_queries,
@@ -215,6 +216,29 @@ def test_compact_search_subject_strips_formatting_instructions_via_phrase_extrac
 
     assert "bullets" not in subject
     assert "numbered" not in subject
+
+
+def test_compact_search_subject_drops_connective_leftovers_after_stripping():
+    """Regression test for a third live trace with the same underlying
+    collision, surfaced via _policy_regulatory_anchor_queries this time:
+    ('Domain lane'-style subject extraction hits _extract_search_subject_phrase's
+    "for X" match, and _strip_meta_instruction_terms correctly drops "bullets",
+    "supporting", "detail", "numbered", "above" -- but the connective words
+    "then" and "by" that were adjacent to them survived, because
+    _clean_search_subject_phrase's stopword set didn't include them (unlike
+    _compact_search_subject's tokenizer-fallback stop set, which already did).
+    The reported query was exactly "javah 3-5 then by regulation official
+    guidance"."""
+    message = "Give me a report on javah 3-5 bullets max then supporting detail by numbered above"
+
+    subject = _compact_search_subject(message)
+
+    assert subject == "javah 3-5"
+    assert "then" not in subject
+    assert " by " not in f" {subject} "
+
+    queries = _policy_regulatory_anchor_queries(message)
+    assert queries[0] == "javah 3-5 regulation official guidance site:gov OR site:europa.eu"
 
 
 def test_domain_discovery_workers_do_not_leak_formatting_instructions():

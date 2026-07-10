@@ -1359,7 +1359,14 @@ def _clean_search_subject_phrase(phrase: str) -> str:
     phrase = re.sub(r"\b(like|such as|including)\b", " ", phrase)
     phrase = re.sub(r"\b(system architecture|architecture|system design|components|workflows?|workflow|mechanisms?|integration|explaining|explaining)\b", " ", phrase)
     phrase = re.sub(r"[^a-z0-9.+#/-]+", " ", phrase)
-    stop2 = {"and", "or", "of", "for", "to", "in", "with", "platforms" if len(phrase.split()) <= 2 else ""}
+    # "by"/"then" are already excluded from _compact_search_subject's tokenizer-fallback
+    # stop set; this phrase-cleaning path lacked them, so a trailing connective fragment
+    # left over after _strip_meta_instruction_terms removes the formatting-instruction
+    # words around it (e.g. "javah 3-5 bullets max then supporting detail by numbered
+    # above" -> "javah 3-5 then by") would survive into the search query. Not a
+    # proper-noun/collision blocklist -- generic connective words, same category as the
+    # rest of this stop2 set.
+    stop2 = {"and", "or", "of", "for", "to", "in", "with", "by", "then", "platforms" if len(phrase.split()) <= 2 else ""}
     tokens = [token for token in phrase.split() if token and token not in stop2]
     return " ".join(_dedupe(tokens)).strip()
 

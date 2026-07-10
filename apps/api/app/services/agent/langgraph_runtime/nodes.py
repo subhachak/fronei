@@ -375,6 +375,15 @@ def search_worker(
 
     if tools is not None:
         try:
+            # Unconditional trace of the literal query string right before it
+            # hits web_search -- independent of any query-construction fix
+            # (date-idiom resolution, meta-instruction stripping, etc.), so a
+            # future bad query is always visible in logs rather than only
+            # inferable from search results after the fact.
+            logger.debug(
+                "search_worker_dispatching_query",
+                extra={"worker_index": worker_index, "question": worker.question, "query": worker.query},
+            )
             sources, call = tools.search_web(worker.query, worker.max_results)
             tool_calls_count = 1
             emit_graph_event(

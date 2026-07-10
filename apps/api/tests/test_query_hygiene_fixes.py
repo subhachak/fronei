@@ -20,6 +20,13 @@ Covers:
   - research_planner.flag_untargeted_worker_queries() -- the new generic
     self-check, and that the LangGraph "plan" node actually calls it regardless
     of which planning path produced the plan
+  - research_planner._strip_meta_instruction_terms() -- confirmed live failure:
+    a user's embedded answer-formatting preferences ("3-5 bullets max then
+    supporting detail by numbered above") echoed verbatim into a search query
+    and literally collided with the JDK `javah` tool
+  - langgraph_runtime.nodes.search_worker's unconditional debug trace of the
+    literal query string right before it hits web_search -- independent of
+    any query-construction fix, so a bad query is always visible in logs
 """
 from __future__ import annotations
 
@@ -32,6 +39,7 @@ from app.services.agent.models import TurnRequest
 from app.services.agent.research_contracts import COVERAGE_CONTRACT_PROMPT, generate_coverage_contract
 from app.services.agent.research_models import CoverageCell, CoverageContract, ResearchBrief, ResearchPlan, SearchWorkerPlan
 from app.services.agent.research_planner import (
+    _strip_meta_instruction_terms,
     _targeted_query,
     flag_untargeted_worker_queries,
     plan_from_contract,
@@ -126,6 +134,50 @@ def test_targeted_query_without_relative_dates_is_unaffected():
 
 
 # ---------------------------------------------------------------------------
+# _strip_meta_instruction_terms() / the "javah" live-failure collision
+# ---------------------------------------------------------------------------
+
+def test_strips_the_exact_reported_formatting_instruction_phrase():
+    """Reproduces the confirmed live failure: this exact phrase, embedded in
+    the user's message, was echoed verbatim into a search query and matched
+    the JDK `javah` tool."""
+    stripped = _strip_meta_instruction_terms("3-5 bullets max then supporting detail by numbered above")
+    for term in ("bullets", "max", "supporting", "detail", "numbered", "above"):
+        assert term not in stripped.lower()
+
+
+def test_targeted_query_does_not_echo_formatting_instructions():
+    query = _targeted_query(
+        "javah",
+        ["section"],
+        "Assess JAVAH modernization. 3-5 bullets max then supporting detail by numbered above.",
+        tz=TZ,
+    )
+    assert "bullets" not in query.lower()
+    assert "supporting detail" not in query.lower()
+    assert "numbered above" not in query.lower()
+    # Real subject content must survive the filtering.
+    assert "javah" in query.lower()
+    assert "modernization" in query.lower()
+
+
+def test_strip_meta_instruction_terms_preserves_resolved_dates():
+    """Splits on whitespace rather than research_utils-style character-class
+    tokenization, so a resolved ISO date (from resolve_relative_date_phrases)
+    doesn't get fragmented into separate digit tokens."""
+    assert _strip_meta_instruction_terms("games on 2026-07-10 and 2026-07-11") == "games on 2026-07-10 and 2026-07-11"
+
+
+def test_strip_meta_instruction_terms_leaves_ordinary_text_unchanged():
+    text = "FIFA World Cup match schedule and results"
+    assert _strip_meta_instruction_terms(text) == text
+
+
+def test_strip_meta_instruction_terms_empty_text_returns_empty():
+    assert _strip_meta_instruction_terms("") == ""
+
+
+# ---------------------------------------------------------------------------
 # plan_from_contract() end-to-end -- the actual code path from the live trace
 # ---------------------------------------------------------------------------
 
@@ -150,6 +202,32 @@ def test_plan_from_contract_avoids_idiom_collision_in_worker_queries():
 
     for worker in plan.workers:
         assert "the day after" not in worker.query.lower(), f"literal idiom leaked into: {worker.query!r}"
+
+
+def test_plan_from_contract_avoids_formatting_instruction_collision_in_worker_queries():
+    """Regression test replaying the confirmed live failure's shape: a message
+    embedding both a substantive research ask and answer-formatting
+    preferences must not produce a worker query that echoes the formatting
+    phrase verbatim (it collided with the JDK `javah` tool in the live trace)."""
+    request = TurnRequest(
+        message=(
+            "Assess JAVAH modernization for Corebridge Financial. "
+            "3-5 bullets max then supporting detail by numbered above."
+        ),
+        user_timezone=TZ,
+    )
+    contract = CoverageContract(
+        subjects=["javah"],
+        dimensions=["section"],
+        cells=[CoverageCell(subject="javah", dimension="section")],
+        source="test",
+    )
+
+    plan = plan_from_contract(request, contract)
+
+    for worker in plan.workers:
+        assert "bullets" not in worker.query.lower(), f"formatting instruction leaked into: {worker.query!r}"
+        assert "supporting detail" not in worker.query.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -244,3 +322,32 @@ def test_plan_node_calls_the_self_check_regardless_of_planning_path(monkeypatch)
     nodes_module.plan(state, run_id="r1", request=request, tools=None, progress=None)
 
     assert called.get("invoked") is True
+
+
+# ---------------------------------------------------------------------------
+# search_worker's unconditional query-dispatch trace
+# ---------------------------------------------------------------------------
+
+def test_search_worker_logs_the_literal_query_right_before_dispatch(caplog):
+    """Independent of any query-construction fix: whatever string search_worker
+    is about to hand to web_search must be visible in logs, so a future bad
+    query is never only inferable after the fact from search results."""
+    from test_agent_runtime import FakeTools
+
+    from app.services.agent.langgraph_runtime import nodes as nodes_module
+
+    worker = SearchWorkerPlan(question="What is on the schedule?", query="javah section 3-5 then by", rationale="", max_results=4)
+    state = {
+        "worker_index": 0,
+        "worker_plan": worker.model_dump(mode="json"),
+        "visited_nodes": [],
+        "artifacts": {},
+    }
+    request = TurnRequest(message="irrelevant for this test")
+
+    with caplog.at_level(logging.DEBUG, logger="app.services.agent.langgraph_runtime.nodes"):
+        nodes_module.search_worker(state, run_id="r1", request=request, tools=FakeTools(), progress=None)
+
+    matching = [r for r in caplog.records if "search_worker_dispatching_query" in r.message]
+    assert matching, "expected a debug log right before the web_search call"
+    assert matching[0].query == "javah section 3-5 then by"

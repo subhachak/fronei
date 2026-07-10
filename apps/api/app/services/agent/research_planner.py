@@ -1271,6 +1271,40 @@ def _compact_search_subject(message: str) -> str:
     return cleaned[:140] or (message or "")[:110] or "research topic"
 
 
+# Generic output-formatting/meta-instruction vocabulary -- describes how the
+# ANSWER should be structured, not what to research. Same category as the
+# existing meta-vocabulary _compact_search_subject() already filters out
+# ("detailed", "report", "explain", "conduct", ...); not a proper-noun/
+# collision blocklist.
+_QUERY_META_INSTRUCTION_TERMS = frozenset({
+    "bullets", "bullet", "numbered", "numbering", "format", "formatted",
+    "structure", "structured", "detail", "details", "supporting",
+    "above", "below", "max", "maximum", "section", "sections",
+    "outline", "outlined",
+})
+
+
+def _strip_meta_instruction_terms(text: str) -> str:
+    """Drop output-formatting/meta-instruction words (e.g. "3-5 bullets max
+    then supporting detail by numbered above") before a message fragment is
+    echoed into a search query.
+
+    Confirmed root cause of a live failure: a user's answer-formatting
+    preferences, embedded in the same message as the substantive research
+    ask, got echoed verbatim by _targeted_query()'s default branch and
+    literally matched the JDK `javah` tool in web search -- the same
+    collision-with-an-unrelated-proper-noun failure mode as unresolved date
+    idioms, just a different category of text that shouldn't be searched
+    literally. Splits on whitespace rather than research_utils-style
+    character-class tokenization so it doesn't fragment hyphenated tokens
+    (e.g. a resolved ISO date like "2026-07-10").
+    """
+    if not text:
+        return text
+    tokens = [token for token in text.split() if token.strip(".,;:!?()[]{}\"'").lower() not in _QUERY_META_INSTRUCTION_TERMS]
+    return " ".join(tokens)
+
+
 def _comparison_focus_terms(message: str) -> str:
     text = (message or "").lower()
     focus_terms: list[str] = []
@@ -1388,6 +1422,12 @@ def _targeted_query(subject: str, dimensions: list[str], original: str, tz: str 
     # collide with an unrelated proper noun (e.g. the movie The Day After
     # Tomorrow). See research_utils.resolve_relative_date_phrases.
     resolved_original = resolve_relative_date_phrases(original, tz)
+    # A user's answer-formatting preferences ("3-5 bullets max then
+    # supporting detail by numbered above") can be embedded in the same
+    # message as the substantive ask. Left in, they echo verbatim into the
+    # query and can literally collide with an unrelated proper noun (e.g.
+    # the JDK `javah` tool) -- confirmed root cause of a live failure.
+    resolved_original = _strip_meta_instruction_terms(resolved_original)
     return f"{base} {resolved_original}".strip()[:220]
 
 
@@ -1823,6 +1863,7 @@ __all__ = [
     "_profile_from_contract",
     "_public_technical_subject",
     "_strategy_brief_anchor_queries",
+    "_strip_meta_instruction_terms",
     "_subject_phrase_is_useful",
     "_targeted_query",
     "_tech_arch_anchor_queries",

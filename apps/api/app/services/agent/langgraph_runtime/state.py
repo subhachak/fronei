@@ -99,6 +99,17 @@ class ResearchGraphState(TypedDict, total=False):
 
     # ---- Pipeline products (each node writes its own output field) --------
     brief: ResearchBrief | None
+    # Set by the brief node. Equal to request.message except when the current
+    # message is a short confirmation/continuation reply ("Yes", "go ahead")
+    # to a prior turn's proposal -- in that case it's research_brief.objective
+    # (already resolved using conversation_context; see BRIEF_PROMPT's
+    # Continuation rule). Every downstream node that builds an LLM prompt
+    # referencing "the user's request" reads this via _effective_request()
+    # instead of request.message directly, so a bare confirmation reply can't
+    # leak into contract/plan/synthesis/repair prompts. Confirmed root cause
+    # of a live failure: a "Yes" reply produced a plan, search, and synthesis
+    # prompt entirely about an unrelated same-word entity.
+    resolved_message: str
     named_subjects: list[str]        # output of subject_derivation node
     contract: CoverageContract | None
     plan: ResearchPlan | None

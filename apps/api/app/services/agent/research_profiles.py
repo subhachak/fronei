@@ -123,6 +123,14 @@ Infer carefully from the request. Do not invent facts.
 Use vendor_comparison when named products/providers are being compared, even if the user also asks for a recommendation.
 Use policy_regulatory only for legal, compliance, regulator, statutory, or jurisdictional questions — not for generic brand, routing, or product policy wording.
 Use general when no specialized profile is clearly dominant.
+
+Continuation rule: the payload includes "is_confirmation_reply". When true, the current
+message is a short confirmation/continuation reply (e.g. "yes," "go ahead," "sounds good")
+to something proposed in a prior turn, not a substantive request on its own. Do not build
+the objective, scope_in, or success_criteria from the reply text itself — use
+conversation_context to identify what the user is actually confirming or continuing, and
+build the brief from THAT prior request. Treating "yes" (or similar) as the research
+subject produces a brief about an unrelated topic that happens to share the word.
 """
 
 
@@ -484,6 +492,18 @@ def _request_for_research_objective(request: TurnRequest, brief: ResearchBrief) 
 # Brief generation
 # ---------------------------------------------------------------------------
 
+def _is_confirmation_reply(request: TurnRequest) -> bool:
+    """Same heuristic orchestrator.py's pending-intent carry-forward already
+    uses (last_turn_route == "clarify" and a short reply) -- reused here so
+    generate_research_brief() can tell the model explicitly that the current
+    message is a confirmation/continuation reply, not a substantive request
+    on its own. Confirmed root cause of a live failure: a bare "Yes" reply to
+    a deep-research confirmation offer produced a brief (and everything
+    downstream) about the word "Yes" itself, because nothing signaled that
+    the reply text wasn't the actual research subject."""
+    return request.last_turn_route == "clarify" and len((request.message or "").split()) <= 25
+
+
 def generate_research_brief(request: TurnRequest) -> ResearchBrief:
     try:
         prompt = resolve_prompt(
@@ -502,6 +522,7 @@ def generate_research_brief(request: TurnRequest) -> ResearchBrief:
                         {
                             "message": request.message,
                             "conversation_context": request.conversation_context[-3000:] if request.conversation_context else "",
+                            "is_confirmation_reply": _is_confirmation_reply(request),
                             "quality_mode": request.quality_mode,
                             "research_level": request.research_level,
                             "output_format": request.output_format,

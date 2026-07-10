@@ -78,6 +78,21 @@ def _url_priority_merge(sources: list) -> list:
     return list(url_to_source.values()) + no_url
 
 
+def _effective_request(state: ResearchGraphState, request: TurnRequest) -> TurnRequest:
+    """`request` with .message replaced by state["resolved_message"] once the
+    brief node has resolved it (see brief() below and BRIEF_PROMPT's
+    Continuation rule). Every node that builds an LLM prompt referencing "the
+    user's request" -- contract, plan, synthesize, repair -- should call this
+    at the top rather than using `request` directly, so a bare confirmation
+    reply ("Yes") can't leak into those prompts even after subject/contract/
+    plan correctly resolve the real topic elsewhere. A no-op (returns
+    `request` unchanged) whenever resolution wasn't needed."""
+    resolved = state.get("resolved_message")
+    if resolved and resolved != request.message:
+        return request.model_copy(update={"message": resolved})
+    return request
+
+
 # ---------------------------------------------------------------------------
 # Slice 1 real nodes
 # ---------------------------------------------------------------------------
@@ -90,7 +105,7 @@ def brief(
     tools: Tools | None = None,
     progress: ProgressCallback | None = None,
 ) -> dict:
-    from app.services.agent.research_profiles import generate_research_brief
+    from app.services.agent.research_profiles import _is_confirmation_reply, generate_research_brief
 
     visited = [*state.get("visited_nodes", []), "brief"]
     try:
@@ -102,6 +117,12 @@ def brief(
             objective=request.message,
             research_level=getattr(request, "research_level", "regular"),
         )
+
+    resolved_message = (
+        research_brief.objective
+        if _is_confirmation_reply(request) and research_brief.objective
+        else request.message
+    )
 
     cost = getattr(research_brief, "cost_usd", 0.0) or 0.0
     emit_graph_event(
@@ -118,6 +139,7 @@ def brief(
         "visited_nodes": visited,
         "artifacts": {**state.get("artifacts", {}), "brief": {"status": "done"}},
         "brief": research_brief,
+        "resolved_message": resolved_message,
         "cost_usd_spent": cost,     # delta → added by reducer
         "tool_calls_made": 0,
         "model_calls_made": 1,
@@ -136,6 +158,15 @@ def subject_derivation(
 
     visited = [*state.get("visited_nodes", []), "subject_derivation"]
     research_brief = state.get("brief")
+    # _effective_request swaps in research_brief.objective for a bare
+    # confirmation/continuation reply ("Yes") -- see brief() and
+    # BRIEF_PROMPT's Continuation rule. Without it, the extractor's
+    # capitalization heuristic treats a lone "Yes" as if it were a proper
+    # noun (returns ["Yes"], not []), so a not-empty-result check alone
+    # cannot detect this case. Confirmed root cause of a live failure: a
+    # "Yes" reply to a deep-research confirmation offer produced a plan and
+    # search entirely about an unrelated same-word entity (a band named "Yes").
+    request = _effective_request(state, request)
     named_subjects = _extract_named_comparison_subjects(request.message)
 
     if research_brief and research_brief.scope_in and not named_subjects:
@@ -177,6 +208,7 @@ def contract(
     visited = [*state.get("visited_nodes", []), "contract"]
     research_brief = state.get("brief")
     named_subjects = state.get("named_subjects") or []
+    request = _effective_request(state, request)
 
     if research_brief is None:
         from app.services.agent.research_models import ResearchBrief
@@ -223,6 +255,7 @@ def plan(
 
     visited = [*state.get("visited_nodes", []), "plan"]
     coverage_contract = state.get("contract")
+    request = _effective_request(state, request)
 
     if coverage_contract is None:
         from app.services.agent.research_planner import plan_research
@@ -1039,6 +1072,7 @@ def synthesize(
 
     plan = state.get("plan")
     evidence = state.get("evidence")
+    request = _effective_request(state, request)
 
     emit_graph_event(
         progress,
@@ -1309,6 +1343,7 @@ def repair(
     artifacts = {**state.get("artifacts", {}), node_name: {"status": "real"}}
 
     judge_result = state.get("judge_result")
+    request = _effective_request(state, request)
 
     # ── Pass-through paths ───────────────────────────────────────────────────
     skip = (

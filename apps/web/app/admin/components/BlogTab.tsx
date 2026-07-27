@@ -1,11 +1,12 @@
 'use client'
 
-import { Eye, Loader2, Pencil, Plus, RefreshCw, Sparkles, Trash2 } from 'lucide-react'
+import { Eye, History, Loader2, Pencil, Plus, RefreshCw, Sparkles, Trash2, Undo2, Wand2 } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
 import { MarkdownResult } from '../../components/MarkdownResult'
 import { readErrorBody } from '../../lib/api'
 import { formatAppDateTime } from '../../lib/format'
-import type { AuthorizedFetch, BlogPost, BlogPostVoice } from '../types'
+import type { AuthorizedFetch, BlogPost, BlogPostVoice, BlogRevision } from '../types'
+import { PostDiff } from './PostDiff'
 
 const INPUT_CLASS =
   'w-full rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-3 py-2 text-sm text-neutral-900 dark:text-neutral-50 focus:outline-none focus:ring-2 focus:ring-neutral-400'
@@ -63,6 +64,12 @@ export function BlogTab({ authorizedFetch }: { authorizedFetch: AuthorizedFetch 
   const [busyId, setBusyId] = useState<string | null>(null)
   const [notes, setNotes] = useState('')
   const [generating, setGenerating] = useState(false)
+  const [revisions, setRevisions] = useState<BlogRevision[]>([])
+  const [loadingEditor, setLoadingEditor] = useState(false)
+  const [instruction, setInstruction] = useState('')
+  const [applyingEdit, setApplyingEdit] = useState(false)
+  const [lastEdit, setLastEdit] = useState<{ before: string; after: string; changes: string[] } | null>(null)
+  const [restoringId, setRestoringId] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     setRefreshing(true)
@@ -88,13 +95,31 @@ export function BlogTab({ authorizedFetch }: { authorizedFetch: AuthorizedFetch 
   function startNew() {
     setForm(emptyForm())
     setNotes('')
+    setRevisions([])
+    setLastEdit(null)
+    setInstruction('')
     setEditing('new')
   }
 
-  function startEdit(post: BlogPost) {
+  async function startEdit(post: BlogPost) {
     setForm(formFromPost(post))
     setNotes('')
+    setLastEdit(null)
+    setInstruction('')
     setEditing(post)
+    // The list row doesn't carry revision history -- fetch the full detail.
+    setLoadingEditor(true)
+    try {
+      const response = await authorizedFetch(`/admin/blog/posts/${post.id}`)
+      if (response.ok) {
+        const full = await response.json() as BlogPost
+        setForm(formFromPost(full))
+        setRevisions(full.revisions || [])
+        setEditing(full)
+      }
+    } finally {
+      setLoadingEditor(false)
+    }
   }
 
   async function generateFromNotes() {
@@ -144,11 +169,55 @@ export function BlogTab({ authorizedFetch }: { authorizedFetch: AuthorizedFetch 
       const saved = await response.json() as BlogPost
       setEditing(saved)
       setForm(formFromPost(saved))
+      setRevisions(saved.revisions || [])
       await load()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not save post')
     } finally {
       setSaving(false)
+    }
+  }
+
+  async function applyEditInstruction() {
+    if (editing === 'new' || !editing) return
+    setApplyingEdit(true)
+    setError('')
+    try {
+      const before = form.body_markdown
+      const response = await authorizedFetch(`/admin/blog/posts/${editing.id}/edit-with-instruction`, {
+        method: 'POST',
+        body: JSON.stringify({ instruction }),
+      })
+      if (!response.ok) throw new Error(await readErrorBody(response, 'Could not apply that edit'))
+      const result = await response.json() as BlogPost & { changes: string[] }
+      set('body_markdown', result.body_markdown)
+      setRevisions(result.revisions || [])
+      setLastEdit({ before, after: result.body_markdown, changes: result.changes })
+      setInstruction('')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not apply that edit')
+    } finally {
+      setApplyingEdit(false)
+    }
+  }
+
+  async function restoreRevision(revisionId: string) {
+    if (editing === 'new' || !editing) return
+    setRestoringId(revisionId)
+    setError('')
+    try {
+      const response = await authorizedFetch(`/admin/blog/posts/${editing.id}/revisions/${revisionId}/restore`, {
+        method: 'POST',
+      })
+      if (!response.ok) throw new Error(await readErrorBody(response, 'Could not restore that version'))
+      const restored = await response.json() as BlogPost
+      set('body_markdown', restored.body_markdown)
+      setRevisions(restored.revisions || [])
+      setLastEdit(null)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not restore that version')
+    } finally {
+      setRestoringId(null)
     }
   }
 
@@ -252,6 +321,78 @@ export function BlogTab({ authorizedFetch }: { authorizedFetch: AuthorizedFetch 
             Generate draft
           </button>
         </div>
+
+        {currentPost && (
+          <div className="rounded-lg border border-dashed border-neutral-300 bg-neutral-50 p-3 dark:border-neutral-700 dark:bg-neutral-900">
+            <label className={LABEL_CLASS}>
+              Edit with AI <span className="font-normal text-neutral-400">(generic — &quot;tighten this up&quot; — or pointed — &quot;rewrite the second paragraph&quot;)</span>
+            </label>
+            <textarea
+              rows={2}
+              value={instruction}
+              onChange={e => setInstruction(e.target.value)}
+              placeholder="e.g. make the intro punchier, or cut the paragraph about pricing"
+              className={`${INPUT_CLASS} resize-none`}
+            />
+            <button
+              type="button"
+              onClick={() => void applyEditInstruction()}
+              disabled={applyingEdit || !instruction.trim() || !form.body_markdown.trim()}
+              className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-neutral-300 bg-white px-3 py-1.5 text-xs font-semibold text-neutral-700 disabled:opacity-50 dark:border-neutral-600 dark:bg-neutral-800 dark:text-neutral-200"
+            >
+              {applyingEdit ? <Loader2 size={13} className="animate-spin" /> : <Wand2 size={13} />}
+              Apply edit
+            </button>
+
+            {lastEdit && (
+              <div className="mt-3 border-t border-neutral-200 pt-3 dark:border-neutral-700">
+                <div className="flex items-center justify-between">
+                  <p className="text-xs font-semibold text-neutral-500">What changed</p>
+                  <button
+                    type="button"
+                    onClick={() => void restoreRevision(revisions[revisions.length - 1].id)}
+                    disabled={restoringId !== null || revisions.length === 0}
+                    className="inline-flex items-center gap-1 text-xs font-semibold text-neutral-500 hover:text-neutral-900 disabled:opacity-50 dark:hover:text-neutral-100"
+                  >
+                    <Undo2 size={12} /> Undo this edit
+                  </button>
+                </div>
+                <ul className="mt-1.5 list-disc space-y-0.5 pl-4 text-xs text-neutral-600 dark:text-neutral-300">
+                  {lastEdit.changes.map((c, idx) => <li key={idx}>{c}</li>)}
+                </ul>
+                <div className="mt-2 max-h-64 overflow-y-auto rounded border border-neutral-200 bg-white p-2 dark:border-neutral-700 dark:bg-neutral-950">
+                  <PostDiff before={lastEdit.before} after={lastEdit.after} />
+                </div>
+              </div>
+            )}
+
+            {revisions.length > 0 && (
+              <details className="mt-3 border-t border-neutral-200 pt-3 dark:border-neutral-700">
+                <summary className="flex cursor-pointer items-center gap-1.5 text-xs font-semibold text-neutral-500">
+                  <History size={12} /> Revision history ({revisions.length})
+                </summary>
+                <ul className="mt-2 space-y-1.5">
+                  {[...revisions].reverse().map(rev => (
+                    <li key={rev.id} className="flex items-center justify-between gap-2 text-xs">
+                      <div className="min-w-0">
+                        <p className="truncate font-medium text-neutral-700 dark:text-neutral-200" title={rev.label}>{rev.label}</p>
+                        <p className="text-[10px] text-neutral-400">{formatAppDateTime(rev.created_at)}</p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => void restoreRevision(rev.id)}
+                        disabled={restoringId !== null}
+                        className="flex-shrink-0 rounded-md border border-neutral-200 px-2 py-1 font-semibold text-neutral-600 hover:bg-neutral-50 disabled:opacity-50 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+                      >
+                        {restoringId === rev.id ? <Loader2 size={11} className="animate-spin" /> : 'Restore'}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            )}
+          </div>
+        )}
 
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
           <div className="space-y-3">

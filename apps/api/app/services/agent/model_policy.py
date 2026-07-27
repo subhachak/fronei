@@ -36,6 +36,7 @@ MODEL_ROLES: tuple[str, ...] = (
     "synthesis_executive",
     "profile_consolidation",
     "blog_draft",
+    "blog_edit",
 )
 
 # Roles deliberately NOT included above: "judge" / "research_judge" /
@@ -80,6 +81,11 @@ DEFAULT_MODEL_POLICY: dict[str, str] = {
     # tier, since it's structuring an admin's own words rather than
     # synthesizing novel research.
     "blog_draft": "claude-sonnet-4-6",
+    # Applies a targeted or generic edit instruction to an existing draft's
+    # body and reports back what changed. Same tier as blog_draft -- it's
+    # editing the admin's own words under explicit instruction, not
+    # originating new research.
+    "blog_edit": "claude-sonnet-4-6",
 }
 
 # LiteLLM needs the provider prefix to route to Gemini.

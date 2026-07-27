@@ -213,3 +213,128 @@ def test_non_admin_cannot_reach_draft_from_notes(monkeypatch):
     with TestClient(app) as client:
         response = client.post("/admin/blog/posts/draft-from-notes", json={"notes": "some notes"})
         assert response.status_code in (401, 403)
+
+
+def test_edit_with_instruction_applies_change_and_records_revision(monkeypatch):
+    Session = _sqlite_session()
+    monkeypatch.setattr(blog_router, "SessionLocal", Session)
+
+    def fake_complete(messages, *, role=None, **kwargs):
+        assert role == "blog_edit"
+        payload = json.loads(messages[-1]["content"])
+        assert payload["instruction"] == "make it punchier"
+        assert payload["current_body_markdown"] == "Original body."
+        return SimpleNamespace(
+            text=json.dumps({"body_markdown": "Punchier body.", "changes": ["Tightened the opening line."]}),
+            model_used="test", latency_ms=1, cost_usd=0.0,
+        )
+
+    monkeypatch.setattr(model_client, "complete", fake_complete)
+
+    _as_admin()
+    try:
+        with TestClient(app) as client:
+            post = client.post("/admin/blog/posts", json={"title": "Draft", "body_markdown": "Original body."}).json()
+
+            edited = client.post(
+                f"/admin/blog/posts/{post['id']}/edit-with-instruction",
+                json={"instruction": "make it punchier"},
+            )
+            assert edited.status_code == 200
+            body = edited.json()
+            assert body["body_markdown"] == "Punchier body."
+            assert body["changes"] == ["Tightened the opening line."]
+            assert len(body["revisions"]) == 1
+            assert body["revisions"][0]["body_markdown"] == "Original body."
+            assert body["revisions"][0]["label"] == "make it punchier"
+
+            # The list endpoint stays lightweight -- no revisions leak there.
+            listed = client.get("/admin/blog/posts").json()["items"][0]
+            assert "revisions" not in listed
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_restore_revision_reverts_body_and_is_itself_undoable(monkeypatch):
+    Session = _sqlite_session()
+    monkeypatch.setattr(blog_router, "SessionLocal", Session)
+
+    def fake_complete(*args, **kwargs):
+        return SimpleNamespace(
+            text=json.dumps({"body_markdown": "Edited body.", "changes": ["Rewrote it."]}),
+            model_used="test", latency_ms=1, cost_usd=0.0,
+        )
+
+    monkeypatch.setattr(model_client, "complete", fake_complete)
+
+    _as_admin()
+    try:
+        with TestClient(app) as client:
+            post = client.post("/admin/blog/posts", json={"title": "Draft", "body_markdown": "Original body."}).json()
+            edited = client.post(
+                f"/admin/blog/posts/{post['id']}/edit-with-instruction",
+                json={"instruction": "rewrite it"},
+            ).json()
+            revision_id = edited["revisions"][0]["id"]
+
+            restored = client.post(f"/admin/blog/posts/{post['id']}/revisions/{revision_id}/restore")
+            assert restored.status_code == 200
+            restored_body = restored.json()
+            assert restored_body["body_markdown"] == "Original body."
+            # Restoring snapshotted the pre-restore state too, so undoing the
+            # undo is possible -- history now has both the original pre-edit
+            # snapshot and the pre-restore ("Edited body.") snapshot.
+            assert len(restored_body["revisions"]) == 2
+            assert restored_body["revisions"][-1]["body_markdown"] == "Edited body."
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_manual_patch_save_also_records_a_revision(monkeypatch):
+    Session = _sqlite_session()
+    monkeypatch.setattr(blog_router, "SessionLocal", Session)
+
+    _as_admin()
+    try:
+        with TestClient(app) as client:
+            post = client.post("/admin/blog/posts", json={"title": "Draft", "body_markdown": "A"}).json()
+            updated = client.patch(f"/admin/blog/posts/{post['id']}", json={"body_markdown": "B"})
+            assert updated.status_code == 200
+            body = updated.json()
+            assert body["body_markdown"] == "B"
+            assert len(body["revisions"]) == 1
+            assert body["revisions"][0]["body_markdown"] == "A"
+            assert body["revisions"][0]["label"] == "Manual edit"
+
+            # No-op body_markdown (same value) shouldn't record a revision.
+            unchanged = client.patch(f"/admin/blog/posts/{post['id']}", json={"body_markdown": "B"})
+            assert len(unchanged.json()["revisions"]) == 1
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_revision_history_is_capped(monkeypatch):
+    Session = _sqlite_session()
+    monkeypatch.setattr(blog_router, "SessionLocal", Session)
+
+    _as_admin()
+    try:
+        with TestClient(app) as client:
+            post = client.post("/admin/blog/posts", json={"title": "Draft", "body_markdown": "v0"}).json()
+            for i in range(1, blog_router.MAX_REVISIONS + 5):
+                updated = client.patch(f"/admin/blog/posts/{post['id']}", json={"body_markdown": f"v{i}"})
+            assert len(updated.json()["revisions"]) == blog_router.MAX_REVISIONS
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_non_admin_cannot_edit_with_instruction_or_restore(monkeypatch):
+    Session = _sqlite_session()
+    monkeypatch.setattr(blog_router, "SessionLocal", Session)
+
+    with TestClient(app) as client:
+        edit_resp = client.post("/admin/blog/posts/some-id/edit-with-instruction", json={"instruction": "x"})
+        assert edit_resp.status_code in (401, 403)
+
+        restore_resp = client.post("/admin/blog/posts/some-id/revisions/some-rev/restore")
+        assert restore_resp.status_code in (401, 403)

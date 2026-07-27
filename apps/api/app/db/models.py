@@ -452,11 +452,24 @@ class BlogPost(Base):
         default=lambda: datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc),
     )
+    # Bounded stack of prior body_markdown snapshots, most recent last --
+    # see blog.py's _push_revision(). Populated before every body_markdown
+    # change (manual save or LLM edit-with-instruction) so any edit is
+    # undoable, not just LLM ones. Each entry:
+    # {id, body_markdown, label, changes, created_at}.
+    revisions_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
 
     @property
     def tags(self) -> list[str]:
         try:
             return json.loads(self.tags_json)
+        except (TypeError, ValueError):
+            return []
+
+    @property
+    def revisions(self) -> list[dict]:
+        try:
+            return json.loads(self.revisions_json)
         except (TypeError, ValueError):
             return []
 

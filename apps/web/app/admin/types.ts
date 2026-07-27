@@ -465,6 +465,14 @@ export type EvalRunSummary = {
 export type BlogPostVoice = 'personal' | 'product'
 export type BlogPostStatus = 'draft' | 'published'
 
+export type BlogRevision = {
+  id: string
+  body_markdown: string
+  label: string
+  changes: string[] | null
+  created_at: string
+}
+
 export type BlogPost = {
   id: string
   slug: string
@@ -479,4 +487,6 @@ export type BlogPost = {
   published_at: string | null
   created_at: string
   updated_at: string
+  /** Only present on single-post admin responses (list rows omit it). */
+  revisions?: BlogRevision[]
 }

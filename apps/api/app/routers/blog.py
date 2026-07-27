@@ -47,6 +47,48 @@ Return only JSON:
 {"title": "...", "excerpt": "...", "tags": ["...", "..."], "body_markdown": "..."}
 """
 
+BLOG_EDIT_PROMPT = """You are Fronei's blog editing assistant.
+
+You are given the current Markdown body of a blog post draft and an editing
+instruction from the author -- generic ("tighten this up", "make it punchier")
+or pointed ("rewrite the second paragraph", "cut the bit about pricing").
+Apply the instruction and return the full edited Markdown body, not just the
+changed portion.
+
+Rules:
+- Make only the changes the instruction actually calls for. Don't rewrite or
+  "improve" parts of the post the instruction didn't touch.
+- Preserve the author's voice, opinions, and claims. Don't add new claims, or
+  soften or strengthen an opinion beyond what the instruction asks for.
+- If the instruction is vague, use reasonable editorial judgment but stay
+  conservative -- prefer trimming and clarifying over adding new content.
+
+Return only JSON:
+{
+  "body_markdown": "<the full edited post body>",
+  "changes": ["<one short, specific, human-readable description per distinct
+    change, e.g. 'Cut the third paragraph about pricing' or 'Rewrote the
+    opening sentence to lead with the prediction'>"]
+}
+"""
+
+MAX_REVISIONS = 20
+
+
+def _push_revision(post: BlogPost, *, label: str, changes: list[str] | None = None) -> None:
+    """Snapshot post's CURRENT body_markdown as a revision, before the caller
+    overwrites it. Called for both manual saves and LLM edits, so undo covers
+    either source -- not just AI-driven changes."""
+    revisions = post.revisions
+    revisions.append({
+        "id": new_id("rev"),
+        "body_markdown": post.body_markdown,
+        "label": label,
+        "changes": changes,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    post.revisions_json = json.dumps(revisions[-MAX_REVISIONS:])
+
 
 def _slugify(text: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
@@ -84,6 +126,13 @@ def _serialize(post: BlogPost) -> dict:
     }
 
 
+def _serialize_detail(post: BlogPost) -> dict:
+    """_serialize() plus revision history -- for single-post admin views
+    (the editor), not the list view or public endpoints, so those stay
+    lightweight and drafts' edit history never leaks publicly."""
+    return {**_serialize(post), "revisions": post.revisions}
+
+
 class BlogPostIn(BaseModel):
     title: str = Field(min_length=1, max_length=255)
     slug: str | None = Field(default=None, max_length=160)
@@ -104,6 +153,10 @@ class BlogDraftSuggestion(BaseModel):
     excerpt: str
     tags: list[str]
     body_markdown: str
+
+
+class BlogEditInstructionIn(BaseModel):
+    instruction: str = Field(min_length=1, max_length=2_000)
 
 
 class BlogPostUpdate(BaseModel):
@@ -154,7 +207,7 @@ def admin_create_post(payload: BlogPostIn, admin: AdminPrincipal = RequireAdmin)
         db.add(post)
         db.commit()
         db.refresh(post)
-        return _serialize(post)
+        return _serialize_detail(post)
     finally:
         db.close()
 
@@ -211,7 +264,7 @@ def admin_get_post_by_slug(slug: str, admin: AdminPrincipal = RequireAdmin) -> d
         post = db.query(BlogPost).filter(BlogPost.slug == slug).first()
         if post is None:
             raise HTTPException(status_code=404, detail="Post not found.")
-        return _serialize(post)
+        return _serialize_detail(post)
     finally:
         db.close()
 
@@ -223,7 +276,7 @@ def admin_get_post(post_id: str, admin: AdminPrincipal = RequireAdmin) -> dict:
         post = db.get(BlogPost, post_id)
         if post is None:
             raise HTTPException(status_code=404, detail="Post not found.")
-        return _serialize(post)
+        return _serialize_detail(post)
     finally:
         db.close()
 
@@ -242,11 +295,13 @@ def admin_update_post(post_id: str, payload: BlogPostUpdate, admin: AdminPrincip
             data.pop("slug", None)
         if "tags" in data:
             post.tags_json = json.dumps(data.pop("tags"))
+        if "body_markdown" in data and data["body_markdown"] != post.body_markdown:
+            _push_revision(post, label="Manual edit")
         for key, value in data.items():
             setattr(post, key, value)
         db.commit()
         db.refresh(post)
-        return _serialize(post)
+        return _serialize_detail(post)
     finally:
         db.close()
 
@@ -277,7 +332,7 @@ def admin_publish_post(post_id: str, admin: AdminPrincipal = RequireAdmin) -> di
             post.published_at = datetime.now(timezone.utc)
         db.commit()
         db.refresh(post)
-        return _serialize(post)
+        return _serialize_detail(post)
     finally:
         db.close()
 
@@ -292,7 +347,91 @@ def admin_unpublish_post(post_id: str, admin: AdminPrincipal = RequireAdmin) -> 
         post.status = "draft"
         db.commit()
         db.refresh(post)
-        return _serialize(post)
+        return _serialize_detail(post)
+    finally:
+        db.close()
+
+
+@admin_router.post("/posts/{post_id}/edit-with-instruction")
+def admin_edit_with_instruction(
+    post_id: str, payload: BlogEditInstructionIn, admin: AdminPrincipal = RequireAdmin,
+) -> dict:
+    """Apply an LLM edit to a draft's body under an explicit instruction.
+    Applies the change directly (not a propose-then-confirm flow) but always
+    snapshots the pre-edit body first, so it's always undoable -- fully via
+    /revisions/{id}/restore, or effectively partially by restoring an earlier
+    point in the history and re-applying only the instructions you want."""
+    from app.services.agent import model_client
+    from app.services.agent.prompt_library import resolve_prompt
+    from app.services.agent.research_planner import _longform_timeout_s
+    from app.services.agent.research_utils import _parse_json
+
+    db = SessionLocal()
+    try:
+        post = db.get(BlogPost, post_id)
+        if post is None:
+            raise HTTPException(status_code=404, detail="Post not found.")
+
+        prompt = resolve_prompt(
+            "agent.blog.edit_with_instruction.default",
+            agent_id="blog_edit",
+            fallback_system_prompt=BLOG_EDIT_PROMPT,
+            variables=["instruction", "current_body_markdown"],
+        )
+        try:
+            response = model_client.complete(
+                [
+                    {"role": "system", "content": prompt.system_prompt},
+                    {
+                        "role": "user",
+                        "content": json.dumps({
+                            "instruction": payload.instruction,
+                            "current_body_markdown": post.body_markdown,
+                        }),
+                    },
+                ],
+                role="blog_edit",
+                max_tokens=4000,
+                timeout_s=_longform_timeout_s(),
+            )
+            data = _parse_json(response.text)
+            new_body = str(data.get("body_markdown", "")).strip()
+            changes = [str(c).strip() for c in (data.get("changes") or []) if str(c).strip()]
+            if not new_body:
+                raise ValueError("model returned an empty body_markdown")
+        except Exception as exc:
+            logger.warning("blog edit-with-instruction failed: %s", exc)
+            raise HTTPException(
+                status_code=502,
+                detail="Could not apply that edit. Try rephrasing the instruction or edit manually.",
+            ) from exc
+
+        _push_revision(post, label=payload.instruction, changes=changes)
+        post.body_markdown = new_body
+        db.commit()
+        db.refresh(post)
+        return {**_serialize_detail(post), "changes": changes}
+    finally:
+        db.close()
+
+
+@admin_router.post("/posts/{post_id}/revisions/{revision_id}/restore")
+def admin_restore_revision(post_id: str, revision_id: str, admin: AdminPrincipal = RequireAdmin) -> dict:
+    """Restore body_markdown to an earlier revision. Snapshots the current
+    body first, so restoring is itself undoable (no dead ends)."""
+    db = SessionLocal()
+    try:
+        post = db.get(BlogPost, post_id)
+        if post is None:
+            raise HTTPException(status_code=404, detail="Post not found.")
+        target = next((r for r in post.revisions if r.get("id") == revision_id), None)
+        if target is None:
+            raise HTTPException(status_code=404, detail="Revision not found.")
+        _push_revision(post, label="Before restoring an earlier version")
+        post.body_markdown = target["body_markdown"]
+        db.commit()
+        db.refresh(post)
+        return _serialize_detail(post)
     finally:
         db.close()
 

@@ -49,39 +49,62 @@ Return only JSON:
 
 BLOG_EDIT_PROMPT = """You are Fronei's blog editing assistant.
 
-You are given the current Markdown body of a blog post draft and an editing
-instruction from the author -- generic ("tighten this up", "make it punchier")
-or pointed ("rewrite the second paragraph", "cut the bit about pricing").
-Apply the instruction and return the full edited Markdown body, not just the
-changed portion.
+You are given a blog post draft's current title, excerpt, tags, and Markdown
+body, plus an editing instruction from the author -- generic ("tighten this
+up", "make the title more dramatic") or pointed ("rewrite the second
+paragraph", "cut the bit about pricing"). Apply the instruction to whichever
+field(s) it actually concerns and return the full post: every field, not
+just the one(s) you changed, and the full body, not just the changed
+portion.
 
 Rules:
-- Make only the changes the instruction actually calls for. Don't rewrite or
-  "improve" parts of the post the instruction didn't touch.
+- Only touch the field(s) the instruction concerns. An instruction about the
+  title means edit the title and return excerpt/tags/body unchanged; an
+  instruction about the body means edit the body and return title/excerpt/
+  tags unchanged. Don't rewrite or "improve" a field the instruction didn't
+  ask about.
 - Preserve the author's voice, opinions, and claims. Don't add new claims, or
   soften or strengthen an opinion beyond what the instruction asks for.
 - If the instruction is vague, use reasonable editorial judgment but stay
   conservative -- prefer trimming and clarifying over adding new content.
+- Tags are short, lowercase, topical words or short phrases, not sentences.
 
 Return only JSON:
 {
-  "body_markdown": "<the full edited post body>",
+  "title": "<current or edited title>",
+  "excerpt": "<current or edited excerpt>",
+  "tags": ["<current or edited tags>"],
+  "body_markdown": "<current or edited full post body>",
   "changes": ["<one short, specific, human-readable description per distinct
-    change, e.g. 'Cut the third paragraph about pricing' or 'Rewrote the
-    opening sentence to lead with the prediction'>"]
+    change you actually made, e.g. 'Cut the third paragraph about pricing'
+    or 'Made the title more dramatic'. If the instruction doesn't apply to
+    anything in the post, explain that instead of guessing.>"]
 }
 """
 
 MAX_REVISIONS = 20
 
 
+def _clean_or_preserve(original: str, candidate: str) -> str:
+    """Avoid a false content diff from the model's whitespace normalization:
+    if a field's content is the same once trimmed, keep the original string
+    exactly (byte-for-byte) rather than the model's cleaned copy, so a field
+    the instruction didn't ask about doesn't show up as "changed" over
+    nothing but leading/trailing whitespace."""
+    stripped = candidate.strip()
+    return original if stripped == original.strip() else stripped
+
+
 def _push_revision(post: BlogPost, *, label: str, changes: list[str] | None = None) -> None:
-    """Snapshot post's CURRENT body_markdown as a revision, before the caller
-    overwrites it. Called for both manual saves and LLM edits, so undo covers
-    either source -- not just AI-driven changes."""
+    """Snapshot post's CURRENT title/excerpt/tags/body as a revision, before
+    the caller overwrites any of them. Called for both manual saves and LLM
+    edits, so undo covers either source -- not just AI-driven changes."""
     revisions = post.revisions
     revisions.append({
         "id": new_id("rev"),
+        "title": post.title,
+        "excerpt": post.excerpt,
+        "tags": post.tags,
         "body_markdown": post.body_markdown,
         "label": label,
         "changes": changes,
@@ -289,14 +312,20 @@ def admin_update_post(post_id: str, payload: BlogPostUpdate, admin: AdminPrincip
         if post is None:
             raise HTTPException(status_code=404, detail="Post not found.")
         data = payload.model_dump(exclude_unset=True)
+        content_changed = any([
+            "title" in data and data["title"] != post.title,
+            "excerpt" in data and data["excerpt"] != post.excerpt,
+            "tags" in data and data["tags"] != post.tags,
+            "body_markdown" in data and data["body_markdown"] != post.body_markdown,
+        ])
+        if content_changed:
+            _push_revision(post, label="Manual edit")
         if "slug" in data or "title" in data:
             base = _slugify(data.get("slug") or data.get("title") or post.slug)
             post.slug = _unique_slug(db, base, exclude_id=post.id)
             data.pop("slug", None)
         if "tags" in data:
             post.tags_json = json.dumps(data.pop("tags"))
-        if "body_markdown" in data and data["body_markdown"] != post.body_markdown:
-            _push_revision(post, label="Manual edit")
         for key, value in data.items():
             setattr(post, key, value)
         db.commit()
@@ -356,9 +385,10 @@ def admin_unpublish_post(post_id: str, admin: AdminPrincipal = RequireAdmin) -> 
 def admin_edit_with_instruction(
     post_id: str, payload: BlogEditInstructionIn, admin: AdminPrincipal = RequireAdmin,
 ) -> dict:
-    """Apply an LLM edit to a draft's body under an explicit instruction.
-    Applies the change directly (not a propose-then-confirm flow) but always
-    snapshots the pre-edit body first, so it's always undoable -- fully via
+    """Apply an LLM edit to a draft under an explicit instruction -- title,
+    excerpt, tags, and/or body, whichever the instruction concerns. Applies
+    the change directly (not a propose-then-confirm flow) but always
+    snapshots the pre-edit state first, so it's always undoable -- fully via
     /revisions/{id}/restore, or effectively partially by restoring an earlier
     point in the history and re-applying only the instructions you want."""
     from app.services.agent import model_client
@@ -376,7 +406,7 @@ def admin_edit_with_instruction(
             "agent.blog.edit_with_instruction.default",
             agent_id="blog_edit",
             fallback_system_prompt=BLOG_EDIT_PROMPT,
-            variables=["instruction", "current_body_markdown"],
+            variables=["instruction", "title", "excerpt", "tags", "body_markdown"],
         )
         try:
             response = model_client.complete(
@@ -386,7 +416,10 @@ def admin_edit_with_instruction(
                         "role": "user",
                         "content": json.dumps({
                             "instruction": payload.instruction,
-                            "current_body_markdown": post.body_markdown,
+                            "title": post.title,
+                            "excerpt": post.excerpt,
+                            "tags": post.tags,
+                            "body_markdown": post.body_markdown,
                         }),
                     },
                 ],
@@ -395,9 +428,14 @@ def admin_edit_with_instruction(
                 timeout_s=_longform_timeout_s(),
             )
             data = _parse_json(response.text)
-            new_body = str(data.get("body_markdown", "")).strip()
+            new_title = _clean_or_preserve(post.title, str(data.get("title", post.title))) or post.title
+            new_excerpt = _clean_or_preserve(post.excerpt, str(data.get("excerpt", post.excerpt)))
+            new_tags = [
+                str(t).strip().lower() for t in (data.get("tags", post.tags) or []) if str(t).strip()
+            ]
+            new_body = _clean_or_preserve(post.body_markdown, str(data.get("body_markdown", post.body_markdown)))
             changes = [str(c).strip() for c in (data.get("changes") or []) if str(c).strip()]
-            if not new_body:
+            if not new_body.strip():
                 raise ValueError("model returned an empty body_markdown")
         except Exception as exc:
             logger.warning("blog edit-with-instruction failed: %s", exc)
@@ -407,6 +445,9 @@ def admin_edit_with_instruction(
             ) from exc
 
         _push_revision(post, label=payload.instruction, changes=changes)
+        post.title = new_title
+        post.excerpt = new_excerpt
+        post.tags_json = json.dumps(new_tags)
         post.body_markdown = new_body
         db.commit()
         db.refresh(post)
@@ -417,8 +458,10 @@ def admin_edit_with_instruction(
 
 @admin_router.post("/posts/{post_id}/revisions/{revision_id}/restore")
 def admin_restore_revision(post_id: str, revision_id: str, admin: AdminPrincipal = RequireAdmin) -> dict:
-    """Restore body_markdown to an earlier revision. Snapshots the current
-    body first, so restoring is itself undoable (no dead ends)."""
+    """Restore title/excerpt/tags/body to an earlier revision. Snapshots the
+    current state first, so restoring is itself undoable (no dead ends).
+    Fields absent from an older-shaped revision (pre-dating title/excerpt/
+    tags snapshotting) are left as-is rather than cleared."""
     db = SessionLocal()
     try:
         post = db.get(BlogPost, post_id)
@@ -428,6 +471,12 @@ def admin_restore_revision(post_id: str, revision_id: str, admin: AdminPrincipal
         if target is None:
             raise HTTPException(status_code=404, detail="Revision not found.")
         _push_revision(post, label="Before restoring an earlier version")
+        if "title" in target:
+            post.title = target["title"]
+        if "excerpt" in target:
+            post.excerpt = target["excerpt"]
+        if "tags" in target:
+            post.tags_json = json.dumps(target["tags"])
         post.body_markdown = target["body_markdown"]
         db.commit()
         db.refresh(post)

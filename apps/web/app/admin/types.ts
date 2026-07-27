@@ -468,6 +468,10 @@ export type BlogPostStatus = 'draft' | 'published'
 export type BlogRevision = {
   id: string
   body_markdown: string
+  /** Absent on revisions recorded before title/excerpt/tags snapshotting shipped. */
+  title?: string
+  excerpt?: string
+  tags?: string[]
   label: string
   changes: string[] | null
   created_at: string

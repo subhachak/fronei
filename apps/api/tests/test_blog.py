@@ -223,7 +223,9 @@ def test_edit_with_instruction_applies_change_and_records_revision(monkeypatch):
         assert role == "blog_edit"
         payload = json.loads(messages[-1]["content"])
         assert payload["instruction"] == "make it punchier"
-        assert payload["current_body_markdown"] == "Original body."
+        assert payload["body_markdown"] == "Original body."
+        # Response omits title/excerpt/tags entirely -- the endpoint should
+        # default them to the post's current values, not blank them out.
         return SimpleNamespace(
             text=json.dumps({"body_markdown": "Punchier body.", "changes": ["Tightened the opening line."]}),
             model_used="test", latency_ms=1, cost_usd=0.0,
@@ -242,15 +244,67 @@ def test_edit_with_instruction_applies_change_and_records_revision(monkeypatch):
             )
             assert edited.status_code == 200
             body = edited.json()
+            assert body["title"] == "Draft"
             assert body["body_markdown"] == "Punchier body."
             assert body["changes"] == ["Tightened the opening line."]
             assert len(body["revisions"]) == 1
             assert body["revisions"][0]["body_markdown"] == "Original body."
+            assert body["revisions"][0]["title"] == "Draft"
             assert body["revisions"][0]["label"] == "make it punchier"
 
             # The list endpoint stays lightweight -- no revisions leak there.
             listed = client.get("/admin/blog/posts").json()["items"][0]
             assert "revisions" not in listed
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_edit_with_instruction_can_change_title_only(monkeypatch):
+    Session = _sqlite_session()
+    monkeypatch.setattr(blog_router, "SessionLocal", Session)
+
+    def fake_complete(messages, *, role=None, **kwargs):
+        payload = json.loads(messages[-1]["content"])
+        assert payload["title"] == "Boring Title"
+        # Echo excerpt/tags/body back unchanged, only touch title -- exactly
+        # what the prompt asks of the model for a title-only instruction.
+        return SimpleNamespace(
+            text=json.dumps({
+                "title": "THE MOST DRAMATIC TITLE EVER",
+                "excerpt": payload["excerpt"],
+                "tags": payload["tags"],
+                "body_markdown": payload["body_markdown"],
+                "changes": ["Made the title more dramatic"],
+            }),
+            model_used="test", latency_ms=1, cost_usd=0.0,
+        )
+
+    monkeypatch.setattr(model_client, "complete", fake_complete)
+
+    _as_admin()
+    try:
+        with TestClient(app) as client:
+            post = client.post(
+                "/admin/blog/posts",
+                json={"title": "Boring Title", "excerpt": "meh", "tags": ["ai"], "body_markdown": "Body text."},
+            ).json()
+
+            edited = client.post(
+                f"/admin/blog/posts/{post['id']}/edit-with-instruction",
+                json={"instruction": "make the title more dramatic"},
+            ).json()
+            assert edited["title"] == "THE MOST DRAMATIC TITLE EVER"
+            assert edited["excerpt"] == "meh"
+            assert edited["tags"] == ["ai"]
+            assert edited["body_markdown"] == "Body text."  # untouched
+            # The pre-edit title is recoverable.
+            assert edited["revisions"][0]["title"] == "Boring Title"
+
+            restored = client.post(
+                f"/admin/blog/posts/{post['id']}/revisions/{edited['revisions'][0]['id']}/restore",
+            ).json()
+            assert restored["title"] == "Boring Title"
+            assert restored["body_markdown"] == "Body text."
     finally:
         app.dependency_overrides.clear()
 

@@ -68,7 +68,13 @@ export function BlogTab({ authorizedFetch }: { authorizedFetch: AuthorizedFetch 
   const [loadingEditor, setLoadingEditor] = useState(false)
   const [instruction, setInstruction] = useState('')
   const [applyingEdit, setApplyingEdit] = useState(false)
-  const [lastEdit, setLastEdit] = useState<{ before: string; after: string; changes: string[] } | null>(null)
+  const [lastEdit, setLastEdit] = useState<{
+    title: { before: string; after: string }
+    excerpt: { before: string; after: string }
+    tags: { before: string; after: string }
+    body: { before: string; after: string }
+    changes: string[]
+  } | null>(null)
   const [restoringId, setRestoringId] = useState<string | null>(null)
 
   const load = useCallback(async () => {
@@ -183,16 +189,28 @@ export function BlogTab({ authorizedFetch }: { authorizedFetch: AuthorizedFetch 
     setApplyingEdit(true)
     setError('')
     try {
-      const before = form.body_markdown
+      const before = { title: form.title, excerpt: form.excerpt, tags: form.tags, body_markdown: form.body_markdown }
       const response = await authorizedFetch(`/admin/blog/posts/${editing.id}/edit-with-instruction`, {
         method: 'POST',
         body: JSON.stringify({ instruction }),
       })
       if (!response.ok) throw new Error(await readErrorBody(response, 'Could not apply that edit'))
       const result = await response.json() as BlogPost & { changes: string[] }
-      set('body_markdown', result.body_markdown)
+      setForm(prev => ({
+        ...prev,
+        title: result.title,
+        excerpt: result.excerpt,
+        tags: result.tags.join(', '),
+        body_markdown: result.body_markdown,
+      }))
       setRevisions(result.revisions || [])
-      setLastEdit({ before, after: result.body_markdown, changes: result.changes })
+      setLastEdit({
+        title: { before: before.title, after: result.title },
+        excerpt: { before: before.excerpt, after: result.excerpt },
+        tags: { before: before.tags, after: result.tags.join(', ') },
+        body: { before: before.body_markdown, after: result.body_markdown },
+        changes: result.changes,
+      })
       setInstruction('')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not apply that edit')
@@ -211,7 +229,13 @@ export function BlogTab({ authorizedFetch }: { authorizedFetch: AuthorizedFetch 
       })
       if (!response.ok) throw new Error(await readErrorBody(response, 'Could not restore that version'))
       const restored = await response.json() as BlogPost
-      set('body_markdown', restored.body_markdown)
+      setForm(prev => ({
+        ...prev,
+        title: restored.title,
+        excerpt: restored.excerpt,
+        tags: restored.tags.join(', '),
+        body_markdown: restored.body_markdown,
+      }))
       setRevisions(restored.revisions || [])
       setLastEdit(null)
     } catch (err) {
@@ -325,13 +349,13 @@ export function BlogTab({ authorizedFetch }: { authorizedFetch: AuthorizedFetch 
         {currentPost && (
           <div className="rounded-lg border border-dashed border-neutral-300 bg-neutral-50 p-3 dark:border-neutral-700 dark:bg-neutral-900">
             <label className={LABEL_CLASS}>
-              Edit with AI <span className="font-normal text-neutral-400">(generic — &quot;tighten this up&quot; — or pointed — &quot;rewrite the second paragraph&quot;)</span>
+              Edit with AI <span className="font-normal text-neutral-400">(covers title, excerpt, tags, and body — generic, e.g. &quot;tighten this up&quot;, or pointed, e.g. &quot;make the title more dramatic&quot;)</span>
             </label>
             <textarea
               rows={2}
               value={instruction}
               onChange={e => setInstruction(e.target.value)}
-              placeholder="e.g. make the intro punchier, or cut the paragraph about pricing"
+              placeholder="e.g. make the title more dramatic, or cut the paragraph about pricing"
               className={`${INPUT_CLASS} resize-none`}
             />
             <button
@@ -360,9 +384,22 @@ export function BlogTab({ authorizedFetch }: { authorizedFetch: AuthorizedFetch 
                 <ul className="mt-1.5 list-disc space-y-0.5 pl-4 text-xs text-neutral-600 dark:text-neutral-300">
                   {lastEdit.changes.map((c, idx) => <li key={idx}>{c}</li>)}
                 </ul>
-                <div className="mt-2 max-h-64 overflow-y-auto rounded border border-neutral-200 bg-white p-2 dark:border-neutral-700 dark:bg-neutral-950">
-                  <PostDiff before={lastEdit.before} after={lastEdit.after} />
-                </div>
+                {(['title', 'excerpt', 'tags'] as const).map(field => {
+                  const { before, after } = lastEdit[field]
+                  if (before === after) return null
+                  return (
+                    <div key={field} className="mt-2 text-xs">
+                      <p className="font-semibold capitalize text-neutral-500">{field}</p>
+                      <p className="rounded bg-red-50 px-2 py-1 text-red-800 line-through dark:bg-red-950/60 dark:text-red-300">{before || '(empty)'}</p>
+                      <p className="mt-1 rounded bg-emerald-50 px-2 py-1 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300">{after || '(empty)'}</p>
+                    </div>
+                  )
+                })}
+                {lastEdit.body.before !== lastEdit.body.after && (
+                  <div className="mt-2 max-h-64 overflow-y-auto rounded border border-neutral-200 bg-white p-2 dark:border-neutral-700 dark:bg-neutral-950">
+                    <PostDiff before={lastEdit.body.before} after={lastEdit.body.after} />
+                  </div>
+                )}
               </div>
             )}
 

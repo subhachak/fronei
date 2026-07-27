@@ -1,6 +1,6 @@
 'use client'
 
-import { Eye, Loader2, Pencil, Plus, RefreshCw, Trash2 } from 'lucide-react'
+import { Eye, Loader2, Pencil, Plus, RefreshCw, Sparkles, Trash2 } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
 import { MarkdownResult } from '../../components/MarkdownResult'
 import { readErrorBody } from '../../lib/api'
@@ -61,6 +61,8 @@ export function BlogTab({ authorizedFetch }: { authorizedFetch: AuthorizedFetch 
   const [form, setForm] = useState<EditorForm>(emptyForm())
   const [saving, setSaving] = useState(false)
   const [busyId, setBusyId] = useState<string | null>(null)
+  const [notes, setNotes] = useState('')
+  const [generating, setGenerating] = useState(false)
 
   const load = useCallback(async () => {
     setRefreshing(true)
@@ -85,12 +87,38 @@ export function BlogTab({ authorizedFetch }: { authorizedFetch: AuthorizedFetch 
 
   function startNew() {
     setForm(emptyForm())
+    setNotes('')
     setEditing('new')
   }
 
   function startEdit(post: BlogPost) {
     setForm(formFromPost(post))
+    setNotes('')
     setEditing(post)
+  }
+
+  async function generateFromNotes() {
+    setGenerating(true)
+    setError('')
+    try {
+      const response = await authorizedFetch('/admin/blog/posts/draft-from-notes', {
+        method: 'POST',
+        body: JSON.stringify({ notes }),
+      })
+      if (!response.ok) throw new Error(await readErrorBody(response, 'Could not generate a draft from these notes'))
+      const suggestion = await response.json() as { title: string; excerpt: string; tags: string[]; body_markdown: string }
+      setForm(prev => ({
+        ...prev,
+        title: suggestion.title || prev.title,
+        excerpt: suggestion.excerpt || prev.excerpt,
+        tags: suggestion.tags.length ? suggestion.tags.join(', ') : prev.tags,
+        body_markdown: suggestion.body_markdown || prev.body_markdown,
+      }))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not generate a draft from these notes')
+    } finally {
+      setGenerating(false)
+    }
   }
 
   async function save() {
@@ -202,6 +230,28 @@ export function BlogTab({ authorizedFetch }: { authorizedFetch: AuthorizedFetch 
         </div>
 
         {error && <p className="text-xs text-red-600 dark:text-red-400">{error}</p>}
+
+        <div className="rounded-lg border border-dashed border-neutral-300 bg-neutral-50 p-3 dark:border-neutral-700 dark:bg-neutral-900">
+          <label className={LABEL_CLASS}>
+            Start from scratch notes <span className="font-normal text-neutral-400">(optional — paste raw notes or research; this fills in the fields below, which you can then edit)</span>
+          </label>
+          <textarea
+            rows={4}
+            value={notes}
+            onChange={e => setNotes(e.target.value)}
+            placeholder="Paste a half-formed thought, some research, or bullet points here…"
+            className={`${INPUT_CLASS} resize-none`}
+          />
+          <button
+            type="button"
+            onClick={() => void generateFromNotes()}
+            disabled={generating || !notes.trim()}
+            className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-neutral-300 bg-white px-3 py-1.5 text-xs font-semibold text-neutral-700 disabled:opacity-50 dark:border-neutral-600 dark:bg-neutral-800 dark:text-neutral-200"
+          >
+            {generating ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />}
+            Generate draft
+          </button>
+        </div>
 
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
           <div className="space-y-3">

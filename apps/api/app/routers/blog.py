@@ -24,6 +24,29 @@ from app.services.agent.models import new_id
 
 logger = logging.getLogger(__name__)
 
+BLOG_DRAFT_PROMPT = """You are Fronei's blog drafting assistant.
+
+You are given a scratch note or piece of research from the author -- raw,
+unstructured, possibly just a paragraph of half-formed thoughts, bullet
+points, or copy-pasted research. Turn it into a structured personal blog
+post draft: a title, a one-sentence excerpt, 2-5 topical tags, and a
+cleaned-up Markdown body.
+
+Rules:
+- Preserve the author's actual opinions, claims, and voice. Do not add
+  claims, facts, or conclusions that aren't in the notes -- if the notes are
+  thin on a point, keep the post thin there too rather than inventing detail.
+- Write in first person ("I think...", "my take is..."), not corporate "we."
+- The body should read like a finished blog post -- proper paragraphs and
+  headings where useful, code fences for code -- not a bullet-point summary
+  of the notes.
+- Tags should be short, lowercase, topical single words or short phrases
+  (e.g. "ai", "predictions", "projects"), not full sentences.
+
+Return only JSON:
+{"title": "...", "excerpt": "...", "tags": ["...", "..."], "body_markdown": "..."}
+"""
+
 
 def _slugify(text: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
@@ -70,6 +93,17 @@ class BlogPostIn(BaseModel):
     author: str = "Subh Chakraborty"
     voice: Literal["personal", "product"] = "personal"
     cover_image_url: str | None = None
+
+
+class BlogDraftFromNotesIn(BaseModel):
+    notes: str = Field(min_length=1, max_length=20_000)
+
+
+class BlogDraftSuggestion(BaseModel):
+    title: str
+    excerpt: str
+    tags: list[str]
+    body_markdown: str
 
 
 class BlogPostUpdate(BaseModel):
@@ -123,6 +157,51 @@ def admin_create_post(payload: BlogPostIn, admin: AdminPrincipal = RequireAdmin)
         return _serialize(post)
     finally:
         db.close()
+
+
+@admin_router.post("/posts/draft-from-notes")
+def admin_draft_from_notes(
+    payload: BlogDraftFromNotesIn, admin: AdminPrincipal = RequireAdmin,
+) -> BlogDraftSuggestion:
+    """Turn a pasted scratch note into structured draft fields for the editor
+    to prefill. Doesn't save anything -- the admin reviews/edits the
+    suggestion before hitting Save, same as any other form fill."""
+    from app.services.agent import model_client
+    from app.services.agent.prompt_library import resolve_prompt
+    from app.services.agent.research_planner import _longform_timeout_s
+    from app.services.agent.research_utils import _parse_json
+
+    prompt = resolve_prompt(
+        "agent.blog.draft_from_notes.default",
+        agent_id="blog_draft",
+        fallback_system_prompt=BLOG_DRAFT_PROMPT,
+        variables=["notes"],
+    )
+    try:
+        response = model_client.complete(
+            [
+                {"role": "system", "content": prompt.system_prompt},
+                {"role": "user", "content": payload.notes},
+            ],
+            role="blog_draft",
+            max_tokens=4000,
+            timeout_s=_longform_timeout_s(),
+        )
+        data = _parse_json(response.text)
+    except Exception as exc:
+        logger.warning("blog draft-from-notes failed: %s", exc)
+        raise HTTPException(
+            status_code=502,
+            detail="Could not generate a draft from these notes. Try again or write it manually.",
+        ) from exc
+
+    tags = [str(t).strip().lower() for t in (data.get("tags") or []) if str(t).strip()]
+    return BlogDraftSuggestion(
+        title=str(data.get("title", ""))[:255],
+        excerpt=str(data.get("excerpt", ""))[:2000],
+        tags=tags[:8],
+        body_markdown=str(data.get("body_markdown", "")),
+    )
 
 
 @admin_router.get("/posts/by-slug/{slug}")

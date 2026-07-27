@@ -35,6 +35,7 @@ MODEL_ROLES: tuple[str, ...] = (
     "synthesis",
     "synthesis_executive",
     "profile_consolidation",
+    "blog_draft",
 )
 
 # Roles deliberately NOT included above: "judge" / "research_judge" /
@@ -72,6 +73,13 @@ DEFAULT_MODEL_POLICY: dict[str, str] = {
     "synthesis": "claude-opus-4-8",
     "synthesis_executive": "claude-opus-4-8",
     "profile_consolidation": "gpt-4.1-mini",
+    # Turns a pasted scratch note/research dump into a structured blog draft
+    # (title/excerpt/tags/body). Low-volume, admin-triggered, and its output
+    # goes straight into an editable draft a human reviews before publishing
+    # -- same tier as document_writer/research_brief, not the top synthesis
+    # tier, since it's structuring an admin's own words rather than
+    # synthesizing novel research.
+    "blog_draft": "claude-sonnet-4-6",
 }
 
 # LiteLLM needs the provider prefix to route to Gemini.

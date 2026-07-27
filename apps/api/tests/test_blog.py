@@ -7,6 +7,9 @@ endpoints or the admin endpoints.
 """
 from __future__ import annotations
 
+import json
+from types import SimpleNamespace
+
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -16,6 +19,7 @@ from app.auth import AdminPrincipal, require_admin_principal
 from app.db.models import Base
 from app.main import app
 from app.routers import blog as blog_router
+from app.services.agent import model_client
 
 
 def _sqlite_session():
@@ -144,3 +148,68 @@ def test_non_admin_cannot_reach_admin_blog_endpoints(monkeypatch):
 
         create_resp = client.post("/admin/blog/posts", json={"title": "Should Not Work"})
         assert create_resp.status_code in (401, 403)
+
+
+def test_draft_from_notes_fills_structured_fields(monkeypatch):
+    Session = _sqlite_session()
+    monkeypatch.setattr(blog_router, "SessionLocal", Session)
+
+    def fake_complete(messages, *, role=None, **kwargs):
+        assert role == "blog_draft"
+        assert "half-baked thought" in messages[-1]["content"]
+        return SimpleNamespace(
+            text=json.dumps({
+                "title": "Agents Are Just State Machines",
+                "excerpt": "A hot take on agent architecture.",
+                "tags": ["AI", " Agents ", ""],
+                "body_markdown": "## My take\n\nAgents are state machines with good PR.",
+            }),
+            model_used="test",
+            latency_ms=1,
+            cost_usd=0.0,
+        )
+
+    monkeypatch.setattr(model_client, "complete", fake_complete)
+
+    _as_admin()
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/admin/blog/posts/draft-from-notes",
+                json={"notes": "half-baked thought: agents are just state machines with good PR"},
+            )
+            assert response.status_code == 200
+            body = response.json()
+            assert body["title"] == "Agents Are Just State Machines"
+            # Tags are lowercased, trimmed, and empties dropped.
+            assert body["tags"] == ["ai", "agents"]
+            assert "state machines" in body["body_markdown"]
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_draft_from_notes_returns_clean_error_on_malformed_output(monkeypatch):
+    Session = _sqlite_session()
+    monkeypatch.setattr(blog_router, "SessionLocal", Session)
+
+    def fake_complete(*args, **kwargs):
+        return SimpleNamespace(text="not json at all", model_used="test", latency_ms=1, cost_usd=0.0)
+
+    monkeypatch.setattr(model_client, "complete", fake_complete)
+
+    _as_admin()
+    try:
+        with TestClient(app) as client:
+            response = client.post("/admin/blog/posts/draft-from-notes", json={"notes": "some notes"})
+            assert response.status_code == 502
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_non_admin_cannot_reach_draft_from_notes(monkeypatch):
+    Session = _sqlite_session()
+    monkeypatch.setattr(blog_router, "SessionLocal", Session)
+
+    with TestClient(app) as client:
+        response = client.post("/admin/blog/posts/draft-from-notes", json={"notes": "some notes"})
+        assert response.status_code in (401, 403)

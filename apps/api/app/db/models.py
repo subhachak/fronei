@@ -428,6 +428,39 @@ class RoutingDecisionFeedback(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
+class BlogPost(Base):
+    __tablename__ = "blog_posts"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    slug: Mapped[str] = mapped_column(String(160), unique=True, index=True, nullable=False)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    excerpt: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    body_markdown: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    tags_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    author: Mapped[str] = mapped_column(String(120), nullable=False, default="Subh Chakraborty")
+    # "personal" (byline voice, no badge) or "product" (shown with a Product
+    # Update badge) -- see the blog design plan: content can be personal
+    # opinion or a Fronei-the-product update, and readers need to be able to
+    # tell which at a glance.
+    voice: Mapped[str] = mapped_column(String(16), nullable=False, default="personal")
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="draft", index=True)
+    cover_image_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    @property
+    def tags(self) -> list[str]:
+        try:
+            return json.loads(self.tags_json)
+        except (TypeError, ValueError):
+            return []
+
+
 class DocumentTemplate(Base):
     __tablename__ = "document_templates"
 

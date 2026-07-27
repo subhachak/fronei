@@ -461,3 +461,22 @@ export type EvalRunSummary = {
   error: string | null
   live: boolean
 }
+
+export type BlogPostVoice = 'personal' | 'product'
+export type BlogPostStatus = 'draft' | 'published'
+
+export type BlogPost = {
+  id: string
+  slug: string
+  title: string
+  excerpt: string
+  body_markdown: string
+  tags: string[]
+  author: string
+  voice: BlogPostVoice
+  status: BlogPostStatus
+  cover_image_url: string | null
+  published_at: string | null
+  created_at: string
+  updated_at: string
+}

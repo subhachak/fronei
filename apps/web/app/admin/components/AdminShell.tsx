@@ -3,6 +3,7 @@
 import {
   Activity,
   ArrowLeft,
+  BookOpen,
   Cpu,
   FlaskConical,
   LayoutDashboard,
@@ -19,6 +20,7 @@ import { useState } from 'react'
 import { useTheme } from '../../hooks/useTheme'
 import { useAdmin } from '../hooks/useAdmin'
 import { ApprovalsTab } from './ApprovalsTab'
+import { BlogTab } from './BlogTab'
 import { EvalsTab } from './EvalsTab'
 import { ModelPolicyTab } from './ModelPolicyTab'
 import { JobsTab } from './JobsTab'
@@ -27,7 +29,7 @@ import { SystemTab } from './SystemTab'
 import { UsageTab } from './UsageTab'
 import { UsersTab } from './UsersTab'
 
-type AdminTab = 'overview' | 'jobs' | 'approvals' | 'users' | 'modelpolicy' | 'usage' | 'system' | 'evals'
+type AdminTab = 'overview' | 'jobs' | 'approvals' | 'users' | 'modelpolicy' | 'usage' | 'system' | 'evals' | 'blog'
 
 const TABS: { id: AdminTab; label: string; icon: typeof LayoutDashboard }[] = [
   { id: 'overview', label: 'Overview', icon: LayoutDashboard },
@@ -38,6 +40,7 @@ const TABS: { id: AdminTab; label: string; icon: typeof LayoutDashboard }[] = [
   { id: 'usage', label: 'Usage', icon: Activity },
   { id: 'system', label: 'System', icon: ServerCog },
   { id: 'evals', label: 'Evals', icon: FlaskConical },
+  { id: 'blog', label: 'Blog', icon: BookOpen },
 ]
 
 export function AdminShell({ embedded = false, onClose }: { embedded?: boolean; onClose?: () => void }) {
@@ -150,6 +153,7 @@ export function AdminShell({ embedded = false, onClose }: { embedded?: boolean; 
             {tab === 'usage' && <UsageTab authorizedFetch={authorizedFetch} />}
             {tab === 'system' && <SystemTab authorizedFetch={authorizedFetch} />}
             {tab === 'evals' && <EvalsTab authorizedFetch={authorizedFetch} />}
+            {tab === 'blog' && <BlogTab authorizedFetch={authorizedFetch} />}
           </>
         )}
       </div>

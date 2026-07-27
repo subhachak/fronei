@@ -18,6 +18,7 @@ export function MarketingNav() {
           <a href="#domains" className="hover:text-stone-900">Platform</a>
           <a href="#how-it-works" className="hover:text-stone-900">How it works</a>
           <a href="#security" className="hover:text-stone-900">Security</a>
+          <Link href="/blog" className="hover:text-stone-900">Blog</Link>
         </nav>
         <AuthCta variant="compact" />
       </div>

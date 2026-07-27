@@ -9,6 +9,8 @@ from app.db.schema_check import check_schema_version
 from app.observability import configure_observability
 from app.routers.admin import router as admin_router
 from app.routers.agent import router as agent_router
+from app.routers.blog import admin_router as blog_admin_router
+from app.routers.blog import public_router as blog_public_router
 from app.routers.documents import router as documents_router
 from app.routers.evals import router as evals_router
 from app.routers.facts import router as facts_router
@@ -136,6 +138,8 @@ def health() -> dict:
 
 
 app.include_router(admin_router)
+app.include_router(blog_admin_router)
+app.include_router(blog_public_router)
 app.include_router(evals_router)
 app.include_router(agent_router)
 app.include_router(documents_router)

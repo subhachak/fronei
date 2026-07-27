@@ -421,7 +421,15 @@ def test_relevance_gate_insufficient_evidence_skips_expensive_stages_end_to_end(
             return SimpleNamespace(text=json.dumps({"relevance_fraction": 0.05, "reasoning": "off-topic"}), model_used="test", latency_ms=1, cost_usd=0.0)
         return SimpleNamespace(text="# Answer\n\nInsufficient relevant evidence was found.", model_used="test", latency_ms=1, cost_usd=0.0)
 
+    def _fake_stream_complete(messages, **kwargs):
+        text = "# Answer\n\nInsufficient relevant evidence was found."
+        midpoint = max(1, len(text) // 2)
+        yield model_client.ModelDelta(text[:midpoint])
+        yield model_client.ModelDelta(text[midpoint:])
+        yield model_client.ModelResponse(text=text, model_used="test", latency_ms=1, cost_usd=0.0)
+
     monkeypatch.setattr(model_client, "complete", _fake_complete)
+    monkeypatch.setattr(model_client, "stream_complete", _fake_stream_complete)
 
     result = run_stub_graph(
         {"request_message": "Research the JAVAH project", "visited_nodes": [], "artifacts": {}},

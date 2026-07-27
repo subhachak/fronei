@@ -724,7 +724,11 @@ def test_agent_orchestrator_falls_back_to_heuristic(monkeypatch):
     def fake_simple_completion(system, user, *, max_tokens=1200, **kwargs):
         return SimpleNamespace(text="Fallback answer.", model_used="fake-model", latency_ms=3, cost_usd=0.0)
 
+    def fake_stream_complete(messages, **kwargs):
+        yield from _stream_response(model_client, "Fallback answer.")
+
     monkeypatch.setattr(model_client, "simple_completion", fake_simple_completion)
+    monkeypatch.setattr(model_client, "stream_complete", fake_stream_complete)
     runtime = Runtime(tools=FakeTools())
 
     envelopes = _collect_stream(runtime, TurnRequest(message="Research current AI governance trends."))
@@ -1319,6 +1323,13 @@ def test_agent_api_stream(monkeypatch):
 def test_agent_background_turn_persists_and_polls_status(monkeypatch):
     _patch_completion(monkeypatch, "Background answer.")
     from app.services.agent import persistence
+    from app.services.agent.tools import Tools
+
+    # Same reason as test_agent_stream_persists_turn_events_tools_and_artifacts:
+    # the /turns route builds its own Runtime() with real Tools, so without
+    # this the test depends on live web search.
+    monkeypatch.setattr(Tools, "search_web", FakeTools.search_web)
+    monkeypatch.setattr(Tools, "extract_urls", FakeTools.extract_urls)
 
     Session = _sqlite_session()
     monkeypatch.setattr(persistence, "SessionLocal", Session)
@@ -1393,6 +1404,15 @@ def test_agent_api_stream_emits_keepalive_during_quiet_work(monkeypatch):
 def test_agent_stream_persists_turn_events_tools_and_artifacts(monkeypatch, tmp_path):
     _patch_completion(monkeypatch, "## Durable report\n\nDone.")
     from app.services.agent import persistence
+    from app.services.agent.tools import Tools
+
+    # The /turns/stream route builds its own Runtime() with real Tools
+    # (app/routers/agent.py has no DI seam for FakeTools), so without this
+    # the test hits live web search/URL extraction. Patch at the class level
+    # so any Tools instance -- including the router's -- uses FakeTools'
+    # deterministic implementation instead of real network calls.
+    monkeypatch.setattr(Tools, "search_web", FakeTools.search_web)
+    monkeypatch.setattr(Tools, "extract_urls", FakeTools.extract_urls)
 
     _set_artifact_dir(monkeypatch, tmp_path)
     Session = _sqlite_session()

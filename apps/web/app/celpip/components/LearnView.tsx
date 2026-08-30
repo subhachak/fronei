@@ -1,6 +1,6 @@
 'use client'
 
-import { ArrowLeft, Clock, Loader2 } from 'lucide-react'
+import { ArrowLeft, BookOpenText, Clock, Headphones, Loader2, Mic2, PenLine } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
 import { MarkdownResult } from '../../components/MarkdownResult'
 import type { Lesson, Spec } from '../types'
@@ -16,6 +16,13 @@ const CATEGORY_LABEL: Record<string, string> = {
   scoring: 'How scoring works',
   strategy: 'Task strategies',
   vocabulary: 'Vocabulary',
+}
+
+const SKILL_ICON = {
+  listening: Headphones,
+  reading: BookOpenText,
+  writing: PenLine,
+  speaking: Mic2,
 }
 
 export function LearnView({ api }: { api: Api }) {
@@ -116,21 +123,62 @@ export function LearnView({ api }: { api: Api }) {
 
       {CATEGORY_ORDER.filter(c => byCategory.has(c)).map(category => (
         <div key={category}>
-          <SectionHeading title={CATEGORY_LABEL[category] ?? category} />
-          <div className="grid gap-3 sm:grid-cols-2">
-            {(byCategory.get(category) ?? []).map(lesson => (
-              <button
-                key={lesson.id}
-                type="button"
-                onClick={() => void openLesson(lesson.slug)}
-                className={`${CARD} text-left transition-colors hover:border-neutral-400 dark:hover:border-neutral-600`}
-              >
-                <p className="text-sm font-bold text-neutral-900 dark:text-neutral-50">{lesson.title}</p>
-                <p className="mt-1 text-[13px] leading-relaxed text-neutral-500">{lesson.summary}</p>
-                <p className="mt-2 text-[11px] text-neutral-400">{lesson.estimated_minutes} min</p>
-              </button>
-            ))}
-          </div>
+          <SectionHeading
+            title={CATEGORY_LABEL[category] ?? category}
+            hint={category === 'strategy' ? 'Organized by component and official task order.' : undefined}
+          />
+          {category === 'strategy' ? (
+            <div className="space-y-6">
+              {spec.sections.map(section => {
+                const sectionLessons = (byCategory.get(category) ?? [])
+                  .filter(lesson => lesson.skill === section.skill)
+                  .sort((a, b) => {
+                    const taskOrder = new Map(section.tasks.map((task, index) => [task.key, index]))
+                    const aOrder = a.task_key ? (taskOrder.get(a.task_key) ?? 999) + 1 : 0
+                    const bOrder = b.task_key ? (taskOrder.get(b.task_key) ?? 999) + 1 : 0
+                    return aOrder - bOrder || a.sort_order - b.sort_order
+                  })
+                if (sectionLessons.length === 0) return null
+                const Icon = SKILL_ICON[section.skill]
+                return (
+                  <section key={section.skill} className={`overflow-hidden rounded-2xl border ${SKILL_TONE[section.skill] ?? 'border-neutral-200'}`}>
+                    <div className="flex items-center justify-between gap-3 border-b border-current/10 px-4 py-3 sm:px-5">
+                      <div className="flex items-center gap-2.5">
+                        <span className="grid h-9 w-9 place-items-center rounded-xl bg-white/70 dark:bg-neutral-950/30"><Icon size={17} /></span>
+                        <div>
+                          <h3 className="text-base font-bold">{section.label}</h3>
+                          <p className="text-xs opacity-70">Start with the foundation, then follow Parts 1–{section.tasks.length}</p>
+                        </div>
+                      </div>
+                      <span className="hidden rounded-full bg-white/60 px-2.5 py-1 text-xs font-bold dark:bg-neutral-950/30 sm:block">{sectionLessons.length} guides</span>
+                    </div>
+                    <div className="divide-y divide-current/10 bg-white/75 dark:bg-neutral-950/35">
+                      {sectionLessons.map((lesson, index) => (
+                        <button key={lesson.id} type="button" onClick={() => void openLesson(lesson.slug)} className="group flex w-full items-start gap-3 px-4 py-3.5 text-left transition-colors hover:bg-white dark:hover:bg-neutral-900 sm:px-5">
+                          <span className="grid h-7 w-7 flex-shrink-0 place-items-center rounded-full border border-current/20 text-xs font-bold">{index + 1}</span>
+                          <span className="min-w-0 flex-1">
+                            <span className="block text-sm font-bold text-neutral-950 group-hover:text-amber-700 dark:text-white dark:group-hover:text-amber-300">{lesson.title}</span>
+                            <span className="mt-0.5 block text-sm leading-relaxed text-neutral-500">{lesson.summary}</span>
+                          </span>
+                          <span className="flex-shrink-0 pt-1 text-xs font-medium text-neutral-400">{lesson.estimated_minutes} min</span>
+                        </button>
+                      ))}
+                    </div>
+                  </section>
+                )
+              })}
+            </div>
+          ) : (
+            <div className="grid gap-3 sm:grid-cols-2">
+              {(byCategory.get(category) ?? []).map(lesson => (
+                <button key={lesson.id} type="button" onClick={() => void openLesson(lesson.slug)} className={`${CARD} text-left transition-colors hover:border-neutral-400 dark:hover:border-neutral-600`}>
+                  <p className="text-sm font-bold text-neutral-900 dark:text-neutral-50">{lesson.title}</p>
+                  <p className="mt-1 text-[13px] leading-relaxed text-neutral-500">{lesson.summary}</p>
+                  <p className="mt-2 text-[11px] text-neutral-400">{lesson.estimated_minutes} min</p>
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       ))}
     </div>

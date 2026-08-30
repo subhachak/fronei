@@ -1,0 +1,44 @@
+{
+  "_note": "Fronei's existing Playwright suite, indexed as a regression library for the agentic QA pipeline. Written by reading the specs and the code index, so every entry is coverage_provenance 'declared' — asserted, not observed. The first QA run that executes these upgrades them to 'runtime-observed' from what the tests actually requested, which is the only kind of coverage the release gate treats as proof.",
+  "scripts": [
+    {
+      "id": "fronei-agent-workbench",
+      "file": "agent.spec.ts",
+      "route": "/app",
+      "tags": ["agent", "workbench", "timeline", "regression"],
+      "covers": "The agent workbench loads, a mocked turn runs from the composer, and the mobile shell controls render",
+      "covers_modules": [
+        "apps/web/app",
+        "apps/web/app/app",
+        "apps/web/app/components",
+        "apps/web/app/hooks",
+        "apps/web/app/lib"
+      ],
+      "coverage_provenance": "declared",
+      "covers_files": [
+        "apps/web/app/app/page.tsx",
+        "apps/web/app/components/AgentShell.tsx",
+        "apps/web/app/components/Timeline.tsx",
+        "apps/web/app/components/LibraryPanel.tsx"
+      ]
+    },
+    {
+      "id": "fronei-admin-overview",
+      "file": "admin.spec.ts",
+      "route": "/admin",
+      "tags": ["admin", "navigation", "regression"],
+      "covers": "The admin overview loads with mocked admin access and the tabs switch",
+      "covers_modules": [
+        "apps/web/app",
+        "apps/web/app/admin",
+        "apps/web/app/components",
+        "apps/web/app/lib"
+      ],
+      "coverage_provenance": "declared",
+      "covers_files": [
+        "apps/web/app/admin/page.tsx",
+        "apps/web/app/admin/components/AdminShell.tsx"
+      ]
+    }
+  ]
+}

@@ -121,7 +121,7 @@ export function CelpipShell() {
           </button>
         </div>
 
-        <nav className="-mx-1 mt-3 hidden gap-1 overflow-x-auto pb-0.5 sm:flex">
+        <nav className="-mx-1 mt-3 hidden gap-1 overflow-visible pb-0.5 sm:flex">
           {NAV.map(item => (
             <button
               key={item.id}

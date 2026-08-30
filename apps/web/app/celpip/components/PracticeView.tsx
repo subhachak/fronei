@@ -4,6 +4,7 @@ import { GraduationCap, Loader2, Target, Timer } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
 import type { BankCoverage, PracticeMode, Skill, Spec } from '../types'
 import type { useCelpip } from '../hooks/useCelpip'
+import { prepareAndCreateTest } from '../lib/prepareTest'
 import { BUTTON, EmptyState, ErrorNote, SectionHeading, SKILL_TONE } from './ui'
 
 type Api = ReturnType<typeof useCelpip>
@@ -22,6 +23,7 @@ export function PracticeView({ api, onStart }: { api: Api; onStart: (attemptId: 
   const [taskKey, setTaskKey] = useState('')
   const [error, setError] = useState('')
   const [starting, setStarting] = useState('')
+  const [progress, setProgress] = useState('')
 
   const load = useCallback(async () => {
     try {
@@ -52,16 +54,17 @@ export function PracticeView({ api, onStart }: { api: Api; onStart: (attemptId: 
       setStarting(taskKey)
       setError('')
       try {
-        const test = await api.postJson<{ attempt_id: string }>('/admin/celpip/tests', {
+        const test = await prepareAndCreateTest(api, {
           mode: 'single_task',
           practice_mode: mode,
           task_keys: [taskKey],
-        })
+        }, [{ taskKey }], setProgress)
         onStart(test.attempt_id)
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Could not start this drill.')
       } finally {
         setStarting('')
+        setProgress('')
       }
     },
     [api, mode, onStart],
@@ -90,7 +93,7 @@ export function PracticeView({ api, onStart }: { api: Api; onStart: (attemptId: 
       </div>
 
       {total === 0 && (
-        <EmptyState title="The question bank is empty" hint="Generate validated items in Manage questions before starting practice." />
+        <EmptyState title="Fresh questions are generated when you start" hint="No preparation is needed. Your previous questions stay in Test history only." />
       )}
 
       <section>
@@ -116,7 +119,7 @@ export function PracticeView({ api, onStart }: { api: Api; onStart: (attemptId: 
                 <button key={task.key} type="button" disabled={ready === 0} onClick={() => setTaskKey(task.key)} className={`flex min-h-14 w-full items-center gap-3 border-b border-neutral-100 px-4 py-3 text-left last:border-0 disabled:opacity-40 dark:border-neutral-800 ${selected ? 'bg-neutral-950 text-white dark:bg-white dark:text-neutral-950' : 'hover:bg-neutral-50 dark:hover:bg-neutral-800'}`}>
                   <span className={`grid h-7 w-7 flex-shrink-0 place-items-center rounded-full border text-xs font-bold ${selected ? 'border-white/30' : 'border-neutral-200 dark:border-neutral-700'}`}>{task.part}</span>
                   <span className="min-w-0 flex-1 text-sm font-semibold">{task.label}</span>
-                  {ready === 0 && <span className="text-xs">Unavailable</span>}
+                  {ready === 0 && <span className="text-xs">Created on demand</span>}
                 </button>
               )
             })}
@@ -141,8 +144,9 @@ export function PracticeView({ api, onStart }: { api: Api; onStart: (attemptId: 
                 </button>
               ))}
             </div>
-            <button type="button" disabled={!selectedTask || (coverage[selectedTask.key] ?? 0) === 0 || starting === selectedTask?.key} onClick={() => selectedTask && void start(selectedTask.key)} className={`${BUTTON} mt-5 w-full justify-center`}>
-              {starting ? 'Starting…' : `Start ${mode} practice`}
+            {progress && <p className="mt-4 flex items-center gap-2 text-xs font-medium text-amber-700 dark:text-amber-300"><Loader2 size={13} className="animate-spin" /> {progress}</p>}
+            <button type="button" disabled={!selectedTask || Boolean(starting)} onClick={() => selectedTask && void start(selectedTask.key)} className={`${BUTTON} mt-5 w-full justify-center`}>
+              {starting ? 'Preparing…' : `Start ${mode} practice`}
             </button>
           </div>
         </aside>

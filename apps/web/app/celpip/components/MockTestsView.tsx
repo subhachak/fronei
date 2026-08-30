@@ -1,20 +1,27 @@
 'use client'
 
-import { AlertTriangle, CheckCircle2, Clock3, Headphones, Loader2, Mic, ShieldCheck } from 'lucide-react'
+import { CheckCircle2, Clock3, Headphones, Loader2, Mic, ShieldCheck } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
 import type { PracticeMode, Profile, Skill, Spec } from '../types'
 import type { useCelpip } from '../hooks/useCelpip'
+import { prepareAndCreateTest } from '../lib/prepareTest'
 import { BUTTON, BUTTON_QUIET, CARD, ErrorNote, SectionHeading } from './ui'
 
 type Api = ReturnType<typeof useCelpip>
-type Shortfall = { message: string; shortfalls: Record<string, number>; hint: string }
+
+const DIAGNOSTIC_TASKS: Partial<Record<Skill, string[]>> = {
+  listening: ['listening_problem_solving', 'listening_viewpoints'],
+  reading: ['reading_correspondence', 'reading_viewpoints'],
+  writing: ['writing_email'],
+  speaking: ['speaking_advice', 'speaking_opinions'],
+}
 
 export function MockTestsView({ api, onStart }: { api: Api; onStart: (attemptId: string) => void }) {
   const [profile, setProfile] = useState<Profile | null>(null)
   const [spec, setSpec] = useState<Spec | null>(null)
   const [error, setError] = useState('')
-  const [shortfall, setShortfall] = useState<Shortfall | null>(null)
   const [busy, setBusy] = useState('')
+  const [progress, setProgress] = useState('')
   const [micOk, setMicOk] = useState<boolean | null>(null)
 
   useEffect(() => {
@@ -43,26 +50,30 @@ export function MockTestsView({ api, onStart }: { api: Api; onStart: (attemptId:
     async (body: Record<string, unknown>, key: string) => {
       setBusy(key)
       setError('')
-      setShortfall(null)
       try {
-        const test = await api.postJson<{ attempt_id: string }>('/admin/celpip/tests', body)
+        if (!profile || !spec) throw new Error('Test format is still loading.')
+        const mode = String(body.mode)
+        const selectedSkills = (body.components as Skill[] | undefined) ?? profile.components
+        const taskKeys = mode === 'diagnostic'
+          ? selectedSkills.flatMap(skill => DIAGNOSTIC_TASKS[skill] ?? [])
+          : spec.sections
+              .filter(section => selectedSkills.includes(section.skill))
+              .flatMap(section => section.tasks.map(task => task.key))
+        const test = await prepareAndCreateTest(
+          api,
+          body,
+          taskKeys.map(taskKey => ({ taskKey })),
+          setProgress,
+        )
         onStart(test.attempt_id)
       } catch (err) {
-        const message = err instanceof Error ? err.message : 'Could not build this test.'
-        // The API returns exactly which task types the bank is short of, so the
-        // failure names the fix instead of just refusing.
-        try {
-          const parsed = JSON.parse(message)
-          if (parsed?.detail?.shortfalls) setShortfall(parsed.detail as Shortfall)
-          else setError(message)
-        } catch {
-          setError(message)
-        }
+        setError(err instanceof Error ? err.message : 'Could not build this test.')
       } finally {
         setBusy('')
+        setProgress('')
       }
     },
-    [api, onStart],
+    [api, onStart, profile, spec],
   )
 
   if (!profile || !spec) {
@@ -79,21 +90,7 @@ export function MockTestsView({ api, onStart }: { api: Api; onStart: (attemptId:
   return (
     <div className="space-y-6">
       {error && <ErrorNote message={error} />}
-      {shortfall && (
-        <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-[13px] text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300">
-          <p className="flex items-center gap-1.5 font-semibold">
-            <AlertTriangle size={14} /> Not enough items yet
-          </p>
-          <ul className="mt-1.5 list-disc pl-5">
-            {Object.entries(shortfall.shortfalls).map(([task, count]) => (
-              <li key={task}>
-                {task} — generate {count} more
-              </li>
-            ))}
-          </ul>
-          <p className="mt-1.5">{shortfall.hint}</p>
-        </div>
-      )}
+      {progress && <div className="flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm font-medium text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300"><Loader2 size={15} className="animate-spin" /> {progress} You can leave this page; generation continues in the background.</div>}
 
       <div>
         <p className="text-xs font-bold uppercase tracking-[0.15em] text-amber-600 dark:text-amber-400">Exam training</p>

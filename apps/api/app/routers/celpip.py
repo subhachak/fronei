@@ -297,6 +297,7 @@ class GenerateIn(BaseModel):
 def get_bank(
     task_key: str | None = Query(default=None),
     status: str | None = Query(default=None),
+    generation_run_id: str | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
     admin: AdminPrincipal = RequireAdmin,
 ) -> dict:
@@ -305,8 +306,15 @@ def get_bank(
         query = db.query(CelpipQuestion)
         if task_key:
             query = query.filter(CelpipQuestion.task_key == task_key)
+        if generation_run_id:
+            query = query.filter(CelpipQuestion.generation_run_id == generation_run_id)
         if status:
             query = query.filter(CelpipQuestion.status == status)
+        else:
+            # Single-use questions belong to the attempt that consumed them.
+            # Keep them queryable explicitly for support, but out of the live
+            # bank; learners revisit them through Test history.
+            query = query.filter(CelpipQuestion.status != "retired")
         rows = query.order_by(CelpipQuestion.created_at.desc()).limit(limit).all()
         counts = assembly.available_counts(db)
         return {
@@ -341,6 +349,7 @@ def _serialize_question(row: CelpipQuestion, *, detail: bool) -> dict:
         "times_served": row.times_served,
         "last_served_at": _iso(row.last_served_at),
         "approved_at": _iso(row.approved_at),
+        "generation_run_id": row.generation_run_id,
         "generator_model": row.generator_model,
         "validator_model": row.validator_model,
         "created_at": _iso(row.created_at),
@@ -493,6 +502,7 @@ class AssembleIn(BaseModel):
     # Bounded to the column width: Postgres enforces VARCHAR(255), SQLite does
     # not, so an unbounded label passes every local test and fails in production.
     label: str = Field(default="", max_length=255)
+    generation_run_ids: list[str] | None = Field(default=None, max_length=100)
 
 
 @router.post("/tests")
@@ -502,6 +512,16 @@ def create_test(payload: AssembleIn, admin: AdminPrincipal = RequireAdmin) -> di
         profile = _get_or_create_profile(db, admin.user_id)
         test_type = profile.test_type
         target = profile.target_level
+        if payload.generation_run_ids is not None:
+            requested = set(payload.generation_run_ids)
+            owned = {
+                row.id for row in db.query(CelpipGenerationRun).filter(
+                    CelpipGenerationRun.user_id == admin.user_id,
+                    CelpipGenerationRun.id.in_(requested),
+                ).all()
+            }
+            if not requested or owned != requested:
+                raise HTTPException(status_code=400, detail="Invalid generation batch.")
     finally:
         db.close()
 
@@ -516,6 +536,7 @@ def create_test(payload: AssembleIn, admin: AdminPrincipal = RequireAdmin) -> di
             repeats=payload.repeats,
             target_level=target,
             label=payload.label,
+            generation_run_ids=payload.generation_run_ids,
         )
     except assembly.NotEnoughItems as exc:
         # Actionable rather than a bare 409: the caller is told exactly which
@@ -525,7 +546,11 @@ def create_test(payload: AssembleIn, admin: AdminPrincipal = RequireAdmin) -> di
             detail={
                 "message": str(exc),
                 "shortfalls": exc.shortfalls,
-                "hint": "Generate more items for these task types in the Question Bank.",
+                "hint": (
+                    "The fresh generation batch did not produce enough validated items."
+                    if payload.generation_run_ids is not None
+                    else "Generate more items for these task types in the Question Bank."
+                ),
             },
         ) from exc
     except ValueError as exc:
@@ -574,6 +599,26 @@ def list_attempts(
         return {"attempts": out}
     finally:
         db.close()
+
+
+@router.post("/attempts/{attempt_id}/retake")
+def retake_attempt(attempt_id: str, admin: AdminPrincipal = RequireAdmin) -> dict:
+    """Create a clean sitting over the exact same assembled questions."""
+    db = SessionLocal()
+    try:
+        original = db.get(CelpipAttempt, attempt_id)
+        if original is None or original.user_id != admin.user_id:
+            raise HTTPException(status_code=404, detail="Attempt not found.")
+        if original.status not in {"submitted", "evaluating", "completed", "failed"}:
+            raise HTTPException(status_code=409, detail="Finish the current attempt before retaking it.")
+        test_id = original.test_id
+        practice_mode = original.practice_mode
+    finally:
+        db.close()
+
+    return attempts_service.create_attempt(
+        user_id=admin.user_id, test_id=test_id, practice_mode=practice_mode,
+    )
 
 
 @router.get("/attempts/{attempt_id}")
@@ -728,6 +773,25 @@ def get_results(attempt_id: str, admin: AdminPrincipal = RequireAdmin) -> dict:
             r.id: r for r in
             db.query(CelpipResponse).filter(CelpipResponse.attempt_id == attempt_id).all()
         }
+        series_history = []
+        if test:
+            peer_attempts = (
+                db.query(CelpipAttempt)
+                .filter(CelpipAttempt.user_id == admin.user_id)
+                .filter(CelpipAttempt.test_id == test.id)
+                .order_by(CelpipAttempt.created_at)
+                .all()
+            )
+            for peer in peer_attempts:
+                peer_results = _loads(peer.results_json, {})
+                series_history.append({
+                    "attempt_id": peer.id,
+                    "created_at": _iso(peer.created_at),
+                    "status": peer.status,
+                    "levels": {
+                        skill: data.get("level", {}) for skill, data in peer_results.items()
+                    },
+                })
 
         serialized = []
         for evaluation in evaluations:
@@ -790,6 +854,8 @@ def get_results(attempt_id: str, admin: AdminPrincipal = RequireAdmin) -> dict:
             "error": attempt.error,
             "evaluation_pending": bool(job and job["active"]),
             "evaluation_job": job,
+            "retake_available": bool(test and attempt.status in {"submitted", "evaluating", "completed", "failed"}),
+            "series_history": series_history,
         }
     finally:
         db.close()

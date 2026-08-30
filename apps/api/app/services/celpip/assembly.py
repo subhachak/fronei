@@ -69,14 +69,19 @@ def _seen_question_ids(db, user_id: str, since_days: int = RECENTLY_SEEN_DAYS) -
     return {row[0] for row in rows}
 
 
-def _pick(db, task_key: str, count: int, *, exclude: set[str], target_level: int) -> list[CelpipQuestion]:
+def _pick(
+    db, task_key: str, count: int, *, exclude: set[str], target_level: int,
+    generation_run_ids: set[str] | None = None,
+) -> list[CelpipQuestion]:
     """Choose `count` servable items for a task, avoiding recently seen ones."""
-    pool = (
+    query = (
         db.query(CelpipQuestion)
         .filter(CelpipQuestion.task_key == task_key)
         .filter(CelpipQuestion.status == "ready")
-        .all()
     )
+    if generation_run_ids is not None:
+        query = query.filter(CelpipQuestion.generation_run_id.in_(generation_run_ids))
+    pool = query.all()
     fresh = [q for q in pool if q.id not in exclude]
     # Fall back to seen items only when there is nothing else -- a repeated
     # item is worth more than a missing section, but only just.
@@ -136,6 +141,7 @@ def assemble_test(
     target_level: int = 9,
     label: str = "",
     include_unscored: bool | None = None,
+    generation_run_ids: list[str] | None = None,
 ) -> dict:
     """Build a test and return its id plus what it contains."""
     plan = _task_plan(mode, test_type, components=components, task_keys=task_keys)
@@ -149,13 +155,17 @@ def assemble_test(
 
     db = SessionLocal()
     try:
+        fresh_run_ids = set(generation_run_ids) if generation_run_ids is not None else None
         exclude = _seen_question_ids(db, user_id)
         chosen: list[tuple[str, CelpipQuestion]] = []
         shortfalls: dict[str, int] = {}
 
         for task_key in plan:
             wanted = max(1, repeats)
-            picked = _pick(db, task_key, wanted, exclude=exclude, target_level=target_level)
+            picked = _pick(
+                db, task_key, wanted, exclude=exclude, target_level=target_level,
+                generation_run_ids=fresh_run_ids,
+            )
             if len(picked) < wanted:
                 shortfalls[task_key] = wanted - len(picked)
             for question in picked:
@@ -203,6 +213,17 @@ def assemble_test(
             ))
             question.times_served += 1
             question.last_served_at = datetime.now(timezone.utc)
+
+        # A launch-scoped batch is single-use. Keeping the rows (rather than
+        # deleting them) preserves completed attempts and their feedback, but
+        # retiring the whole batch prevents any surplus item from leaking into
+        # a later Practice or Mock launch.
+        if fresh_run_ids is not None:
+            for question in db.query(CelpipQuestion).filter(
+                CelpipQuestion.generation_run_id.in_(fresh_run_ids)
+            ).all():
+                if question.status == "ready":
+                    question.status = "retired"
 
         db.commit()
         return {

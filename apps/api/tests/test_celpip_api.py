@@ -22,6 +22,7 @@ from app.auth import AdminPrincipal, require_admin_principal
 from app.db.models import (
     Base,
     CelpipAttempt,
+    CelpipGenerationRun,
     CelpipQuestion,
     CelpipTest,
     CelpipTestItem,
@@ -429,6 +430,85 @@ def test_assembly_prefers_items_the_learner_has_not_seen(session_factory):
     finally:
         db.close()
     assert picked_first != picked_second
+
+
+def test_fresh_assembly_uses_only_its_generation_batch_and_retires_it(session_factory):
+    db = session_factory()
+    try:
+        old = _bank_item(db, "writing_email", skill="writing", part=1, questions=0)
+        old.id = "cq_old_email"
+        db.merge(old)
+        fresh = _bank_item(db, "writing_email", skill="writing", part=1, questions=0)
+        fresh.id = "cq_fresh_email"
+        fresh.generation_run_id = "cgen_fresh"
+        db.merge(fresh)
+        db.commit()
+    finally:
+        db.close()
+
+    test = assembly.assemble_test(
+        user_id=ADMIN.user_id,
+        mode="single_task",
+        task_keys=["writing_email"],
+        generation_run_ids=["cgen_fresh"],
+    )
+
+    db = session_factory()
+    try:
+        picked = db.query(CelpipTestItem).filter(CelpipTestItem.test_id == test["test_id"]).one()
+        assert picked.question_id == "cq_fresh_email"
+        assert db.get(CelpipQuestion, "cq_fresh_email").status == "retired"
+        assert db.get(CelpipQuestion, "cq_old_email").status == "ready"
+    finally:
+        db.close()
+
+
+def test_test_creation_rejects_another_users_generation_batch(session_factory, as_admin):
+    db = session_factory()
+    try:
+        db.add(CelpipGenerationRun(
+            id="cgen_theirs", user_id="someone_else", task_key="writing_email",
+            requested_count=1,
+        ))
+        db.commit()
+    finally:
+        db.close()
+
+    with TestClient(app) as client:
+        response = client.post("/admin/celpip/tests", json={
+            "mode": "single_task",
+            "task_keys": ["writing_email"],
+            "generation_run_ids": ["cgen_theirs"],
+        })
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Invalid generation batch."
+
+
+def test_retake_creates_a_new_sitting_on_the_exact_same_test(session_factory, as_admin):
+    test_id, attempt_id = _seed_reading_test(session_factory, practice_mode="timed")
+    db = session_factory()
+    try:
+        original = db.get(CelpipAttempt, attempt_id)
+        original.status = "completed"
+        db.commit()
+    finally:
+        db.close()
+
+    with TestClient(app) as client:
+        response = client.post(f"/admin/celpip/attempts/{attempt_id}/retake")
+
+    assert response.status_code == 200
+    assert response.json()["attempt_id"] != attempt_id
+    assert response.json()["test_id"] == test_id
+
+    db = session_factory()
+    try:
+        retake = db.get(CelpipAttempt, response.json()["attempt_id"])
+        assert retake.test_id == test_id
+        assert retake.status == "not_started"
+    finally:
+        db.close()
 
 
 # --- Submission -----------------------------------------------------------

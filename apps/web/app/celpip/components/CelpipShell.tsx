@@ -160,7 +160,7 @@ export function CelpipShell() {
           {view === 'practice' && <PracticeView api={api} onStart={openAttempt} />}
           {view === 'mocks' && <MockTestsView api={api} onStart={openAttempt} />}
           {view === 'results' && (
-            <ResultsView api={api} initialAttemptId={openResult} onClear={() => setOpenResult(null)} />
+            <ResultsView api={api} initialAttemptId={openResult} onClear={() => setOpenResult(null)} onStart={openAttempt} />
           )}
           {view === 'plan' && <StudyPlanView api={api} onStart={openAttempt} />}
           {view === 'bank' && <QuestionBankView api={api} />}

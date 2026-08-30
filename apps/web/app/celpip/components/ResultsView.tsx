@@ -32,11 +32,12 @@ const DIMENSION_LABEL: Record<string, string> = {
 }
 
 export function ResultsView({
-  api, initialAttemptId, onClear,
+  api, initialAttemptId, onClear, onStart,
 }: {
   api: Api
   initialAttemptId: string | null
   onClear: () => void
+  onStart: (attemptId: string) => void
 }) {
   const [rows, setRows] = useState<AttemptRow[] | null>(null)
   const [open, setOpen] = useState<string | null>(initialAttemptId)
@@ -95,6 +96,7 @@ export function ResultsView({
         results={results}
         onBack={() => { setOpen(null); onClear() }}
         onRefresh={() => void loadResults(open)}
+        onStart={onStart}
       />
     )
   }
@@ -145,13 +147,17 @@ export function ResultsView({
 }
 
 function AttemptResults({
-  api, results, onBack, onRefresh,
+  api, results, onBack, onRefresh, onStart,
 }: {
   api: Api
   results: ResultsPayload
   onBack: () => void
   onRefresh: () => void
+  onStart: (attemptId: string) => void
 }) {
+  const [retaking, setRetaking] = useState(false)
+  const [retakeProgress, setRetakeProgress] = useState('')
+  const [retakeError, setRetakeError] = useState('')
   const scoring =
     results.status === 'submitted' ||
     results.status === 'evaluating' ||
@@ -161,16 +167,45 @@ function AttemptResults({
   const measured = Object.entries(results.components).filter(([, component]) => component.level.low > 0)
   const lowest = measured.sort((a, b) => a[1].level.low - b[1].level.low)[0]
 
+  const retake = async () => {
+    if (!results.retake_available) return
+    setRetaking(true)
+    setRetakeError('')
+    try {
+      setRetakeProgress('Resetting the original assessment…')
+      const test = await api.postJson<{ attempt_id: string }>(
+        `/admin/celpip/attempts/${results.attempt_id}/retake`,
+      )
+      onStart(test.attempt_id)
+    } catch (error) {
+      setRetakeError(error instanceof Error ? error.message : 'Could not prepare the retake.')
+    } finally {
+      setRetaking(false)
+      setRetakeProgress('')
+    }
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between gap-3">
         <button type="button" className={BUTTON_QUIET} onClick={onBack}>
           <ArrowLeft size={14} /> All results
         </button>
-        <button type="button" className={BUTTON_QUIET} onClick={onRefresh}>
-          <RefreshCw size={14} /> Refresh
-        </button>
+        <div className="flex gap-2">
+          <button type="button" className={BUTTON_QUIET} onClick={onRefresh}>
+            <RefreshCw size={14} /> Refresh
+          </button>
+          {results.retake_available && !scoring && (
+            <button type="button" className={BUTTON} disabled={retaking} onClick={() => void retake()}>
+              {retaking ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+              {retaking ? 'Preparing…' : 'Retake same questions'}
+            </button>
+          )}
+        </div>
       </div>
+
+      {retakeProgress && <div className="flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm font-medium text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300"><Loader2 size={15} className="animate-spin" /> {retakeProgress}</div>}
+      {retakeError && <ErrorNote message={retakeError} />}
 
       <div className="rounded-3xl bg-neutral-950 p-5 text-white sm:p-7">
         <p className="text-xs font-bold uppercase tracking-[0.15em] text-amber-300">Your result</p>
@@ -237,6 +272,24 @@ function AttemptResults({
         ))}
       </div>
       <ApproximateNote />
+
+      {(results.series_history?.length ?? 0) > 1 && (
+        <section className={CARD}>
+          <SectionHeading title="Score history" hint="Every sitting of this exact assessment, oldest to newest." />
+          <div className="mt-3 space-y-2">
+            {results.series_history?.map((attempt, index) => (
+              <div key={attempt.attempt_id} className="flex items-center justify-between gap-3 rounded-xl bg-neutral-50 px-3 py-2 dark:bg-neutral-800/60">
+                <p className="text-sm font-semibold text-neutral-700 dark:text-neutral-200">Attempt {index + 1} · {formatDate(attempt.created_at)}</p>
+                <div className="flex gap-2">
+                  {Object.entries(attempt.levels).map(([skill, level]) => (
+                    <span key={skill} className="text-center"><LevelBadge low={level.low ?? null} high={level.high ?? null} size="sm" /><span className="block text-[9px] uppercase text-neutral-400">{skill.slice(0, 4)}</span></span>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       {Object.entries(results.components)
         .filter(([, c]) => c.method === 'deterministic')

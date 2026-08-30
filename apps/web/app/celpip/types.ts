@@ -131,6 +131,7 @@ export type BankItem = {
   times_served: number
   last_served_at: string | null
   approved_at: string | null
+  generation_run_id: string | null
   generator_model: string
   validator_model: string
   created_at: string
@@ -316,6 +317,13 @@ export type ResultsPayload = {
   components: Record<string, ComponentResult>
   evaluations: Evaluation[]
   error: string | null
+  retake_available?: boolean
+  series_history?: {
+    attempt_id: string
+    created_at: string
+    status: string
+    levels: Record<string, { low?: number; high?: number }>
+  }[]
   /** Scoring is still in flight, including between a failed run and its retry. */
   evaluation_pending?: boolean
   evaluation_job?: {

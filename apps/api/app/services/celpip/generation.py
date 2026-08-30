@@ -206,8 +206,8 @@ def run_generation(
                 ),
                 validated_at=_now(),
                 generation_run_id=run_id,
-                generator_model=generator_model,
-                validator_model=verdict.get("validator_model", ""),
+                generator_model=generator_model[:120],
+                validator_model=str(verdict.get("validator_model", ""))[:120],
                 spec_version=SPEC_VERSION,
                 content_fingerprint=fingerprint,
             )
@@ -234,8 +234,8 @@ def run_generation(
         run.rejected_count = len(rejections)
         run.rejections_json = json.dumps(rejections, ensure_ascii=False)
         run.question_ids_json = json.dumps(accepted_ids)
-        run.generator_model = generator_model
-        run.validator_model = validator_model
+        run.generator_model = generator_model[:120]
+        run.validator_model = validator_model[:120]
         run.spec_version = SPEC_VERSION
         run.completed_at = _now()
         db.commit()

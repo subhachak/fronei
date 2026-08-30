@@ -492,9 +492,9 @@ def evaluate_response(db, attempt: CelpipAttempt, response: CelpipResponse) -> C
     evaluation.weakness_tags_json = json.dumps(
         _collect_tags(eval_a, eval_b, extra=(metrics or {}).get("flags"))
     )
-    evaluation.evaluator_a_model = model_a
-    evaluation.evaluator_b_model = model_b
-    evaluation.reconciler_model = reconciler_model
+    evaluation.evaluator_a_model = model_a[:120]
+    evaluation.evaluator_b_model = model_b[:120]
+    evaluation.reconciler_model = reconciler_model[:120]
     evaluation.completed_at = _now()
     db.commit()
     return evaluation

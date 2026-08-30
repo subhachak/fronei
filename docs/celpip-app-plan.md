@@ -443,3 +443,44 @@ Verification: 104 CELPIP backend tests, 40 web tests, full API suite 1080 passin
 with no failures, `npm run build` and `tsc --noEmit` clean, ruff clean. The P2
 fix and the P0 runner fix were both confirmed to fail their new tests when
 reverted.
+
+### Deploy fix: Postgres rejected the migration
+
+The first production deploy failed at `alembic upgrade head`:
+
+    column "is_unscored" is of type boolean but default expression is of type
+    integer
+
+The migration's four boolean columns were generated with
+`server_default=sa.text('0')`. SQLite accepts an integer literal as a boolean
+default; Postgres does not. Local development and the entire test suite run on
+SQLite, so nothing caught it until the deploy. Changed to `sa.false()`, which
+SQLAlchemy renders per dialect (`false` on Postgres, `0` on SQLite).
+
+Postgres uses transactional DDL, so the failed migration rolled back whole --
+no partial schema was left behind, and the migration's `table_exists` guards
+would have handled it even if there had been.
+
+**`tests/test_celpip_migration.py` closes the gap.** It renders the migration as
+Postgres DDL through Alembic's offline mode -- no database needed -- and asserts
+boolean columns default to `true`/`false` rather than `0`/`1`. Reverting the fix
+makes it fail with the exact statement production rejected.
+
+Two things that test had to work around, both worth knowing about:
+
+- Offline mode cannot run this migration as written, because the idempotency
+  guards call `inspect()` on a connection that offline mode does not have. The
+  guards are stubbed to "nothing exists yet" -- the state of a fresh production
+  database.
+- The Alembic `Config` is built **without** `alembic.ini`. `env.py` calls
+  `logging.config.fileConfig()` whenever a config file is present, and that runs
+  with `disable_existing_loggers=True`, silencing every logger created before
+  it. Loading the ini file made two unrelated tests in other files fail on
+  missing log output -- a failure that points nowhere near its cause.
+
+**Also hardened while here: `VARCHAR(n)` lengths.** Postgres enforces them and
+SQLite ignores them, so the same "passes locally, fails in production" shape
+applied to any unbounded write to a length-limited column. Test labels, and the
+model-name columns on questions, generation runs, and evaluations, are now
+bounded at their column width, and the assemble endpoint rejects an over-long
+label at the API boundary rather than truncating what the caller asked for.

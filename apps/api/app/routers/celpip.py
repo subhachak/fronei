@@ -490,7 +490,9 @@ class AssembleIn(BaseModel):
     components: list[str] | None = None
     task_keys: list[str] | None = None
     repeats: int = Field(default=1, ge=1, le=5)
-    label: str = ""
+    # Bounded to the column width: Postgres enforces VARCHAR(255), SQLite does
+    # not, so an unbounded label passes every local test and fails in production.
+    label: str = Field(default="", max_length=255)
 
 
 @router.post("/tests")

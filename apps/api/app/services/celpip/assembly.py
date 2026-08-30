@@ -174,7 +174,8 @@ def assemble_test(
         test = CelpipTest(
             id=new_id("ctest"),
             user_id=user_id,
-            label=label or _default_label(mode, skills),
+            # VARCHAR(255): Postgres rejects an over-long value outright.
+            label=(label or _default_label(mode, skills))[:255],
             mode=mode,
             components_json=json.dumps(skills),
             practice_mode=practice_mode,

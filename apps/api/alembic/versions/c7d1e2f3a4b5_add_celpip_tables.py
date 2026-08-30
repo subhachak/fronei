@@ -164,8 +164,8 @@ def upgrade() -> None:
             sa.Column("skill", sa.String(length=16), nullable=False),
             sa.Column("task_key", sa.String(length=64), nullable=False),
             sa.Column("position", sa.Integer(), nullable=False, server_default='0'),
-            sa.Column("is_unscored", sa.Boolean(), nullable=False, server_default=sa.text('0')),
-            sa.Column("is_practice_task", sa.Boolean(), nullable=False, server_default=sa.text('0')),
+            sa.Column("is_unscored", sa.Boolean(), nullable=False, server_default=sa.false()),
+            sa.Column("is_practice_task", sa.Boolean(), nullable=False, server_default=sa.false()),
         )
         op.create_index("ix_celpip_test_items_test_id", "celpip_test_items", ["test_id"], unique=False)
         op.create_index("ix_celpip_test_items_question_id", "celpip_test_items", ["question_id"], unique=False)
@@ -211,8 +211,8 @@ def upgrade() -> None:
             sa.Column("transcript_words_json", sa.Text(), nullable=False, server_default='[]'),
             sa.Column("transcription_status", sa.String(length=16), nullable=False, server_default='none'),
             sa.Column("time_spent_ms", sa.Integer(), nullable=False, server_default='0'),
-            sa.Column("flagged", sa.Boolean(), nullable=False, server_default=sa.text('0')),
-            sa.Column("late", sa.Boolean(), nullable=False, server_default=sa.text('0')),
+            sa.Column("flagged", sa.Boolean(), nullable=False, server_default=sa.false()),
+            sa.Column("late", sa.Boolean(), nullable=False, server_default=sa.false()),
             sa.Column("created_at", sa.DateTime(), nullable=False),
             sa.Column("updated_at", sa.DateTime(), nullable=False),
         )

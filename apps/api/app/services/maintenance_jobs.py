@@ -18,6 +18,14 @@ from app.services.agent.profile_consolidator import consolidate_active_workspace
 logger = logging.getLogger(__name__)
 PROFILE_CONSOLIDATION_JOB = "profile_consolidation"
 LANGGRAPH_CHECKPOINT_CLEANUP_JOB = "langgraph_checkpoint_cleanup"
+# CELPIP work that is minutes long and must survive a restart: generating and
+# validating exam items, synthesising listening audio, and scoring a submitted
+# attempt (two evaluator passes across up to ten productive responses). Each
+# runs on this queue rather than in a request, so a closed browser tab or a
+# redeploy mid-run does not lose the work.
+CELPIP_GENERATION_JOB = "celpip_generation"
+CELPIP_ASSETS_JOB = "celpip_assets"
+CELPIP_EVALUATION_JOB = "celpip_evaluation"
 
 # langgraph_run_contexts.status values that must never be touched by cleanup
 # (a run in one of these states may still resume and needs its checkpoint).
@@ -180,6 +188,121 @@ def enqueue_langgraph_checkpoint_cleanup(
         return _payload(job), True
     finally:
         db.close()
+
+
+def _enqueue_celpip_job(job_type: str, dedupe_key: str, payload: dict[str, Any]) -> str:
+    """Queue one CELPIP background job and return its id.
+
+    Unlike the maintenance jobs above, these are per-run rather than daily, so
+    the dedupe key names the specific run/attempt. Re-enqueueing the same one
+    (a double-clicked button, a retried request) returns the existing job
+    instead of starting a second pass over the same work.
+    """
+    db = SessionLocal()
+    try:
+        existing = (
+            db.query(MaintenanceJob)
+            .filter(MaintenanceJob.dedupe_key == dedupe_key)
+            .first()
+        )
+        if existing:
+            return existing.id
+        settings = get_settings()
+        now = _now()
+        job = MaintenanceJob(
+            id=f"celpip_{uuid.uuid4().hex[:24]}",
+            job_type=job_type,
+            dedupe_key=dedupe_key,
+            status="queued",
+            payload_json=json.dumps(payload),
+            result_json="{}",
+            max_attempts=max(1, settings.maintenance_worker_max_attempts),
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(job)
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            raced = (
+                db.query(MaintenanceJob)
+                .filter(MaintenanceJob.dedupe_key == dedupe_key)
+                .one()
+            )
+            return raced.id
+        db.refresh(job)
+        job_id = job.id
+    finally:
+        db.close()
+    maintenance_job_worker.notify()
+    return job_id
+
+
+def enqueue_celpip_generation(
+    *, run_id: str, user_id: str, task_key: str, count: int,
+    difficulty: int = 9, topic_hint: str = "",
+) -> str:
+    return _enqueue_celpip_job(
+        CELPIP_GENERATION_JOB,
+        f"{CELPIP_GENERATION_JOB}:{run_id}",
+        {
+            "run_id": run_id, "user_id": user_id, "task_key": task_key,
+            "count": count, "difficulty": difficulty, "topic_hint": topic_hint,
+        },
+    )
+
+
+def enqueue_celpip_assets(*, question_id: str) -> str:
+    return _enqueue_celpip_job(
+        CELPIP_ASSETS_JOB,
+        f"{CELPIP_ASSETS_JOB}:{question_id}",
+        {"question_id": question_id},
+    )
+
+
+def enqueue_celpip_evaluation(*, attempt_id: str) -> str:
+    return _enqueue_celpip_job(
+        CELPIP_EVALUATION_JOB,
+        f"{CELPIP_EVALUATION_JOB}:{attempt_id}",
+        {"attempt_id": attempt_id},
+    )
+
+
+def job_retry_state(dedupe_key: str) -> dict[str, Any] | None:
+    """Retry status of the job behind `dedupe_key`, or None if there is none.
+
+    `attempt_count` is incremented when a job is claimed, so while a job is
+    running this reports the run currently in flight -- which is what lets a
+    handler tell "this failure will be retried" from "this was the last try".
+    """
+    db = SessionLocal()
+    try:
+        job = (
+            db.query(MaintenanceJob)
+            .filter(MaintenanceJob.dedupe_key == dedupe_key)
+            .first()
+        )
+        if job is None:
+            return None
+        attempt_count = int(job.attempt_count or 0)
+        max_attempts = int(job.max_attempts or 1)
+        return {
+            "job_id": job.id,
+            "status": job.status,
+            "attempt_count": attempt_count,
+            "max_attempts": max_attempts,
+            # True while the job is queued or still has a try left after this one.
+            "retry_pending": job.status in {"queued", "running"} and attempt_count < max_attempts,
+            "active": job.status in {"queued", "running"},
+            "error": job.error_message,
+        }
+    finally:
+        db.close()
+
+
+def celpip_evaluation_job_state(attempt_id: str) -> dict[str, Any] | None:
+    return job_retry_state(f"{CELPIP_EVALUATION_JOB}:{attempt_id}")
 
 
 def get_job(job_id: str) -> dict[str, Any] | None:
@@ -497,6 +620,33 @@ def execute_job(job_type: str, payload: dict[str, Any]) -> dict[str, Any]:
             retention_days=int(payload.get("retention_days") or settings.langgraph_checkpoint_retention_days),
         )
         result["outcome"] = "success"
+        return result
+    if job_type == CELPIP_GENERATION_JOB:
+        # Imported lazily: the CELPIP services import this module to enqueue,
+        # so a module-level import here would close the cycle.
+        from app.services.celpip.generation import run_generation
+
+        result = run_generation(
+            run_id=str(payload.get("run_id")),
+            user_id=str(payload.get("user_id") or ""),
+            task_key=str(payload.get("task_key")),
+            count=int(payload.get("count") or 1),
+            difficulty=int(payload.get("difficulty") or 9),
+            topic_hint=str(payload.get("topic_hint") or ""),
+        )
+        result["outcome"] = "success" if result.get("accepted") else "partial_success"
+        return result
+    if job_type == CELPIP_ASSETS_JOB:
+        from app.services.celpip.assets import build_assets_for_question
+
+        result = build_assets_for_question(str(payload.get("question_id")))
+        result["outcome"] = "success" if result.get("ready") else "partial_success"
+        return result
+    if job_type == CELPIP_EVALUATION_JOB:
+        from app.services.celpip.scoring import evaluate_attempt
+
+        result = evaluate_attempt(str(payload.get("attempt_id")))
+        result["outcome"] = "success" if result.get("completed") else "partial_success"
         return result
     raise ValueError(f"Unsupported maintenance job type: {job_type}")
 

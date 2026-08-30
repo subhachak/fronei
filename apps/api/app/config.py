@@ -126,6 +126,25 @@ class Settings(BaseSettings):
     artifact_s3_key_prefix: str = "artifacts"
     artifact_download_url_ttl_seconds: int = 300
 
+    # CELPIP speech. Listening items are synthesised once at generation time
+    # and cached in the blob store; speaking responses are transcribed after
+    # capture. Both go straight to OpenAI's audio endpoints over httpx rather
+    # than through the LiteLLM gateway, which is text-only.
+    #
+    # whisper-1 is chosen over the newer transcription models specifically
+    # because it returns word-level timestamps (verbose_json +
+    # timestamp_granularities=word). Those timings are what produce the
+    # deterministic pace / pause / filler metrics for speaking feedback -- a
+    # cleaned-up transcript alone hides every hesitation.
+    celpip_tts_model: str = "gpt-4o-mini-tts"
+    celpip_stt_model: str = "whisper-1"
+    celpip_speech_timeout_seconds: int = 180
+    # Voices assigned round-robin to the speakers in a listening script, so a
+    # three-way discussion is three distinguishable people rather than one
+    # narrator reading a play.
+    celpip_tts_female_voices: str = "nova,shimmer,coral"
+    celpip_tts_male_voices: str = "onyx,echo,ash"
+
     # Whether to run LibreOffice/poppler-based PPTX render QA synchronously on
     # the document-generation request path. This can take up to ~60s per deck
     # (see pptx_render_qa.CONVERT_TIMEOUT_SECONDS). Disabled by default in

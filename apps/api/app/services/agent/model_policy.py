@@ -37,6 +37,14 @@ MODEL_ROLES: tuple[str, ...] = (
     "profile_consolidation",
     "blog_draft",
     "blog_edit",
+    "celpip_item_writer",
+    "celpip_item_validator",
+    "celpip_writing_scorer",
+    "celpip_writing_scorer_b",
+    "celpip_speaking_scorer",
+    "celpip_speaking_scorer_b",
+    "celpip_score_reconciler",
+    "celpip_feedback_writer",
 )
 
 # Roles deliberately NOT included above: "judge" / "research_judge" /
@@ -86,7 +94,43 @@ DEFAULT_MODEL_POLICY: dict[str, str] = {
     # editing the admin's own words under explicit instruction, not
     # originating new research.
     "blog_edit": "claude-sonnet-4-6",
+    # --- CELPIP preparation app (docs/celpip-app-plan.md) ---
+    # Writes exam items: stimulus, questions, keyed answers, distractor
+    # rationale. High volume relative to the rest of the CELPIP pipeline and
+    # its output is checked by an independent validator pass before anything
+    # is servable, so mid-tier is the right trade.
+    "celpip_item_writer": "claude-sonnet-4-6",
+    # Independently re-answers a generated item from the stimulus alone and
+    # rejects it if more than one option is defensible or the key lacks
+    # evidence. Deliberately a DIFFERENT default model from the writer -- a
+    # validator sharing the writer's blind spots validates nothing.
+    "celpip_item_validator": "gpt-4.1",
+    # The two productive-skill scorers and the reconciler are the only place
+    # in this app where a wrong answer costs the learner real preparation
+    # time: a soft or inconsistent level estimate sends them to drill the
+    # wrong weakness for a week. Top tier, and evaluator B intentionally
+    # defaults to a different provider from evaluator A so the two passes are
+    # genuinely independent rather than the same model asked twice.
+    "celpip_writing_scorer": "claude-opus-4-8",
+    "celpip_speaking_scorer": "claude-opus-4-8",
+    # The second evaluator pass. Defaults to a different provider from pass A
+    # on purpose: two passes from one model is one opinion asked twice, and
+    # the agreement between them would then mean nothing. If both roles are
+    # ever pointed at the same model, the confidence score this app reports
+    # becomes a fiction.
+    "celpip_writing_scorer_b": "gpt-4.1",
+    "celpip_speaking_scorer_b": "gpt-4.1",
+    "celpip_score_reconciler": "claude-opus-4-8",
+    # Exemplar responses, improved outlines, and retry exercises. Generation
+    # under an explicit brief rather than judgement, and it runs after the
+    # score is already fixed, so it cannot move an estimate.
+    "celpip_feedback_writer": "claude-sonnet-4-6",
 }
+# Deliberately NOT a role: the study planner. It schedules from measured
+# weakness tags, readiness sub-scores, and the learner's stated available
+# hours -- all data the system already holds -- so it is ordinary arithmetic
+# over a template, not a model call. A model-policy entry for it would
+# control nothing, exactly like the rule-based judges above.
 
 # LiteLLM needs the provider prefix to route to Gemini.
 DEFAULT_FALLBACK_MODELS: list[str] = ["gpt-4.1", "gemini/gemini-2.5-flash", "gpt-4.1-mini"]

@@ -11,6 +11,7 @@ from app.routers.admin import router as admin_router
 from app.routers.agent import router as agent_router
 from app.routers.blog import admin_router as blog_admin_router
 from app.routers.blog import public_router as blog_public_router
+from app.routers.celpip import router as celpip_router
 from app.routers.documents import router as documents_router
 from app.routers.evals import router as evals_router
 from app.routers.facts import router as facts_router
@@ -54,6 +55,18 @@ def _bootstrap_eval_cases() -> None:
     except Exception as exc:
         # Never block startup — log and continue.
         log.warning("eval case bootstrap skipped: %s", exc)
+
+
+def _bootstrap_celpip_lessons() -> None:
+    """Seed the CELPIP Learn library on startup (hash-guarded — rewrites only
+    lessons whose authored source actually changed)."""
+    import logging
+    log = logging.getLogger(__name__)
+    try:
+        from app.services.celpip.lessons import seed_lessons
+        log.info("celpip lesson bootstrap: %s", seed_lessons())
+    except Exception as exc:
+        log.warning("celpip lesson bootstrap skipped: %s", exc)
 
 
 @asynccontextmanager
@@ -110,6 +123,7 @@ async def lifespan(app: FastAPI):
     configure_provider_keys()
     _configure_langsmith()
     _bootstrap_eval_cases()
+    _bootstrap_celpip_lessons()
     _mark_orphaned_eval_runs()
     _mark_orphaned_langgraph_runs()
     turn_job_worker.start()
@@ -140,6 +154,7 @@ def health() -> dict:
 app.include_router(admin_router)
 app.include_router(blog_admin_router)
 app.include_router(blog_public_router)
+app.include_router(celpip_router)
 app.include_router(evals_router)
 app.include_router(agent_router)
 app.include_router(documents_router)

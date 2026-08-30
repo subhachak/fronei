@@ -7,6 +7,7 @@ import {
   Cpu,
   FlaskConical,
   LayoutDashboard,
+  GraduationCap,
   ListTodo,
   Loader2,
   Moon,
@@ -106,6 +107,16 @@ export function AdminShell({ embedded = false, onClose }: { embedded?: boolean; 
                 {item.label}
               </button>
             ))}
+            {/* CELPIP is a link, not a tab: a timed exam simulation needs its
+                own full-screen shell rather than this scrolling pane under a
+                tab strip. Same admin gate on both sides. */}
+            <a
+              href="/celpip"
+              className="flex flex-shrink-0 items-center gap-1.5 rounded-full px-3 py-1.5 text-[13px] font-semibold text-neutral-500 transition-colors hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
+            >
+              <GraduationCap size={14} />
+              CELPIP
+            </a>
           </nav>
         )}
       </header>

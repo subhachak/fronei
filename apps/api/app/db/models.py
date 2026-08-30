@@ -1,7 +1,7 @@
 import json
 import secrets
 from datetime import datetime, date, timezone
-from sqlalchemy import Boolean, create_engine, DateTime, Float, ForeignKey, Integer, String, Text, event, func
+from sqlalchemy import Boolean, create_engine, Date, DateTime, Float, ForeignKey, Integer, String, Text, event, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 from app.config import get_settings
 
@@ -496,6 +496,398 @@ class DocumentTemplate(Base):
     design_system_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+
+# --- CELPIP preparation app -----------------------------------------------
+#
+# The CELPIP workspace owns its own tables and service layer rather than
+# routing through Fronei's conversational agent stack: a timed exam has a
+# server-authoritative clock, a fixed item schema, and a scoring pipeline that
+# has nothing in common with a chat turn. See docs/celpip-app-plan.md.
+#
+# Every row is scoped by user_id (the Clerk id) even though the section is
+# admin-only today -- a scored attempt belongs to the person who sat it, and
+# a table that assumes a single user is expensive to un-assume later.
+
+
+class CelpipProfile(Base):
+    """Per-user preparation settings and onboarding state."""
+
+    __tablename__ = "celpip_profiles"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(128), unique=True, index=True, nullable=False)
+    # "general" (all four components) or "general_ls" (Listening + Speaking).
+    test_type: Mapped[str] = mapped_column(String(16), nullable=False, default="general")
+    test_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    target_level: Mapped[int] = mapped_column(Integer, nullable=False, default=9)
+    weekday_hours: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
+    weekend_hours: Mapped[float] = mapped_column(Float, nullable=False, default=2.0)
+    # Task keys or weakness tags the learner named for themselves at onboarding.
+    # Kept distinct from measured weaknesses (which come from evaluations) --
+    # self-report seeds the first plan, measurement replaces it.
+    self_reported_weaknesses_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    # "pending" until onboarding is completed or explicitly skipped.
+    onboarding_state: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    diagnostic_attempt_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Last computed readiness composite plus its component sub-scores, so the
+    # dashboard can explain why the number moved instead of just showing it.
+    readiness_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
+    )
+
+
+class CelpipLesson(Base):
+    """Learn-library content.
+
+    Authored in the repo and seeded into the DB rather than rendered straight
+    from files, because plan items and result feedback link to lessons by id
+    ("review the lesson for this weakness") and a DB row is what makes that
+    link resolvable and orderable.
+    """
+
+    __tablename__ = "celpip_lessons"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    slug: Mapped[str] = mapped_column(String(160), unique=True, index=True, nullable=False)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    # "overview" | "format" | "strategy" | "scoring" | "vocabulary"
+    category: Mapped[str] = mapped_column(String(32), nullable=False, default="overview", index=True)
+    # Null for general lessons; set for a lesson that teaches one official task.
+    skill: Mapped[str | None] = mapped_column(String(16), nullable=True, index=True)
+    task_key: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    body_markdown: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # Weakness tags this lesson addresses -- the join that lets a scored
+    # weakness surface "review this" without a hand-maintained mapping table.
+    weakness_tags_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    estimated_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Content hash of the authored source, so reseeding only rewrites lessons
+    # whose source actually changed and never clobbers nothing-to-do rows.
+    source_hash: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
+    )
+
+
+class CelpipQuestion(Base):
+    """One self-contained task instance in the item bank.
+
+    `payload_json` carries the whole item -- stimulus, questions, keyed
+    answers, evidence spans, and per-distractor rationale -- validated against
+    the per-task schema in services/celpip/schemas.py before the row is
+    written. Keeping it as one JSON document rather than normalised question
+    rows is deliberate: an item is only ever served, scored, and retired as a
+    unit, and the shape differs sharply between task types.
+    """
+
+    __tablename__ = "celpip_questions"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    skill: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    task_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    part: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    title: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    # Target CELPIP level this item was written for (1-12).
+    difficulty: Mapped[int] = mapped_column(Integer, nullable=False, default=9)
+    topic: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    # "generated" | "authored"
+    source: Mapped[str] = mapped_column(String(16), nullable=False, default="generated")
+    # "draft" -> validation pending; "awaiting_assets" -> validated but its
+    # audio or image is still being built; "ready" -> servable; "rejected" ->
+    # failed validation; "disabled" -> manually withdrawn; "retired" ->
+    # superseded. Only "ready" is ever served.
+    # Note "ready" is set by automated validation, not human approval: a review
+    # queue that blocks practice would cost more preparation time than it saves
+    # (docs/celpip-app-plan.md section 5).
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="draft", index=True)
+    # Full validator output: verdict, per-check results, rejection reasons.
+    validation_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    validated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Set when a human explicitly approved it in the Question Bank. Never
+    # required for serving -- purely a quality signal for assembly preference.
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    generation_run_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    generator_model: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    validator_model: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    spec_version: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    # Normalised shingle fingerprint of the stimulus, used to reject items that
+    # substantially duplicate something already in the bank.
+    content_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, default="", index=True)
+    times_served: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_served_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
+    )
+
+
+class CelpipQuestionAsset(Base):
+    """Generated media belonging to a question: listening audio, the diagram
+    image for Reading Part 2, or the scene image for Speaking 3/4/5/8."""
+
+    __tablename__ = "celpip_question_assets"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    question_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    # "audio" | "image" | "transcript"
+    kind: Mapped[str] = mapped_column(String(16), nullable=False, default="audio")
+    # Which segment of a multi-part listening item this belongs to (0-based).
+    segment_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # blob_store location, e.g. "local:celpip/audio/<id>.mp3" or "s3:...".
+    blob_location: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    content_type: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    duration_seconds: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    # The exact script the audio was synthesised from. Stored so the validator
+    # can confirm audio and transcript agree, and so a failed synthesis can be
+    # retried without regenerating the item.
+    text_content: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    voice: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    # "pending" | "ready" | "failed"
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending", index=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
+    )
+
+
+class CelpipTest(Base):
+    """An assembled set of items: a full mock, a component test, a custom
+    drill set, or a diagnostic."""
+
+    __tablename__ = "celpip_tests"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(128), index=True, nullable=False)
+    label: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    # "full" | "full_ls" | "component" | "custom" | "diagnostic" | "single_task"
+    mode: Mapped[str] = mapped_column(String(24), nullable=False, default="custom", index=True)
+    # Skills covered, in delivery order.
+    components_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    # "learn" | "timed" | "simulation" -- fixed at assembly because it changes
+    # which items are eligible and how the runner behaves.
+    practice_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="timed")
+    target_level: Mapped[int] = mapped_column(Integer, nullable=False, default=9)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class CelpipTestItem(Base):
+    """Ordered membership of a question in a test."""
+
+    __tablename__ = "celpip_test_items"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    test_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    question_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    skill: Mapped[str] = mapped_column(String(16), nullable=False)
+    task_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Unscored content appears in a real full mock and is not identified during
+    # the attempt. Excluded from raw score at evaluation time.
+    is_unscored: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # The official practice task at the head of Listening and Reading.
+    is_practice_task: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+
+class CelpipAttempt(Base):
+    """One sitting.
+
+    The clock is server-authoritative: section deadlines are computed from
+    `section_state_json`'s recorded server start times, never from anything the
+    browser reports. That is what makes timer recovery after a refresh correct
+    rather than exploitable.
+    """
+
+    __tablename__ = "celpip_attempts"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(128), index=True, nullable=False)
+    test_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    practice_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="timed")
+    # not_started | in_progress | submitted | evaluating | completed | failed
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="not_started", index=True)
+    # Per-skill: {started_at, deadline_at, completed_at, auto_submitted}.
+    section_state_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    current_skill: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    current_position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Question ids the learner flagged to revisit, where the task allows it.
+    flagged_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Rolled-up per-component level estimates once evaluation finishes.
+    results_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
+    )
+
+
+class CelpipResponse(Base):
+    """One answer within an attempt. Autosaved server-side on every change."""
+
+    __tablename__ = "celpip_responses"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    attempt_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    question_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    skill: Mapped[str] = mapped_column(String(16), nullable=False)
+    task_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Index of the sub-question within a receptive item; 0 for writing/speaking.
+    question_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Selected option key for multiple choice.
+    selected_option: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # Written response for writing tasks.
+    response_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # Speaking capture.
+    audio_blob_location: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    audio_duration_seconds: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    transcript: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # Word-level timing from the transcription provider, when available. Drives
+    # the deterministic pace/pause/filler metrics an LLM cannot infer from a
+    # cleaned-up transcript.
+    transcript_words_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    transcription_status: Mapped[str] = mapped_column(String(16), nullable=False, default="none")
+    time_spent_ms: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    flagged: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Set when the server recorded the answer after the section deadline plus
+    # its grace window (reachable through clock skew or a late autosave).
+    # Receptive answers flagged here are scored as unanswered -- see
+    # scoring.score_receptive_question, which also reports how many were
+    # dropped so the learner is told rather than silently docked. Written and
+    # spoken responses are NOT dropped on this flag: their text accumulates
+    # through autosave, so one late save would discard the whole essay.
+    late: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
+    )
+
+
+class CelpipEvaluation(Base):
+    """Scoring output for one response (productive) or one task (receptive).
+
+    Writing and Speaking are scored twice by independent passes and reconciled
+    when they materially disagree. All three outputs persist: a level estimate
+    the learner is meant to trust has to be auditable, and a disagreement
+    between passes is itself the honest signal that the estimate is soft.
+    """
+
+    __tablename__ = "celpip_evaluations"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    attempt_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    response_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    question_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    skill: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    task_key: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    # "deterministic" for keyed L/R scoring, "rubric" for W/S.
+    method: Mapped[str] = mapped_column(String(16), nullable=False, default="rubric")
+    # pending | scoring | complete | failed
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending", index=True)
+    # Reconciled per-dimension levels and the overall estimate.
+    level_low: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    level_high: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    dimensions_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    # 0-1. Falls as the two evaluator passes diverge.
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    # The two independent passes, kept verbatim.
+    evaluator_a_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    evaluator_b_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    reconciliation_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    # Learner-facing bundle: evidence, missing requirements, corrections,
+    # outline, patterns. The improved sample response is generated separately
+    # and on demand so it cannot bias the score.
+    feedback_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    exemplar_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    # Deterministic delivery metrics for speaking (pace, pauses, fillers).
+    delivery_metrics_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    weakness_tags_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    evaluator_a_model: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    evaluator_b_model: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    reconciler_model: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    rubric_version: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class CelpipStudyPlanItem(Base):
+    """One scheduled activity in the one-month plan."""
+
+    __tablename__ = "celpip_study_plan_items"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(128), index=True, nullable=False)
+    scheduled_for: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    # 1-4, for the week-level view.
+    week_index: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    # "diagnostic" | "lesson" | "drill" | "timed_component" | "full_mock" |
+    # "simulation" | "review" | "vocabulary"
+    activity_type: Mapped[str] = mapped_column(String(24), nullable=False, default="drill")
+    title: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    rationale: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    skill: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    task_keys_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    weakness_tags_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    lesson_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    estimated_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
+    # pending | in_progress | completed | skipped | deferred
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending", index=True)
+    attempt_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Append-only log of {from_date, to_date, reason} so a plan that keeps
+    # sliding is visible as such instead of silently rewriting itself.
+    reschedule_history_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    # Which planner pass created this item, so a rebalance can replace its own
+    # prior output without touching items the learner has already started.
+    plan_generation: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
+    )
+
+
+class CelpipGenerationRun(Base):
+    """Audit of one generation batch, including everything it rejected.
+
+    Rejections are the useful half: a task type whose items keep failing
+    independent validation is a prompt problem, and without this table that
+    shows up only as a mysteriously empty bank.
+    """
+
+    __tablename__ = "celpip_generation_runs"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(128), index=True, nullable=False)
+    task_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    requested_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    difficulty: Mapped[int] = mapped_column(Integer, nullable=False, default=9)
+    topic_hint: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    # queued | running | complete | failed
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="queued", index=True)
+    accepted_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    rejected_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # [{reason, detail, task_key}] -- one entry per rejected candidate.
+    rejections_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    question_ids_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    generator_model: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    validator_model: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    spec_version: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    job_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 def build_engine():

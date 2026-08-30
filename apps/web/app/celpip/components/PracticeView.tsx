@@ -1,38 +1,53 @@
 'use client'
 
-import { GraduationCap, Loader2, Target, Timer } from 'lucide-react'
-import { useCallback, useEffect, useState } from 'react'
-import type { BankCoverage, PracticeMode, Skill, Spec } from '../types'
+import {
+  GraduationCap, Layers, Loader2, Mic, RefreshCw, Target, Timer, Zap,
+} from 'lucide-react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import type { PracticeMode, Profile, Skill, Spec, StockReport } from '../types'
 import type { useCelpip } from '../hooks/useCelpip'
-import { prepareAndCreateTest } from '../lib/prepareTest'
-import { BUTTON, EmptyState, ErrorNote, SectionHeading, SKILL_TONE } from './ui'
+import { BUTTON, BUTTON_QUIET, CARD, ErrorNote, SKILL_TONE, SectionHeading } from './ui'
 
 type Api = ReturnType<typeof useCelpip>
+type Scope = 'task' | 'component' | 'full' | 'diagnostic'
 
-const MODES: { id: PracticeMode; label: string; icon: typeof Target; hint: string }[] = [
-  { id: 'learn', label: 'Learn', icon: Target, hint: 'Untimed, answers changeable, feedback after you submit.' },
-  { id: 'timed', label: 'Timed', icon: Timer, hint: 'Official time limits, no hints, feedback after the set.' },
-  { id: 'simulation', label: 'Simulation', icon: GraduationCap, hint: 'Strict timing, one audio play, no answer changes.' },
+const SCOPES: { id: Scope; label: string; hint: string; icon: typeof Target }[] = [
+  { id: 'task', label: 'One task type', hint: 'A single official task. The fastest way to drill a weakness.', icon: Target },
+  { id: 'component', label: 'One component', hint: 'Every task in one skill, under its official section limit.', icon: Layers },
+  { id: 'full', label: 'Full test', hint: 'All components in order — the whole sitting.', icon: GraduationCap },
+  { id: 'diagnostic', label: 'Diagnostic', hint: 'A short pass across every component to place you.', icon: Zap },
+]
+
+const MODES: { id: PracticeMode; label: string; hint: string; icon: typeof Target }[] = [
+  { id: 'learn', label: 'Learn', hint: 'Untimed, answers changeable, feedback after you submit.', icon: Target },
+  { id: 'timed', label: 'Timed', hint: 'Official limits, no hints, feedback after the set.', icon: Timer },
+  { id: 'simulation', label: 'Simulation', hint: 'Strict timing, one audio play, no answer changes.', icon: GraduationCap },
 ]
 
 export function PracticeView({ api, onStart }: { api: Api; onStart: (attemptId: string) => void }) {
   const [spec, setSpec] = useState<Spec | null>(null)
-  const [coverage, setCoverage] = useState<Record<string, number>>({})
+  const [profile, setProfile] = useState<Profile | null>(null)
+  const [stock, setStock] = useState<StockReport | null>(null)
+  const [scope, setScope] = useState<Scope>('task')
   const [mode, setMode] = useState<PracticeMode>('learn')
-  const [skill, setSkill] = useState<Skill>('listening')
-  const [taskKey, setTaskKey] = useState('')
+  const [skill, setSkill] = useState<Skill | null>(null)
+  const [taskKey, setTaskKey] = useState<string | null>(null)
   const [error, setError] = useState('')
-  const [starting, setStarting] = useState('')
-  const [progress, setProgress] = useState('')
+  const [preparing, setPreparing] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [micOk, setMicOk] = useState<boolean | null>(null)
 
   const load = useCallback(async () => {
     try {
-      const [s, bank] = await Promise.all([
+      const [s, p, stockReport] = await Promise.all([
         api.getJson<Spec>('/admin/celpip/spec'),
-        api.getJson<{ coverage: BankCoverage[] }>('/admin/celpip/bank?limit=1'),
+        api.getJson<Profile>('/admin/celpip/profile'),
+        api.getJson<StockReport>('/admin/celpip/stock'),
       ])
       setSpec(s)
-      setCoverage(Object.fromEntries(bank.coverage.map(c => [c.task_key, c.ready])))
+      setProfile(p)
+      setStock(stockReport)
+      setSkill(current => current ?? p.components[0])
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not load practice options.')
     }
@@ -42,35 +57,87 @@ export function PracticeView({ api, onStart }: { api: Api; onStart: (attemptId: 
     void load()
   }, [load])
 
+  // Questions are single-use, so a launch draws from a background-filled
+  // buffer. While that buffer is short, poll so the launcher unlocks on its own
+  // rather than making the learner guess when to retry.
   useEffect(() => {
-    const section = spec?.sections.find(item => item.skill === skill)
-    if (section && !section.tasks.some(task => task.key === taskKey)) {
-      setTaskKey(section.tasks[0]?.key ?? '')
-    }
-  }, [spec, skill, taskKey])
+    if (!stock || stock.can_launch) return
+    const id = window.setTimeout(() => void load(), 8000)
+    return () => window.clearTimeout(id)
+  }, [stock, load])
 
-  const start = useCallback(
-    async (taskKey: string) => {
-      setStarting(taskKey)
-      setError('')
-      try {
-        const test = await prepareAndCreateTest(api, {
-          mode: 'single_task',
-          practice_mode: mode,
-          task_keys: [taskKey],
-        }, [{ taskKey }], setProgress)
-        onStart(test.attempt_id)
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Could not start this drill.')
-      } finally {
-        setStarting('')
-        setProgress('')
-      }
-    },
-    [api, mode, onStart],
+  const tasksForSkill = useMemo(
+    () => (skill && spec ? spec.sections.find(section => section.skill === skill)?.tasks ?? [] : []),
+    [skill, spec],
   )
 
-  if (!spec) {
+  const requiredTasks = useMemo(() => {
+    if (!spec || !profile) return []
+    if (scope === 'task') return taskKey ? [taskKey] : []
+    if (scope === 'component') {
+      return skill ? (spec.sections.find(s => s.skill === skill)?.tasks ?? []).map(t => t.key) : []
+    }
+    return profile.components.flatMap(
+      component => (spec.sections.find(s => s.skill === component)?.tasks ?? []).map(t => t.key),
+    )
+  }, [scope, spec, profile, skill, taskKey])
+
+  // The server decides the diagnostic's task subset; the client only needs to
+  // know whether the buffer covers what it will ask for, so it checks the
+  // whole component rather than restating that subset here.
+  const notReady = useMemo(
+    () => requiredTasks.filter(key => (stock?.ready[key] ?? 0) < 1),
+    [requiredTasks, stock],
+  )
+
+  const needsMic = Boolean(
+    profile?.components.includes('speaking') &&
+    (scope === 'full' || scope === 'diagnostic' || skill === 'speaking'),
+  )
+
+  const checkMic = useCallback(async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      stream.getTracks().forEach(track => track.stop())
+      setMicOk(true)
+    } catch {
+      setMicOk(false)
+    }
+  }, [])
+
+  const launch = useCallback(async () => {
+    if (!profile) return
+    setBusy(true)
+    setError('')
+    setPreparing('')
+    const body: Record<string, unknown> =
+      scope === 'task' ? { mode: 'single_task', practice_mode: mode, task_keys: [taskKey] }
+      : scope === 'component' ? { mode: 'component', practice_mode: mode, components: [skill] }
+      : scope === 'diagnostic' ? { mode: 'diagnostic', practice_mode: mode }
+      : { mode: profile.test_type === 'general_ls' ? 'full_ls' : 'full', practice_mode: mode }
+
+    try {
+      const test = await api.postJson<{ attempt_id: string }>('/admin/celpip/tests', body)
+      onStart(test.attempt_id)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Could not start this test.'
+      try {
+        const detail = JSON.parse(message)?.detail
+        if (detail?.preparing) {
+          setPreparing(detail.hint)
+          void load()
+        } else {
+          setError(detail?.message ?? message)
+        }
+      } catch {
+        setError(message)
+      }
+    } finally {
+      setBusy(false)
+    }
+  }, [api, profile, scope, mode, taskKey, skill, onStart, load])
+
+  if (!spec || !profile || !stock) {
     return (
       <div className="flex items-center justify-center gap-2 py-24 text-sm text-neutral-400">
         {error ? <ErrorNote message={error} /> : (<><Loader2 size={16} className="animate-spin" /> Loading…</>)}
@@ -78,78 +145,187 @@ export function PracticeView({ api, onStart }: { api: Api; onStart: (attemptId: 
     )
   }
 
-  const total = Object.values(coverage).reduce((sum, n) => sum + n, 0)
-  const activeSection = spec.sections.find(section => section.skill === skill) ?? spec.sections[0]
-  const selectedTask = activeSection?.tasks.find(task => task.key === taskKey) ?? activeSection?.tasks[0]
+  const canLaunch =
+    notReady.length === 0 &&
+    requiredTasks.length > 0 &&
+    (!needsMic || micOk === true) &&
+    !busy
 
   return (
-    <div className="space-y-7">
+    <div className="space-y-6">
       {error && <ErrorNote message={error} />}
 
       <div>
-        <p className="text-xs font-bold uppercase tracking-[0.15em] text-amber-600 dark:text-amber-400">Focused practice</p>
-        <h2 className="mt-1 text-3xl font-bold tracking-tight text-neutral-950 dark:text-white">What do you want to improve?</h2>
-        <p className="mt-2 max-w-2xl text-sm leading-relaxed text-neutral-500">Choose one skill and task. We’ll keep the setup out of the way and take you straight into practice.</p>
+        <p className="text-xs font-bold uppercase tracking-[0.15em] text-amber-600 dark:text-amber-400">
+          Practice
+        </p>
+        <h2 className="mt-1 text-3xl font-bold tracking-tight text-neutral-950 dark:text-white">
+          What do you want to sit?
+        </h2>
+        <p className="mt-2 max-w-2xl text-sm leading-relaxed text-neutral-500">
+          Every question is new — you have never seen it, and it is never reused. Retake a finished
+          test from Results when you want the same questions again to measure improvement.
+        </p>
       </div>
 
-      {total === 0 && (
-        <EmptyState title="Fresh questions are generated when you start" hint="No preparation is needed. Your previous questions stay in Test history only." />
-      )}
-
       <section>
-        <SectionHeading title="1. Choose a skill" />
-        <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
-          {spec.sections.map(section => (
-            <button key={section.skill} type="button" onClick={() => { setSkill(section.skill); setTaskKey(section.tasks[0]?.key ?? '') }} className={`min-h-16 rounded-2xl border p-3 text-left text-sm font-bold capitalize transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 ${skill === section.skill ? `${SKILL_TONE[section.skill]} ring-1 ring-current/20` : 'border-neutral-200 bg-white text-neutral-600 hover:border-neutral-400 dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-300'}`}>
-              {section.label}
-              <span className="mt-1 block text-xs font-normal opacity-70">{section.tasks.length} task types</span>
+        <SectionHeading title="1. How much" />
+        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+          {SCOPES.map(item => (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => setScope(item.id)}
+              className={`rounded-xl border p-3 text-left transition-colors ${
+                scope === item.id
+                  ? 'border-neutral-950 bg-neutral-50 ring-1 ring-neutral-950 dark:border-white dark:bg-neutral-800 dark:ring-white'
+                  : 'border-neutral-200 dark:border-neutral-700'
+              }`}
+            >
+              <span className="flex items-center gap-1.5 text-sm font-bold text-neutral-900 dark:text-neutral-50">
+                <item.icon size={14} /> {item.label}
+              </span>
+              <span className="mt-1 block text-xs leading-snug text-neutral-500">{item.hint}</span>
             </button>
           ))}
         </div>
       </section>
 
-      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(320px,.8fr)]">
+      {(scope === 'task' || scope === 'component') && (
         <section>
-          <SectionHeading title="2. Choose a task" />
-          <div className="overflow-hidden rounded-2xl border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
-            {activeSection?.tasks.map(task => {
-              const ready = coverage[task.key] ?? 0
-              const selected = selectedTask?.key === task.key
+          <SectionHeading title="2. Which skill" />
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+            {profile.components.map(component => (
+              <button
+                key={component}
+                type="button"
+                onClick={() => { setSkill(component); setTaskKey(null) }}
+                className={`rounded-xl border p-3 text-left capitalize transition-colors ${
+                  skill === component
+                    ? `border-neutral-950 ring-1 ring-neutral-950 dark:border-white dark:ring-white ${SKILL_TONE[component] ?? ''}`
+                    : 'border-neutral-200 dark:border-neutral-700'
+                }`}
+              >
+                <span className="text-sm font-bold text-neutral-900 dark:text-neutral-50">{component}</span>
+                <span className="mt-0.5 block text-xs text-neutral-500">
+                  {spec.sections.find(s => s.skill === component)?.tasks.length ?? 0} task types
+                </span>
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {scope === 'task' && skill && (
+        <section>
+          <SectionHeading title="3. Which task type" />
+          <div className="overflow-hidden rounded-xl border border-neutral-200 dark:border-neutral-800">
+            {tasksForSkill.map(task => {
+              const selected = taskKey === task.key
+              const building = (stock.building[task.key] ?? 0) > 0
+              const ready = (stock.ready[task.key] ?? 0) > 0
               return (
-                <button key={task.key} type="button" disabled={ready === 0} onClick={() => setTaskKey(task.key)} className={`flex min-h-14 w-full items-center gap-3 border-b border-neutral-100 px-4 py-3 text-left last:border-0 disabled:opacity-40 dark:border-neutral-800 ${selected ? 'bg-neutral-950 text-white dark:bg-white dark:text-neutral-950' : 'hover:bg-neutral-50 dark:hover:bg-neutral-800'}`}>
-                  <span className={`grid h-7 w-7 flex-shrink-0 place-items-center rounded-full border text-xs font-bold ${selected ? 'border-white/30' : 'border-neutral-200 dark:border-neutral-700'}`}>{task.part}</span>
-                  <span className="min-w-0 flex-1 text-sm font-semibold">{task.label}</span>
-                  {ready === 0 && <span className="text-xs">Created on demand</span>}
+                <button
+                  key={task.key}
+                  type="button"
+                  onClick={() => setTaskKey(task.key)}
+                  className={`flex min-h-14 w-full items-center gap-3 border-b border-neutral-100 px-4 py-3 text-left last:border-0 dark:border-neutral-800 ${
+                    selected
+                      ? 'bg-neutral-950 text-white dark:bg-white dark:text-neutral-950'
+                      : 'hover:bg-neutral-50 dark:hover:bg-neutral-800'
+                  }`}
+                >
+                  <span className="grid h-7 w-7 flex-shrink-0 place-items-center rounded-lg bg-neutral-100 text-xs font-bold text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
+                    {task.part}
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-sm font-semibold">{task.label}</span>
+                    <span className={`block text-xs ${selected ? 'text-neutral-300 dark:text-neutral-600' : 'text-neutral-500'}`}>
+                      {task.description}
+                    </span>
+                  </span>
+                  {/* Stock is a readiness signal, never a gate on choosing:
+                      a task the buffer has not reached yet is still selectable,
+                      and the launch button explains the wait. */}
+                  <span className={`flex-shrink-0 text-xs ${selected ? 'text-neutral-300 dark:text-neutral-600' : 'text-neutral-400'}`}>
+                    {ready ? 'Ready' : building ? 'Preparing…' : 'Queued'}
+                  </span>
                 </button>
               )
             })}
           </div>
         </section>
+      )}
 
-        <aside className="lg:sticky lg:top-4 lg:self-start">
-          <SectionHeading title="3. Choose how to practise" />
-          <div className="rounded-3xl border border-neutral-200 bg-neutral-50 p-4 dark:border-neutral-800 dark:bg-neutral-900 sm:p-5">
-            {selectedTask && (
-              <div className="mb-4">
-                <p className="text-lg font-bold text-neutral-950 dark:text-white">{selectedTask.label}</p>
-                <p className="mt-1 text-sm leading-relaxed text-neutral-500">{selectedTask.description}</p>
-                <p className="mt-2 text-xs font-medium text-neutral-400">{selectedTask.question_count > 0 && `${selectedTask.question_count} questions · `}{selectedTask.response_seconds > 0 && `${selectedTask.response_seconds >= 120 ? Math.round(selectedTask.response_seconds / 60) + ' min' : selectedTask.response_seconds + ' sec'}`}{selectedTask.word_range && ` · ${selectedTask.word_range[0]}–${selectedTask.word_range[1]} words`}</p>
-              </div>
-            )}
-            <div className="space-y-2">
-              {MODES.map(item => (
-                <button key={item.id} type="button" onClick={() => setMode(item.id)} className={`flex w-full items-start gap-3 rounded-xl border p-3 text-left ${mode === item.id ? 'border-neutral-950 bg-white ring-1 ring-neutral-950 dark:border-white dark:bg-neutral-800 dark:ring-white' : 'border-neutral-200 bg-white/60 dark:border-neutral-700 dark:bg-neutral-950/30'}`}>
-                  <span className={`mt-0.5 grid h-5 w-5 place-items-center rounded-full border ${mode === item.id ? 'border-neutral-950 bg-neutral-950 text-white dark:border-white dark:bg-white dark:text-neutral-950' : 'border-neutral-300'}`}>{mode === item.id && '✓'}</span>
-                  <span><span className="block text-sm font-bold text-neutral-950 dark:text-white">{item.label}</span><span className="mt-0.5 block text-xs leading-relaxed text-neutral-500">{item.hint}</span></span>
-                </button>
-              ))}
-            </div>
-            {progress && <p className="mt-4 flex items-center gap-2 text-xs font-medium text-amber-700 dark:text-amber-300"><Loader2 size={13} className="animate-spin" /> {progress}</p>}
-            <button type="button" disabled={!selectedTask || Boolean(starting)} onClick={() => selectedTask && void start(selectedTask.key)} className={`${BUTTON} mt-5 w-full justify-center`}>
-              {starting ? 'Preparing…' : `Start ${mode} practice`}
+      <section>
+        <SectionHeading title={scope === 'task' ? '4. How to sit it' : '3. How to sit it'} />
+        <div className="grid gap-2 sm:grid-cols-3">
+          {MODES.map(item => (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => setMode(item.id)}
+              className={`rounded-xl border p-3 text-left transition-colors ${
+                mode === item.id
+                  ? 'border-neutral-950 bg-neutral-50 ring-1 ring-neutral-950 dark:border-white dark:bg-neutral-800 dark:ring-white'
+                  : 'border-neutral-200 dark:border-neutral-700'
+              }`}
+            >
+              <span className="flex items-center gap-1.5 text-sm font-bold text-neutral-900 dark:text-neutral-50">
+                <item.icon size={14} /> {item.label}
+              </span>
+              <span className="mt-1 block text-xs leading-snug text-neutral-500">{item.hint}</span>
             </button>
+          ))}
+        </div>
+      </section>
+
+      <div className={CARD}>
+        {needsMic && (
+          <div className="mb-3 flex flex-wrap items-center gap-3">
+            <button type="button" className={BUTTON_QUIET} onClick={() => void checkMic()}>
+              <Mic size={14} /> {micOk === true ? 'Microphone ready' : 'Test microphone'}
+            </button>
+            {micOk === false && (
+              <span className="text-sm font-semibold text-rose-600">
+                Blocked — allow microphone access, then retry.
+              </span>
+            )}
+            {micOk === null && (
+              <span className="text-sm text-neutral-500">
+                Speaking tasks record audio. Check this before you start.
+              </span>
+            )}
           </div>
-        </aside>
+        )}
+
+        {notReady.length > 0 && (
+          <div className="mb-3 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300">
+            <Loader2 size={15} className="mt-0.5 flex-shrink-0 animate-spin" />
+            <span>
+              Preparing {notReady.length} new {notReady.length === 1 ? 'question' : 'questions'} in
+              the background. Each one is written and then independently checked before it can be
+              served, so the first run after a deploy takes a few minutes. This unlocks on its own.
+            </span>
+          </div>
+        )}
+        {preparing && (
+          <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300">
+            {preparing}
+          </div>
+        )}
+
+        <div className="flex flex-wrap items-center gap-3">
+          <button type="button" disabled={!canLaunch} onClick={() => void launch()} className={BUTTON}>
+            {busy ? 'Starting…' : `Start ${mode} ${scope === 'task' ? 'drill' : 'test'}`}
+          </button>
+          <button type="button" className={BUTTON_QUIET} onClick={() => void load()}>
+            <RefreshCw size={14} /> Refresh
+          </button>
+          {requiredTasks.length === 0 && (
+            <span className="text-sm text-neutral-500">Choose a task type to continue.</span>
+          )}
+        </div>
       </div>
     </div>
   )

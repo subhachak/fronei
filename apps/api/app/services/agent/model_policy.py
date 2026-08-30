@@ -45,6 +45,7 @@ MODEL_ROLES: tuple[str, ...] = (
     "celpip_speaking_scorer_b",
     "celpip_score_reconciler",
     "celpip_feedback_writer",
+    "celpip_coach",
 )
 
 # Roles deliberately NOT included above: "judge" / "research_judge" /
@@ -125,6 +126,11 @@ DEFAULT_MODEL_POLICY: dict[str, str] = {
     # under an explicit brief rather than judgement, and it runs after the
     # score is already fixed, so it cannot move an estimate.
     "celpip_feedback_writer": "claude-sonnet-4-6",
+    # Reads the measured progress report and writes a short personal plan. The
+    # numbers and the ranking are already computed deterministically -- this
+    # only turns them into advice, so it is generation over settled data rather
+    # than judgement, and mid-tier is right.
+    "celpip_coach": "claude-sonnet-4-6",
 }
 # Deliberately NOT a role: the study planner. It schedules from measured
 # weakness tags, readiness sub-scores, and the learner's stated available

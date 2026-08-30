@@ -22,14 +22,24 @@ from app.auth import AdminPrincipal, require_admin_principal
 from app.db.models import (
     Base,
     CelpipAttempt,
-    CelpipGenerationRun,
     CelpipQuestion,
     CelpipTest,
     CelpipTestItem,
 )
 from app.main import app
 from app.routers import celpip as celpip_router
-from app.services.celpip import assembly, assets, attempts, generation, planner, readiness, scoring
+from app.services import maintenance_jobs
+from app.services.celpip import (
+    assembly,
+    assets,
+    attempts,
+    generation,
+    planner,
+    progress,
+    readiness,
+    scoring,
+    stock,
+)
 from app.services.celpip import lessons as lessons_service
 
 ADMIN = AdminPrincipal(user_id="admin_1", email="admin@example.com")
@@ -38,7 +48,8 @@ ADMIN = AdminPrincipal(user_id="admin_1", email="admin@example.com")
 # the CELPIP service layer deliberately manages its own sessions so it can run
 # inside a background job with no request in scope.
 SESSION_HOLDERS = (
-    celpip_router, assembly, assets, attempts, generation, planner, readiness, scoring, lessons_service,
+    celpip_router, assembly, assets, attempts, generation, planner, progress, readiness,
+    scoring, stock, lessons_service, maintenance_jobs,
 )
 
 
@@ -53,6 +64,25 @@ def session_factory(monkeypatch):
         if hasattr(module, "SessionLocal"):
             monkeypatch.setattr(module, "SessionLocal", factory)
     return factory
+
+
+@pytest.fixture(autouse=True)
+def topup_calls(monkeypatch):
+    """Record stock top-ups instead of queueing them.
+
+    Assembly refills the buffer it consumed, which enqueues a real maintenance
+    job. Under TestClient the worker thread is running, so it would claim that
+    job and make live generation calls. Tests that care about refills assert on
+    this list; every other test is simply protected from the network.
+    """
+    calls: list[tuple[str, ...]] = []
+
+    def record(*, user_id, task_keys=None):
+        calls.append(tuple(sorted(task_keys or [])))
+        return {"queued": {}, "deficits": {}, "target": 0}
+
+    monkeypatch.setattr(stock, "plan_topup", record)
+    return calls
 
 
 @pytest.fixture
@@ -389,7 +419,10 @@ def test_unscored_items_are_not_identified_to_the_client(session_factory, as_adm
 
 # --- Assembly failure is actionable ---------------------------------------
 
-def test_building_a_test_with_an_empty_bank_names_what_is_missing(session_factory, as_admin):
+def test_an_empty_buffer_starts_a_refill_instead_of_sending_the_learner_away(
+    session_factory, as_admin, topup_calls,
+):
+    """Launching should never require a detour through the Question Bank."""
     with TestClient(app) as client:
         response = client.post(
             "/admin/celpip/tests", json={"mode": "component", "components": ["writing"]},
@@ -397,7 +430,9 @@ def test_building_a_test_with_an_empty_bank_names_what_is_missing(session_factor
     assert response.status_code == 409
     detail = response.json()["detail"]
     assert "writing_email" in detail["shortfalls"]
-    assert "Question Bank" in detail["hint"]
+    assert detail["preparing"] is True
+    assert "Question Bank" not in detail["hint"]
+    assert topup_calls and "writing_email" in topup_calls[0]
 
 
 def test_assembly_prefers_items_the_learner_has_not_seen(session_factory):
@@ -432,57 +467,114 @@ def test_assembly_prefers_items_the_learner_has_not_seen(session_factory):
     assert picked_first != picked_second
 
 
-def test_fresh_assembly_uses_only_its_generation_batch_and_retires_it(session_factory):
+def test_served_questions_are_retired_so_they_never_come_back(session_factory):
+    """Questions are single-use: that is what makes a retake meaningful (same
+    questions, measure improvement) while a new launch is genuinely fresh."""
     db = session_factory()
     try:
-        old = _bank_item(db, "writing_email", skill="writing", part=1, questions=0)
-        old.id = "cq_old_email"
-        db.merge(old)
-        fresh = _bank_item(db, "writing_email", skill="writing", part=1, questions=0)
-        fresh.id = "cq_fresh_email"
-        fresh.generation_run_id = "cgen_fresh"
-        db.merge(fresh)
+        first = _bank_item(db, "writing_email", skill="writing", part=1, questions=0)
+        first.id = "cq_email_a"
+        db.merge(first)
+        second = _bank_item(db, "writing_email", skill="writing", part=1, questions=0)
+        second.id = "cq_email_b"
+        db.merge(second)
         db.commit()
     finally:
         db.close()
 
     test = assembly.assemble_test(
-        user_id=ADMIN.user_id,
-        mode="single_task",
-        task_keys=["writing_email"],
-        generation_run_ids=["cgen_fresh"],
+        user_id=ADMIN.user_id, mode="single_task", task_keys=["writing_email"],
     )
 
     db = session_factory()
     try:
-        picked = db.query(CelpipTestItem).filter(CelpipTestItem.test_id == test["test_id"]).one()
-        assert picked.question_id == "cq_fresh_email"
-        assert db.get(CelpipQuestion, "cq_fresh_email").status == "retired"
-        assert db.get(CelpipQuestion, "cq_old_email").status == "ready"
+        served = db.query(CelpipTestItem).filter(
+            CelpipTestItem.test_id == test["test_id"]
+        ).one().question_id
+        assert db.get(CelpipQuestion, served).status == "retired"
+        others = [q for q in db.query(CelpipQuestion).all() if q.id != served]
+        assert all(q.status == "ready" for q in others), "only the served item is retired"
     finally:
         db.close()
 
 
-def test_test_creation_rejects_another_users_generation_batch(session_factory, as_admin):
+def test_consuming_stock_queues_a_refill(session_factory, topup_calls):
+    """The buffer refills itself, so the next launch is instant too."""
     db = session_factory()
     try:
-        db.add(CelpipGenerationRun(
-            id="cgen_theirs", user_id="someone_else", task_key="writing_email",
-            requested_count=1,
-        ))
-        db.commit()
+        _bank_item(db, "writing_email", skill="writing", part=1, questions=0)
+    finally:
+        db.close()
+
+    assembly.assemble_test(
+        user_id=ADMIN.user_id, mode="single_task", task_keys=["writing_email"],
+    )
+    assert topup_calls == [("writing_email",)]
+
+
+def test_a_failed_refill_never_fails_the_launch(session_factory, monkeypatch):
+    """The learner is waiting on this request; a background refill problem is
+    not their problem."""
+    def boom(**kwargs):
+        raise RuntimeError("queue unavailable")
+
+    monkeypatch.setattr(stock, "plan_topup", boom)
+    db = session_factory()
+    try:
+        _bank_item(db, "writing_email", skill="writing", part=1, questions=0)
+    finally:
+        db.close()
+
+    test = assembly.assemble_test(
+        user_id=ADMIN.user_id, mode="single_task", task_keys=["writing_email"],
+    )
+    assert test["item_count"] == 1
+
+
+def test_stock_reports_what_the_launcher_can_start(session_factory, as_admin):
+    db = session_factory()
+    try:
+        _bank_item(db, "writing_email", skill="writing", part=1, questions=0)
     finally:
         db.close()
 
     with TestClient(app) as client:
-        response = client.post("/admin/celpip/tests", json={
-            "mode": "single_task",
-            "task_keys": ["writing_email"],
-            "generation_run_ids": ["cgen_theirs"],
-        })
+        report = client.get("/admin/celpip/stock").json()
 
-    assert response.status_code == 400
-    assert response.json()["detail"] == "Invalid generation batch."
+    assert report["ready"]["writing_email"] == 1
+    assert report["can_launch"] is False, "a General profile still needs the other 19 task types"
+    assert "speaking_advice" in report["missing"]
+    assert any(task["task_key"] == "writing_email" for task in report["tasks"])
+
+
+def test_stock_counts_only_unserved_items(session_factory):
+    """A retired item is still a row; it must not read as available stock."""
+    db = session_factory()
+    try:
+        item = _bank_item(db, "writing_email", skill="writing", part=1, questions=0)
+        item.status = "retired"
+        item.times_served = 1
+        db.merge(item)
+        db.commit()
+        levels = stock.stock_levels(db, ["writing_email"])
+    finally:
+        db.close()
+    assert levels["writing_email"] == 0
+
+
+def test_items_still_building_count_towards_the_target(session_factory):
+    """Otherwise every check would queue another top-up for work already in
+    flight, and one launch would trigger a generation storm."""
+    db = session_factory()
+    try:
+        item = _bank_item(db, "listening_news", skill="listening", part=4, questions=5)
+        item.status = "awaiting_assets"
+        db.merge(item)
+        db.commit()
+        shortfall = stock.deficits(db, ["listening_news"])
+    finally:
+        db.close()
+    assert shortfall["listening_news"] == stock.target_stock() - 1
 
 
 def test_retake_creates_a_new_sitting_on_the_exact_same_test(session_factory, as_admin):
@@ -753,3 +845,25 @@ def test_results_report_whether_scoring_is_still_in_flight(session_factory, as_a
     assert results["evaluation_pending"] is True
     assert results["evaluation_job"]["attempt_count"] == 2
     assert results["evaluation_job"]["max_attempts"] == 3
+
+
+def test_the_dashboard_warms_the_question_buffer(session_factory, as_admin, topup_calls):
+    """A fresh deployment should be filling its buffer before the learner ever
+    reaches Practice, rather than making the first launch wait for everything."""
+    with TestClient(app) as client:
+        home = client.get("/admin/celpip/home").json()
+
+    assert topup_calls, "opening the dashboard must queue a top-up"
+    assert home["launch_ready"] is False
+    assert home["preparing_questions"] > 0
+
+
+def test_the_dashboard_survives_a_broken_job_queue(session_factory, as_admin, monkeypatch):
+    """A background refill problem must not take the whole dashboard down."""
+    def boom(**kwargs):
+        raise RuntimeError("queue unavailable")
+
+    monkeypatch.setattr(stock, "plan_topup", boom)
+    with TestClient(app) as client:
+        response = client.get("/admin/celpip/home")
+    assert response.status_code == 200

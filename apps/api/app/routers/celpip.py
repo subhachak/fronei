@@ -36,8 +36,10 @@ from app.services.celpip import (
     assembly,
     generation,
     planner,
+    progress,
     scoring,
     speech,
+    stock,
 )
 from app.services.celpip import (
     assets as assets_service,
@@ -250,6 +252,21 @@ def get_home(admin: AdminPrincipal = RequireAdmin) -> dict:
         )
 
         weaknesses = planner.measured_weaknesses(db, admin.user_id, limit=5)
+        launch_readiness = stock.readiness_for(db, test_type=profile.test_type)
+    finally:
+        db.close()
+
+    # Warm the question buffer on the first dashboard load, so a fresh
+    # deployment is filling itself before the learner reaches Practice. The
+    # enqueue is deduped per task type, so this is a no-op once stocked.
+    try:
+        stock.plan_topup(user_id=admin.user_id)
+    except Exception:
+        logger.warning("celpip stock warm-up could not be queued", exc_info=True)
+
+    db = SessionLocal()
+    try:
+        profile = _get_or_create_profile(db, admin.user_id)
 
         return {
             "profile": _serialize_profile(profile),
@@ -279,6 +296,8 @@ def get_home(admin: AdminPrincipal = RequireAdmin) -> dict:
             ],
             "resume_attempt_id": resumable.id if resumable else None,
             "speech_configured": speech.is_configured(),
+            "launch_ready": launch_readiness["can_launch"],
+            "preparing_questions": len(launch_readiness["missing"]),
         }
     finally:
         db.close()
@@ -372,6 +391,40 @@ def get_bank_item(question_id: str, admin: AdminPrincipal = RequireAdmin) -> dic
         return data
     finally:
         db.close()
+
+
+@router.get("/stock")
+def get_stock(admin: AdminPrincipal = RequireAdmin) -> dict:
+    """What the launcher needs: whether a test can start right now.
+
+    Questions are single-use, so the launcher draws from a buffer that a
+    background job keeps topped up. This reports whether that buffer covers the
+    learner's components, and what is still building if not.
+    """
+    db = SessionLocal()
+    try:
+        profile = _get_or_create_profile(db, admin.user_id)
+        report = stock.readiness_for(db, test_type=profile.test_type)
+        by_task = [
+            {
+                "task_key": task.key,
+                "label": task.label,
+                "skill": task.skill,
+                "part": task.part,
+                "ready": report["ready"].get(task.key, 0),
+                "building": report["building"].get(task.key, 0),
+            }
+            for task in ALL_TASKS
+            if task.skill in components_for_test_type(profile.test_type)
+        ]
+        return {**report, "tasks": by_task}
+    finally:
+        db.close()
+
+
+@router.post("/stock/topup")
+def topup_stock(admin: AdminPrincipal = RequireAdmin) -> dict:
+    return stock.plan_topup(user_id=admin.user_id)
 
 
 @router.post("/bank/generate")
@@ -502,7 +555,6 @@ class AssembleIn(BaseModel):
     # Bounded to the column width: Postgres enforces VARCHAR(255), SQLite does
     # not, so an unbounded label passes every local test and fails in production.
     label: str = Field(default="", max_length=255)
-    generation_run_ids: list[str] | None = Field(default=None, max_length=100)
 
 
 @router.post("/tests")
@@ -512,16 +564,6 @@ def create_test(payload: AssembleIn, admin: AdminPrincipal = RequireAdmin) -> di
         profile = _get_or_create_profile(db, admin.user_id)
         test_type = profile.test_type
         target = profile.target_level
-        if payload.generation_run_ids is not None:
-            requested = set(payload.generation_run_ids)
-            owned = {
-                row.id for row in db.query(CelpipGenerationRun).filter(
-                    CelpipGenerationRun.user_id == admin.user_id,
-                    CelpipGenerationRun.id.in_(requested),
-                ).all()
-            }
-            if not requested or owned != requested:
-                raise HTTPException(status_code=400, detail="Invalid generation batch.")
     finally:
         db.close()
 
@@ -536,20 +578,24 @@ def create_test(payload: AssembleIn, admin: AdminPrincipal = RequireAdmin) -> di
             repeats=payload.repeats,
             target_level=target,
             label=payload.label,
-            generation_run_ids=payload.generation_run_ids,
         )
     except assembly.NotEnoughItems as exc:
-        # Actionable rather than a bare 409: the caller is told exactly which
-        # task types to generate more of.
+        # The buffer was short. Kick off a refill and tell the caller it is
+        # coming, rather than leaving them to work out that they must go to the
+        # Question Bank -- launching should never require that.
+        try:
+            stock.plan_topup(user_id=admin.user_id, task_keys=list(exc.shortfalls))
+        except Exception:
+            logger.warning("celpip top-up after a short launch failed", exc_info=True)
         raise HTTPException(
             status_code=409,
             detail={
                 "message": str(exc),
                 "shortfalls": exc.shortfalls,
+                "preparing": True,
                 "hint": (
-                    "The fresh generation batch did not produce enough validated items."
-                    if payload.generation_run_ids is not None
-                    else "Generate more items for these task types in the Question Bank."
+                    "New questions are being prepared for this test. This takes a few "
+                    "minutes the first time; try again shortly."
                 ),
             },
         ) from exc
@@ -975,43 +1021,17 @@ def set_plan_item_status(
 
 @router.get("/progress")
 def get_progress(admin: AdminPrincipal = RequireAdmin) -> dict:
-    """Trends: component levels over time, weakness frequency, task accuracy."""
+    """Four components, twenty sub-categories: sittings, level, trend, focus, tips."""
     db = SessionLocal()
     try:
         profile = _get_or_create_profile(db, admin.user_id)
         readiness = readiness_service.compute_readiness(db, user_id=admin.user_id, profile=profile)
-
-        attempt_ids = [
-            row[0] for row in
-            db.query(CelpipAttempt.id).filter(CelpipAttempt.user_id == admin.user_id).all()
-        ]
-        task_accuracy: dict[str, dict] = {}
-        for attempt in (
-            db.query(CelpipAttempt)
-            .filter(CelpipAttempt.user_id == admin.user_id)
-            .filter(CelpipAttempt.status == "completed")
-            .all()
-        ):
-            for component in _loads(attempt.results_json, {}).values():
-                for task_key, counts in (component.get("accuracy_by_task") or {}).items():
-                    bucket = task_accuracy.setdefault(task_key, {"correct": 0, "total": 0})
-                    bucket["correct"] += counts.get("correct", 0)
-                    bucket["total"] += counts.get("total", 0)
-
-        task_levels: dict[str, list[float]] = {}
-        if attempt_ids:
-            for evaluation in (
-                db.query(CelpipEvaluation)
-                .filter(CelpipEvaluation.attempt_id.in_(attempt_ids))
-                .filter(CelpipEvaluation.status == "complete")
-                .all()
-            ):
-                if evaluation.level_low is None or not evaluation.task_key:
-                    continue
-                task_levels.setdefault(evaluation.task_key, []).append(
-                    (evaluation.level_low + (evaluation.level_high or evaluation.level_low)) / 2
-                )
-
+        report = progress.build_report(
+            db,
+            user_id=admin.user_id,
+            test_type=profile.test_type,
+            target_level=profile.target_level,
+        )
         return {
             "readiness": readiness,
             "component_levels": readiness["component_levels"],
@@ -1019,25 +1039,116 @@ def get_progress(admin: AdminPrincipal = RequireAdmin) -> dict:
                 {"tag": tag, "label": WEAKNESS_TAGS[tag], "count": count}
                 for tag, count in planner.measured_weaknesses(db, admin.user_id, limit=15)
             ],
-            "task_accuracy": [
-                {
-                    "task_key": key,
-                    "label": TASKS_BY_KEY[key].label if key in TASKS_BY_KEY else key,
-                    "correct": data["correct"],
-                    "total": data["total"],
-                    "accuracy": round(data["correct"] / data["total"], 3) if data["total"] else None,
-                }
-                for key, data in sorted(task_accuracy.items())
-            ],
-            "task_levels": [
-                {
-                    "task_key": key,
-                    "label": TASKS_BY_KEY[key].label if key in TASKS_BY_KEY else key,
-                    "average_level": round(sum(values) / len(values), 1),
-                    "attempts": len(values),
-                }
-                for key, values in sorted(task_levels.items())
-            ],
+            **report,
         }
     finally:
         db.close()
+
+
+COACH_SYSTEM = """You are a CELPIP preparation coach writing to one learner.
+
+You are given their measured progress: per task type, how many sittings, the
+estimated level, the trend, and the weakness tags their scored responses were
+actually assigned. The numbers are already computed and are not yours to
+revise -- your job is to turn them into a short, specific plan.
+
+Rules:
+- Refer to their real numbers. "Your Speaking is around 7 across four sittings"
+  beats "keep practising speaking".
+- Name task types by their official names.
+- Be concrete about what to do next, and say roughly how long it should take.
+- If a task type has never been attempted, say so plainly -- an unmeasured
+  component is the biggest risk before a test.
+- No encouragement padding. They have limited days; every sentence should
+  change what they do this week.
+- Never invent a score, a trend, or a weakness that is not in the data.
+
+Return ONLY JSON:
+{"headline": "one sentence on where they stand",
+ "this_week": [{"focus": "what to work on", "why": "grounded in their data",
+                "action": "the specific drill or lesson", "minutes": 30}],
+ "watch_out": ["a risk their numbers suggest"],
+ "encouragement": "one honest sentence, only if the data supports it"}"""
+
+
+@router.post("/coach")
+def get_coaching(admin: AdminPrincipal = RequireAdmin) -> dict:
+    """An LLM read of the measured report -- on demand, not on every load."""
+    from app.services.agent import model_client
+    from app.services.agent.research_utils import _parse_json
+
+    db = SessionLocal()
+    try:
+        profile = _get_or_create_profile(db, admin.user_id)
+        report = progress.build_report(
+            db,
+            user_id=admin.user_id,
+            test_type=profile.test_type,
+            target_level=profile.target_level,
+        )
+        days_left = (profile.test_date - _now().date()).days if profile.test_date else None
+    finally:
+        db.close()
+
+    if report["total_sittings"] == 0:
+        # Nothing measured yet. A model asked to coach on no data will invent a
+        # plan that sounds personal and is not.
+        return {
+            "headline": "Nothing measured yet — sit a diagnostic first.",
+            "this_week": [{
+                "focus": "Diagnostic assessment",
+                "why": "Every other number on this page needs a starting point.",
+                "action": "Run the diagnostic from Practice.",
+                "minutes": 60,
+            }],
+            "watch_out": [],
+            "encouragement": "",
+            "generated": False,
+        }
+
+    trimmed = {
+        "target_level": report["target_level"],
+        "days_until_test": days_left,
+        "categories": [
+            {
+                "skill": category["skill"],
+                "level": category["level"],
+                "sittings": category["sittings"],
+                "trend": category["trend"],
+                "tasks": [
+                    {
+                        "label": task["label"],
+                        "sittings": task["sittings"],
+                        "level": task["level"],
+                        "trend": task["trend"],
+                        "weaknesses": [tag["tag"] for tag in task["weakness_tags"]],
+                    }
+                    for task in category["tasks"]
+                ],
+            }
+            for category in report["categories"]
+        ],
+        "focus": [
+            {"label": item["label"], "reason": item["reason"], "level": item["level"]}
+            for item in report["focus"]
+        ],
+    }
+
+    try:
+        response = model_client.complete(
+            [
+                {"role": "system", "content": COACH_SYSTEM},
+                {"role": "user", "content": json.dumps(trimmed, ensure_ascii=False, indent=2)},
+            ],
+            role="celpip_coach",
+            max_tokens=1800,
+            timeout_s=120,
+        )
+        data = _parse_json(response.text)
+    except Exception as exc:
+        logger.warning("celpip coaching failed: %s", exc)
+        raise HTTPException(
+            status_code=502, detail="Could not generate a coaching summary. Try again."
+        ) from exc
+
+    return {**data, "generated": True, "model": getattr(response, "model", "")}

@@ -26,6 +26,7 @@ LANGGRAPH_CHECKPOINT_CLEANUP_JOB = "langgraph_checkpoint_cleanup"
 CELPIP_GENERATION_JOB = "celpip_generation"
 CELPIP_ASSETS_JOB = "celpip_assets"
 CELPIP_EVALUATION_JOB = "celpip_evaluation"
+CELPIP_TOPUP_JOB = "celpip_topup"
 
 # langgraph_run_contexts.status values that must never be touched by cleanup
 # (a run in one of these states may still resume and needs its checkpoint).
@@ -258,6 +259,19 @@ def enqueue_celpip_assets(*, question_id: str) -> str:
         CELPIP_ASSETS_JOB,
         f"{CELPIP_ASSETS_JOB}:{question_id}",
         {"question_id": question_id},
+    )
+
+
+def enqueue_celpip_topup(*, user_id: str, task_key: str, count: int) -> str:
+    """Refill the question buffer for one task type.
+
+    Keyed by task type, so a top-up requested while one is already queued or
+    running is a no-op rather than a second batch of generation calls.
+    """
+    return _enqueue_celpip_job(
+        CELPIP_TOPUP_JOB,
+        f"{CELPIP_TOPUP_JOB}:{task_key}",
+        {"user_id": user_id, "task_key": task_key, "count": count},
     )
 
 
@@ -641,6 +655,16 @@ def execute_job(job_type: str, payload: dict[str, Any]) -> dict[str, Any]:
 
         result = build_assets_for_question(str(payload.get("question_id")))
         result["outcome"] = "success" if result.get("ready") else "partial_success"
+        return result
+    if job_type == CELPIP_TOPUP_JOB:
+        from app.services.celpip.stock import run_topup
+
+        result = run_topup(
+            user_id=str(payload.get("user_id") or ""),
+            task_key=str(payload.get("task_key")),
+            count=int(payload.get("count") or 1),
+        )
+        result["outcome"] = "success"
         return result
     if job_type == CELPIP_EVALUATION_JOB:
         from app.services.celpip.scoring import evaluate_attempt

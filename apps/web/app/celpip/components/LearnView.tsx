@@ -25,11 +25,24 @@ const SKILL_ICON = {
   speaking: Mic2,
 }
 
-export function LearnView({ api }: { api: Api }) {
+export function LearnView({ api, initialSlug, onConsumed }: {
+  api: Api
+  initialSlug?: string | null
+  onConsumed?: () => void
+}) {
   const [lessons, setLessons] = useState<Lesson[] | null>(null)
   const [spec, setSpec] = useState<Spec | null>(null)
   const [open, setOpen] = useState<Lesson | null>(null)
   const [error, setError] = useState('')
+
+  // A tip on the Progress dashboard links straight to the lesson that
+  // addresses it; without this the learner lands on the index and has to hunt.
+  useEffect(() => {
+    if (!initialSlug) return
+    void openLesson(initialSlug)
+    onConsumed?.()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialSlug])
 
   useEffect(() => {
     Promise.all([

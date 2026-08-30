@@ -6,7 +6,7 @@ import {
   ClipboardList,
   Ellipsis,
   Database,
-  GraduationCap,
+  TrendingUp,
   Home,
   Loader2,
   Moon,
@@ -21,20 +21,23 @@ import { useCelpip } from '../hooks/useCelpip'
 import { HomeView } from './HomeView'
 import { LearnView } from './LearnView'
 import { PracticeView } from './PracticeView'
-import { MockTestsView } from './MockTestsView'
+import { ProgressView } from './ProgressView'
 import { ResultsView } from './ResultsView'
 import { StudyPlanView } from './StudyPlanView'
 import { QuestionBankView } from './QuestionBankView'
 import { SessionRunner } from './runner/SessionRunner'
 
-type View = 'home' | 'learn' | 'practice' | 'mocks' | 'results' | 'plan' | 'bank'
+// Practice and Mock Test were one flow wearing two hats -- same launch path,
+// same generation, duplicated task lists that had already drifted apart. They
+// are now a single surface with a scope selector.
+type View = 'home' | 'learn' | 'practice' | 'progress' | 'results' | 'plan' | 'bank'
 
 const NAV: { id: View; label: string; icon: typeof Home }[] = [
   { id: 'home', label: 'Today', icon: Home },
   { id: 'learn', label: 'Learn', icon: BookOpen },
   { id: 'practice', label: 'Practice', icon: Target },
-  { id: 'mocks', label: 'Mock Test', icon: GraduationCap },
-  { id: 'results', label: 'Progress', icon: Trophy },
+  { id: 'progress', label: 'Progress', icon: TrendingUp },
+  { id: 'results', label: 'Results', icon: Trophy },
 ]
 
 export function CelpipShell() {
@@ -46,6 +49,8 @@ export function CelpipShell() {
   const [runningAttempt, setRunningAttempt] = useState<string | null>(null)
   const [openResult, setOpenResult] = useState<string | null>(null)
   const [moreOpen, setMoreOpen] = useState(false)
+  // Set when a tip on the Progress dashboard is followed into the library.
+  const [lessonSlug, setLessonSlug] = useState<string | null>(null)
 
   const finishAttempt = useCallback((attemptId: string) => {
     setRunningAttempt(null)
@@ -156,9 +161,16 @@ export function CelpipShell() {
           {view === 'home' && (
             <HomeView api={api} onOpenAttempt={openAttempt} onNavigate={setView} onOpenResult={id => { setOpenResult(id); setView('results') }} />
           )}
-          {view === 'learn' && <LearnView api={api} />}
+          {view === 'learn' && (
+            <LearnView api={api} initialSlug={lessonSlug} onConsumed={() => setLessonSlug(null)} />
+          )}
           {view === 'practice' && <PracticeView api={api} onStart={openAttempt} />}
-          {view === 'mocks' && <MockTestsView api={api} onStart={openAttempt} />}
+          {view === 'progress' && (
+            <ProgressView
+              api={api}
+              onOpenLesson={slug => { setLessonSlug(slug); setView('learn') }}
+            />
+          )}
           {view === 'results' && (
             <ResultsView api={api} initialAttemptId={openResult} onClear={() => setOpenResult(null)} onStart={openAttempt} />
           )}

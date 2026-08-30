@@ -32,6 +32,18 @@ from app.services.celpip import assembly, generation, planner, readiness, scorin
 USER = "admin_1"
 
 
+@pytest.fixture(autouse=True)
+def no_background_topup(monkeypatch):
+    """Assembly refills the buffer it consumed; these tests must not queue real
+    generation work to do it."""
+    from app.services.celpip import stock
+
+    monkeypatch.setattr(
+        stock, "plan_topup",
+        lambda *, user_id, task_keys=None: {"queued": {}, "deficits": {}, "target": 0},
+    )
+
+
 @pytest.fixture
 def db_factory(monkeypatch):
     engine = create_engine(

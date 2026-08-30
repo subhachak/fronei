@@ -144,6 +144,11 @@ class Settings(BaseSettings):
     # narrator reading a play.
     celpip_tts_female_voices: str = "nova,shimmer,coral"
     celpip_tts_male_voices: str = "onyx,echo,ash"
+    # How many unserved questions to keep buffered per task type. Every sitting
+    # retires the questions it used, so this is the stock a launch draws from.
+    # 2 covers a launch plus its immediate top-up without over-generating: at
+    # 20 task types, each unit of stock is 20 generation + 20 validation calls.
+    celpip_stock_per_task: int = 2
 
     # Whether to run LibreOffice/poppler-based PPTX render QA synchronously on
     # the document-generation request path. This can take up to ~60s per deck

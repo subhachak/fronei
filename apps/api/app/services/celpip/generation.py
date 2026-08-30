@@ -262,6 +262,49 @@ def run_generation(
         db.close()
 
 
+def _create_run(*, user_id: str, task_key: str, count: int, difficulty: int, topic_hint: str) -> str:
+    run_id = new_id("crun")
+    db = SessionLocal()
+    try:
+        db.add(CelpipGenerationRun(
+            id=run_id,
+            user_id=user_id,
+            task_key=task_key,
+            requested_count=count,
+            difficulty=difficulty,
+            topic_hint=topic_hint[:255],
+            status="queued",
+            spec_version=SPEC_VERSION,
+        ))
+        db.commit()
+    finally:
+        db.close()
+    return run_id
+
+
+def enqueue_generation_sync(
+    *, user_id: str, task_key: str, count: int, difficulty: int = 9, topic_hint: str = "",
+) -> dict:
+    """Generate inline rather than through the job queue.
+
+    Called from inside a background job (the stock top-up). Going through
+    enqueue_generation there would queue a job from within a job, which on a
+    single worker thread means the outer job finishes having done nothing and
+    the real work waits for the next poll.
+    """
+    if task_key not in TASKS_BY_KEY:
+        raise ValueError(f"unknown task type {task_key!r}")
+    count = max(1, min(int(count), 10))
+    run_id = _create_run(
+        user_id=user_id, task_key=task_key, count=count,
+        difficulty=difficulty, topic_hint=topic_hint,
+    )
+    return run_generation(
+        run_id=run_id, user_id=user_id, task_key=task_key,
+        count=count, difficulty=difficulty, topic_hint=topic_hint,
+    )
+
+
 def enqueue_generation(
     *, user_id: str, task_key: str, count: int, difficulty: int = 9, topic_hint: str = "",
 ) -> dict:
@@ -272,23 +315,10 @@ def enqueue_generation(
         raise ValueError(f"unknown task type {task_key!r}")
     count = max(1, min(int(count), 10))
 
-    run_id = new_id("crun")
-    db = SessionLocal()
-    try:
-        run = CelpipGenerationRun(
-            id=run_id,
-            user_id=user_id,
-            task_key=task_key,
-            requested_count=count,
-            difficulty=difficulty,
-            topic_hint=topic_hint[:255],
-            status="queued",
-            spec_version=SPEC_VERSION,
-        )
-        db.add(run)
-        db.commit()
-    finally:
-        db.close()
+    run_id = _create_run(
+        user_id=user_id, task_key=task_key, count=count,
+        difficulty=difficulty, topic_hint=topic_hint,
+    )
 
     job_id = maintenance_jobs.enqueue_celpip_generation(
         run_id=run_id, user_id=user_id, task_key=task_key, count=count,

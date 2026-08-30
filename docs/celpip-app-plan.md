@@ -484,3 +484,83 @@ applied to any unbounded write to a length-limited column. Test labels, and the
 model-name columns on questions, generation runs, and evaluations, are now
 bounded at their column width, and the assemble endpoint rejects an over-long
 label at the API boundary rather than truncating what the caller asked for.
+
+---
+
+## Fresh questions, one launcher, and a progress report
+
+Three changes, driven by the review findings and by what the app is actually
+for.
+
+### Questions come from a buffer, not from a wait
+
+Every sitting consumes its questions: an item served once is retired. That is
+what makes a retake meaningful (same questions, measure improvement) while a new
+launch is genuinely fresh.
+
+Generating them at click time did not work, and the review said why: a full mock
+needs one item for each of 20 task types, every item costs a generation call
+plus an independent validation call, listening items then need audio synthesised
+per speaker turn — and all of it runs on a single maintenance worker thread. The
+client allowed 20 minutes for generation and 10 for assets; the work does not
+fit, so assembly failed and the loop regenerated. It also starved the evaluation
+queue, so scoring for a submitted attempt waited behind it.
+
+`services/celpip/stock.py` fills the buffer ahead of time instead. It keeps a
+target number of unserved items per task type, enqueues one small generation job
+per deficient task, and counts items still building towards the target so a
+top-up already in flight never triggers another. Assembly refills what it
+consumed, and the dashboard warms the buffer on first load. Launching is now a
+single POST.
+
+**"Fresh" means never served to this learner, not generated seconds ago.** That
+is the property that matters, and it is the one this preserves. The launch-scoped
+`generation_run_ids` plumbing is gone with the polling loop it existed for.
+
+### Practice and Mock Tests are one surface
+
+They were the same flow wearing two hats — same launch path, same generation,
+and duplicated task lists that had already drifted. Practice now has a scope
+selector: one task type, one component, a full test, or a diagnostic. That also
+removes the review's most serious finding, where Practice gated task selection
+on bank stock (`disabled={ready === 0}`) while telling the learner the questions
+were "created on demand" — on a fresh deployment nothing was selectable at all.
+Stock is now a readiness signal, never a gate.
+
+### The progress report
+
+`services/celpip/progress.py` answers four questions per task type, for all four
+components and all twenty sub-categories:
+
+- **How much have I practised this?** Sittings, counted in distinct attempts —
+  eight speaking answers in one mock is one sitting of each speaking task, not
+  eight of anything.
+- **How am I doing, and is it moving?** Level per sitting, plus a deliberately
+  coarse trend. Fewer than two sittings reports "unknown" rather than drawing an
+  arrow the data cannot support.
+- **Where should I spend my time?** A deterministic focus score — distance from
+  target, whether it has been measured at all, and staleness — so the ranking is
+  explainable and each entry states its own reason. A never-attempted task ranks
+  top: an unmeasured task type is a risk, not a strength.
+- **What do I do about it?** The authored Learn library, reached through the
+  weakness tags the scorer already assigns, so every tip is a real technique. A
+  task with no measured weakness falls back to its own strategy lesson, so no
+  sub-category is ever a dead end.
+
+On top of that, `POST /coach` asks a model to turn the measured report into a
+short personal plan. It runs on request rather than on every load, it is given
+only the computed numbers, and with no sittings recorded it returns a fixed
+"sit a diagnostic first" response rather than letting a model invent a
+personalised plan out of nothing.
+
+### Also fixed from the review
+
+- Section progress now reads the section's own `completed_at` instead of
+  inferring completion from the learner's position, and the server sends that
+  field.
+- The diagnostic task list is no longer duplicated on the client.
+- Leaving the launcher mid-flight can no longer drop the learner into a running
+  exam minutes later — there is no longer a long-running client loop to leave.
+- Tests no longer queue real generation work: assembly's refill is stubbed by an
+  autouse fixture, which was making the suite hit live providers through the
+  TestClient worker thread.

@@ -176,6 +176,8 @@ export type SectionState = {
   limit_seconds: number | null
   seconds_remaining: number | null
   expired: boolean
+  completed_at: string | null
+  auto_submitted: boolean
 }
 
 export type AttemptState = {
@@ -346,3 +348,82 @@ export type Progress = {
 }
 
 export type AuthorizedFetch = (path: string, init?: RequestInit) => Promise<Response>
+
+export type StockTask = {
+  task_key: string
+  label: string
+  skill: Skill
+  part: number
+  ready: number
+  building: number
+}
+
+export type StockReport = {
+  ready: Record<string, number>
+  building: Record<string, number>
+  missing: string[]
+  can_launch: boolean
+  target: number
+  tasks: StockTask[]
+}
+
+export type TaskProgress = {
+  task_key: string
+  label: string
+  part: number
+  description: string
+  sittings: number
+  correct: number
+  total: number
+  accuracy: number | null
+  level: number | null
+  trend: 'improving' | 'steady' | 'slipping' | 'unknown'
+  history: { at: string | null; attempt_id: string; level?: number; accuracy?: number }[]
+  last_attempted: string | null
+  days_since: number | null
+  focus_score: number
+  weakness_tags: { tag: string; label: string; count: number }[]
+  tips: Lesson[]
+}
+
+export type CategoryProgress = {
+  skill: Skill
+  label: string
+  level: number | null
+  target: number
+  sittings: number
+  tasks_attempted: number
+  tasks_total: number
+  trend: TaskProgress['trend']
+  tasks: TaskProgress[]
+}
+
+export type ProgressReport = {
+  readiness: Readiness
+  component_levels: Readiness['component_levels']
+  weaknesses: { tag: string; label: string; count: number }[]
+  target_level: number
+  categories: CategoryProgress[]
+  focus: {
+    task_key: string
+    label: string
+    skill: Skill
+    level: number | null
+    sittings: number
+    focus_score: number
+    reason: string
+    tips: Lesson[]
+    weakness_tags: { tag: string; label: string; count: number }[]
+  }[]
+  total_sittings: number
+  computed_at: string
+}
+
+export type Coaching = {
+  headline: string
+  this_week: { focus: string; why: string; action: string; minutes: number }[]
+  watch_out: string[]
+  encouragement: string
+  generated: boolean
+  model?: string
+}

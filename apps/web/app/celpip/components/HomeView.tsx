@@ -46,7 +46,7 @@ export function HomeView({
 }: {
   api: Api
   onOpenAttempt: (attemptId: string) => void
-  onNavigate: (view: 'learn' | 'practice' | 'mocks' | 'results' | 'plan' | 'bank') => void
+  onNavigate: (view: 'learn' | 'practice' | 'progress' | 'results' | 'plan' | 'bank') => void
   onOpenResult: (attemptId: string) => void
 }) {
   const [data, setData] = useState<HomePayload | null>(null)
@@ -130,7 +130,7 @@ export function HomeView({
               <p className="mt-1 text-lg font-bold">{data.today[0].title}</p>
               <p className="mt-1 text-sm text-neutral-300">{data.today[0].rationale}</p>
             </div>
-            <button type="button" onClick={() => onNavigate(data.today[0].activity_type === 'lesson' ? 'learn' : data.today[0].activity_type.includes('mock') || data.today[0].activity_type === 'diagnostic' ? 'mocks' : 'practice')} className="inline-flex min-h-12 flex-shrink-0 items-center justify-center gap-2 rounded-xl bg-amber-400 px-5 py-3 text-sm font-bold text-neutral-950 hover:bg-amber-300">
+            <button type="button" onClick={() => onNavigate(data.today[0].activity_type === 'lesson' ? 'learn' : 'practice')} className="inline-flex min-h-12 flex-shrink-0 items-center justify-center gap-2 rounded-xl bg-amber-400 px-5 py-3 text-sm font-bold text-neutral-950 hover:bg-amber-300">
               Start now <ArrowRight size={16} />
             </button>
           </div>
@@ -201,7 +201,7 @@ export function HomeView({
                       {item.estimated_minutes}m
                     </span>
                   </div>
-                  <button type="button" onClick={() => onNavigate(item.activity_type === 'lesson' ? 'learn' : item.activity_type.includes('mock') || item.activity_type === 'diagnostic' ? 'mocks' : 'practice')} className="mt-3 inline-flex min-h-10 items-center gap-1.5 text-sm font-bold text-neutral-900 hover:text-amber-700 dark:text-white dark:hover:text-amber-300">
+                  <button type="button" onClick={() => onNavigate(item.activity_type === 'lesson' ? 'learn' : 'practice')} className="mt-3 inline-flex min-h-10 items-center gap-1.5 text-sm font-bold text-neutral-900 hover:text-amber-700 dark:text-white dark:hover:text-amber-300">
                     Start activity <ArrowRight size={14} />
                   </button>
                 </li>
@@ -283,7 +283,7 @@ export function HomeView({
             title="No attempts yet"
             hint="A diagnostic gives every other number on this page something to stand on."
             action={
-              <button type="button" className={BUTTON} onClick={() => onNavigate('mocks')}>
+              <button type="button" className={BUTTON} onClick={() => onNavigate('practice')}>
                 <Sparkles size={14} /> Start a diagnostic
               </button>
             }

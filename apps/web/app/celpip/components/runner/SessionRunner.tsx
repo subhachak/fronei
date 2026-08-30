@@ -279,7 +279,11 @@ export function SessionRunner({
         {state.components.map((skill, skillIndex) => {
           const sectionItems = items.filter(item => item.skill === skill)
           const active = skill === currentSkill
-          const done = state.components.indexOf(skill) < state.components.indexOf(currentSkill as Skill)
+          // Completion comes from the section's own completed_at, not from
+          // where the learner happens to be standing: moving past a section is
+          // not the same as finishing it, and with currentSkill null the
+          // position comparison marks everything unfinished.
+          const done = Boolean(state.sections[skill]?.completed_at)
           const answered = sectionItems.filter(item => item.answered > 0).length
           return (
             <div key={skill} className="flex flex-1 items-center gap-2">

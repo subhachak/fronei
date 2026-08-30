@@ -204,6 +204,10 @@ def _state_payload(attempt: CelpipAttempt, state: dict, skill: str) -> dict:
         # nothing.
         "seconds_remaining": remaining,
         "expired": remaining == 0 if remaining is not None else False,
+        # The client needs the real completion signal: having moved past a
+        # section is not the same as having finished it.
+        "completed_at": section.get("completed_at"),
+        "auto_submitted": bool(section.get("auto_submitted")),
     }
 
 

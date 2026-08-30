@@ -1,6 +1,6 @@
 'use client'
 
-import { CalendarClock, Loader2, PlayCircle, RefreshCw, Sparkles, TriangleAlert } from 'lucide-react'
+import { ArrowRight, CalendarClock, Check, Loader2, PlayCircle, RefreshCw, Sparkles, TriangleAlert } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
 import type { HomePayload, Profile } from '../types'
 import type { useCelpip } from '../hooks/useCelpip'
@@ -13,6 +13,7 @@ import {
   EmptyState,
   ErrorNote,
   LevelBadge,
+  SKILL_TONE,
   SectionHeading,
   formatDate,
 } from './ui'
@@ -100,31 +101,43 @@ export function HomeView({
     <div className="space-y-6">
       {error && <ErrorNote message={error} />}
 
-      <div className="grid gap-4 sm:grid-cols-3">
-        <div className={CARD}>
-          <p className="text-xs font-semibold uppercase tracking-wide text-neutral-400">Test date</p>
-          <p className="mt-1 text-2xl font-bold text-neutral-900 dark:text-neutral-50">
-            {days === null ? 'Not set' : days < 0 ? 'Past' : `${days} days`}
-          </p>
-          <p className="mt-0.5 text-[13px] text-neutral-500">
-            {profile.test_date ? formatDate(profile.test_date) : 'Set a date to get a scheduled plan'}
-            {' · '}
-            {profile.test_type === 'general_ls' ? 'General LS' : 'General'}
-          </p>
+      <section className="overflow-hidden rounded-3xl bg-neutral-950 p-5 text-white shadow-xl shadow-neutral-950/10 dark:border dark:border-neutral-800 sm:p-7">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-amber-300">Your CELPIP runway</p>
+            <h2 className="mt-2 text-3xl font-bold tracking-tight sm:text-4xl">
+              {days === null ? 'Set your test date' : days < 0 ? 'Update your test date' : `${days} days to reach level ${profile.target_level}`}
+            </h2>
+            <p className="mt-2 max-w-xl text-sm leading-relaxed text-neutral-300">
+              {profile.test_date ? `${profile.test_type === 'general_ls' ? 'General LS' : 'General'} on ${formatDate(profile.test_date)}.` : 'Add a date so the plan can pace your practice.'}
+              {' '}Your lowest component determines whether you have reached the target.
+            </p>
+          </div>
+          <div className="rounded-2xl border border-white/10 bg-white/10 px-4 py-3 text-right backdrop-blur">
+            <p className="text-xs font-semibold uppercase tracking-wide text-neutral-300">Readiness</p>
+            <p className="text-3xl font-bold tabular-nums">{readiness.readiness}%</p>
+          </div>
         </div>
-        <div className={CARD}>
-          <p className="text-xs font-semibold uppercase tracking-wide text-neutral-400">Target level</p>
-          <p className="mt-1 text-2xl font-bold text-neutral-900 dark:text-neutral-50">CELPIP {profile.target_level}</p>
-          <p className="mt-0.5 text-[13px] text-neutral-500">Applied to your lowest component, not your average</p>
-        </div>
-        <div className={CARD}>
-          <p className="text-xs font-semibold uppercase tracking-wide text-neutral-400">Readiness</p>
-          <p className="mt-1 text-2xl font-bold tabular-nums text-neutral-900 dark:text-neutral-50">
-            {readiness.readiness}%
-          </p>
-          <p className="mt-0.5 text-[13px] text-neutral-500">Computed from six measured signals, below</p>
-        </div>
-      </div>
+
+        {data.resume_attempt_id ? (
+          <button type="button" onClick={() => onOpenAttempt(data.resume_attempt_id!)} className="mt-6 inline-flex min-h-12 items-center gap-2 rounded-xl bg-amber-400 px-5 py-3 text-sm font-bold text-neutral-950 transition hover:bg-amber-300">
+            <PlayCircle size={17} /> Resume your attempt <ArrowRight size={16} />
+          </button>
+        ) : data.today[0] ? (
+          <div className="mt-6 flex flex-col justify-between gap-4 rounded-2xl border border-white/10 bg-white/[0.07] p-4 sm:flex-row sm:items-center">
+            <div>
+              <p className="text-xs font-bold uppercase tracking-wide text-amber-300">Today’s focus · {data.today[0].estimated_minutes} min</p>
+              <p className="mt-1 text-lg font-bold">{data.today[0].title}</p>
+              <p className="mt-1 text-sm text-neutral-300">{data.today[0].rationale}</p>
+            </div>
+            <button type="button" onClick={() => onNavigate(data.today[0].activity_type === 'lesson' ? 'learn' : data.today[0].activity_type.includes('mock') || data.today[0].activity_type === 'diagnostic' ? 'mocks' : 'practice')} className="inline-flex min-h-12 flex-shrink-0 items-center justify-center gap-2 rounded-xl bg-amber-400 px-5 py-3 text-sm font-bold text-neutral-950 hover:bg-amber-300">
+              Start now <ArrowRight size={16} />
+            </button>
+          </div>
+        ) : (
+          <button type="button" onClick={() => onNavigate('plan')} className="mt-6 inline-flex min-h-12 items-center gap-2 rounded-xl bg-amber-400 px-5 py-3 text-sm font-bold text-neutral-950 hover:bg-amber-300">Build today’s plan <ArrowRight size={16} /></button>
+        )}
+      </section>
 
       <div>
         <SectionHeading
@@ -142,7 +155,7 @@ export function HomeView({
             const latest = level?.latest ?? null
             const short = latest !== null && latest < profile.target_level
             return (
-              <div key={skill} className={CARD}>
+              <div key={skill} className={`${CARD} ${SKILL_TONE[skill] ?? ''}`}>
                 <div className="flex items-center justify-between">
                   <p className="text-sm font-bold capitalize text-neutral-900 dark:text-neutral-50">{skill}</p>
                   <LevelBadge low={latest === null ? null : Math.floor(latest)} high={latest === null ? null : Math.ceil(latest)} />
@@ -165,15 +178,6 @@ export function HomeView({
       <div className="grid gap-4 lg:grid-cols-2">
         <div>
           <SectionHeading title="Today" hint={`${data.today.length} scheduled ${data.today.length === 1 ? 'activity' : 'activities'}`} />
-          {data.resume_attempt_id && (
-            <button
-              type="button"
-              onClick={() => onOpenAttempt(data.resume_attempt_id!)}
-              className={`${BUTTON} mb-3 w-full justify-center`}
-            >
-              <PlayCircle size={15} /> Resume attempt in progress
-            </button>
-          )}
           {data.today.length === 0 ? (
             <EmptyState
               title="Nothing scheduled today"
@@ -187,7 +191,7 @@ export function HomeView({
           ) : (
             <ul className="space-y-2">
               {data.today.map(item => (
-                <li key={item.id} className={CARD}>
+                <li key={item.id} className={`${CARD} group`}>
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <p className="text-sm font-semibold text-neutral-900 dark:text-neutral-50">{item.title}</p>
@@ -197,6 +201,9 @@ export function HomeView({
                       {item.estimated_minutes}m
                     </span>
                   </div>
+                  <button type="button" onClick={() => onNavigate(item.activity_type === 'lesson' ? 'learn' : item.activity_type.includes('mock') || item.activity_type === 'diagnostic' ? 'mocks' : 'practice')} className="mt-3 inline-flex min-h-10 items-center gap-1.5 text-sm font-bold text-neutral-900 hover:text-amber-700 dark:text-white dark:hover:text-amber-300">
+                    Start activity <ArrowRight size={14} />
+                  </button>
                 </li>
               ))}
             </ul>
@@ -217,7 +224,7 @@ export function HomeView({
         </div>
 
         <div>
-          <SectionHeading title="What is holding the score back" hint="Ranked by how much readiness each is costing." />
+          <SectionHeading title="What needs attention" hint="The clearest ways to improve your readiness." />
           <ul className="space-y-2">
             {readiness.biggest_gaps.map(gap => (
               <li key={gap.signal} className={CARD}>
@@ -225,9 +232,7 @@ export function HomeView({
                   <p className="text-sm font-semibold text-neutral-900 dark:text-neutral-50">
                     {SIGNAL_LABELS[gap.signal] ?? gap.signal}
                   </p>
-                  <span className="flex-shrink-0 text-[11px] font-semibold tabular-nums text-neutral-400">
-                    −{Math.round(gap.unclaimed * 100)} pts
-                  </span>
+                  {gap.unclaimed < 0.15 ? <Check size={15} className="text-emerald-500" /> : <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-bold text-amber-800 dark:bg-amber-950 dark:text-amber-300">Needs work</span>}
                 </div>
                 <p className="mt-0.5 text-[13px] leading-relaxed text-neutral-500">
                   {SIGNAL_ADVICE[gap.signal] ?? ''}

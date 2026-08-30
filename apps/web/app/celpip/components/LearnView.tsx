@@ -5,7 +5,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { MarkdownResult } from '../../components/MarkdownResult'
 import type { Lesson, Spec } from '../types'
 import type { useCelpip } from '../hooks/useCelpip'
-import { BUTTON_QUIET, CARD, ErrorNote, SectionHeading } from './ui'
+import { BUTTON_QUIET, CARD, ErrorNote, SectionHeading, SKILL_TONE } from './ui'
 
 type Api = ReturnType<typeof useCelpip>
 
@@ -82,6 +82,12 @@ export function LearnView({ api }: { api: Api }) {
 
   return (
     <div className="space-y-8">
+      <div className="rounded-3xl bg-gradient-to-br from-amber-50 to-white p-6 dark:from-amber-950/30 dark:to-neutral-950 sm:p-8">
+        <p className="text-xs font-bold uppercase tracking-[0.15em] text-amber-700 dark:text-amber-300">Learn the test</p>
+        <h2 className="mt-1 text-3xl font-bold tracking-tight text-neutral-950 dark:text-white">Know the format. Practise the strategy.</h2>
+        <p className="mt-2 max-w-2xl text-sm leading-relaxed text-neutral-600 dark:text-neutral-300">Start with the overview, then use task lessons immediately before a focused practice session.</p>
+        {lessons[0] && <button type="button" onClick={() => void openLesson(lessons[0].slug)} className="mt-5 inline-flex min-h-11 items-center rounded-xl bg-neutral-950 px-4 py-2.5 text-sm font-bold text-white dark:bg-white dark:text-neutral-950">Start with {lessons[0].title}</button>}
+      </div>
       <div>
         <SectionHeading
           title="The test at a glance"
@@ -89,7 +95,7 @@ export function LearnView({ api }: { api: Api }) {
         />
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           {spec.sections.map(section => (
-            <div key={section.skill} className={CARD}>
+            <div key={section.skill} className={`${CARD} ${SKILL_TONE[section.skill] ?? ''}`}>
               <p className="text-sm font-bold text-neutral-900 dark:text-neutral-50">{section.label}</p>
               <p className="mt-0.5 text-[13px] text-neutral-500">
                 ~{Math.round(section.limit_seconds / 60)} min

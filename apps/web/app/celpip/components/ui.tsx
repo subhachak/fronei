@@ -4,21 +4,28 @@ import { AlertTriangle, Info } from 'lucide-react'
 import type { ReactNode } from 'react'
 
 export const CARD =
-  'rounded-xl border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900'
+  'rounded-2xl border border-neutral-200/80 bg-white p-4 shadow-sm shadow-neutral-950/[0.025] dark:border-neutral-800 dark:bg-neutral-900 dark:shadow-none'
 export const INPUT =
   'w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-900 focus:outline-none focus:ring-2 focus:ring-neutral-400 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-50'
 export const LABEL = 'mb-1 block text-xs font-semibold text-neutral-500'
 export const BUTTON =
-  'inline-flex items-center gap-1.5 rounded-lg bg-neutral-900 px-3.5 py-2 text-sm font-semibold text-white disabled:opacity-40 dark:bg-white dark:text-neutral-900'
+  'inline-flex min-h-11 items-center gap-1.5 rounded-xl bg-neutral-900 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition-all hover:-translate-y-px hover:bg-neutral-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 focus-visible:ring-offset-2 disabled:translate-y-0 disabled:opacity-40 dark:bg-white dark:text-neutral-900 dark:hover:bg-neutral-100'
 export const BUTTON_QUIET =
-  'inline-flex items-center gap-1.5 rounded-lg border border-neutral-200 px-3.5 py-2 text-sm font-semibold text-neutral-700 hover:bg-neutral-50 disabled:opacity-40 dark:border-neutral-700 dark:text-neutral-200 dark:hover:bg-neutral-800'
+  'inline-flex min-h-11 items-center gap-1.5 rounded-xl border border-neutral-200 px-4 py-2.5 text-sm font-semibold text-neutral-700 transition-colors hover:border-neutral-300 hover:bg-neutral-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 focus-visible:ring-offset-2 disabled:opacity-40 dark:border-neutral-700 dark:text-neutral-200 dark:hover:bg-neutral-800'
+
+export const SKILL_TONE: Record<string, string> = {
+  listening: 'border-violet-200 bg-violet-50 text-violet-900 dark:border-violet-900 dark:bg-violet-950/35 dark:text-violet-200',
+  reading: 'border-sky-200 bg-sky-50 text-sky-900 dark:border-sky-900 dark:bg-sky-950/35 dark:text-sky-200',
+  writing: 'border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-900 dark:bg-amber-950/35 dark:text-amber-200',
+  speaking: 'border-teal-200 bg-teal-50 text-teal-900 dark:border-teal-900 dark:bg-teal-950/35 dark:text-teal-200',
+}
 
 export function SectionHeading({ title, hint, action }: { title: string; hint?: string; action?: ReactNode }) {
   return (
     <div className="mb-3 flex items-end justify-between gap-4">
       <div>
-        <h2 className="text-base font-bold text-neutral-900 dark:text-neutral-50">{title}</h2>
-        {hint && <p className="mt-0.5 text-[13px] text-neutral-500">{hint}</p>}
+        <h2 className="text-lg font-bold tracking-tight text-neutral-900 dark:text-neutral-50">{title}</h2>
+        {hint && <p className="mt-0.5 text-sm leading-relaxed text-neutral-500">{hint}</p>}
       </div>
       {action}
     </div>

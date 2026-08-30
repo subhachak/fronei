@@ -4,6 +4,7 @@ import {
   ArrowLeft,
   BookOpen,
   ClipboardList,
+  Ellipsis,
   Database,
   GraduationCap,
   Home,
@@ -29,13 +30,11 @@ import { SessionRunner } from './runner/SessionRunner'
 type View = 'home' | 'learn' | 'practice' | 'mocks' | 'results' | 'plan' | 'bank'
 
 const NAV: { id: View; label: string; icon: typeof Home }[] = [
-  { id: 'home', label: 'Home', icon: Home },
+  { id: 'home', label: 'Today', icon: Home },
   { id: 'learn', label: 'Learn', icon: BookOpen },
   { id: 'practice', label: 'Practice', icon: Target },
-  { id: 'mocks', label: 'Mock Tests', icon: GraduationCap },
-  { id: 'results', label: 'Results', icon: Trophy },
-  { id: 'plan', label: 'Study Plan', icon: ClipboardList },
-  { id: 'bank', label: 'Question Bank', icon: Database },
+  { id: 'mocks', label: 'Mock Test', icon: GraduationCap },
+  { id: 'results', label: 'Progress', icon: Trophy },
 ]
 
 export function CelpipShell() {
@@ -46,6 +45,7 @@ export function CelpipShell() {
   // navigation rail down the side is not an exam simulation.
   const [runningAttempt, setRunningAttempt] = useState<string | null>(null)
   const [openResult, setOpenResult] = useState<string | null>(null)
+  const [moreOpen, setMoreOpen] = useState(false)
 
   const finishAttempt = useCallback((attemptId: string) => {
     setRunningAttempt(null)
@@ -121,7 +121,7 @@ export function CelpipShell() {
           </button>
         </div>
 
-        <nav className="-mx-1 mt-3 flex gap-1 overflow-x-auto pb-0.5">
+        <nav className="-mx-1 mt-3 hidden gap-1 overflow-x-auto pb-0.5 sm:flex">
           {NAV.map(item => (
             <button
               key={item.id}
@@ -137,6 +137,17 @@ export function CelpipShell() {
               {item.label}
             </button>
           ))}
+          <div className="relative ml-auto">
+            <button type="button" onClick={() => setMoreOpen(v => !v)} className="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[13px] font-semibold text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800">
+              <Ellipsis size={14} /> More
+            </button>
+            {moreOpen && (
+              <div className="absolute right-0 top-9 z-30 w-44 rounded-xl border border-neutral-200 bg-white p-1 shadow-xl dark:border-neutral-800 dark:bg-neutral-900">
+                <button type="button" onClick={() => { setView('plan'); setMoreOpen(false) }} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium hover:bg-neutral-100 dark:hover:bg-neutral-800"><ClipboardList size={14} /> Study plan</button>
+                <button type="button" onClick={() => { setView('bank'); setMoreOpen(false) }} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium hover:bg-neutral-100 dark:hover:bg-neutral-800"><Database size={14} /> Manage questions</button>
+              </div>
+            )}
+          </div>
         </nav>
       </header>
 
@@ -155,6 +166,13 @@ export function CelpipShell() {
           {view === 'bank' && <QuestionBankView api={api} />}
         </div>
       </div>
+      <nav className="grid flex-shrink-0 grid-cols-5 border-t border-neutral-200 bg-white px-1 pb-[max(.35rem,env(safe-area-inset-bottom))] pt-1 dark:border-neutral-800 dark:bg-neutral-950 sm:hidden">
+        {NAV.map(item => (
+          <button key={item.id} type="button" onClick={() => setView(item.id)} className={`flex min-h-12 flex-col items-center justify-center gap-0.5 rounded-lg text-[10px] font-semibold ${view === item.id ? 'text-neutral-950 dark:text-white' : 'text-neutral-400'}`}>
+            <item.icon size={18} /> {item.label}
+          </button>
+        ))}
+      </nav>
     </div>
   )
 }

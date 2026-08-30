@@ -247,19 +247,19 @@ export function SessionRunner({
 
   return (
     <div className="flex h-full flex-col overflow-hidden bg-white dark:bg-neutral-950">
-      <header className="flex flex-shrink-0 items-center justify-between gap-3 border-b border-neutral-200 px-4 py-2.5 dark:border-neutral-800 sm:px-6">
+      <header className="flex flex-shrink-0 items-center justify-between gap-3 border-b border-neutral-200 px-4 py-3 dark:border-neutral-800 sm:px-6">
         <div className="flex min-w-0 items-center gap-3">
           <button
             type="button"
             onClick={onExit}
             title={state.practice_mode === 'simulation' ? 'Leave — the clock keeps running' : 'Leave'}
-            className="grid h-8 w-8 flex-shrink-0 place-items-center rounded-full border border-neutral-200 text-neutral-500 dark:border-neutral-800 dark:text-neutral-400"
+            className="grid h-11 w-11 flex-shrink-0 place-items-center rounded-xl border border-neutral-200 text-neutral-500 hover:bg-neutral-50 dark:border-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-900"
           >
             <LogOut size={14} />
           </button>
           <div className="min-w-0">
-            <p className="truncate text-[13px] font-bold text-neutral-900 dark:text-neutral-50">{state.label}</p>
-            <p className="text-[11px] capitalize text-neutral-500">
+            <p className="truncate text-sm font-bold text-neutral-900 dark:text-neutral-50">{state.label}</p>
+            <p className="text-xs capitalize text-neutral-500">
               {state.practice_mode} · item {index + 1} of {items.length} · {answeredCount} answered
             </p>
           </div>
@@ -275,8 +275,24 @@ export function SessionRunner({
         </div>
       </header>
 
+      <div className="flex flex-shrink-0 items-center gap-1 border-b border-neutral-100 bg-neutral-50 px-4 py-2 dark:border-neutral-900 dark:bg-neutral-950 sm:px-6">
+        {state.components.map((skill, skillIndex) => {
+          const sectionItems = items.filter(item => item.skill === skill)
+          const active = skill === currentSkill
+          const done = state.components.indexOf(skill) < state.components.indexOf(currentSkill as Skill)
+          const answered = sectionItems.filter(item => item.answered > 0).length
+          return (
+            <div key={skill} className="flex flex-1 items-center gap-2">
+              <div className={`h-1.5 flex-1 rounded-full ${done ? 'bg-emerald-500' : active ? 'bg-amber-400' : 'bg-neutral-200 dark:bg-neutral-800'}`} />
+              <span className={`hidden text-[11px] font-bold capitalize lg:block ${active ? 'text-neutral-900 dark:text-white' : 'text-neutral-400'}`}>{skill} {answered}/{sectionItems.length}</span>
+              {skillIndex < state.components.length - 1 && <span className="sr-only">then</span>}
+            </div>
+          )
+        })}
+      </div>
+
       <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-8">
-        <div className="mx-auto w-full max-w-3xl">
+        <div className={`mx-auto w-full ${question?.skill === 'writing' ? 'max-w-6xl' : 'max-w-3xl'}`}>
           {error && <div className="mb-4"><ErrorNote message={error} /></div>}
           {question ? (
             <QuestionCard
@@ -307,21 +323,22 @@ export function SessionRunner({
         >
           <ChevronLeft size={14} /> Previous
         </button>
-        <div className="flex flex-wrap justify-center gap-1">
+        <div className="flex max-w-[55vw] flex-wrap justify-center gap-1.5 overflow-y-auto">
           {navigable.map(({ item, i }) => (
             <button
               key={item.question_id}
               type="button"
               onClick={() => setIndex(i)}
               title={item.task_key}
-              className={`h-2 w-6 rounded-full transition-colors ${
+              aria-label={`Question ${i + 1}${item.answered > 0 ? ', answered' : ''}`}
+              className={`grid h-9 min-w-9 place-items-center rounded-lg border px-2 text-xs font-bold transition-colors ${
                 i === index
-                  ? 'bg-neutral-900 dark:bg-white'
+                  ? 'border-neutral-900 bg-neutral-900 text-white dark:border-white dark:bg-white dark:text-neutral-900'
                   : item.answered > 0
-                    ? 'bg-emerald-400'
-                    : 'bg-neutral-200 dark:bg-neutral-700'
+                    ? 'border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-300'
+                    : 'border-neutral-200 bg-white text-neutral-500 dark:border-neutral-700 dark:bg-neutral-900'
               }`}
-            />
+            >{i + 1}</button>
           ))}
         </div>
         {index < lastNavigable ? (

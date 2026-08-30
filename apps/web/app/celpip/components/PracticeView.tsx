@@ -2,9 +2,9 @@
 
 import { GraduationCap, Loader2, Target, Timer } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
-import type { BankCoverage, PracticeMode, Spec } from '../types'
+import type { BankCoverage, PracticeMode, Skill, Spec } from '../types'
 import type { useCelpip } from '../hooks/useCelpip'
-import { BUTTON, CARD, EmptyState, ErrorNote, SectionHeading } from './ui'
+import { BUTTON, EmptyState, ErrorNote, SectionHeading, SKILL_TONE } from './ui'
 
 type Api = ReturnType<typeof useCelpip>
 
@@ -18,6 +18,8 @@ export function PracticeView({ api, onStart }: { api: Api; onStart: (attemptId: 
   const [spec, setSpec] = useState<Spec | null>(null)
   const [coverage, setCoverage] = useState<Record<string, number>>({})
   const [mode, setMode] = useState<PracticeMode>('learn')
+  const [skill, setSkill] = useState<Skill>('listening')
+  const [taskKey, setTaskKey] = useState('')
   const [error, setError] = useState('')
   const [starting, setStarting] = useState('')
 
@@ -37,6 +39,13 @@ export function PracticeView({ api, onStart }: { api: Api; onStart: (attemptId: 
   useEffect(() => {
     void load()
   }, [load])
+
+  useEffect(() => {
+    const section = spec?.sections.find(item => item.skill === skill)
+    if (section && !section.tasks.some(task => task.key === taskKey)) {
+      setTaskKey(section.tasks[0]?.key ?? '')
+    }
+  }, [spec, skill, taskKey])
 
   const start = useCallback(
     async (taskKey: string) => {
@@ -67,89 +76,77 @@ export function PracticeView({ api, onStart }: { api: Api; onStart: (attemptId: 
   }
 
   const total = Object.values(coverage).reduce((sum, n) => sum + n, 0)
+  const activeSection = spec.sections.find(section => section.skill === skill) ?? spec.sections[0]
+  const selectedTask = activeSection?.tasks.find(task => task.key === taskKey) ?? activeSection?.tasks[0]
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-7">
       {error && <ErrorNote message={error} />}
 
       <div>
-        <SectionHeading title="Practice mode" hint="The same task type behaves differently in each." />
-        <div className="grid gap-2 sm:grid-cols-3">
-          {MODES.map(item => (
-            <button
-              key={item.id}
-              type="button"
-              onClick={() => setMode(item.id)}
-              className={`rounded-xl border p-3 text-left transition-colors ${
-                mode === item.id
-                  ? 'border-neutral-900 bg-neutral-50 dark:border-white dark:bg-neutral-800'
-                  : 'border-neutral-200 dark:border-neutral-700'
-              }`}
-            >
-              <span className="flex items-center gap-1.5 text-sm font-bold text-neutral-900 dark:text-neutral-50">
-                <item.icon size={14} /> {item.label}
-              </span>
-              <span className="mt-1 block text-[12px] leading-snug text-neutral-500">{item.hint}</span>
-            </button>
-          ))}
-        </div>
+        <p className="text-xs font-bold uppercase tracking-[0.15em] text-amber-600 dark:text-amber-400">Focused practice</p>
+        <h2 className="mt-1 text-3xl font-bold tracking-tight text-neutral-950 dark:text-white">What do you want to improve?</h2>
+        <p className="mt-2 max-w-2xl text-sm leading-relaxed text-neutral-500">Choose one skill and task. We’ll keep the setup out of the way and take you straight into practice.</p>
       </div>
 
       {total === 0 && (
-        <EmptyState
-          title="The question bank is empty"
-          hint="Generate items per task type in the Question Bank. Each one is validated by an independent second pass before it can be served."
-        />
+        <EmptyState title="The question bank is empty" hint="Generate validated items in Manage questions before starting practice." />
       )}
 
-      {spec.sections.map(section => (
-        <div key={section.skill}>
-          <SectionHeading title={section.label} hint={`${section.tasks.length} official task types`} />
-          <div className="grid gap-3 sm:grid-cols-2">
-            {section.tasks.map(task => {
-              const available = coverage[task.key] ?? 0
+      <section>
+        <SectionHeading title="1. Choose a skill" />
+        <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
+          {spec.sections.map(section => (
+            <button key={section.skill} type="button" onClick={() => { setSkill(section.skill); setTaskKey(section.tasks[0]?.key ?? '') }} className={`min-h-16 rounded-2xl border p-3 text-left text-sm font-bold capitalize transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 ${skill === section.skill ? `${SKILL_TONE[section.skill]} ring-1 ring-current/20` : 'border-neutral-200 bg-white text-neutral-600 hover:border-neutral-400 dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-300'}`}>
+              {section.label}
+              <span className="mt-1 block text-xs font-normal opacity-70">{section.tasks.length} task types</span>
+            </button>
+          ))}
+        </div>
+      </section>
+
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(320px,.8fr)]">
+        <section>
+          <SectionHeading title="2. Choose a task" />
+          <div className="overflow-hidden rounded-2xl border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
+            {activeSection?.tasks.map(task => {
+              const ready = coverage[task.key] ?? 0
+              const selected = selectedTask?.key === task.key
               return (
-                <div key={task.key} className={CARD}>
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <p className="text-sm font-bold text-neutral-900 dark:text-neutral-50">
-                        Part {task.part} · {task.label}
-                      </p>
-                      <p className="mt-0.5 text-[13px] leading-relaxed text-neutral-500">{task.description}</p>
-                      <p className="mt-1.5 text-[11px] text-neutral-400">
-                        {task.question_count > 0 && `${task.question_count} questions · `}
-                        {task.prep_seconds > 0 && `${task.prep_seconds}s prep · `}
-                        {task.response_seconds > 0 &&
-                          (task.response_seconds >= 120
-                            ? `${Math.round(task.response_seconds / 60)} min`
-                            : `${task.response_seconds}s`)}
-                        {task.word_range && ` · ${task.word_range[0]}–${task.word_range[1]} words`}
-                      </p>
-                    </div>
-                    <span
-                      className={`flex-shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold ${
-                        available > 0
-                          ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300'
-                          : 'bg-neutral-100 text-neutral-500 dark:bg-neutral-800'
-                      }`}
-                    >
-                      {available} ready
-                    </span>
-                  </div>
-                  <button
-                    type="button"
-                    disabled={available === 0 || starting === task.key}
-                    onClick={() => void start(task.key)}
-                    className={`${BUTTON} mt-3 w-full justify-center`}
-                  >
-                    {starting === task.key ? 'Starting…' : `Practise in ${mode} mode`}
-                  </button>
-                </div>
+                <button key={task.key} type="button" disabled={ready === 0} onClick={() => setTaskKey(task.key)} className={`flex min-h-14 w-full items-center gap-3 border-b border-neutral-100 px-4 py-3 text-left last:border-0 disabled:opacity-40 dark:border-neutral-800 ${selected ? 'bg-neutral-950 text-white dark:bg-white dark:text-neutral-950' : 'hover:bg-neutral-50 dark:hover:bg-neutral-800'}`}>
+                  <span className={`grid h-7 w-7 flex-shrink-0 place-items-center rounded-full border text-xs font-bold ${selected ? 'border-white/30' : 'border-neutral-200 dark:border-neutral-700'}`}>{task.part}</span>
+                  <span className="min-w-0 flex-1 text-sm font-semibold">{task.label}</span>
+                  {ready === 0 && <span className="text-xs">Unavailable</span>}
+                </button>
               )
             })}
           </div>
-        </div>
-      ))}
+        </section>
+
+        <aside className="lg:sticky lg:top-4 lg:self-start">
+          <SectionHeading title="3. Choose how to practise" />
+          <div className="rounded-3xl border border-neutral-200 bg-neutral-50 p-4 dark:border-neutral-800 dark:bg-neutral-900 sm:p-5">
+            {selectedTask && (
+              <div className="mb-4">
+                <p className="text-lg font-bold text-neutral-950 dark:text-white">{selectedTask.label}</p>
+                <p className="mt-1 text-sm leading-relaxed text-neutral-500">{selectedTask.description}</p>
+                <p className="mt-2 text-xs font-medium text-neutral-400">{selectedTask.question_count > 0 && `${selectedTask.question_count} questions · `}{selectedTask.response_seconds > 0 && `${selectedTask.response_seconds >= 120 ? Math.round(selectedTask.response_seconds / 60) + ' min' : selectedTask.response_seconds + ' sec'}`}{selectedTask.word_range && ` · ${selectedTask.word_range[0]}–${selectedTask.word_range[1]} words`}</p>
+              </div>
+            )}
+            <div className="space-y-2">
+              {MODES.map(item => (
+                <button key={item.id} type="button" onClick={() => setMode(item.id)} className={`flex w-full items-start gap-3 rounded-xl border p-3 text-left ${mode === item.id ? 'border-neutral-950 bg-white ring-1 ring-neutral-950 dark:border-white dark:bg-neutral-800 dark:ring-white' : 'border-neutral-200 bg-white/60 dark:border-neutral-700 dark:bg-neutral-950/30'}`}>
+                  <span className={`mt-0.5 grid h-5 w-5 place-items-center rounded-full border ${mode === item.id ? 'border-neutral-950 bg-neutral-950 text-white dark:border-white dark:bg-white dark:text-neutral-950' : 'border-neutral-300'}`}>{mode === item.id && '✓'}</span>
+                  <span><span className="block text-sm font-bold text-neutral-950 dark:text-white">{item.label}</span><span className="mt-0.5 block text-xs leading-relaxed text-neutral-500">{item.hint}</span></span>
+                </button>
+              ))}
+            </div>
+            <button type="button" disabled={!selectedTask || (coverage[selectedTask.key] ?? 0) === 0 || starting === selectedTask?.key} onClick={() => selectedTask && void start(selectedTask.key)} className={`${BUTTON} mt-5 w-full justify-center`}>
+              {starting ? 'Starting…' : `Start ${mode} practice`}
+            </button>
+          </div>
+        </aside>
+      </div>
     </div>
   )
 }

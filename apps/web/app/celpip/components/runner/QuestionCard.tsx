@@ -176,10 +176,10 @@ export function QuestionCard({
     <div className="space-y-5">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <p className="text-[11px] font-bold uppercase tracking-wide text-neutral-400">
+          <p className="text-xs font-bold uppercase tracking-wide text-neutral-400">
             Part {question.part} · {question.label}
           </p>
-          <p className="mt-0.5 text-[13px] leading-relaxed text-neutral-500">{question.description}</p>
+          <p className="mt-0.5 text-sm leading-relaxed text-neutral-500">{question.description}</p>
         </div>
         <button
           type="button"
@@ -189,7 +189,7 @@ export function QuestionCard({
             void save({ question_index: 0, flagged: next })
           }}
           title="Flag for review"
-          className={`flex-shrink-0 rounded-lg border p-2 ${
+          className={`grid h-11 w-11 flex-shrink-0 place-items-center rounded-xl border ${
             flagged
               ? 'border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-950/50'
               : 'border-neutral-200 text-neutral-400 dark:border-neutral-700'
@@ -217,19 +217,24 @@ export function QuestionCard({
         />
       )}
 
-      <StimulusView question={question} imageUrl={imageUrl} />
+      {question.skill !== 'writing' && <StimulusView question={question} imageUrl={imageUrl} />}
 
       {question.skill === 'writing' && (
-        <div>
-          <textarea
-            value={text}
-            onChange={e => setText(e.target.value)}
-            rows={16}
-            spellCheck={practiceMode !== 'simulation'}
-            placeholder="Write your response here."
-            className="w-full rounded-lg border border-neutral-200 bg-white p-3 font-sans text-[15px] leading-relaxed text-neutral-900 focus:outline-none focus:ring-2 focus:ring-neutral-400 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-50"
-          />
-          <div className="mt-1.5 flex items-center justify-between text-[12px]">
+        <div className="grid gap-4 lg:grid-cols-[minmax(280px,.75fr)_minmax(0,1.25fr)]">
+          <aside className="rounded-2xl border border-neutral-200 bg-neutral-50 p-4 dark:border-neutral-800 dark:bg-neutral-900 lg:sticky lg:top-0 lg:self-start">
+            <p className="mb-3 text-xs font-bold uppercase tracking-wide text-neutral-400">Writing prompt</p>
+            <StimulusView question={question} imageUrl={imageUrl} />
+          </aside>
+          <div className="overflow-hidden rounded-2xl border border-neutral-200 bg-white dark:border-neutral-700 dark:bg-neutral-900">
+            <textarea
+              value={text}
+              onChange={e => setText(e.target.value)}
+              rows={19}
+              spellCheck={practiceMode !== 'simulation'}
+              placeholder="Write your response here."
+              className="w-full resize-none bg-transparent p-5 font-sans text-base leading-7 text-neutral-900 focus:outline-none dark:text-neutral-50"
+            />
+          <div className="sticky bottom-0 flex flex-wrap items-center justify-between gap-2 border-t border-neutral-200 bg-white px-4 py-2.5 text-xs dark:border-neutral-800 dark:bg-neutral-900">
             <span
               className={
                 words < low
@@ -243,9 +248,10 @@ export function QuestionCard({
               {words < low && low ? ' · under length is penalised' : ''}
             </span>
             <span className="text-neutral-400">
-              {saving ? 'Saving…' : 'Saved automatically'}
+              {saving ? 'Saving…' : 'Saved'}
               {practiceMode === 'simulation' ? ' · spellcheck off, as in the test' : ''}
             </span>
+          </div>
           </div>
         </div>
       )}

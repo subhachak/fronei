@@ -7,7 +7,7 @@ import { useCallback, useEffect, useState } from 'react'
 import type { Evaluation, ReceptiveItemReview, ResultsPayload } from '../types'
 import type { useCelpip } from '../hooks/useCelpip'
 import {
-  ApproximateNote, BUTTON, BUTTON_QUIET, CARD, EmptyState, ErrorNote, LevelBadge,
+  ApproximateNote, BUTTON, BUTTON_QUIET, CARD, EmptyState, ErrorNote, LevelBadge, SKILL_TONE,
   SectionHeading, formatDate,
 } from './ui'
 
@@ -158,6 +158,8 @@ function AttemptResults({
     Boolean(results.evaluation_pending)
   const retrying =
     Boolean(results.evaluation_job?.active) && (results.evaluation_job?.attempt_count ?? 0) > 1
+  const measured = Object.entries(results.components).filter(([, component]) => component.level.low > 0)
+  const lowest = measured.sort((a, b) => a[1].level.low - b[1].level.low)[0]
 
   return (
     <div className="space-y-6">
@@ -170,11 +172,19 @@ function AttemptResults({
         </button>
       </div>
 
-      <div>
-        <h2 className="text-xl font-bold text-neutral-900 dark:text-neutral-50">{results.label}</h2>
-        <p className="text-[13px] text-neutral-500">
+      <div className="rounded-3xl bg-neutral-950 p-5 text-white sm:p-7">
+        <p className="text-xs font-bold uppercase tracking-[0.15em] text-amber-300">Your result</p>
+        <h2 className="mt-1 text-3xl font-bold tracking-tight">{results.label}</h2>
+        <p className="mt-1 text-sm text-neutral-300">
           {results.practice_mode} · submitted {formatDate(results.submitted_at)}
         </p>
+        {!scoring && lowest && (
+          <div className="mt-5 rounded-2xl border border-white/10 bg-white/[0.07] p-4">
+            <p className="text-xs font-bold uppercase tracking-wide text-amber-300">Best next move</p>
+            <p className="mt-1 text-lg font-bold capitalize">Focus on {lowest[0]}</p>
+            <p className="mt-1 text-sm text-neutral-300">This was your lowest estimated component at level {lowest[1].level.low}{lowest[1].level.high !== lowest[1].level.low ? `–${lowest[1].level.high}` : ''}. Review the feedback below, then retry a parallel task.</p>
+          </div>
+        )}
       </div>
 
       {scoring && (
@@ -198,7 +208,7 @@ function AttemptResults({
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         {Object.entries(results.components).map(([skill, component]) => (
-          <div key={skill} className={CARD}>
+          <div key={skill} className={`${CARD} ${SKILL_TONE[skill] ?? ''}`}>
             <div className="flex items-center justify-between">
               <p className="text-sm font-bold capitalize text-neutral-900 dark:text-neutral-50">{skill}</p>
               <LevelBadge low={component.level.low} high={component.level.high} />
@@ -389,11 +399,12 @@ function EvaluationCard({ api, evaluation }: { api: Api; evaluation: Evaluation 
         <p className="mt-3 text-[14px] leading-relaxed text-neutral-700 dark:text-neutral-200">{feedback.summary}</p>
       )}
 
-      <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="mt-4 space-y-3">
         {Object.entries(evaluation.dimensions).map(([dim, level]) => (
-          <div key={dim} className="rounded-lg border border-neutral-200 p-2 dark:border-neutral-800">
-            <p className="text-[11px] text-neutral-500">{DIMENSION_LABEL[dim] ?? dim}</p>
-            <p className="text-lg font-bold tabular-nums text-neutral-900 dark:text-neutral-50">{level}</p>
+          <div key={dim} className="grid grid-cols-[minmax(130px,1fr)_3fr_2rem] items-center gap-3">
+            <p className="text-xs font-semibold text-neutral-600 dark:text-neutral-300">{DIMENSION_LABEL[dim] ?? dim}</p>
+            <div className="h-2 overflow-hidden rounded-full bg-neutral-100 dark:bg-neutral-800"><div className="h-full rounded-full bg-amber-400" style={{ width: `${Math.max(4, Math.min(100, (level / 12) * 100))}%` }} /></div>
+            <p className="text-right text-sm font-bold tabular-nums text-neutral-900 dark:text-neutral-50">{level}</p>
           </div>
         ))}
       </div>

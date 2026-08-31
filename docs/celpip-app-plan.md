@@ -564,3 +564,31 @@ personalised plan out of nothing.
 - Tests no longer queue real generation work: assembly's refill is stubbed by an
   autouse fixture, which was making the suite hit live providers through the
   TestClient worker thread.
+
+### Listening audio cut out mid-playback
+
+Reported from a Part 4 practice run: the page appeared to refresh itself and the
+audio stopped partway through.
+
+The runner reloads the current question whenever its load effect re-runs, and
+reloading blanks `question` — which unmounts QuestionCard and destroys the
+`<audio>` element inside it. An earlier fix had made that effect depend on the
+question **id** rather than the items array, which stopped the 30-second clock
+resync from triggering it. One hole remained: the effect also depended on the
+whole `api` object, and `useCelpip` returned a fresh object literal on every
+render of the shell. Clerk re-renders on session-token refresh, roughly once a
+minute, so the question reloaded on that cadence and took the audio with it. In
+simulation mode the remount also reset the play counter, quietly handing back
+plays the real test does not allow.
+
+Fixed at both levels, because either alone would have been fragile:
+
+- `useCelpip` now memoises what it returns, so its identity stops churning for
+  every consumer that reads it in a dependency array.
+- The runner tracks the question it has actually loaded in a ref and ignores a
+  request to load the same one again. The effect is now free to re-run for any
+  reason — a resync, an autosave, an unstable reference introduced later — and
+  cannot interrupt playback.
+
+`SessionRunner.test.tsx` covers both triggers. Reverting the ref guard makes it
+fail with four question fetches where there should be one.

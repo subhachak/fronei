@@ -59,6 +59,7 @@ export function SessionRunner({
 
   const items = state?.items ?? []
   const currentItem = items[index]
+  const currentQuestionId = currentItem?.question_id ?? null
   const currentSkill = currentItem?.skill ?? null
 
   // Opening a section stamps its deadline server-side. Idempotent there, so a
@@ -78,24 +79,40 @@ export function SessionRunner({
       .catch(err => setError(err instanceof Error ? err.message : 'Could not open this section.'))
   }, [state, currentSkill, api, attemptId, loadState])
 
-  const loadQuestion = useCallback(async () => {
-    if (!currentItem) return
-    setQuestion(null)
-    try {
-      setQuestion(
-        await api.getJson<RunnerQuestion>(
-          `/admin/celpip/attempts/${attemptId}/questions/${currentItem.question_id}`,
-        ),
-      )
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not load this question.')
-    }
-  }, [api, attemptId, currentItem])
+  // Which question the runner has actually loaded. The effect below is allowed
+  // to re-run for any reason -- a clock resync, an autosave, a token refresh
+  // changing a dependency's identity -- and this is what stops it acting on
+  // those. Reloading blanks `question`, which unmounts QuestionCard and
+  // destroys the <audio> element with it, so a spurious reload cuts listening
+  // audio off mid-playback. Guarding on effect dependencies alone was not
+  // enough: it only takes one unstable reference upstream.
+  const loadedQuestionId = useRef<string | null>(null)
+
+  const loadQuestion = useCallback(
+    async (questionId: string, { force = false }: { force?: boolean } = {}) => {
+      if (!force && loadedQuestionId.current === questionId) return
+      loadedQuestionId.current = questionId
+      setQuestion(null)
+      try {
+        setQuestion(
+          await api.getJson<RunnerQuestion>(
+            `/admin/celpip/attempts/${attemptId}/questions/${questionId}`,
+          ),
+        )
+      } catch (err) {
+        // Clear the marker so the next render retries rather than sitting on a
+        // question that never arrived.
+        loadedQuestionId.current = null
+        setError(err instanceof Error ? err.message : 'Could not load this question.')
+      }
+    },
+    [api, attemptId],
+  )
 
   useEffect(() => {
-    if (instructionsFor) return
-    void loadQuestion()
-  }, [loadQuestion, instructionsFor])
+    if (instructionsFor || !currentQuestionId) return
+    void loadQuestion(currentQuestionId)
+  }, [currentQuestionId, instructionsFor, loadQuestion])
 
   const beginSection = useCallback(
     async (skill: Skill) => {

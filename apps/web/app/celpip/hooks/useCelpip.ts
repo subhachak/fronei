@@ -53,5 +53,14 @@ export function useCelpip() {
     [getJson],
   )
 
-  return { authorizedFetch, getJson, postJson, readErrorBody, access }
+  // Memoised: this object is passed as a prop and read in effect dependency
+  // arrays. Returning a fresh literal every render meant that any re-render of
+  // the shell -- including the one Clerk triggers when it refreshes the session
+  // token, roughly once a minute -- changed its identity and re-ran those
+  // effects. In the session runner that reloaded the current question and
+  // unmounted it, cutting listening audio off mid-playback.
+  return useMemo(
+    () => ({ authorizedFetch, getJson, postJson, readErrorBody, access }),
+    [authorizedFetch, getJson, postJson, access],
+  )
 }

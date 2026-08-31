@@ -33,5 +33,11 @@ test('renders the mobile agent shell controls', async ({ page }) => {
 
   await expect(page.getByAltText('Fronei').first()).toBeVisible()
   await expect(page.getByRole('button', { name: 'Open library' })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Open context' })).toBeVisible()
+  // The single "Open context" rail became separate sheets. Asserting on each
+  // of them keeps the point of the test -- that a phone can still reach
+  // everything the desktop rails hold -- rather than on a control that no
+  // longer exists.
+  await expect(page.getByRole('button', { name: 'Current work' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Pinned facts' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Quick preferences' })).toBeVisible()
 })

@@ -236,6 +236,32 @@ TASKS_BY_SKILL: dict[str, tuple[TaskSpec, ...]] = {
 }
 
 
+# How long a stimulus may run, in words. Generous ranges: the point is to reject
+# an item that is obviously the wrong size for its part (a 40-word "article", a
+# 900-word "short conversation"), not to police style. Roughly calibrated to the
+# real audio lengths at ordinary speaking pace.
+#
+# Read by BOTH the generator prompt and the validator. They were once separate,
+# and the generator was silently held to a limit it had never been told -- every
+# rejection in a run was a length overrun.
+STIMULUS_WORD_BOUNDS: dict[str, tuple[int, int]] = {
+    "listening_problem_solving": (250, 750),
+    "listening_daily_life": (120, 400),
+    "listening_information": (150, 450),
+    "listening_news": (120, 350),
+    "listening_discussion": (250, 700),
+    "listening_viewpoints": (250, 700),
+    "reading_correspondence": (150, 450),
+    "reading_diagram": (80, 400),
+    "reading_information": (200, 600),
+    "reading_viewpoints": (250, 700),
+}
+
+
+def word_bounds(task_key: str) -> tuple[int, int] | None:
+    return STIMULUS_WORD_BOUNDS.get(task_key)
+
+
 @dataclass(frozen=True)
 class SectionSpec:
     """Section-level timing for a full simulation."""

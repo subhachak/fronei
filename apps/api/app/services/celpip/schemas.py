@@ -25,6 +25,7 @@ import hashlib
 import re
 from typing import Any
 
+from app.services.celpip.spec import STIMULUS_WORD_BOUNDS as SPEC_WORD_BOUNDS
 from app.services.celpip.spec import TASKS_BY_KEY, TaskSpec
 
 # The receptive tasks that are answered by choosing an option.
@@ -35,21 +36,10 @@ MULTIPLE_CHOICE_SKILLS = {"listening", "reading"}
 PARAGRAPH_LABELS = ("A", "B", "C", "D")
 NOT_GIVEN_LABEL = "E"
 
-# Length bounds per task, in words, for the stimulus. Generous ranges: the
-# point is to reject an item that is obviously the wrong size for its part
-# (a 40-word "article", a 900-word "short conversation"), not to police style.
-STIMULUS_WORD_BOUNDS: dict[str, tuple[int, int]] = {
-    "listening_problem_solving": (250, 750),
-    "listening_daily_life": (120, 400),
-    "listening_information": (150, 450),
-    "listening_news": (120, 350),
-    "listening_discussion": (250, 700),
-    "listening_viewpoints": (250, 700),
-    "reading_correspondence": (150, 450),
-    "reading_diagram": (80, 400),
-    "reading_information": (200, 600),
-    "reading_viewpoints": (250, 700),
-}
+# Re-exported for callers that already import it from here. The definition
+# lives in spec.py, so the prompt that asks for a length and the check that
+# enforces it cannot drift apart.
+STIMULUS_WORD_BOUNDS = SPEC_WORD_BOUNDS
 
 
 class PayloadError(ValueError):

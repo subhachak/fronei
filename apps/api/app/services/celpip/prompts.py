@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 
-from app.services.celpip.spec import TASKS_BY_KEY, TaskSpec
+from app.services.celpip.spec import TASKS_BY_KEY, TaskSpec, word_bounds
 
 GENERATOR_SYSTEM = """You write practice items for the CELPIP-General English test.
 
@@ -101,8 +101,13 @@ def _stimulus_shape(task: TaskSpec) -> str:
         speaker_note = (
             f"exactly {task.speakers} speaker" + ("s" if task.speakers != 1 else "")
         )
+        limits = word_bounds(task.key)
+        budget = (
+            f" -- {limits[0]}-{limits[1]} words in total across all segments"
+            if limits else ""
+        )
         return f"""  "stimulus": {{
-    "segments": [           // exactly {segments} segment(s), with {speaker_note} overall
+    "segments": [           // exactly {segments} segment(s), with {speaker_note} overall{budget}
       {{
         "index": 0,
         "speakers": [{{"name": "Priya", "gender_hint": "female"}}],
@@ -193,6 +198,27 @@ def build_generation_prompt(
     if task.question_count:
         shape = shape + "\n" + _question_shape(task)
 
+    # State the length budget. Without it the generator writes a natural-sounding
+    # script roughly 40% over, and the validator discards every one of them for
+    # breaking a rule it was never given -- which is most of the cost of a run
+    # and most of the reason the buffer fills slowly.
+    length_lines: list[str] = []
+    bounds = word_bounds(task_key)
+    if bounds:
+        low, high = bounds
+        aim = round((low + high) / 2 / 10) * 10
+        segments = 3 if task.key == "listening_problem_solving" else 1
+        what = "spoken script" if task.skill == "listening" else "passage text"
+        length_lines.append(
+            f"LENGTH: the {what} must total {low}-{high} words. Aim for about {aim}. "
+            "This is checked and enforced -- an item outside the range is discarded, "
+            "however good it is, so keep it tight rather than rich."
+        )
+        if segments > 1:
+            length_lines.append(
+                f"Across {segments} segments that is roughly {aim // segments} words per segment."
+            )
+
     timing = []
     if task.prep_seconds:
         timing.append(f"{task.prep_seconds}s preparation")
@@ -214,6 +240,8 @@ def build_generation_prompt(
         f"Target difficulty: CELPIP level {difficulty}. Pitch the vocabulary, sentence "
         f"length, and inference load at a candidate scoring {difficulty}.",
     ]
+    if length_lines:
+        lines += ["", *length_lines]
     if topic_hint:
         lines.append(f"Topic to use: {topic_hint}")
     if avoid_topics:

@@ -289,3 +289,56 @@ def test_every_task_type_has_a_validation_path(task_key: str) -> None:
     """No task may silently accept an empty stimulus for want of a rule."""
     errors = schemas.validate_payload(task_key, {"stimulus": {}})
     assert errors, f"{task_key} accepted an empty stimulus"
+
+
+# --- The generator must be told the rules it is judged by -----------------
+
+@pytest.mark.parametrize("task_key", sorted(schemas.STIMULUS_WORD_BOUNDS))
+def test_the_prompt_states_the_length_it_will_be_rejected_for(task_key: str) -> None:
+    """A validator enforcing an undisclosed rule just burns generation calls.
+
+    This was real: length bounds lived only in the validator, so the generator
+    wrote naturally-sized scripts about 40% over and had every one discarded.
+    A whole run could come back "0 kept, 3 rejected", all for length.
+    """
+    from app.services.celpip.prompts import build_generation_prompt
+
+    low, high = schemas.STIMULUS_WORD_BOUNDS[task_key]
+    _, user = build_generation_prompt(task_key, difficulty=9)
+
+    assert f"{low}-{high} words" in user, f"{task_key} never states its length budget"
+    assert "LENGTH:" in user
+
+
+def test_multi_segment_items_get_a_per_segment_budget() -> None:
+    """A total is hard to hold to across three separately written segments."""
+    from app.services.celpip.prompts import build_generation_prompt
+
+    _, user = build_generation_prompt("listening_problem_solving", difficulty=9)
+    assert "per segment" in user
+
+
+def test_the_prompt_and_the_validator_read_the_same_bounds() -> None:
+    """They were separate definitions once, which is how they drifted."""
+    from app.services.celpip.spec import STIMULUS_WORD_BOUNDS as spec_bounds
+
+    assert schemas.STIMULUS_WORD_BOUNDS is spec_bounds
+
+
+def test_a_stimulus_inside_the_stated_budget_passes() -> None:
+    """The bound the prompt advertises has to be one an item can actually meet."""
+    payload = _news_item()
+    low, high = schemas.STIMULUS_WORD_BOUNDS["listening_news"]
+    aim = (low + high) // 2
+    words = ["Council", "confirmed", "the", "revised", "timetable", "yesterday", "evening."]
+    filler = " ".join(words[i % len(words)] for i in range(aim))
+    payload["stimulus"]["segments"][0]["lines"][0]["text"] = (
+        "extend the Riverside bus route by four kilometres. " + filler
+    )
+    for question in payload["questions"]:
+        question["evidence"] = "extend the Riverside bus route by four kilometres"
+        question["answer"] = "A"
+        question["options"] = {"A": "Extend a route", "B": "b", "C": "c", "D": "d"}
+    payload["questions"][1]["answer"] = "A"
+    errors = [e for e in schemas.validate_payload("listening_news", payload) if "words" in e]
+    assert errors == [], errors

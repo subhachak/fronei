@@ -627,3 +627,32 @@ that produced them finished long ago.
 
 `tests/test_celpip_stock.py` covers each one. Reverting the enqueue change makes
 three of them fail.
+
+### The generator was judged by a rule it was never told
+
+A generation run came back "0 kept · 3 rejected", every rejection reading
+`schema — stimulus is 526 words; Listening to a Daily Life Conversation expects
+120-400`. Every visible rejection across two task types was the same thing: a
+length overrun, by roughly 40%.
+
+The bounds lived in `schemas.py`, which validates, and nowhere in `prompts.py`,
+which asks. The generator wrote a natural-sounding script, the validator
+discarded it for breaking a limit it had never been given, and the run repeated
+until it hit its attempt ceiling. That is most of the cost of a run and most of
+the reason the buffer filled slowly.
+
+`STIMULUS_WORD_BOUNDS` now lives in `spec.py` with the rest of the format, and
+both sides read it from there — the same principle the app already applies to
+task counts and timings, which is exactly the drift this was. The prompt states
+the range, an explicit target to aim at (models hold a target far better than a
+range), and for Problem Solving a per-segment budget, since a total is hard to
+hold to across three separately written segments.
+
+The bounds themselves were left alone: 120-400 words for a daily-life
+conversation and 250-750 across three problem-solving segments are already
+generous against the real audio at ordinary speaking pace. The prompt was the
+problem, not the limit.
+
+`tests/test_celpip_schemas.py` now asserts that every task type with a bound
+states it in its prompt, and that the prompt and validator read one definition.
+Removing the prompt line fails eleven of them.

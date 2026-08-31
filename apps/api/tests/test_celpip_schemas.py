@@ -436,3 +436,67 @@ def test_the_prompt_asks_for_a_rationale_for_every_option_it_offers(task_key: st
         f"{task_key} offers options {sorted(options)} but only shows rationales "
         f"for {sorted(rationales)}"
     )
+
+
+# --- Evidence may cite anything the learner can see ----------------------
+
+def test_a_diagram_footnote_can_be_cited_as_evidence() -> None:
+    """Footnotes are the heart of Reading Part 2: "members only", "except
+    holidays", the qualifier that invalidates the row you would otherwise pick.
+    They were left out of the evidence source, so an item built around the
+    task's most characteristic question was rejected on sight."""
+    payload = _diagram_item()
+    payload["stimulus"]["diagram"]["footnotes"] = ["Members pay half price."]
+    payload["questions"][0]["evidence"] = "Members pay half price"
+    errors = schemas.validate_payload("reading_diagram", payload)
+    assert [e for e in errors if "evidence" in e or "does not contain" in e] == [], errors
+
+
+def test_a_correspondence_sender_can_be_cited() -> None:
+    body = " ".join(["The booking was confirmed for the fourteenth of March."] * 12)
+    payload = {
+        "topic": "a booking",
+        "stimulus": {
+            "message": {"from": "Priya Raman", "to": "Sam", "subject": "Your booking",
+                        "body": body},
+            "reply": {"body": "Thanks Priya, that works. " + body},
+        },
+        "questions": [
+            {
+                "prompt": f"Question {i}",
+                "options": {"A": "a", "B": "b", "C": "c", "D": "d"},
+                "answer": "A" if i % 2 else "B",
+                "evidence": "Priya Raman" if i == 0 else "The booking was confirmed",
+                "rationales": {"A": "w", "B": "x", "C": "y", "D": "z"},
+            }
+            for i in range(11)
+        ],
+    }
+    errors = schemas.validate_payload("reading_correspondence", payload)
+    assert [e for e in errors if "does not appear in the stimulus" in e] == [], errors
+
+
+@pytest.mark.parametrize(
+    "task_key,field_path,value",
+    [
+        ("reading_diagram", ("diagram", "footnotes"), ["Members pay half price."]),
+        ("reading_correspondence", ("message", "from"), "Priya Raman"),
+        ("reading_viewpoints", ("comment", "author"), "Dana Whitfield"),
+    ],
+)
+def test_every_rendered_field_reaches_the_evidence_source(task_key, field_path, value) -> None:
+    """The evidence check compares against `stimulus_text`. Anything the runner
+    renders but that flattening omits is content a question can be built on and
+    then rejected for citing."""
+    stim: dict = {}
+    container = stim
+    for key in field_path[:-1]:
+        container = container.setdefault(key, {})
+    container[field_path[-1]] = value
+
+    flattened = schemas.stimulus_text(task_key, {"stimulus": stim})
+    needle = value[0] if isinstance(value, list) else value
+    assert schemas.normalize(needle) in schemas.normalize(flattened), (
+        f"{task_key} renders {'.'.join(field_path)} but leaves it out of the "
+        "text evidence is checked against"
+    )

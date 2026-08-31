@@ -88,7 +88,16 @@ def word_count(text: str) -> int:
 
 
 def stimulus_text(task_key: str, payload: dict) -> str:
-    """Flatten a stimulus to the plain text an answer can be evidenced against."""
+    """Flatten a stimulus to the plain text an answer can be evidenced against.
+
+    This must cover everything the learner is shown, because that is exactly
+    what a question may legitimately cite. Diagram footnotes were missing, and
+    they are the heart of Reading Part 2 -- "members only", "except holidays",
+    the qualifier that invalidates the row you would otherwise pick. A question
+    keyed on one could never be evidenced, so items built around the task's
+    most characteristic question were rejected on sight. The sender line and
+    the comment byline were missing for the same reason.
+    """
     stim = payload.get("stimulus") or {}
     parts: list[str] = []
 
@@ -98,21 +107,28 @@ def stimulus_text(task_key: str, payload: dict) -> str:
                 parts.append(str(line.get("text", "")))
     elif task_key == "reading_correspondence":
         message = stim.get("message") or {}
-        parts += [str(message.get("subject", "")), str(message.get("body", ""))]
+        parts += [
+            str(message.get("from", "")),
+            str(message.get("subject", "")),
+            str(message.get("body", "")),
+        ]
         parts.append(str((stim.get("reply") or {}).get("body", "")))
     elif task_key == "reading_diagram":
         diagram = stim.get("diagram") or {}
         parts.append(str(diagram.get("title", "")))
         for entry in diagram.get("entries") or []:
             parts.append(" ".join(f"{k}: {v}" for k, v in entry.items()))
-        parts.append(str((stim.get("email") or {}).get("body", "")))
+        parts += [str(note) for note in diagram.get("footnotes") or []]
+        email = stim.get("email") or {}
+        parts += [str(email.get("from", "")), str(email.get("body", ""))]
     elif task_key == "reading_information":
         for para in stim.get("paragraphs") or []:
             parts.append(str(para.get("text", "")))
     elif task_key == "reading_viewpoints":
         article = stim.get("article") or {}
         parts += [str(article.get("title", "")), str(article.get("body", ""))]
-        parts.append(str((stim.get("comment") or {}).get("body", "")))
+        comment = stim.get("comment") or {}
+        parts += [str(comment.get("author", "")), str(comment.get("body", ""))]
     else:
         # Productive tasks: the prompt is the whole stimulus.
         parts.append(str(stim.get("prompt", "")))

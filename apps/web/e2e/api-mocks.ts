@@ -1,6 +1,30 @@
 import type { Page, Route } from '@playwright/test'
+import type { AdminOverview } from '../app/admin/types'
 
 const now = '2026-06-22T12:00:00.000Z'
+
+// Typed against the real response shape. This mock silently dropped
+// tokens_by_route_today, and OverviewTab calls Object.entries on it -- so the
+// whole admin panel threw and rendered nothing, and the two admin specs failed
+// for months on a mock that had drifted from the contract rather than on
+// anything the app got wrong. Typing it means the next drift fails tsc.
+const adminOverview: AdminOverview = {
+  users: 1,
+  requests_today: 3,
+  spend_today: 0.12,
+  input_tokens_today: 1200,
+  output_tokens_today: 340,
+  tokens_by_route_today: {
+    direct_answer: { requests: 2, input_tokens: 800, output_tokens: 200 },
+    research: { requests: 1, input_tokens: 400, output_tokens: 140 },
+  },
+  errors_today: 0,
+  running_research_runs: 0,
+  total_conversations: 1,
+  total_memories: 0,
+  total_writing_samples: 0,
+  total_research_runs: 0,
+}
 
 const workspace = {
   id: 'ws_e2e',
@@ -88,17 +112,7 @@ export async function mockFroneiApi(page: Page) {
     }
 
     if (method === 'GET' && path === '/admin/overview') {
-      return json(route, {
-        users: 1,
-        requests_today: 3,
-        spend_today: 0.12,
-        errors_today: 0,
-        running_research_runs: 0,
-        total_conversations: 1,
-        total_memories: 0,
-        total_writing_samples: 0,
-        total_research_runs: 0,
-      })
+      return json(route, adminOverview)
     }
 
     if (method === 'GET' && path === '/admin/users') {

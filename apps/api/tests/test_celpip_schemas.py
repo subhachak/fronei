@@ -389,13 +389,33 @@ def test_a_diagram_citation_may_read_as_a_sentence() -> None:
     assert [e for e in errors if "evidence" in e or "diagram does not contain" in e] == [], errors
 
 
-def test_a_diagram_citation_of_content_that_is_not_there_is_rejected() -> None:
+def test_a_diagram_citation_of_a_row_that_does_not_exist_is_rejected() -> None:
     """Relaxing the span rule must not stop the check catching a made-up row."""
     payload = _diagram_item()
     payload["questions"][0]["evidence"] = "Fencing on Thursday costs $40"
     errors = schemas.validate_payload("reading_diagram", payload)
-    assert any("diagram does not contain" in e for e in errors), errors
+    assert any("none of which the diagram contains" in e for e in errors), errors
     assert any("fencing" in e for e in errors), errors
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        "Yoga Monday 6:00 PM",
+        "The Monday evening yoga class costs $12 per session",
+        "Yoga is offered on Monday at 6:00 PM",
+        "Yoga runs Monday evenings and costs twelve dollars",
+    ],
+)
+def test_a_diagram_citation_of_a_real_row_passes_however_it_is_phrased(evidence: str) -> None:
+    """Requiring every content word to appear was tried and rejected far too
+    much: one incidental "offered" or "session" failed an otherwise perfect
+    citation, and a false rejection costs a whole generation cycle. Whether the
+    citation points at the RIGHT row is the blind reviewer's job."""
+    payload = _diagram_item()
+    payload["questions"][0]["evidence"] = evidence
+    errors = schemas.validate_payload("reading_diagram", payload)
+    assert [e for e in errors if "diagram contains" in e or "evidence" in e] == [], errors
 
 
 def test_prose_tasks_still_require_a_verbatim_span() -> None:

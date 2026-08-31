@@ -295,17 +295,36 @@ def _validate_productive_stimulus(task: TaskSpec, stim: dict, errors: list[str])
 
 # --- Question validation --------------------------------------------------
 
-def _unsupported_terms(evidence: str, source_terms: set[str]) -> list[str]:
-    """Terms in a citation that the structured stimulus does not actually hold.
-
-    Only content words count. A citation phrased as a sentence ("Yoga runs on
-    Monday at 6:00 PM") should pass against a table row; one naming a class the
-    table never lists should not.
-    """
+def _content_terms(evidence: str) -> list[str]:
     return [
         term for term in normalize(evidence).split()
-        if len(term) > 2 and term not in EVIDENCE_STOPWORDS and term not in source_terms
+        if len(term) > 2 and term not in EVIDENCE_STOPWORDS
     ]
+
+
+def _unsupported_terms(evidence: str, source_terms: set[str]) -> list[str]:
+    """Content words in a citation that the stimulus does not hold."""
+    return [term for term in _content_terms(evidence) if term not in source_terms]
+
+
+def _is_anchored(evidence: str, source_terms: set[str]) -> bool:
+    """Whether a citation is grounded in the stimulus at all.
+
+    Deliberately weak, and the strength is in the division of labour. Requiring
+    that *every* content word appear was tried and rejected far too much: one
+    incidental "offered" or "session" in an otherwise perfect citation of a real
+    row failed the item, and a false rejection costs a whole generation cycle.
+
+    Whether the citation points at the *right* row is a judgement, and there is
+    already a gate for judgement -- a second model answers the item blind and
+    discards it when the key is not defensible. This check only has to catch the
+    thing that gate cannot see cheaply: evidence invented wholesale, naming a
+    row the table never contained.
+    """
+    terms = _content_terms(evidence)
+    if not terms:
+        return True
+    return any(term in source_terms for term in terms)
 
 
 def _validate_questions(task: TaskSpec, payload: dict, errors: list[str]) -> None:
@@ -364,11 +383,11 @@ def _validate_questions(task: TaskSpec, payload: dict, errors: list[str]) -> Non
             if task.key == "reading_information" and answer == NOT_GIVEN_LABEL:
                 pass  # "not given" is evidenced by absence; nothing to contain.
             elif task.key in STRUCTURED_STIMULUS_TASKS:
-                unsupported = _unsupported_terms(evidence, source_terms)
-                if unsupported:
+                if not _is_anchored(evidence, source_terms):
+                    unsupported = _unsupported_terms(evidence, source_terms)
                     errors.append(
-                        f"{where} cites {', '.join(unsupported[:4])}, "
-                        "which the diagram does not contain"
+                        f"{where} cites {', '.join(unsupported[:4])}, none of which "
+                        "the diagram contains"
                     )
             elif normalize(evidence) not in source:
                 errors.append(f"{where} cites evidence that does not appear in the stimulus")

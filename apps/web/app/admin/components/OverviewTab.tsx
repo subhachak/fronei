@@ -33,7 +33,9 @@ export function OverviewTab({ authorizedFetch }: { authorizedFetch: AuthorizedFe
     { label: 'Users', value: data.users.toLocaleString() },
     { label: 'Requests today', value: data.requests_today.toLocaleString() },
     { label: 'Spend today', value: `$${data.spend_today.toFixed(2)}` },
-    { label: 'Tokens today', value: (data.input_tokens_today + data.output_tokens_today).toLocaleString() },
+    // Renders "NaN" rather than throwing when either half is absent, which is
+    // quieter than a crash and harder to notice; nail it to a number.
+    { label: 'Tokens today', value: ((data.input_tokens_today ?? 0) + (data.output_tokens_today ?? 0)).toLocaleString() },
     { label: 'Errors today', value: data.errors_today.toLocaleString() },
     { label: 'Running research', value: data.running_research_runs.toLocaleString() },
     { label: 'Conversations', value: data.total_conversations.toLocaleString() },
@@ -41,7 +43,14 @@ export function OverviewTab({ authorizedFetch }: { authorizedFetch: AuthorizedFe
     { label: 'Research runs', value: data.total_research_runs.toLocaleString() },
   ]
 
-  const routeEntries = Object.entries(data.tokens_by_route_today).sort((a, b) => b[1].requests - a[1].requests)
+  // A field the response happens not to carry must not take the panel down
+  // with it. Object.entries(undefined) threw here, and because the throw
+  // escaped the component, AdminShell rendered nothing at all -- Users, Model
+  // policy, System and the rest were unreachable because one breakdown table
+  // had no data. The contract does promise this field; the point is that a
+  // breach of it should cost one table, not the whole admin panel.
+  const routeEntries = Object.entries(data.tokens_by_route_today ?? {})
+    .sort((a, b) => b[1].requests - a[1].requests)
 
   return (
     <div className="grid gap-4">

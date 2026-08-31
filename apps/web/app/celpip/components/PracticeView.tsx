@@ -1,12 +1,12 @@
 'use client'
 
 import {
-  GraduationCap, Layers, Loader2, Mic, RefreshCw, Target, Timer, Zap,
+  GraduationCap, Layers, Loader2, Mic, Target, Timer, Zap,
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { PracticeMode, Profile, Skill, Spec, StockReport } from '../types'
 import type { useCelpip } from '../hooks/useCelpip'
-import { BUTTON, BUTTON_QUIET, CARD, ErrorNote, SKILL_TONE, SectionHeading } from './ui'
+import { BUTTON, BUTTON_QUIET, CARD, ErrorNote, RefreshButton, SKILL_TONE, SectionHeading } from './ui'
 
 type Api = ReturnType<typeof useCelpip>
 type Scope = 'task' | 'component' | 'full' | 'diagnostic'
@@ -319,9 +319,7 @@ export function PracticeView({ api, onStart }: { api: Api; onStart: (attemptId: 
           <button type="button" disabled={!canLaunch} onClick={() => void launch()} className={BUTTON}>
             {busy ? 'Starting…' : `Start ${mode} ${scope === 'task' ? 'drill' : 'test'}`}
           </button>
-          <button type="button" className={BUTTON_QUIET} onClick={() => void load()}>
-            <RefreshCw size={14} /> Refresh
-          </button>
+          <RefreshButton onRefresh={load} />
           {requiredTasks.length === 0 && (
             <span className="text-sm text-neutral-500">Choose a task type to continue.</span>
           )}

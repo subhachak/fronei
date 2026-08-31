@@ -1,10 +1,10 @@
 'use client'
 
-import { Check, Ban, Loader2, RefreshCw, Sparkles, Volume2 } from 'lucide-react'
+import { Check, Ban, Loader2, Sparkles, Volume2 } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
 import type { BankCoverage, BankItem, GenerationRun, Spec } from '../types'
 import type { useCelpip } from '../hooks/useCelpip'
-import { BUTTON, BUTTON_QUIET, CARD, ErrorNote, INPUT, LABEL, SectionHeading, formatDate } from './ui'
+import { BUTTON, BUTTON_QUIET, CARD, ErrorNote, INPUT, LABEL, RefreshButton, SectionHeading, formatDate } from './ui'
 
 type Api = ReturnType<typeof useCelpip>
 
@@ -188,9 +188,7 @@ export function QuestionBankView({ api }: { api: Api }) {
             title="Generation runs"
             hint="Rejections are the useful half — a task type that keeps failing is a prompt problem."
             action={
-              <button type="button" className={BUTTON_QUIET} onClick={() => void load()}>
-                <RefreshCw size={14} /> Refresh
-              </button>
+              <RefreshButton onRefresh={load} />
             }
           />
           <ul className="space-y-2">

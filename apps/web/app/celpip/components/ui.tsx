@@ -1,7 +1,7 @@
 'use client'
 
-import { AlertTriangle, Info } from 'lucide-react'
-import type { ReactNode } from 'react'
+import { AlertTriangle, Info, RefreshCw } from 'lucide-react'
+import { useState, type ReactNode } from 'react'
 
 export const CARD =
   'rounded-2xl border border-neutral-200/80 bg-white p-4 shadow-sm shadow-neutral-950/[0.025] dark:border-neutral-800 dark:bg-neutral-900 dark:shadow-none'
@@ -18,6 +18,55 @@ export const SKILL_TONE: Record<string, string> = {
   reading: 'border-sky-200 bg-sky-50 text-sky-900 dark:border-sky-900 dark:bg-sky-950/35 dark:text-sky-200',
   writing: 'border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-900 dark:bg-amber-950/35 dark:text-amber-200',
   speaking: 'border-teal-200 bg-teal-50 text-teal-900 dark:border-teal-900 dark:bg-teal-950/35 dark:text-teal-200',
+}
+
+/**
+ * A refresh control that shows it did something.
+ *
+ * Every one of these was wired to a real refetch and none of them said so: no
+ * pending state, no timestamp. Since the data usually has not changed between
+ * clicks -- question generation takes minutes -- a working refresh looked
+ * exactly like a dead button, which is what prompted someone to ask whether
+ * they did anything at all.
+ */
+export function RefreshButton({
+  onRefresh,
+  label = 'Refresh',
+}: {
+  onRefresh: () => Promise<unknown>
+  label?: string
+}) {
+  const [pending, setPending] = useState(false)
+  const [refreshedAt, setRefreshedAt] = useState<Date | null>(null)
+
+  const run = async () => {
+    setPending(true)
+    try {
+      await onRefresh()
+      setRefreshedAt(new Date())
+    } catch {
+      // Swallowed rather than rethrown: every caller's loader already catches
+      // and renders its own error, and letting it escape here only produced an
+      // unhandled rejection. The timestamp is not set, so a failed refresh
+      // never claims to have updated anything.
+    } finally {
+      setPending(false)
+    }
+  }
+
+  return (
+    <span className="flex items-center gap-2">
+      {refreshedAt && !pending && (
+        <span className="text-[11px] tabular-nums text-neutral-400">
+          Updated {refreshedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+        </span>
+      )}
+      <button type="button" disabled={pending} className={BUTTON_QUIET} onClick={() => void run()}>
+        <RefreshCw size={14} className={pending ? 'animate-spin' : undefined} />
+        {pending ? 'Refreshing…' : label}
+      </button>
+    </span>
+  )
 }
 
 export function SectionHeading({ title, hint, action }: { title: string; hint?: string; action?: ReactNode }) {

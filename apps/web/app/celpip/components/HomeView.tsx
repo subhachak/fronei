@@ -1,22 +1,11 @@
 'use client'
 
-import { ArrowRight, CalendarClock, Check, Loader2, PlayCircle, RefreshCw, Sparkles, TriangleAlert } from 'lucide-react'
+import { ArrowRight, CalendarClock, Check, Loader2, PlayCircle, Sparkles, TriangleAlert } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
 import type { HomePayload, Profile } from '../types'
 import type { useCelpip } from '../hooks/useCelpip'
 import { OnboardingCard } from './OnboardingCard'
-import {
-  ApproximateNote,
-  BUTTON,
-  BUTTON_QUIET,
-  CARD,
-  EmptyState,
-  ErrorNote,
-  LevelBadge,
-  SKILL_TONE,
-  SectionHeading,
-  formatDate,
-} from './ui'
+import { ApproximateNote, BUTTON, BUTTON_QUIET, CARD, EmptyState, ErrorNote, LevelBadge, RefreshButton, SKILL_TONE, SectionHeading, formatDate } from './ui'
 
 type Api = ReturnType<typeof useCelpip>
 
@@ -144,9 +133,7 @@ export function HomeView({
           title="Where you stand"
           hint="Latest estimate per component."
           action={
-            <button type="button" className={BUTTON_QUIET} onClick={() => void load()}>
-              <RefreshCw size={14} /> Refresh
-            </button>
+            <RefreshButton onRefresh={load} />
           }
         />
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">

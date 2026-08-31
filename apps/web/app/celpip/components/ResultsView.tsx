@@ -6,10 +6,7 @@ import {
 import { useCallback, useEffect, useState } from 'react'
 import type { Evaluation, ReceptiveItemReview, ResultsPayload } from '../types'
 import type { useCelpip } from '../hooks/useCelpip'
-import {
-  ApproximateNote, BUTTON, BUTTON_QUIET, CARD, EmptyState, ErrorNote, LevelBadge, SKILL_TONE,
-  SectionHeading, formatDate,
-} from './ui'
+import { ApproximateNote, BUTTON, BUTTON_QUIET, CARD, EmptyState, ErrorNote, LevelBadge, RefreshButton, SKILL_TONE, SectionHeading, formatDate } from './ui'
 
 type Api = ReturnType<typeof useCelpip>
 type AttemptRow = {
@@ -95,7 +92,7 @@ export function ResultsView({
         api={api}
         results={results}
         onBack={() => { setOpen(null); onClear() }}
-        onRefresh={() => void loadResults(open)}
+        onRefresh={() => loadResults(open)}
         onStart={onStart}
       />
     )
@@ -152,7 +149,7 @@ function AttemptResults({
   api: Api
   results: ResultsPayload
   onBack: () => void
-  onRefresh: () => void
+  onRefresh: () => Promise<unknown>
   onStart: (attemptId: string) => void
 }) {
   const [retaking, setRetaking] = useState(false)
@@ -192,9 +189,7 @@ function AttemptResults({
           <ArrowLeft size={14} /> All results
         </button>
         <div className="flex gap-2">
-          <button type="button" className={BUTTON_QUIET} onClick={onRefresh}>
-            <RefreshCw size={14} /> Refresh
-          </button>
+          <RefreshButton onRefresh={onRefresh} />
           {results.retake_available && !scoring && (
             <button type="button" className={BUTTON} disabled={retaking} onClick={() => void retake()}>
               {retaking ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}

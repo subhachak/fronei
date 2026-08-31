@@ -36,6 +36,23 @@ MULTIPLE_CHOICE_SKILLS = {"listening", "reading"}
 PARAGRAPH_LABELS = ("A", "B", "C", "D")
 NOT_GIVEN_LABEL = "E"
 
+# Tasks whose stimulus is structured data rather than prose. Evidence for these
+# cannot be a contiguous span: flattening a table interleaves column labels with
+# values ("class yoga day monday time 6 00 pm"), so a citation of a row is never
+# a substring of it. Held to the prose rule, every diagram item failed every
+# question -- a run of six items kept none. Evidence here is checked by content
+# instead: the values it names must really appear in the table.
+STRUCTURED_STIMULUS_TASKS = {"reading_diagram"}
+
+# Ignored when checking that evidence names real content. Function words carry
+# no claim, and a citation phrased as a sentence would otherwise fail for them.
+EVIDENCE_STOPWORDS = frozenset({
+    "the", "and", "for", "with", "from", "that", "this", "are", "was", "were",
+    "has", "have", "had", "its", "his", "her", "their", "you", "your", "run",
+    "runs", "held", "starts", "start", "costs", "cost", "each", "per", "any",
+    "all", "not", "but", "can", "will", "would", "there", "here", "which",
+})
+
 # Re-exported for callers that already import it from here. The definition
 # lives in spec.py, so the prompt that asks for a length and the check that
 # enforces it cannot drift apart.
@@ -262,6 +279,19 @@ def _validate_productive_stimulus(task: TaskSpec, stim: dict, errors: list[str])
 
 # --- Question validation --------------------------------------------------
 
+def _unsupported_terms(evidence: str, source_terms: set[str]) -> list[str]:
+    """Terms in a citation that the structured stimulus does not actually hold.
+
+    Only content words count. A citation phrased as a sentence ("Yoga runs on
+    Monday at 6:00 PM") should pass against a table row; one naming a class the
+    table never lists should not.
+    """
+    return [
+        term for term in normalize(evidence).split()
+        if len(term) > 2 and term not in EVIDENCE_STOPWORDS and term not in source_terms
+    ]
+
+
 def _validate_questions(task: TaskSpec, payload: dict, errors: list[str]) -> None:
     questions = payload.get("questions")
     if not isinstance(questions, list):
@@ -273,6 +303,7 @@ def _validate_questions(task: TaskSpec, payload: dict, errors: list[str]) -> Non
         )
 
     source = normalize(stimulus_text(task.key, payload))
+    source_terms = set(source.split())
     segment_count = len((payload.get("stimulus") or {}).get("segments") or [])
 
     for i, q in enumerate(questions):
@@ -316,6 +347,13 @@ def _validate_questions(task: TaskSpec, payload: dict, errors: list[str]) -> Non
         elif task.skill in MULTIPLE_CHOICE_SKILLS:
             if task.key == "reading_information" and answer == NOT_GIVEN_LABEL:
                 pass  # "not given" is evidenced by absence; nothing to contain.
+            elif task.key in STRUCTURED_STIMULUS_TASKS:
+                unsupported = _unsupported_terms(evidence, source_terms)
+                if unsupported:
+                    errors.append(
+                        f"{where} cites {', '.join(unsupported[:4])}, "
+                        "which the diagram does not contain"
+                    )
             elif normalize(evidence) not in source:
                 errors.append(f"{where} cites evidence that does not appear in the stimulus")
 

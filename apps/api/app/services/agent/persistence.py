@@ -1658,6 +1658,14 @@ def fail_turn(turn_id: str, message: str) -> None:
 
 
 def load_turn_status(turn_id: str, user_id: str) -> dict | None:
+    """Status and body from one transaction.
+
+    These were read in two separate sessions, and a client polling for
+    completion could be handed a pair that never existed together: the worker
+    commits between the two reads, so the status says completed while the body
+    still carries the previous, empty answer. One session means the caller sees
+    one consistent moment.
+    """
     db = SessionLocal()
     try:
         turn = db.get(Turn, turn_id)
@@ -1670,9 +1678,9 @@ def load_turn_status(turn_id: str, user_id: str) -> dict | None:
         heartbeat_at = turn.heartbeat_at
         langgraph_run_id = turn.langgraph_run_id
         pause_reason = turn.pause_reason
+        result = _load_turn_in_session(db, turn, turn_id)
     finally:
         db.close()
-    result = load_turn(turn_id, user_id)
     if result is None:
         return None
     return {
@@ -1694,27 +1702,36 @@ def load_turn(turn_id: str, user_id: str) -> TurnResult | None:
         turn = db.get(Turn, turn_id)
         if turn is None or turn.user_id != user_id:
             return None
-        events = (
-            db.query(Event)
-            .filter(Event.turn_id == turn_id)
-            .order_by(Event.created_at.asc())
-            .all()
-        )
-        tool_rows = (
-            db.query(ToolCallRow)
-            .filter(ToolCallRow.turn_id == turn_id)
-            .order_by(ToolCallRow.created_at.asc())
-            .all()
-        )
-        artifact_rows = (
-            db.query(ArtifactRow)
-            .filter(ArtifactRow.turn_id == turn_id)
-            .order_by(ArtifactRow.created_at.asc())
-            .all()
-        )
-        return _turn_result_from_rows(turn, events, tool_rows, artifact_rows)
+        return _load_turn_in_session(db, turn, turn_id)
     finally:
         db.close()
+
+
+def _load_turn_in_session(db, turn: Turn, turn_id: str) -> TurnResult | None:
+    """Assemble a turn's body using a session the caller owns.
+
+    Split out so a status poll can read the status fields and the body in the
+    same transaction rather than opening a second one behind its own back.
+    """
+    events = (
+        db.query(Event)
+        .filter(Event.turn_id == turn_id)
+        .order_by(Event.created_at.asc())
+        .all()
+    )
+    tool_rows = (
+        db.query(ToolCallRow)
+        .filter(ToolCallRow.turn_id == turn_id)
+        .order_by(ToolCallRow.created_at.asc())
+        .all()
+    )
+    artifact_rows = (
+        db.query(ArtifactRow)
+        .filter(ArtifactRow.turn_id == turn_id)
+        .order_by(ArtifactRow.created_at.asc())
+        .all()
+    )
+    return _turn_result_from_rows(turn, events, tool_rows, artifact_rows)
 
 
 def _turn_result_from_rows(

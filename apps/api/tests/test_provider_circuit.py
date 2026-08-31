@@ -7,6 +7,11 @@ import pytest
 from app.services import provider_health
 from app.services.agent import model_client
 
+# These drive model_client.complete itself -- its retry, fallback and circuit
+# behaviour -- with litellm stubbed underneath. They need the real function, so
+# the conftest guard against live model calls is lifted for the file.
+pytestmark = pytest.mark.uses_model_client
+
 
 @pytest.fixture(autouse=True)
 def clean_circuits():

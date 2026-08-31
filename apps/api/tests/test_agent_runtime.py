@@ -1,5 +1,7 @@
+import atexit
 import base64
 import json
+import tempfile
 import time
 import zipfile
 from io import BytesIO
@@ -7,13 +9,14 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.auth import get_current_user_id, get_current_user_is_admin
 from app.db.models import (
     Artifact,
+    Base,
     Conversation,
     Event,
     RoutingDecisionFeedback,
@@ -21,10 +24,9 @@ from app.db.models import (
     ToolCall,
     Turn,
     Workspace,
-    Base,
 )
 from app.main import app
-from app.services.agent.models import TurnRequest, Source
+from app.services.agent.models import Source, TurnRequest
 from app.services.agent.orchestrator import OrchestratorDecision
 from app.services.agent.runtime import Runtime
 from app.services.agent.tools import Tools
@@ -188,11 +190,41 @@ def _stream_response(model_client, text: str, *, model: str = "fake-direct"):
 
 
 def _sqlite_session():
+    """A database the worker thread and the request thread reach separately.
+
+    This was an in-memory database behind a StaticPool, which gives the whole
+    engine ONE connection shared by every thread. The turn worker and a status
+    poll then sat inside the same transaction, and two things became possible
+    that cannot happen in production:
+
+      * the poll dirty-read the worker's uncommitted completion, so it saw
+        status "completed" before the answer was durable; and
+      * closing the poll's session rolled the connection back, destroying the
+        worker's in-flight write, so the next read returned an empty answer.
+
+    That is exactly the intermittent CI failure
+    (assert '' == 'Background answer.') this file produced for months.
+    Production is Postgres behind a pool, where a reader never shares a
+    transaction with a writer. A file-backed database gives each connection its
+    own transaction and models that; WAL and a busy timeout mirror what
+    app/db/models.py configures for real.
+    """
+    handle = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    handle.close()
+    atexit.register(lambda path=handle.name: Path(path).unlink(missing_ok=True))
+
     engine = create_engine(
-        "sqlite:///:memory:",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
+        f"sqlite:///{handle.name}",
+        connect_args={"check_same_thread": False, "timeout": 30},
     )
+
+    @event.listens_for(engine, "connect")
+    def _set_pragmas(dbapi_connection, _record):  # noqa: ANN001
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA busy_timeout=5000")
+        cursor.close()
+
     Base.metadata.create_all(bind=engine)
     return sessionmaker(bind=engine)
 
@@ -631,8 +663,7 @@ def test_agent_routing_feedback_creates_candidate(monkeypatch):
 
 
 def test_agent_approved_learned_signal_forces_web_fast(monkeypatch):
-    from app.services.agent import model_client
-    from app.services.agent import routing_policy
+    from app.services.agent import model_client, routing_policy
 
     Session = _sqlite_session()
     db = Session()

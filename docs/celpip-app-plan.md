@@ -592,3 +592,38 @@ Fixed at both levels, because either alone would have been fragile:
 
 `SessionRunner.test.tsx` covers both triggers. Reverting the ref guard makes it
 fail with four question fetches where there should be one.
+
+### Background generation stopped after the first fill
+
+Reported as "generation is stuck". It was, in three independent ways, and the
+job table on a running instance showed all three at once.
+
+**A finished job blocked its own successor.** `_enqueue_celpip_job` returned any
+existing row with a matching dedupe key, whatever its status. That is right for
+one-shot work -- a generation run, one question's assets, one attempt's scoring
+-- but the stock top-up keys on the *task type*, which recurs forever. Once the
+first top-up for a task type completed, its row stayed, and every later
+`plan_topup` returned that dead job id and queued nothing. The buffer filled
+exactly once and then drained. `dedupe_key` is unique, so a completed row cannot
+be joined by a new one; it is now revived in place instead. The same row was
+also silently making the Question Bank's "Rebuild assets" button a no-op.
+
+**Jobs orphaned by a dead worker looked permanently busy.** A worker killed
+mid-job leaves `status = "running"` with a stale lease. `claim_next_job` will
+reclaim one only while its retry budget lasts; after that the row is
+unclaimable, and its dedupe key blocks a replacement. Enqueue now treats a
+running job whose lease has expired as revivable, which also recovers the rows
+already stuck on the deployed instance -- no manual repair needed, the next
+dashboard load clears them.
+
+**A dead asset build masked the deficit forever.** `building_counts` counted
+`draft` and `awaiting_assets` items towards the stock target so that a top-up
+already in flight would not trigger another. But there is no terminal asset
+state: a failed synthesis leaves its question in `awaiting_assets` permanently,
+so one dead item made its task type look permanently stocked. Items untouched
+for longer than `STALLED_AFTER_MINUTES` no longer count, and `plan_topup` now
+re-queues their asset builds -- nothing else would have, since the generation
+that produced them finished long ago.
+
+`tests/test_celpip_stock.py` covers each one. Reverting the enqueue change makes
+three of them fail.

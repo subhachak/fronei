@@ -191,53 +191,102 @@ def enqueue_langgraph_checkpoint_cleanup(
         db.close()
 
 
+def _job_is_active(job: MaintenanceJob) -> bool:
+    """Whether this job will still run on its own.
+
+    Queued jobs will. Running jobs will only while their lease is alive -- a
+    worker that died holding one leaves a row that looks busy forever.
+    """
+    if job.status == "queued":
+        return True
+    if job.status != "running":
+        return False
+    lease = job.lease_expires_at
+    if lease is None:
+        return False
+    if lease.tzinfo is None:
+        lease = lease.replace(tzinfo=timezone.utc)
+    return lease > _now()
+
+
 def _enqueue_celpip_job(job_type: str, dedupe_key: str, payload: dict[str, Any]) -> str:
     """Queue one CELPIP background job and return its id.
 
-    Unlike the maintenance jobs above, these are per-run rather than daily, so
-    the dedupe key names the specific run/attempt. Re-enqueueing the same one
-    (a double-clicked button, a retried request) returns the existing job
-    instead of starting a second pass over the same work.
+    The dedupe key names the unit of work -- a generation run, a question's
+    assets, an attempt's scoring, or a task type's stock top-up. While that work
+    is genuinely in flight, re-enqueueing returns the existing job rather than
+    starting a second pass.
+
+    Once it is *finished*, though, the row must not keep standing in the way.
+    `dedupe_key` is unique, so a completed row cannot simply be joined by a new
+    one; it is revived in place instead. Without this, a recurring job could run
+    exactly once: the stock top-up for a task type completed, its row stayed,
+    and every later top-up returned that dead job id and queued nothing --
+    background generation stopped for good. The same row also blocked retrying
+    a failed asset build, which is what the "Rebuild assets" button does.
     """
     db = SessionLocal()
     try:
+        settings = get_settings()
         existing = (
             db.query(MaintenanceJob)
             .filter(MaintenanceJob.dedupe_key == dedupe_key)
             .first()
         )
-        if existing:
-            return existing.id
-        settings = get_settings()
-        now = _now()
-        job = MaintenanceJob(
-            id=f"celpip_{uuid.uuid4().hex[:24]}",
-            job_type=job_type,
-            dedupe_key=dedupe_key,
-            status="queued",
-            payload_json=json.dumps(payload),
-            result_json="{}",
-            max_attempts=max(1, settings.maintenance_worker_max_attempts),
-            created_at=now,
-            updated_at=now,
-        )
-        db.add(job)
-        try:
+        if existing is not None:
+            if _job_is_active(existing):
+                return existing.id
+            # Finished, failed, or orphaned by a dead worker: run it again.
+            now = _now()
+            existing.job_type = job_type
+            existing.status = "queued"
+            existing.payload_json = json.dumps(payload)
+            existing.result_json = "{}"
+            existing.attempt_count = 0
+            existing.max_attempts = max(1, settings.maintenance_worker_max_attempts)
+            existing.lease_owner = None
+            existing.lease_expires_at = None
+            existing.heartbeat_at = None
+            existing.error_message = None
+            existing.completed_at = None
+            existing.updated_at = now
             db.commit()
-        except IntegrityError:
-            db.rollback()
-            raced = (
-                db.query(MaintenanceJob)
-                .filter(MaintenanceJob.dedupe_key == dedupe_key)
-                .one()
-            )
-            return raced.id
-        db.refresh(job)
-        job_id = job.id
+            job_id = existing.id
+        else:
+            job_id = _create_celpip_job(db, job_type, dedupe_key, payload, settings)
     finally:
         db.close()
     maintenance_job_worker.notify()
     return job_id
+
+
+def _create_celpip_job(db, job_type: str, dedupe_key: str, payload: dict[str, Any], settings) -> str:
+    now = _now()
+    job = MaintenanceJob(
+        id=f"celpip_{uuid.uuid4().hex[:24]}",
+        job_type=job_type,
+        dedupe_key=dedupe_key,
+        status="queued",
+        payload_json=json.dumps(payload),
+        result_json="{}",
+        max_attempts=max(1, settings.maintenance_worker_max_attempts),
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(job)
+    try:
+        db.commit()
+    except IntegrityError:
+        # Another request created it between the lookup and this insert.
+        db.rollback()
+        raced = (
+            db.query(MaintenanceJob)
+            .filter(MaintenanceJob.dedupe_key == dedupe_key)
+            .one()
+        )
+        return raced.id
+    db.refresh(job)
+    return job.id
 
 
 def enqueue_celpip_generation(

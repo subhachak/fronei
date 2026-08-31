@@ -21,12 +21,18 @@ That is the property the learner actually cares about.
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta, timezone
 
 from app.config import get_settings
 from app.db.models import CelpipQuestion, SessionLocal
 from app.services.celpip.spec import ALL_TASKS, TASKS_BY_KEY, task_keys_for_test_type
 
 logger = logging.getLogger(__name__)
+
+# How long a question may sit unservable before its asset build is presumed
+# dead. Generous: synthesising a six-turn listening script is minutes of work
+# on a single worker, and cutting it short would generate duplicates.
+STALLED_AFTER_MINUTES = 30
 
 
 def target_stock() -> int:
@@ -55,18 +61,51 @@ def stock_levels(db, task_keys: list[str] | None = None) -> dict[str, int]:
 
 
 def building_counts(db, task_keys: list[str] | None = None) -> dict[str, int]:
-    """Items generated but not yet servable -- audio or images still building."""
+    """Items generated but not yet servable -- audio or images still building.
+
+    Only work that is plausibly still moving counts. A failed asset build
+    leaves its question in `awaiting_assets` indefinitely (there is no terminal
+    asset state), so counting those forever would let one dead item mask the
+    deficit for its whole task type and stop generation permanently. Anything
+    untouched for longer than the cutoff is treated as stalled, and the top-up
+    goes ahead as if it were not there.
+    """
     wanted = task_keys or [task.key for task in ALL_TASKS]
     counts = {key: 0 for key in wanted}
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=STALLED_AFTER_MINUTES)
     rows = (
-        db.query(CelpipQuestion.task_key)
+        db.query(CelpipQuestion.task_key, CelpipQuestion.updated_at)
         .filter(CelpipQuestion.status.in_(("draft", "awaiting_assets")))
         .filter(CelpipQuestion.task_key.in_(wanted))
         .all()
     )
-    for (task_key,) in rows:
+    for task_key, updated_at in rows:
+        stamp = updated_at
+        if stamp is not None and stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=timezone.utc)
+        if stamp is None or stamp < cutoff:
+            continue
         counts[task_key] = counts.get(task_key, 0) + 1
     return counts
+
+
+def stalled_items(db, task_keys: list[str] | None = None) -> list[str]:
+    """Question ids whose assets have been building for too long."""
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=STALLED_AFTER_MINUTES)
+    query = (
+        db.query(CelpipQuestion.id, CelpipQuestion.updated_at)
+        .filter(CelpipQuestion.status.in_(("draft", "awaiting_assets")))
+    )
+    if task_keys:
+        query = query.filter(CelpipQuestion.task_key.in_(task_keys))
+    out = []
+    for question_id, updated_at in query.all():
+        stamp = updated_at
+        if stamp is not None and stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=timezone.utc)
+        if stamp is None or stamp < cutoff:
+            out.append(question_id)
+    return out
 
 
 def deficits(db, task_keys: list[str] | None = None) -> dict[str, int]:
@@ -98,8 +137,21 @@ def plan_topup(*, user_id: str, task_keys: list[str] | None = None) -> dict:
     db = SessionLocal()
     try:
         needed = deficits(db, task_keys)
+        stalled = stalled_items(db, task_keys)
     finally:
         db.close()
+
+    # Retry asset builds that died. Their questions are stuck unservable, and
+    # nothing else would ever pick them up -- the generation that produced them
+    # is long finished.
+    revived: dict[str, str] = {}
+    for question_id in stalled:
+        try:
+            revived[question_id] = maintenance_jobs.enqueue_celpip_assets(
+                question_id=question_id,
+            )
+        except Exception:
+            logger.warning("celpip asset retry could not be queued", exc_info=True)
 
     queued: dict[str, str] = {}
     for task_key, count in needed.items():
@@ -108,9 +160,17 @@ def plan_topup(*, user_id: str, task_keys: list[str] | None = None) -> dict:
         queued[task_key] = maintenance_jobs.enqueue_celpip_topup(
             user_id=user_id, task_key=task_key, count=count,
         )
-    if queued:
-        logger.info("celpip stock top-up queued for %s task type(s)", len(queued))
-    return {"queued": queued, "deficits": needed, "target": target_stock()}
+    if queued or revived:
+        logger.info(
+            "celpip stock: %s task type(s) topping up, %s stalled asset build(s) retried",
+            len(queued), len(revived),
+        )
+    return {
+        "queued": queued,
+        "deficits": needed,
+        "retried_assets": revived,
+        "target": target_stock(),
+    }
 
 
 def run_topup(*, user_id: str, task_key: str, count: int) -> dict:

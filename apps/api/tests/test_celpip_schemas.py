@@ -342,3 +342,97 @@ def test_a_stimulus_inside_the_stated_budget_passes() -> None:
     payload["questions"][1]["answer"] = "A"
     errors = [e for e in schemas.validate_payload("listening_news", payload) if "words" in e]
     assert errors == [], errors
+
+
+def _diagram_item() -> dict:
+    entries = [
+        {"Class": "Yoga", "Day": "Monday", "Time": "6:00 PM", "Cost": "$12"},
+        {"Class": "Pottery", "Day": "Wednesday", "Time": "7:30 PM", "Cost": "$18"},
+        {"Class": "Swimming", "Day": "Saturday", "Time": "9:00 AM", "Cost": "$10"},
+    ]
+    email = (
+        "Hi Sam, I am looking for a class I could join after work on a weekday. "
+        "Evenings only, and I would rather not spend more than fifteen dollars a "
+        "session. Could you tell me which one fits and what it costs?"
+    )
+    questions = []
+    for i in range(8):
+        questions.append({
+            "prompt": f"Question {i + 1}",
+            "options": {"A": "Yoga", "B": "Pottery", "C": "Swimming", "D": "None of these"},
+            "answer": "A" if i % 2 else "B",
+            # Phrased as a sentence, as a person citing a table would.
+            "evidence": "Yoga runs on Monday at 6:00 PM" if i % 2 else "Pottery on Wednesday costs $18",
+            "rationales": {"A": "a", "B": "b", "C": "c", "D": "d"},
+        })
+    return {
+        "topic": "community centre classes",
+        "stimulus": {
+            "diagram": {
+                "kind": "schedule", "title": "Spring Class Schedule",
+                "columns": ["Class", "Day", "Time", "Cost"], "entries": entries,
+                "footnotes": ["Members pay half price."],
+            },
+            "email": {"from": "Alex", "body": email},
+        },
+        "questions": questions,
+    }
+
+
+def test_a_diagram_citation_may_read_as_a_sentence() -> None:
+    """A table has no span to quote. Flattening one interleaves column labels
+    with values, so a citation of a row is never a substring of it -- held to
+    the prose rule, every diagram item failed every question."""
+    errors = schemas.validate_payload("reading_diagram", _diagram_item())
+    # Any evidence complaint at all, however worded -- the fallback prose rule
+    # phrases it differently and would otherwise slip through this assertion.
+    assert [e for e in errors if "evidence" in e or "diagram does not contain" in e] == [], errors
+
+
+def test_a_diagram_citation_of_content_that_is_not_there_is_rejected() -> None:
+    """Relaxing the span rule must not stop the check catching a made-up row."""
+    payload = _diagram_item()
+    payload["questions"][0]["evidence"] = "Fencing on Thursday costs $40"
+    errors = schemas.validate_payload("reading_diagram", payload)
+    assert any("diagram does not contain" in e for e in errors), errors
+    assert any("fencing" in e for e in errors), errors
+
+
+def test_prose_tasks_still_require_a_verbatim_span() -> None:
+    """The relaxed rule is scoped to structured stimuli; prose keeps the
+    stricter check, which is what catches an unsupported keyed answer."""
+    payload = _news_item()
+    payload["questions"][0]["evidence"] = "council voted to build a subway line"
+    errors = schemas.validate_payload("listening_news", payload)
+    assert any("does not appear in the stimulus" in e for e in errors), errors
+
+
+@pytest.mark.parametrize("task_key", sorted(TASKS_BY_KEY))
+def test_the_prompt_asks_for_a_rationale_for_every_option_it_offers(task_key: str) -> None:
+    """Options and rationales were written out separately, and for Reading for
+    Information the options ran A-E while the rationales example showed A-D.
+    Every generated item omitted the rationale for "Not given" and was rejected
+    for exactly that."""
+    import json as _json
+    import re as _re
+
+    from app.services.celpip.prompts import build_generation_prompt
+
+    if not TASKS_BY_KEY[task_key].question_count:
+        pytest.skip("productive tasks carry no questions")
+
+    _, user = build_generation_prompt(task_key, difficulty=9)
+
+    def _object_after(label: str) -> dict:
+        # The line carries a trailing comma or an inline comment; take the
+        # braced object and nothing after it.
+        match = _re.search(rf'"{label}": (\{{.*?\}})', user)
+        assert match, f"{task_key} prompt never shows {label}"
+        return _json.loads(match.group(1))
+
+    options = _object_after("options")
+    rationales = _object_after("rationales")
+    assert set(rationales) == set(options), (
+        f"{task_key} offers options {sorted(options)} but only shows rationales "
+        f"for {sorted(rationales)}"
+    )

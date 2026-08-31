@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 
+from app.services.celpip.schemas import NOT_GIVEN_LABEL, PARAGRAPH_LABELS
 from app.services.celpip.spec import TASKS_BY_KEY, TaskSpec, word_bounds
 
 GENERATOR_SYSTEM = """You write practice items for the CELPIP-General English test.
@@ -68,8 +69,16 @@ Return ONLY JSON:
 
 
 def _question_shape(task: TaskSpec) -> str:
+    # Options and rationales are built from one list of keys. They were written
+    # out separately, and for Reading for Information the options ran A-E while
+    # the rationales example showed only A-D -- so every generated item omitted
+    # the rationale for "Not given" and was rejected for it.
     if task.key == "reading_information":
-        options = '{"A": "Paragraph A", "B": "Paragraph B", "C": "Paragraph C", "D": "Paragraph D", "E": "Not given"}'
+        option_keys = [*PARAGRAPH_LABELS, NOT_GIVEN_LABEL]
+        option_values = {
+            **{label: f"Paragraph {label}" for label in PARAGRAPH_LABELS},
+            NOT_GIVEN_LABEL: "Not given",
+        }
         extra = (
             '\n    Options are always exactly these five. Between 1 and 3 of the 9\n'
             '    statements should be "Not given" -- ideas that sound plausible for the\n'
@@ -78,19 +87,36 @@ def _question_shape(task: TaskSpec) -> str:
             '    reader would wrongly pick and why it does not actually say this.'
         )
     else:
-        options = '{"A": "...", "B": "...", "C": "...", "D": "..."}'
+        option_keys = ["A", "B", "C", "D"]
+        option_values = {label: "..." for label in option_keys}
         extra = ""
+
+    options = json.dumps(option_values)
+    rationale_hint = {
+        label: "why this is right" if label == "B" else "why this is wrong"
+        for label in option_keys
+    }
+    rationales = json.dumps(rationale_hint)
     segment_field = (
         '\n      "segment_index": 0,   // which segment this question follows'
         if task.key == "listening_problem_solving" else ""
+    )
+    # A diagram is a table, not prose, so there is no span to copy. Evidence
+    # there names the row and the cell values the answer rests on, and the
+    # check is that those values really appear in the table.
+    evidence_hint = json.dumps(
+        "the row and cell values this answer rests on, copied exactly as they "
+        "appear in the diagram (for example: Yoga Monday 6:00 PM)"
+        if task.key == "reading_diagram"
+        else "an EXACT verbatim span copied from the stimulus above"
     )
     return f"""  "questions": [            // exactly {task.question_count} of these
     {{
       "prompt": "...",{segment_field}
       "options": {options},
       "answer": "B",
-      "evidence": "an EXACT verbatim span copied from the stimulus above",
-      "rationales": {{"A": "why this is wrong", "B": "why this is right", "C": "...", "D": "..."}}
+      "evidence": {evidence_hint},
+      "rationales": {rationales}   // one for EVERY option above, no exceptions
     }}
   ]{extra}"""
 

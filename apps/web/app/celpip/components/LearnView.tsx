@@ -77,15 +77,43 @@ export function LearnView({ api, initialSlug, onConsumed }: {
   }
 
   if (open) {
+    const section = spec.sections.find(item => item.skill === open.skill)
+    const task = section?.tasks.find(item => item.key === open.task_key)
     return (
-      <article>
+      <article className="mx-auto max-w-4xl">
         <button type="button" className={`${BUTTON_QUIET} mb-4`} onClick={() => setOpen(null)}>
           <ArrowLeft size={14} /> All lessons
         </button>
-        <h1 className="text-2xl font-bold text-neutral-900 dark:text-neutral-50">{open.title}</h1>
+        <p className="text-xs font-bold uppercase tracking-[0.14em] text-amber-600 dark:text-amber-400">
+          {open.skill ? `${open.skill} playbook` : CATEGORY_LABEL[open.category] ?? open.category}
+        </p>
+        <h1 className="mt-1 text-3xl font-bold tracking-tight text-neutral-900 dark:text-neutral-50">{open.title}</h1>
         <p className="mt-1 flex items-center gap-1.5 text-[13px] text-neutral-500">
           <Clock size={12} /> {open.estimated_minutes} min read
         </p>
+        {task && section && (
+          <div className={`mt-5 rounded-2xl border p-4 ${SKILL_TONE[section.skill] ?? ''}`}>
+            <p className="text-xs font-bold uppercase tracking-wide opacity-70">Official task mechanics</p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              <span className="rounded-full bg-white/70 px-3 py-1 text-xs font-bold dark:bg-neutral-950/40">Part {task.part}</span>
+              {task.question_count > 0 && <span className="rounded-full bg-white/70 px-3 py-1 text-xs font-bold dark:bg-neutral-950/40">{task.question_count} questions</span>}
+              {task.prep_seconds > 0 && <span className="rounded-full bg-white/70 px-3 py-1 text-xs font-bold dark:bg-neutral-950/40">{task.prep_seconds}s preparation</span>}
+              {task.response_seconds > 0 && <span className="rounded-full bg-white/70 px-3 py-1 text-xs font-bold dark:bg-neutral-950/40">{Math.round(task.response_seconds / 60)} min response</span>}
+              {task.word_range && <span className="rounded-full bg-white/70 px-3 py-1 text-xs font-bold dark:bg-neutral-950/40">{task.word_range[0]}–{task.word_range[1]} words</span>}
+            </div>
+            <p className="mt-3 text-sm leading-relaxed opacity-80">{task.description}</p>
+          </div>
+        )}
+        {open.task_key && (
+          <div className="mt-4 grid gap-2 sm:grid-cols-4">
+            {['Understand the task', 'Follow the steps', 'Avoid the traps', 'Run the drill'].map((label, index) => (
+              <div key={label} className="rounded-xl border border-neutral-200 bg-neutral-50 px-3 py-2 dark:border-neutral-800 dark:bg-neutral-900">
+                <p className="text-[10px] font-bold uppercase text-neutral-400">Step {index + 1}</p>
+                <p className="mt-0.5 text-xs font-semibold text-neutral-700 dark:text-neutral-200">{label}</p>
+              </div>
+            ))}
+          </div>
+        )}
         <div className="mt-5">
           <MarkdownResult content={open.body_markdown ?? ''} />
         </div>
@@ -160,7 +188,7 @@ export function LearnView({ api, initialSlug, onConsumed }: {
                         <span className="grid h-9 w-9 place-items-center rounded-xl bg-white/70 dark:bg-neutral-950/30"><Icon size={17} /></span>
                         <div>
                           <h3 className="text-base font-bold">{section.label}</h3>
-                          <p className="text-xs opacity-70">Start with the foundation, then follow Parts 1–{section.tasks.length}</p>
+                          <p className="text-xs opacity-70">Foundation plus detailed playbooks for Parts 1–{section.tasks.length}</p>
                         </div>
                       </div>
                       <span className="hidden rounded-full bg-white/60 px-2.5 py-1 text-xs font-bold dark:bg-neutral-950/30 sm:block">{sectionLessons.length} guides</span>
@@ -172,6 +200,7 @@ export function LearnView({ api, initialSlug, onConsumed }: {
                           <span className="min-w-0 flex-1">
                             <span className="block text-sm font-bold text-neutral-950 group-hover:text-amber-700 dark:text-white dark:group-hover:text-amber-300">{lesson.title}</span>
                             <span className="mt-0.5 block text-sm leading-relaxed text-neutral-500">{lesson.summary}</span>
+                            {lesson.task_key && <span className="mt-1.5 flex flex-wrap gap-1.5"><span className="rounded-full bg-neutral-100 px-2 py-0.5 text-[10px] font-semibold text-neutral-500 dark:bg-neutral-800">Execution plan</span><span className="rounded-full bg-neutral-100 px-2 py-0.5 text-[10px] font-semibold text-neutral-500 dark:bg-neutral-800">Decision rules</span><span className="rounded-full bg-neutral-100 px-2 py-0.5 text-[10px] font-semibold text-neutral-500 dark:bg-neutral-800">Traps + drill</span></span>}
                           </span>
                           <span className="flex-shrink-0 pt-1 text-xs font-medium text-neutral-400">{lesson.estimated_minutes} min</span>
                         </button>

@@ -821,3 +821,170 @@ literally what is being tested.
 """,
     },
 ]
+
+# Every official task lesson gets the same actionable second layer. The core
+# lesson explains the task; this playbook turns it into a repeatable routine.
+# Keeping these task-specific (rather than appending generic study advice) is
+# important: the useful decision rule in Reading Part 2 is not the one needed
+# in Listening Part 5 or Speaking Task 6.
+TASK_PLAYBOOKS: dict[str, dict[str, list[str] | str]] = {
+    "listening_problem_solving": {
+        "steps": ["Draw three headings: problem, options, decision.", "After each segment, mark every option +, −, or ?.", "Answer from the latest decision, not the first suggestion."],
+        "rules": ["Mentioned is not selected.", "A reason introduced with ‘but’ usually belongs to the rejected option.", "If the plan changes, the final plan controls."],
+        "traps": ["Choosing a vividly discussed option that was rejected", "Carrying an early decision into a later segment", "Writing sentences and missing the change of plan"],
+        "drill": "Play a three-minute planning conversation once. Produce only a problem/options/decision table, then summarize the final choice in one sentence.",
+    },
+    "listening_daily_life": {
+        "steps": ["Identify the relationship in the opening exchange.", "Write one word for each speaker’s goal.", "Mark the pivot where a misunderstanding or plan changes."],
+        "rules": ["Tone answers relationship questions; keywords do not.", "The final agreement outweighs the opening request.", "An implied intention must fit both wording and tone."],
+        "traps": ["Confusing polite language with friendship", "Selecting the original plan after it changes", "Treating an inference as a directly stated fact"],
+        "drill": "Use a short service or scheduling dialogue. Note only relationship, goal A, goal B, pivot, and outcome; replay afterward to audit what you missed.",
+    },
+    "listening_information": {
+        "steps": ["Create slots for names, numbers, dates, locations, and conditions.", "Attach a label to every number you write.", "Circle exceptions and eligibility words."],
+        "rules": ["A number without its unit or subject is unusable.", "The clause after ‘unless’, ‘except’, or ‘only if’ often decides the answer.", "Similar figures are deliberate distractors."],
+        "traps": ["Swapping two numbers from the same talk", "Ignoring a condition stated immediately after a fact", "Trying to record every sentence"],
+        "drill": "Listen once to a two-minute informational announcement and build a five-column fact sheet. Score labels and conditions, not total words captured.",
+    },
+    "listening_news": {
+        "steps": ["Capture who/what/where in the first two sentences.", "Add cause, quoted reaction, and likely consequence.", "Separate the reporter’s framing from quoted claims."],
+        "rules": ["The lead carries the event; later lines explain why it matters.", "‘According to’ transfers ownership of a claim.", "Implication answers must follow from the report, not outside knowledge."],
+        "traps": ["Missing the lead while preparing to take notes", "Attributing a quoted opinion to the reporter", "Choosing a plausible consequence the report never supports"],
+        "drill": "Listen to a 60–90 second local news clip once. Write a six-box brief: event, people, place/time, cause, reaction, consequence.",
+    },
+    "listening_discussion": {
+        "steps": ["Set up one column per speaker before content begins.", "Record each position in five words or fewer.", "Draw arrows when speakers agree, challenge, or change."],
+        "rules": ["Answer ‘by the end’ questions from the last stated position.", "Agreement may be partial; note what they agree about.", "A speaker can repeat an idea without endorsing it."],
+        "traps": ["Correct idea, wrong speaker", "Missing a late change of mind", "Assuming two speakers agree on everything"],
+        "drill": "Use a three-person panel clip. Build a speaker matrix with opening view, reason, agreement, and final view for each person.",
+    },
+    "listening_viewpoints": {
+        "steps": ["Write the topic and speaker’s thesis first.", "Start a new line at every contrast marker.", "Reserve the final line for the conclusion."],
+        "rules": ["A reported viewpoint is not automatically the speaker’s view.", "Contrast markers signal where testable distinctions begin.", "The conclusion can qualify everything before it."],
+        "traps": ["Assigning critics’ arguments to the narrator", "Losing structure inside a long monologue", "Relaxing before the final conclusion"],
+        "drill": "Listen once to a short opinion commentary. Outline only thesis → other view → response → conclusion, then identify ownership of every claim.",
+    },
+    "reading_correspondence": {
+        "steps": ["Identify sender, recipient, purpose, and tone.", "Map each question to the smallest relevant sentence.", "For reply gaps, verify meaning against the original message."],
+        "rules": ["Grammar fit is necessary but not sufficient.", "A reply option must preserve both fact and register.", "Strong words such as always/never need equally strong textual support."],
+        "traps": ["Choosing the smoothest-sounding reply", "Using general message meaning instead of the relevant line", "Missing who performed an action"],
+        "drill": "Take one email and write a four-line fact map: purpose, requests, constraints, tone. Complete questions using only that map, then verify in the text.",
+    },
+    "reading_diagram": {
+        "steps": ["Turn the email request into a constraint checklist.", "Scan columns instead of reading every row.", "Test the surviving row against footnotes and exceptions."],
+        "rules": ["The correct option satisfies every constraint.", "A row matching all but one condition is a designed distractor.", "Footnotes override the main row."],
+        "traps": ["Stopping after the first matching detail", "Ignoring units, dates, or membership conditions", "Reading the visual before knowing what to find"],
+        "drill": "Use any timetable or product table. Invent three constraints, eliminate rows one condition at a time, and state the exact cell that eliminated each distractor.",
+    },
+    "reading_information": {
+        "steps": ["Reduce each statement to its core claim.", "Scan paragraph topic sentences, then verify the full sentence.", "Choose Not Given unless you can point to direct support."],
+        "rules": ["Shared vocabulary is not shared meaning.", "Partly true is still unsupported.", "Not Given means absent, not contradicted."],
+        "traps": ["Forcing every statement into A–D", "Matching one keyword while ignoring the claim", "Confusing contradiction with absence"],
+        "drill": "Read four short paragraphs and write one supported paraphrase plus one plausible-but-absent statement for each. Explain the evidence boundary aloud.",
+    },
+    "reading_viewpoints": {
+        "steps": ["Build a name → position map while reading.", "Mark support, opposition, and qualifications.", "Determine the commenter’s stance before filling gaps."],
+        "rules": ["Ownership matters as much as content.", "A qualified position is not the same as full agreement.", "Comment completions must preserve the commenter’s logic and tone."],
+        "traps": ["Correct viewpoint assigned to the wrong person", "Ignoring concession words", "Reaching Part 4 without protected time"],
+        "drill": "Annotate an opinion article with one margin label per person. Reconstruct the argument without looking, then check every attribution.",
+    },
+    "writing_email": {
+        "steps": ["Underline recipient, purpose, register, and every required point.", "Plan one paragraph per requirement.", "Draft purpose first and requested action last.", "Use the final five minutes for a requirement and error audit."],
+        "rules": ["Every prompt bullet must be visible in the response.", "A point needs a reason, detail, or consequence to count as developed.", "Register must remain consistent from greeting to close."],
+        "traps": ["Polished writing that omits one bullet", "A long introduction before the purpose", "Generic closing with no requested action"],
+        "drill": "Plan three email prompts in four minutes each without writing them. Then write one in 18 minutes and audit it with a three-bullet coverage checklist.",
+    },
+    "writing_survey": {
+        "steps": ["Choose a side within 60 seconds.", "Plan two scenario-specific reasons and one example each.", "Acknowledge the alternative once, then defeat it.", "Check that the conclusion matches the opening choice."],
+        "rules": ["Depth beats number of reasons.", "A concrete consequence develops an idea better than another adjective.", "Do not spend half the response explaining both options."],
+        "traps": ["Hedging instead of choosing", "Repeating the same reason in different words", "Examples unrelated to the stated community or organisation"],
+        "drill": "For five survey prompts, produce choice + reason + because + example in 90 seconds each. Write only the strongest outline as a full response.",
+    },
+    "speaking_advice": {
+        "steps": ["Name the problem in one line.", "Give one direct recommendation.", "Develop two benefits or reasons.", "Handle one likely concern and close."],
+        "rules": ["Advice must be actionable.", "Speak to the person as ‘you’.", "One developed recommendation beats a menu of possibilities."],
+        "traps": ["Retelling the situation for 30 seconds", "Offering choices without recommending one", "Ending before addressing consequences"],
+        "drill": "Record three 90-second answers using four cue words only: acknowledge, recommend, reason 1, reason 2/objection.",
+    },
+    "speaking_personal_experience": {
+        "steps": ["Choose one small event.", "Set when, where, and who quickly.", "Tell the turning point in chronological order.", "End with the result or lesson."],
+        "rules": ["Specific sensory details create vocabulary range.", "Past tense should dominate.", "The story needs significance, not just events."],
+        "traps": ["Choosing a story too large for 60 seconds", "Tense switching", "No clear ending or relevance to the prompt"],
+        "drill": "Build a bank of six adaptable stories. Practise each as five beats, never a memorized script.",
+    },
+    "speaking_scene": {
+        "steps": ["State the overall setting.", "Move foreground → middle → background.", "Describe actions and relationships.", "Use remaining time for positions, clothing, weather, and objects."],
+        "rules": ["Follow one spatial route.", "Use present continuous for actions.", "Describe visible evidence; do not predict yet."],
+        "traps": ["Jumping randomly around the image", "Listing nouns without actions", "Repeating ‘there is’ in every sentence"],
+        "drill": "Describe one busy photo for 60 seconds, then repeat using no more than two instances of ‘there is/are’ and at least five position phrases.",
+    },
+    "speaking_predictions": {
+        "steps": ["Select two or three visible clues.", "Turn each clue into a prediction.", "Add the consequence that follows.", "Vary certainty language."],
+        "rules": ["Every prediction needs a visible reason.", "Develop fewer predictions rather than listing many.", "Use might/likely/will to show calibrated certainty."],
+        "traps": ["Predictions unrelated to the image", "Continuing to describe instead of predicting", "Repeating ‘will’ mechanically"],
+        "drill": "For one image, make three clue → prediction → consequence chains in 30 seconds, then deliver them for 60 seconds.",
+    },
+    "speaking_comparing": {
+        "steps": ["Choose one option immediately.", "Identify what the named listener values.", "Give two listener-specific advantages.", "Dismiss the alternative and make a direct ask."],
+        "rules": ["The goal is persuasion, not balanced comparison.", "Comparatives must connect to the listener.", "Commitment sounds stronger than endless qualification."],
+        "traps": ["Describing both pictures equally", "Giving reasons that could apply to anyone", "Forgetting to address the listener directly"],
+        "drill": "Pick between two ordinary products and persuade three different people; change the reasons to fit each listener.",
+    },
+    "speaking_difficult_situation": {
+        "steps": ["Choose whom to address and greet them.", "Acknowledge the difficulty without blame.", "Explain your constraint briefly.", "Offer a concrete alternative and preserve the relationship."],
+        "rules": ["A solution is required, not only an apology.", "Tone must fit the relationship.", "Hedging softens the request without making it unclear."],
+        "traps": ["Never identifying the chosen person", "Sounding accusatory", "Apologizing repeatedly without proposing a solution"],
+        "drill": "Practise one scenario twice: once to a manager and once to a friend. Compare how greeting, modal verbs, explanation, and closing change.",
+    },
+    "speaking_opinions": {
+        "steps": ["State a clear position.", "Develop reason one with an example.", "Develop reason two with a consequence.", "Concede one point, rebut it, and conclude."],
+        "rules": ["Position must be clear in the first sentence.", "Examples should prove the reason, not introduce a new topic.", "A concession earns range only if you return to your position."],
+        "traps": ["Giving a neutral overview", "Listing undeveloped reasons", "Losing the conclusion when the timer is nearly over"],
+        "drill": "Use 15 seconds to create P-R-E-P cues: position, reason, example, position. Record for 90 seconds and mark every unsupported claim.",
+    },
+    "speaking_unusual": {
+        "steps": ["Give the overall impression.", "Describe size, shape, colour, and material.", "Explain parts by position and comparison.", "Guess its purpose with hedging."],
+        "rules": ["Describe around unknown vocabulary.", "Comparison is more useful than silence.", "Separate visible description from guessed purpose."],
+        "traps": ["Freezing while searching for the exact noun", "Naming parts without explaining location", "Stating a guessed purpose as fact"],
+        "drill": "Choose five unfamiliar objects. Describe each for 60 seconds without naming it; a listener should be able to sketch or identify it.",
+    },
+}
+
+
+def _append_playbook(lesson: dict, playbook: dict[str, list[str] | str]) -> None:
+    def bullets(values: list[str]) -> str:
+        return "\n".join(f"- {value}" for value in values)
+
+    lesson["body"] = lesson["body"].rstrip() + f"""
+
+---
+
+## Detailed execution plan
+
+{bullets(playbook["steps"])}
+
+## Fast decision rules
+
+{bullets(playbook["rules"])}
+
+## Traps to recognize immediately
+
+{bullets(playbook["traps"])}
+
+## A focused 10-minute drill
+
+{playbook["drill"]}
+
+## Final self-check
+
+- Did I follow the task's required structure rather than improvise a new one?
+- Can I point to the evidence, requirement, or visible clue behind each choice?
+- Did I protect enough time to complete the response and make a final decision?
+"""
+    lesson["estimated_minutes"] = max(int(lesson.get("estimated_minutes", 5)), 9)
+
+
+for _lesson in LESSONS:
+    _task_key = _lesson.get("task_key")
+    if _task_key in TASK_PLAYBOOKS:
+        _append_playbook(_lesson, TASK_PLAYBOOKS[_task_key])

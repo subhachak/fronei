@@ -46,3 +46,36 @@ def make_llm_sequence():
         return _invoke
 
     return _factory
+
+
+@pytest.fixture(autouse=True)
+def block_live_model_calls(request, monkeypatch):
+    """No test reaches a real model unless it says it is testing the client.
+
+    Tests that quietly called a provider were nondeterministic by construction:
+    they asserted on whatever a frontier model happened to return that run, and
+    failed at random in CI while passing locally. Two long-standing flakes in
+    this suite were exactly that, and an earlier fix had to hunt them one at a
+    time. A guard finds them all and stops the next one being written.
+
+    It also made the suite roughly seven times faster, because the network was
+    most of the runtime.
+
+    Mark a test `@pytest.mark.uses_model_client` when the client itself is what
+    is under test; stub `model_client.complete` when the test merely needs an
+    answer.
+    """
+    if request.node.get_closest_marker("uses_model_client"):
+        return
+
+    from app.services.agent import model_client
+
+    def _blocked(*_args, **kwargs):
+        raise AssertionError(
+            "This test reached a real model, so its result depends on the "
+            "network and on whatever the provider returned. Stub "
+            "model_client.complete, or mark the test @pytest.mark.uses_model_client "
+            f"if it is exercising the client itself. (role={kwargs.get('role')!r})"
+        )
+
+    monkeypatch.setattr(model_client, "complete", _blocked)
